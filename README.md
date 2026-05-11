@@ -4,10 +4,10 @@
 
 **Bridge Claude Code to the Chrome tabs you explicitly enable.**
 
-[![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg)](https://www.npmjs.com/package/@jobshimo/browser-link)
-[![npm downloads](https://img.shields.io/npm/dm/@jobshimo/browser-link.svg)](https://www.npmjs.com/package/@jobshimo/browser-link)
-[![license](https://img.shields.io/npm/l/@jobshimo/browser-link.svg)](./LICENSE)
-[![issues](https://img.shields.io/github/issues/jobshimo/browser-link.svg)](https://github.com/jobshimo/browser-link/issues)
+[![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg?v=1)](https://www.npmjs.com/package/@jobshimo/browser-link)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg?v=1)](./LICENSE)
+[![issues](https://img.shields.io/github/issues/jobshimo/browser-link.svg?v=1)](https://github.com/jobshimo/browser-link/issues)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?v=1)](https://github.com/jobshimo/browser-link/pulls)
 
 </div>
 
