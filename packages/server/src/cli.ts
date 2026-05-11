@@ -90,11 +90,16 @@ async function dispatch(argv: string[]): Promise<void> {
 
 const argv = process.argv.slice(2);
 
-// No args + both stdin and stdout are TTYs → human in a terminal, show setup menu.
+// No args + both stdin and stdout are TTYs → human in a terminal: show the
+// welcome / disclaimer screen, then the setup menu (in the chosen language).
 // Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
 if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
+  const { runWelcome } = await import('./commands/welcome.js');
   const { runMenu } = await import('./commands/menu.js');
-  await runMenu();
+  const welcome = await runWelcome('en');
+  if (welcome.action === 'continue') {
+    await runMenu(welcome.language);
+  }
   process.exit(0);
 }
 
