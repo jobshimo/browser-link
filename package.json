@@ -8,11 +8,11 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:server": "npm run build -w @browser-link/server",
+    "build:server": "npm run build -w @jobshimo/browser-link",
     "build:extension": "npm run build -w @browser-link/extension",
     "dev": "npm run dev:server",
-    "dev:server": "npm run dev -w @browser-link/server",
-    "inspect": "npx @modelcontextprotocol/inspector npx tsx packages/server/src/index.ts",
+    "dev:server": "npm run dev -w @jobshimo/browser-link",
+    "inspect": "npx @modelcontextprotocol/inspector npx tsx packages/server/src/cli.ts",
     "generate:icons": "npm run generate:icons -w @browser-link/extension",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
