@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { getDbPath } from './paths.js';
 
 let dbInstance: Database.Database | null = null;
@@ -9,12 +10,29 @@ export function getDb(): Database.Database {
   if (dbInstance) return dbInstance;
   const path = getDbPath();
   mkdirSync(dirname(path), { recursive: true });
+  migrateLegacyDb(path);
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
   dbInstance = db;
   return db;
+}
+
+/**
+ * Older versions of browser-link stored the map at ~/.browser-link/map.db.
+ * On first boot with the new XDG/per-OS path, copy the legacy file over so
+ * a user upgrading does not lose what they had learned.
+ */
+function migrateLegacyDb(targetPath: string): void {
+  if (existsSync(targetPath)) return;
+  const legacy = join(homedir(), '.browser-link', 'map.db');
+  if (!existsSync(legacy)) return;
+  try {
+    copyFileSync(legacy, targetPath);
+  } catch {
+    // If the copy fails we silently fall back to a fresh DB.
+  }
 }
 
 function runMigrations(db: Database.Database): void {

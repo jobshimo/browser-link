@@ -1,19 +1,20 @@
-import { homedir } from 'node:os';
+import envPaths from 'env-paths';
 import { join } from 'node:path';
 
 /**
  * Resolve the directory where browser-link stores user data (the map DB).
- * Respects $XDG_DATA_HOME; falls back to $HOME/.browser-link.
- * Override with $BROWSER_LINK_DATA_DIR for tests / portable installs.
+ *
+ * Defaults follow per-OS convention via env-paths:
+ *   - Linux: $XDG_DATA_HOME/browser-link, fallback ~/.local/share/browser-link
+ *   - macOS: ~/Library/Application Support/browser-link
+ *   - Windows: %APPDATA%/browser-link
+ *
+ * Override with $BROWSER_LINK_DATA_DIR for tests or portable installs.
  */
 export function getDataDir(): string {
   const override = process.env.BROWSER_LINK_DATA_DIR;
   if (override && override.trim().length > 0) return override;
-
-  const xdg = process.env.XDG_DATA_HOME;
-  if (xdg && xdg.trim().length > 0) return join(xdg, 'browser-link');
-
-  return join(homedir(), '.browser-link');
+  return envPaths('browser-link', { suffix: '' }).data;
 }
 
 export function getDbPath(): string {
