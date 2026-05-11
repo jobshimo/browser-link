@@ -6,7 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocket, WebSocketServer } from 'ws';
 import { randomUUID } from 'node:crypto';
-import type { ExtensionToServer, ServerToExtension } from '@browser-link/shared';
+import type { ExtensionToServer, ServerToExtension } from './messages.js';
 import { MAP_TOOL_DEFINITIONS, handleMapTool, isMapTool } from './map/tools.js';
 import { closeDb } from './map/db.js';
 

@@ -1,27 +1,55 @@
 {
-  "name": "@browser-link/server",
+  "name": "@jobshimo/browser-link",
   "version": "0.0.1",
-  "private": true,
+  "description": "MCP server that bridges Claude (and other MCP clients) to a Chrome tab, with a persistent UI map of selectors, flows and gotchas across sessions.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "chrome",
+    "browser-automation",
+    "ai-tools"
+  ],
+  "homepage": "https://github.com/jobshimo/browser-link#readme",
+  "bugs": {
+    "url": "https://github.com/jobshimo/browser-link/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jobshimo/browser-link.git",
+    "directory": "packages/server"
+  },
+  "license": "MIT",
+  "author": "Martín Miguel Bernal",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
     "browser-link": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli.ts",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build && node ./scripts/prepare-publish.mjs"
   },
   "dependencies": {
-    "@browser-link/shared": "*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^11.5.0",
     "env-paths": "^3.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@browser-link/shared": "*",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.13",
