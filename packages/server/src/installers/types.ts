@@ -1,4 +1,4 @@
-export type ClientId = 'claude' | 'opencode';
+export type ClientId = 'claude' | 'opencode' | 'copilot';
 
 export interface ClientInfo {
   id: ClientId;

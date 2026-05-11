@@ -4,36 +4,46 @@ import { installAll, installFor } from './commands/install.js';
 import { uninstallAll, uninstallFor } from './commands/uninstall.js';
 import { printExtensionInstructions } from './commands/extension.js';
 import { printAbout } from './commands/about.js';
+import { checkUpdates, formatUpdate } from './commands/updates.js';
 import { loadConfig } from './config.js';
+import { VERSION } from './version.js';
 import type { ClientId } from './installers/index.js';
 
-const HELP = `browser-link — bridge Claude Code to the Chrome tabs you enable.
+const HELP = `browser-link ${VERSION} — bridge any MCP client to the Chrome tabs you enable.
 
 Usage:
   browser-link                  When invoked from an interactive terminal,
-                                opens a setup menu (register Claude Code,
-                                show extension steps, run doctor, about).
-                                When invoked by Claude Code (no TTY),
-                                starts the MCP server over stdio.
-  browser-link install          Register browser-link with Claude Code.
-  browser-link uninstall        Remove the registration.
-  browser-link extension        Show the path of the Chrome extension assets
-                                and per-OS install instructions.
-  browser-link doctor           Diagnose current setup (Claude Code, server, extension, map DB).
+                                opens the setup UI (register a client, show
+                                extension steps, run doctor, check updates).
+                                When invoked by an MCP client over stdio,
+                                starts the MCP server.
+  browser-link install          Register browser-link in every detected client.
+  browser-link install --client <claude|opencode|copilot>
+                                Register only in the named client.
+  browser-link uninstall        Remove every registration.
+  browser-link uninstall --client <id>
+                                Remove only the named registration.
+  browser-link extension        Show the Chrome extension assets path and
+                                per-OS install instructions.
+  browser-link doctor           Diagnose current setup (clients, server, extension, map DB).
+  browser-link updates          Check the npm registry for a newer version.
   browser-link about            Show the full explanation of what this is and how it works.
+  browser-link version          Print the installed version (also: --version, -v).
   browser-link help             This message.
 
 Environment:
   BROWSER_LINK_DATA_DIR         Override the DB location (defaults per OS).
   BROWSER_LINK_BIN              Override the command stored in client configs
-                                (e.g. "node /path/to/dist/index.js" for dev).`;
+                                (e.g. "node /path/to/dist/index.js" for dev).
+  COPILOT_HOME                  Override GitHub Copilot CLI's config dir
+                                (default ~/.copilot).`;
 
 function parseClient(argv: string[]): ClientId | null {
   const idx = argv.findIndex((a) => a === '--client');
   if (idx === -1 || idx === argv.length - 1) return null;
   const val = argv[idx + 1];
-  if (val === 'claude' || val === 'opencode') return val;
-  throw new Error(`Unknown --client value: ${val}. Use claude or opencode.`);
+  if (val === 'claude' || val === 'opencode' || val === 'copilot') return val;
+  throw new Error(`Unknown --client value: ${val}. Use claude, opencode or copilot.`);
 }
 
 async function dispatch(argv: string[]): Promise<void> {
@@ -84,6 +94,19 @@ async function dispatch(argv: string[]): Promise<void> {
       printAbout(cfg.language ?? 'en');
       return;
     }
+    case 'updates': {
+      const info = await checkUpdates();
+      console.log(formatUpdate(info));
+      // Non-zero exit when we could not reach the registry, so scripts can detect it.
+      if (info.error || info.latest === null) process.exit(2);
+      return;
+    }
+    case 'version':
+    case '-v':
+    case '--version': {
+      console.log(VERSION);
+      return;
+    }
     default: {
       console.error(`Unknown command: ${cmd}`);
       console.error('');
@@ -95,21 +118,12 @@ async function dispatch(argv: string[]): Promise<void> {
 
 const argv = process.argv.slice(2);
 
-// No args + both stdin and stdout are TTYs → human in a terminal: show the
-// welcome / disclaimer screen (unless previously dismissed) and then the
-// setup menu in the chosen language.
+// No args + both stdin and stdout are TTYs → human in a terminal: mount the
+// Ink-based UI (welcome on first run, then the setup menu).
 // Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
 if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
-  const cfg = loadConfig();
-  const { runMenu } = await import('./commands/menu.js');
-  let language = cfg.language ?? 'en';
-  if (!cfg.skipWelcome) {
-    const { runWelcome } = await import('./commands/welcome.js');
-    const welcome = await runWelcome({ initial: language });
-    if (welcome.action === 'quit') process.exit(0);
-    language = welcome.language;
-  }
-  await runMenu(language);
+  const { startUI } = await import('./ui/start.js');
+  await startUI();
   process.exit(0);
 }
 

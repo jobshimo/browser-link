@@ -1,4 +1,5 @@
 import { claudeInstaller } from './claude.js';
+import { copilotInstaller } from './copilot.js';
 import { opencodeInstaller } from './opencode.js';
 import type { ClientId, Installer } from './types.js';
 
@@ -6,7 +7,7 @@ import type { ClientId, Installer } from './types.js';
  * Installers wired into the CLI surface (`install`, `install --client X`,
  * the interactive menu, and `doctor`). Order here is the display order.
  */
-export const INSTALLERS: Installer[] = [claudeInstaller, opencodeInstaller];
+export const INSTALLERS: Installer[] = [claudeInstaller, opencodeInstaller, copilotInstaller];
 
 export function getInstaller(id: ClientId): Installer {
   const found = INSTALLERS.find((i) => i.id === id);

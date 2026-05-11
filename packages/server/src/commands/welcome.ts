@@ -1,11 +1,14 @@
-import * as p from '@clack/prompts';
-import { saveConfig } from '../config.js';
+/* Welcome screen strings (English / Spanish) shared by the interactive Ink
+ * Welcome view and any future non-interactive caller. No runtime logic here
+ * — every screen consumes this as a pure data module. */
 
 export type Language = 'en' | 'es';
 
 export interface WelcomeResult {
   action: 'continue' | 'quit';
   language: Language;
+  /** True when the user opted "Accept and don't show again" — the App
+   * persists `skipWelcome: true` in config when this is set. */
   persisted: boolean;
 }
 
@@ -37,9 +40,9 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     aboutTitle: 'What this is',
     about: [
       'An MCP server that opens a small WebSocket bridge between an MCP',
-      'client (Claude Code, OpenCode, …) and the Google Chrome tabs you',
-      'explicitly grant access to through a custom companion extension you',
-      'load locally.',
+      'client (Claude Code, OpenCode, GitHub Copilot CLI…) and the Google',
+      'Chrome tabs you explicitly grant access to through a custom companion',
+      'extension you load locally.',
     ].join('\n'),
     capabilitiesTitle: 'What the agent can do on a connected tab',
     capabilities: [
@@ -53,7 +56,7 @@ export const I18N_WELCOME: Record<Language, I18n> = {
       'about each app across sessions in a local SQLite map (selectors,',
       'flows, gotchas — never uploaded anywhere).',
     ].join('\n'),
-    warningTitle: '⚠  Read this before you continue',
+    warningTitle: 'Read this before you continue',
     warning: [
       'Connecting a tab gives the agent access to whatever is on it — any',
       'logged-in session, saved card, wallet, banking page, work console or',
@@ -84,9 +87,9 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     aboutTitle: 'Qué es esto',
     about: [
       'Un servidor MCP que abre un puente WebSocket entre un cliente MCP',
-      '(Claude Code, OpenCode, …) y las pestañas de Google Chrome a las que',
-      'vos le des acceso explícito a través de una extensión que cargás vos',
-      'manualmente.',
+      '(Claude Code, OpenCode, GitHub Copilot CLI…) y las pestañas de Google',
+      'Chrome a las que vos le des acceso explícito a través de una extensión',
+      'que cargás vos manualmente.',
     ].join('\n'),
     capabilitiesTitle: 'Qué puede hacer el agente en una pestaña conectada',
     capabilities: [
@@ -100,7 +103,7 @@ export const I18N_WELCOME: Record<Language, I18n> = {
       'aprende de cada app entre sesiones en un mapa SQLite local (selectores,',
       'flujos, gotchas — nunca se sube a ningún lado).',
     ].join('\n'),
-    warningTitle: '⚠  Leelo antes de continuar',
+    warningTitle: 'Leelo antes de continuar',
     warning: [
       'Conectar una pestaña le da al agente acceso a todo lo que esté en esa',
       'pestaña: sesiones iniciadas, tarjetas guardadas, wallets, banca,',
@@ -129,53 +132,3 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     },
   },
 };
-
-type Choice = 'accept' | 'dismiss' | 'swap' | 'quit';
-
-export async function runWelcome(opts: WelcomeOptions = {}): Promise<WelcomeResult> {
-  let lang: Language = opts.initial ?? 'en';
-  const hideDismiss = opts.hideDismiss === true;
-
-  while (true) {
-    const t = I18N_WELCOME[lang];
-
-    p.intro(t.title);
-    p.note(t.about, t.aboutTitle);
-    p.note(t.capabilities, t.capabilitiesTitle);
-    p.note(t.warning, t.warningTitle);
-    p.note(`${t.responsibility}\n\n${t.extensionNote}`);
-
-    const options: { value: Choice; label: string }[] = [
-      { value: 'accept', label: t.options.accept },
-    ];
-    if (!hideDismiss) options.push({ value: 'dismiss', label: t.options.dismiss });
-    options.push(
-      { value: 'swap', label: t.options.swap },
-      { value: 'quit', label: t.options.quit },
-    );
-
-    const choice = (await p.select({
-      message: t.prompt,
-      options,
-      initialValue: 'accept' as Choice,
-    })) as Choice | symbol;
-
-    if (p.isCancel(choice) || choice === 'quit') {
-      p.cancel(lang === 'es' ? 'Cancelado.' : 'Cancelled.');
-      return { action: 'quit', language: lang, persisted: false };
-    }
-
-    if (choice === 'swap') {
-      lang = lang === 'en' ? 'es' : 'en';
-      continue;
-    }
-
-    if (choice === 'dismiss') {
-      saveConfig({ skipWelcome: true, language: lang });
-      return { action: 'continue', language: lang, persisted: true };
-    }
-
-    // accept
-    return { action: 'continue', language: lang, persisted: false };
-  }
-}

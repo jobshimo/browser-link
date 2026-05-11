@@ -3,12 +3,12 @@
 > ⚠️ **Read this before installing**
 >
 > This package opens a bridge between your MCP client (Claude Code,
-> OpenCode, …) and the Chrome tabs you explicitly enable through a
-> companion extension. On every tab where you press "Conectar" in the
-> extension popup, the agent can read its DOM, click, type, run
-> arbitrary JavaScript, and follow links — including any logged-in
-> session, saved card, wallet, banking page or admin panel that tab is
-> currently showing.
+> OpenCode, GitHub Copilot CLI…) and the Chrome tabs you explicitly
+> enable through a companion extension. On every tab where you press
+> "Conectar" in the extension popup, the agent can read its DOM, click,
+> type, run arbitrary JavaScript, and follow links — including any
+> logged-in session, saved card, wallet, banking page or admin panel
+> that tab is currently showing.
 >
 > Treat the agent like a junior dev with remote control of those tabs.
 > Only enable tabs where you would let an automated process act on your
@@ -16,10 +16,10 @@
 > every action the agent performs on the tabs you explicitly enable.
 
 MCP server that bridges any MCP-compatible client (Claude Code, OpenCode,
-and friends) to the Chrome tabs you grant access to, through a small
-WebSocket relay and a companion Chrome extension. Ships with a persistent
-UI map so the agent remembers selectors, flows and gotchas it learned
-about each app, across sessions.
+GitHub Copilot CLI, and friends) to the Chrome tabs you grant access to,
+through a small WebSocket relay and a companion Chrome extension. Ships
+with a persistent UI map so the agent remembers selectors, flows and
+gotchas it learned about each app, across sessions.
 
 ## Install
 
@@ -31,18 +31,16 @@ This puts the `browser-link` binary on your PATH on macOS, Linux and Windows.
 
 ## Set it up
 
-The fastest path is the interactive menu (built on `@clack/prompts` —
-flicker-free in PowerShell, Windows Terminal, macOS Terminal, iTerm, every
-Linux TTY):
+The fastest path is the interactive UI — a full-screen [Ink](https://github.com/vadimdemedes/ink)-based app with a pinned header, live status of every MCP client, and sub-screens that swap in place (no flicker, no scroll-off):
 
 ```bash
 browser-link
 ```
 
 That opens the welcome / disclaimer screen (English or Spanish), and then
-the setup menu where you can register browser-link with **Claude Code** or
-**OpenCode**, see the Chrome extension install steps, run a doctor
-diagnose, and open the about / help page.
+the setup menu where you can register `browser-link` with **Claude Code**,
+**OpenCode**, or **GitHub Copilot CLI**, see the Chrome extension install
+steps, run a doctor diagnose, and open the about / help page.
 
 If you prefer direct commands:
 
@@ -50,6 +48,7 @@ If you prefer direct commands:
 browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
 browser-link install --client opencode     # register only in OpenCode
+browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
 browser-link extension                     # show the Chrome extension assets path + steps
 browser-link doctor                        # diagnose current setup
@@ -63,12 +62,13 @@ in Chrome. Then click "Conectar" on every tab you want the agent to reach
 
 ## Supported MCP clients
 
-| Client                                            | Config file written                                            |
-| ------------------------------------------------- | -------------------------------------------------------------- |
-| [Claude Code](https://docs.claude.com/claude-code) | `~/.claude.json` (`%USERPROFILE%\.claude.json` on Windows)     |
-| [OpenCode](https://opencode.ai)                   | `~/.config/opencode/opencode.json` on **every** OS (Win incl.) |
+| Client                                                               | Config file written                                              |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| [Claude Code](https://docs.claude.com/claude-code)                   | `~/.claude.json` (`%USERPROFILE%\.claude.json` on Windows)       |
+| [OpenCode](https://opencode.ai)                                      | `~/.config/opencode/opencode.json` on **every** OS (Win incl.)   |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/copilot-cli) | `~/.copilot/mcp-config.json` (override via `COPILOT_HOME` env)   |
 
-Both registrations are idempotent — re-running `install` updates the
+Every registration is idempotent — re-running `install` updates the
 entry instead of duplicating it. `uninstall --client <id>` removes it
 cleanly without touching anything else in the file.
 

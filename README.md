@@ -2,7 +2,7 @@
 
 # 🔗 browser-link
 
-**Bridge your MCP client (Claude Code, OpenCode, …) to the Chrome tabs you explicitly enable.**
+**Bridge your MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …) to the Chrome tabs you explicitly enable.**
 
 [![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg?v=1)](https://www.npmjs.com/package/@jobshimo/browser-link)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg?v=1)](./LICENSE)
@@ -53,40 +53,44 @@ npm install -g @jobshimo/browser-link
 browser-link
 ```
 
-That second command opens an interactive setup menu (English / Spanish), built
-on top of [`@clack/prompts`](https://github.com/bombshell-dev/clack) — the
-same TUI library used by the Astro, Drizzle and Nuxt installers. Flicker-free
-and looks the part in PowerShell, Windows Terminal, macOS Terminal, iTerm and
-every Linux TTY:
+That second command opens a full-screen interactive UI (English / Spanish)
+built on top of [Ink](https://github.com/vadimdemedes/ink) — the same React-for-terminal
+library that powers the Cloudflare Wrangler, Shopify CLI, AWS CDK and
+GitHub Copilot CLI installers. Diff-rendered (no flicker), pinned header
+with live client status, sub-screens that swap in place. Works in
+PowerShell, Windows Terminal, macOS Terminal, iTerm and every Linux TTY:
 
 ```
-┌  browser-link — setup
-│
-◇  MCP clients
-│  Claude Code   not registered
-│  OpenCode      not registered
-│
-◆  Pick an action
-│  ● Register browser-link with an MCP client
-│  ○ Show Chrome extension install steps
-│  ○ Run doctor (diagnose current setup)
-│  ○ Show the welcome screen
-│  ○ About / Help — what is this and how it works
-│  ○ Open the GitHub repository
-│  ○ Quit
-└
+╭─ browser-link — setup ──────────────────────────────────────────╮
+│ Claude Code · registered   OpenCode · not registered            │
+│ GitHub Copilot CLI · not detected                               │
+│                                                                 │
+│ Pick an action                                                  │
+│                                                                 │
+│ ❯ Register browser-link with an MCP client                      │
+│   Show Chrome extension install steps                           │
+│   Run doctor (diagnose current setup)                           │
+│   Show the welcome screen                                       │
+│   About / Help — what is this and how it works                  │
+│   Open the GitHub repository                                    │
+│   Quit                                                          │
+│                                                                 │
+│ ↑↓ navigate · ↵ select · l language · q quit                    │
+╰─────────────────────────────────────────────────────────────────╯
 ```
 
 It walks you through:
 
 1. **Registering `browser-link` with your MCP client.** Pick **Claude Code**
-   (writes `~/.claude.json` / `%USERPROFILE%\.claude.json`) or **OpenCode**
-   (writes `~/.config/opencode/opencode.json` on every OS, Windows included).
-   Restart the client afterwards.
+   (writes `~/.claude.json` / `%USERPROFILE%\.claude.json`), **OpenCode**
+   (writes `~/.config/opencode/opencode.json` on every OS, Windows included),
+   or **GitHub Copilot CLI** (writes `~/.copilot/mcp-config.json`, override
+   via `COPILOT_HOME`). Restart the client afterwards.
 2. **Installing the Chrome extension.** Shows the absolute path to the
    bundled assets and the OS-specific steps (`chrome://extensions` →
    Developer mode → Load unpacked).
-3. **A doctor command.** Reports what is and is not set up, per client.
+3. **A doctor command.** Reports what is and is not set up, per client,
+   with live refresh.
 4. **An About / Help page.** Full breakdown of every tool, where data is
    stored, and how the bridge works.
 
@@ -96,6 +100,7 @@ You can also use the subcommands directly without the menu:
 browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
 browser-link install --client opencode     # register only in OpenCode
+browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
 browser-link extension                     # show extension assets path + steps
 browser-link doctor                        # diagnose current setup
@@ -107,7 +112,7 @@ browser-link help                          # list every subcommand
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Your MCP client  (Claude Code, OpenCode, any MCP-compatible)    │
+│  Your MCP client (Claude Code, OpenCode, Copilot CLI, …)         │
 └──────────────────────┬───────────────────────────────────────────┘
                        │  stdio (MCP)
                        ▼

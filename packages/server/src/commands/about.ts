@@ -1,7 +1,6 @@
-import * as p from '@clack/prompts';
 import type { Language } from './welcome.js';
 
-interface AboutI18n {
+export interface AboutI18n {
   title: string;
   whatTitle: string;
   what: string;
@@ -203,25 +202,8 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
   },
 };
 
-function renderAbout(t: AboutI18n): void {
-  p.note(t.what, t.whatTitle);
-  p.note(t.how, t.howTitle);
-  p.note(t.binding, t.bindingTitle);
-  p.note(t.bridgeTools, t.bridgeToolsTitle);
-  p.note(t.mapTools, t.mapToolsTitle);
-  p.note(t.privacy, t.privacyTitle);
-  p.note(t.help, t.helpTitle);
-}
-
-/** Interactive about screen — used from the setup menu. Falls back to the
- * caller's prompt loop afterwards (no explicit "press any key"). */
-export async function runAbout(language: Language = 'en'): Promise<void> {
-  const t = I18N_ABOUT[language];
-  p.log.message(t.title);
-  renderAbout(t);
-}
-
-/** Non-interactive about — `browser-link about`. Plain output, no prompts. */
+/** Non-interactive about — `browser-link about`. Plain output, no prompts.
+ * The interactive version lives in the Ink UI (`ui/screens.tsx`). */
 export function printAbout(language: Language = 'en'): void {
   const t = I18N_ABOUT[language];
   const sections: { title: string; body: string }[] = [
