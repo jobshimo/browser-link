@@ -131,6 +131,97 @@ Important details:
 - Disconnecting a tab from the extension popup immediately revokes the
   bridge for that tab.
 
+## 🧠 The agent learns your apps — and remembers across sessions
+
+> **This is the feature that makes `browser-link` more than a remote
+> control.** Every time the agent figures something out about a web app
+> (where a button lives, which combination of events fires its handler,
+> what gotcha tripped it the first time), it can persist that piece of
+> knowledge in a **local SQLite database** under your user folder.
+>
+> Next session, the agent calls `browser.map.recall` and gets that
+> knowledge back — instead of rediscovering the same selectors and
+> flows from scratch every conversation.
+
+### What gets remembered
+
+The map stores three kinds of entries, indexed by `(app, route)`:
+
+| Kind         | What it looks like                                                                   | When the agent saves it                                             |
+| ------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| **selector** | `{ selector: "button[aria-label='Save']", evidence?: "found via snapshot" }`         | A CSS selector tied to a stable purpose                             |
+| **flow**     | `{ steps: [{action:'click', selector:'#chip'}, {action:'wait', ms:500}, …] }`        | An ordered sequence of actions that reaches an outcome end-to-end   |
+| **gotcha**   | `{ body: "Synthetic dblclick does not fire the React handler — use full sequence" }` | A non-obvious fact about the app that would take time to rediscover |
+
+Each entry has `verified_at` / `failed_at` timestamps so the agent knows
+whether the saved knowledge is fresh, stale, or known-broken. When a
+selector that used to work suddenly fails, the agent marks it via
+`record_use({ ok: false })` and stops trusting it until it relearns.
+
+### The loop, in plain English
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  You ask:                                                            │
+│     "Open the user detail dialog for user 42 and check the audit log"│
+└────────────────────────────┬─────────────────────────────────────────┘
+                             │
+                             ▼
+     ┌────────────────────────────────────────────────────────┐
+     │  1) Agent calls browser.map.recall({ origin, url })    │
+     │     → returns the selectors / flows / gotchas it has   │
+     │       learned for this app + route in past sessions    │
+     └────────────────────────────┬───────────────────────────┘
+                                  │
+                                  ▼
+     ┌────────────────────────────────────────────────────────┐
+     │  2) Agent reuses what it knows — saves time and tokens │
+     │     If something is stale, it falls back to snapshot   │
+     │     and re-learns. If it's wrong, it marks failed.     │
+     └────────────────────────────┬───────────────────────────┘
+                                  │
+                                  ▼
+     ┌────────────────────────────────────────────────────────┐
+     │  3) Agent does the task and saves any new learning     │
+     │     via browser.map.save({ kind, purpose, payload })   │
+     │     so the next session starts even better-equipped.   │
+     └────────────────────────────────────────────────────────┘
+```
+
+### Where the database lives
+
+A single SQLite file (`map.db`) on your machine. **Nothing is ever
+uploaded** — the bridge talks loopback only and the map never leaves
+your laptop.
+
+| OS      | Default path                                                                                |
+| ------- | ------------------------------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/browser-link/map.db`                                         |
+| Linux   | `$XDG_DATA_HOME/browser-link/map.db` <br/> _(default `~/.local/share/browser-link/map.db`)_ |
+| Windows | `%APPDATA%\browser-link\map.db`                                                             |
+
+Override with `BROWSER_LINK_DATA_DIR` if you want a portable install or
+need to inspect the DB out-of-the-way.
+
+### Schema, for the curious
+
+```sql
+CREATE TABLE apps (
+  id, origin, app_key, title, notes, created_at, last_seen_at
+);
+
+CREATE TABLE entries (
+  id, app_id, url_pattern, kind, purpose,
+  payload TEXT,                  -- JSON blob, shape depends on kind
+  verified_at, failed_at, notes,
+  created_at, updated_at
+);
+```
+
+The agent gets this protocol pushed automatically over the MCP
+`initialize` handshake — you do not need to prompt-engineer it to
+use the map. It just does.
+
 ## Tools exposed to the agent
 
 The MCP server registers two families of tools.
