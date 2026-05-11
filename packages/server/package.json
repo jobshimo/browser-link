@@ -1,11 +1,13 @@
 {
   "name": "@jobshimo/browser-link",
-  "version": "0.0.1",
-  "description": "MCP server that bridges Claude (and other MCP clients) to a Chrome tab, with a persistent UI map of selectors, flows and gotchas across sessions.",
+  "version": "0.1.0",
+  "description": "MCP server that bridges Claude Code, OpenCode and other MCP clients to a Chrome tab, with a persistent UI map of selectors, flows and gotchas across sessions.",
   "keywords": [
     "mcp",
     "model-context-protocol",
     "claude",
+    "claude-code",
+    "opencode",
     "chrome",
     "browser-automation",
     "ai-tools"
@@ -45,6 +47,7 @@
     "prepublishOnly": "npm run clean && npm run build && node ./scripts/prepare-publish.mjs"
   },
   "dependencies": {
+    "@clack/prompts": "^1.3.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^11.5.0",
     "env-paths": "^3.0.0",

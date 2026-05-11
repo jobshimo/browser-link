@@ -1,6 +1,6 @@
 {
   "name": "browser-link",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Bridge between an MCP client (Claude Code) and a Chrome tab via per-tab manual activation",
   "workspaces": [

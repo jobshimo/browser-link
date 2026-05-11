@@ -1,12 +1,12 @@
 import { claudeInstaller } from './claude.js';
+import { opencodeInstaller } from './opencode.js';
 import type { ClientId, Installer } from './types.js';
 
 /**
- * Installers that are currently shippable. OpenCode lives in opencode.ts as
- * a scaffold but is not part of this array yet — installFor / installAll
- * will never invoke its (throwing) install/uninstall stubs.
+ * Installers wired into the CLI surface (`install`, `install --client X`,
+ * the interactive menu, and `doctor`). Order here is the display order.
  */
-export const INSTALLERS: Installer[] = [claudeInstaller];
+export const INSTALLERS: Installer[] = [claudeInstaller, opencodeInstaller];
 
 export function getInstaller(id: ClientId): Installer {
   const found = INSTALLERS.find((i) => i.id === id);

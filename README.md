@@ -2,7 +2,7 @@
 
 # 🔗 browser-link
 
-**Bridge Claude Code to the Chrome tabs you explicitly enable.**
+**Bridge your MCP client (Claude Code, OpenCode, …) to the Chrome tabs you explicitly enable.**
 
 [![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg?v=1)](https://www.npmjs.com/package/@jobshimo/browser-link)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg?v=1)](./LICENSE)
@@ -15,8 +15,8 @@
 
 > ### ⚠️ Read this before installing
 >
-> `browser-link` opens a bridge between Claude Code and the Chrome tabs you
-> explicitly enable through a companion extension. On every tab where you
+> `browser-link` opens a bridge between your MCP client and the Chrome tabs
+> you explicitly enable through a companion extension. On every tab where you
 > press **"Conectar"** in the extension popup, the agent can read its DOM,
 > click, type, run arbitrary JavaScript, and follow links — **including any
 > logged-in session, saved card, wallet, banking page or admin panel that
@@ -53,52 +53,61 @@ npm install -g @jobshimo/browser-link
 browser-link
 ```
 
-That second command opens an interactive setup menu (English / Spanish):
+That second command opens an interactive setup menu (English / Spanish), built
+on top of [`@clack/prompts`](https://github.com/bombshell-dev/clack) — the
+same TUI library used by the Astro, Drizzle and Nuxt installers. Flicker-free
+and looks the part in PowerShell, Windows Terminal, macOS Terminal, iTerm and
+every Linux TTY:
 
 ```
-╭─────────────────────────────────────────────────────────────╮
-│ browser-link — setup                                        │
-│                                                             │
-│ ❯ Register browser-link in Claude Code                      │
-│     (status: not registered)                                │
-│   Show Chrome extension install steps                       │
-│   Run doctor (diagnose current setup)                       │
-│   Show welcome screen                                       │
-│   About / Help — what is this and how it works              │
-│   Open the GitHub repository                                │
-│   Quit                                                      │
-│                                                             │
-│ ↑/↓ to move, Enter to select, q to quit                     │
-╰─────────────────────────────────────────────────────────────╯
+┌  browser-link — setup
+│
+◇  MCP clients
+│  Claude Code   not registered
+│  OpenCode      not registered
+│
+◆  Pick an action
+│  ● Register browser-link with an MCP client
+│  ○ Show Chrome extension install steps
+│  ○ Run doctor (diagnose current setup)
+│  ○ Show the welcome screen
+│  ○ About / Help — what is this and how it works
+│  ○ Open the GitHub repository
+│  ○ Quit
+└
 ```
 
 It walks you through:
 
-1. **Registering `browser-link` with Claude Code.** Writes the MCP entry to
-   `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows). Restart
-   Claude Code afterwards.
+1. **Registering `browser-link` with your MCP client.** Pick **Claude Code**
+   (writes `~/.claude.json` / `%USERPROFILE%\.claude.json`) or **OpenCode**
+   (writes `~/.config/opencode/opencode.json` on every OS, Windows included).
+   Restart the client afterwards.
 2. **Installing the Chrome extension.** Shows the absolute path to the
    bundled assets and the OS-specific steps (`chrome://extensions` →
    Developer mode → Load unpacked).
-3. **A doctor command.** Reports what is and is not set up.
+3. **A doctor command.** Reports what is and is not set up, per client.
 4. **An About / Help page.** Full breakdown of every tool, where data is
    stored, and how the bridge works.
 
 You can also use the subcommands directly without the menu:
 
 ```bash
-browser-link install     # register in Claude Code
-browser-link extension   # show extension assets path + steps
-browser-link doctor      # diagnose current setup
-browser-link about       # the full help page
-browser-link help        # list every subcommand
+browser-link install                       # register in every detected client
+browser-link install --client claude       # register only in Claude Code
+browser-link install --client opencode     # register only in OpenCode
+browser-link uninstall --client opencode   # remove from one client
+browser-link extension                     # show extension assets path + steps
+browser-link doctor                        # diagnose current setup
+browser-link about                         # the full help page
+browser-link help                          # list every subcommand
 ```
 
 ## How it works
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Claude Code (or any MCP-compatible client)                      │
+│  Your MCP client  (Claude Code, OpenCode, any MCP-compatible)    │
 └──────────────────────┬───────────────────────────────────────────┘
                        │  stdio (MCP)
                        ▼
@@ -356,22 +365,22 @@ Useful scripts (run from the repo root):
 >
 > So while you are developing locally:
 >
-> - If Claude Code is open **and** has `browser-link` registered as an MCP,
->   Claude already spawned the server and owns the port. `npm run dev`
->   will crash with `EADDRINUSE`.
-> - If `npm run dev` is the one holding the port, Claude Code's
+> - If your MCP client (Claude Code, OpenCode, …) is open **and** has
+>   `browser-link` registered, it already spawned the server and owns the
+>   port. `npm run dev` will crash with `EADDRINUSE`.
+> - If `npm run dev` is the one holding the port, the client's
 >   `browser-link` MCP will fail to start (`✗ Failed to connect`).
 >
 > Recommended dev flow:
 >
-> 1. Quit Claude Code (or `kill` the `node …/dist/index.js` PID that
->    Claude spawned — find it with `lsof -iTCP:17529 -sTCP:LISTEN -nP`).
+> 1. Quit the MCP client (or `kill` the `node …/dist/index.js` PID that
+>    it spawned — find it with `lsof -iTCP:17529 -sTCP:LISTEN -nP`).
 > 2. Now run `npm run dev` — port is free, tsx watch picks up your edits.
-> 3. When you are done coding, stop `npm run dev` and reopen Claude Code
+> 3. When you are done coding, stop `npm run dev` and reopen the MCP client
 >    so it can spawn its own server again.
 >
 > `npm run build` (without watch) does **not** touch the port, so you can
-> always rebuild while Claude Code is open. Only the live `dev` server
+> always rebuild while the client is open. Only the live `dev` server
 > needs the port.
 
 Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
