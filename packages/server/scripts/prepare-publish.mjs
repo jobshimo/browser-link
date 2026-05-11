@@ -1,28 +1,38 @@
 #!/usr/bin/env node
 // Pre-publish step run by `npm publish`:
-//  1) Bundle the Chrome extension assets into dist/extension.
+//  1) Build the Chrome extension if its dist is missing, then bundle the
+//     assets into the server's dist/extension.
 //  2) Copy the repo-root LICENSE next to package.json so npm includes it.
-// Cross-platform — only node:fs / node:path, no shell.
+// Cross-platform — only node:fs / node:path / node:child_process, no shell.
 
 import { existsSync, mkdirSync, rmSync, cpSync, copyFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverPkgDir = resolve(here, '..');
 const repoRoot = resolve(serverPkgDir, '..', '..');
 
 // 1) Extension assets
-const extensionDist = join(repoRoot, 'packages', 'extension', 'dist');
+const extensionPkgDir = join(repoRoot, 'packages', 'extension');
+const extensionDist = join(extensionPkgDir, 'dist');
 const extensionTarget = join(serverPkgDir, 'dist', 'extension');
 
 if (!existsSync(join(extensionDist, 'manifest.json'))) {
-  console.error(
-    '[prepare-publish] extension dist not found at',
-    extensionDist,
-    '\n  → run `npm run build:extension` from the repo root first.',
-  );
-  process.exit(1);
+  // Self-heal: build the extension in-place. shell:true lets Windows resolve
+  // npm.cmd via PATHEXT — without it spawnSync can't execute .cmd files.
+  // Args are static so there's no shell-injection surface.
+  console.log('[prepare-publish] extension dist missing — building it now…');
+  const r = spawnSync('npm', ['run', 'build'], {
+    cwd: extensionPkgDir,
+    stdio: 'inherit',
+    shell: true,
+  });
+  if (r.status !== 0) {
+    console.error('[prepare-publish] extension build failed (exit ' + r.status + ').');
+    process.exit(r.status ?? 1);
+  }
 }
 
 if (existsSync(extensionTarget)) rmSync(extensionTarget, { recursive: true, force: true });
