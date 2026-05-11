@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+
+# Generated assets — manifest is JSON we hand-author with strict shape
+packages/extension/dist/
+
+# Lock files
+package-lock.json
+pnpm-lock.yaml

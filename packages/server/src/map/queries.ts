@@ -78,9 +78,10 @@ export interface UpsertAppInput {
 export function upsertApp(input: UpsertAppInput): AppRow {
   const db = getDb();
   const ts = now();
-  const app_key = (input.app_key && input.app_key.trim().length > 0)
-    ? slugify(input.app_key)
-    : deriveAppKey(input.origin, input.title);
+  const app_key =
+    input.app_key && input.app_key.trim().length > 0
+      ? slugify(input.app_key)
+      : deriveAppKey(input.origin, input.title);
 
   const existing = db
     .prepare('SELECT * FROM apps WHERE origin = ? AND app_key = ?')
@@ -136,7 +137,9 @@ export function saveEntry(input: SaveEntryInput): { app: AppRow; entry: EntryRow
        SET payload = ?, notes = COALESCE(?, notes), verified_at = ?, failed_at = NULL, updated_at = ?
        WHERE id = ?`,
     ).run(payloadJson, input.notes ?? null, ts, ts, existing.id);
-    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(existing.id) as RawEntryRow;
+    const updated = db
+      .prepare('SELECT * FROM entries WHERE id = ?')
+      .get(existing.id) as RawEntryRow;
     return { app, entry: hydrate(updated) };
   }
 
@@ -156,7 +159,9 @@ export function saveEntry(input: SaveEntryInput): { app: AppRow; entry: EntryRow
       ts,
       ts,
     );
-  const inserted = db.prepare('SELECT * FROM entries WHERE id = ?').get(info.lastInsertRowid) as RawEntryRow;
+  const inserted = db
+    .prepare('SELECT * FROM entries WHERE id = ?')
+    .get(info.lastInsertRowid) as RawEntryRow;
   return { app, entry: hydrate(inserted) };
 }
 
@@ -192,15 +197,17 @@ export function recall(input: RecallInput): RecallResult {
   db.prepare('UPDATE apps SET last_seen_at = ? WHERE id = ?').run(now(), app.id);
 
   const pathname = input.url ? extractPathname(input.url) : null;
-  const rows = (pathname
-    ? db
-        .prepare(
-          `SELECT * FROM entries WHERE app_id = ? AND url_pattern = ? ORDER BY updated_at DESC`,
-        )
-        .all(app.id, pathname)
-    : db
-        .prepare(`SELECT * FROM entries WHERE app_id = ? ORDER BY url_pattern, updated_at DESC`)
-        .all(app.id)) as RawEntryRow[];
+  const rows = (
+    pathname
+      ? db
+          .prepare(
+            `SELECT * FROM entries WHERE app_id = ? AND url_pattern = ? ORDER BY updated_at DESC`,
+          )
+          .all(app.id, pathname)
+      : db
+          .prepare(`SELECT * FROM entries WHERE app_id = ? ORDER BY url_pattern, updated_at DESC`)
+          .all(app.id)
+  ) as RawEntryRow[];
 
   return { app, entries: rows.map(hydrate) };
 }
@@ -259,7 +266,9 @@ export function forget(input: ForgetInput): ForgetResult {
   }
   if (input.app_id) {
     // ON DELETE CASCADE wipes entries.
-    const before = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE app_id = ?').get(input.app_id) as { n: number };
+    const before = db
+      .prepare('SELECT COUNT(*) AS n FROM entries WHERE app_id = ?')
+      .get(input.app_id) as { n: number };
     const info = db.prepare('DELETE FROM apps WHERE id = ?').run(input.app_id);
     return { deleted_entries: before.n, deleted_apps: info.changes };
   }
@@ -268,7 +277,11 @@ export function forget(input: ForgetInput): ForgetResult {
 
 export function renameApp(app_id: number, new_app_key: string): AppRow | null {
   const db = getDb();
-  db.prepare('UPDATE apps SET app_key = ?, last_seen_at = ? WHERE id = ?').run(slugify(new_app_key), now(), app_id);
+  db.prepare('UPDATE apps SET app_key = ?, last_seen_at = ? WHERE id = ?').run(
+    slugify(new_app_key),
+    now(),
+    app_id,
+  );
   const row = db.prepare('SELECT * FROM apps WHERE id = ?').get(app_id) as AppRow | undefined;
   return row ?? null;
 }

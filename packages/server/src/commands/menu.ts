@@ -121,9 +121,12 @@ async function runOption(
     case 0: {
       clearScreen();
       const report = installFor('claude');
-      const mark = report.installedClient ? `${ansi.green}✓${ansi.reset}` : `${ansi.gray}·${ansi.reset}`;
+      const mark = report.installedClient
+        ? `${ansi.green}✓${ansi.reset}`
+        : `${ansi.gray}·${ansi.reset}`;
       console.log(`${mark} ${ansi.bold}${report.displayName}${ansi.reset}: ${report.message}`);
-      if (report.installedClient) console.log(`  ${ansi.cyan}→${ansi.reset} ${t.registerSuccessHint}`);
+      if (report.installedClient)
+        console.log(`  ${ansi.cyan}→${ansi.reset} ${t.registerSuccessHint}`);
       await pressEnter(t);
       return { keep: true, language: lang };
     }

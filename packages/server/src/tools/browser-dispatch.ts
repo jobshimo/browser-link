@@ -49,10 +49,7 @@ const BROWSER_TOOL_HANDLERS: ReadonlyMap<string, Handler> = new Map<string, Hand
       );
     },
   ],
-  [
-    'browser.snapshot',
-    (args, deps) => deps.callBrowserTool(requireTabId(args), 'snapshot', {}),
-  ],
+  ['browser.snapshot', (args, deps) => deps.callBrowserTool(requireTabId(args), 'snapshot', {})],
   [
     'browser.console',
     (args, deps) => {
@@ -84,7 +81,11 @@ const BROWSER_TOOL_HANDLERS: ReadonlyMap<string, Handler> = new Map<string, Hand
   [
     'browser.type',
     (args, deps) => {
-      const { selector, text, clear = false } = args as {
+      const {
+        selector,
+        text,
+        clear = false,
+      } = args as {
         selector: string;
         text: string;
         clear?: boolean;

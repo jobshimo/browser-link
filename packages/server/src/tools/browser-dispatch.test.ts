@@ -1,9 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import {
-  type BrowserToolDeps,
-  handleBrowserTool,
-  isBrowserTool,
-} from './browser-dispatch.js';
+import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
   return {
@@ -71,11 +67,7 @@ describe('handleBrowserTool', () => {
 
   test('type passes selector, text and clear defaulting to false', async () => {
     const deps = makeDeps();
-    await handleBrowserTool(
-      'browser.type',
-      { tab_id: 'tab_1', selector: '#x', text: 'hi' },
-      deps,
-    );
+    await handleBrowserTool('browser.type', { tab_id: 'tab_1', selector: '#x', text: 'hi' }, deps);
     expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'type', {
       selector: '#x',
       text: 'hi',

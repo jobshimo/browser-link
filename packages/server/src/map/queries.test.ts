@@ -3,15 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDb } from './db.js';
-import {
-  forget,
-  listApps,
-  recall,
-  recordUse,
-  renameApp,
-  saveEntry,
-  upsertApp,
-} from './queries.js';
+import { forget, listApps, recall, recordUse, renameApp, saveEntry, upsertApp } from './queries.js';
 
 let dataDir: string;
 

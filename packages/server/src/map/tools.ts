@@ -51,7 +51,8 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         title: {
           type: 'string',
-          description: 'Optional document.title; used to derive app_key on first save for this origin.',
+          description:
+            'Optional document.title; used to derive app_key on first save for this origin.',
         },
         url_pattern: {
           type: 'string',
@@ -61,7 +62,8 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         kind: { type: 'string', enum: ['selector', 'flow', 'gotcha'] },
         purpose: {
           type: 'string',
-          description: 'Human-readable label for what this entry achieves (e.g. "open task detail dialog").',
+          description:
+            'Human-readable label for what this entry achieves (e.g. "open task detail dialog").',
         },
         payload: {
           description:

@@ -36,7 +36,13 @@ function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortSta
 
 export interface DoctorReport {
   ws: { listening: boolean; detail: string; host: string; port: number };
-  clients: { id: string; displayName: string; installed: boolean; registered: boolean; configPath: string }[];
+  clients: {
+    id: string;
+    displayName: string;
+    installed: boolean;
+    registered: boolean;
+    configPath: string;
+  }[];
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
 }
@@ -78,9 +84,13 @@ export function formatDoctor(r: DoctorReport): string {
   const lines: string[] = [];
   lines.push('browser-link doctor');
   lines.push('');
-  lines.push(`WebSocket bridge  ${symbol(r.ws.listening)} ${r.ws.host}:${r.ws.port} — ${r.ws.detail}`);
+  lines.push(
+    `WebSocket bridge  ${symbol(r.ws.listening)} ${r.ws.host}:${r.ws.port} — ${r.ws.detail}`,
+  );
   if (!r.ws.listening) {
-    lines.push('                   (the server is launched by your MCP client; open Claude Code / OpenCode to start it)');
+    lines.push(
+      '                   (the server is launched by your MCP client; open Claude Code / OpenCode to start it)',
+    );
   }
   lines.push('');
   lines.push('MCP clients:');

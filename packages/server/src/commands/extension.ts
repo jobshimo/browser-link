@@ -79,5 +79,7 @@ export function printExtensionInstructions(): void {
   console.log('Install steps:');
   console.log(`  ${info.hints}`);
   console.log('');
-  console.log('After loading, open the extension popup on any tab and click "Conectar" to bridge it.');
+  console.log(
+    'After loading, open the extension popup on any tab and click "Conectar" to bridge it.',
+  );
 }

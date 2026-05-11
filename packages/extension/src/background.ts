@@ -113,7 +113,13 @@ function attachDebuggerListener(state: TabState): void {
       return;
     }
     if (method === 'Log.entryAdded') {
-      const e = p.entry as { level?: string; text?: string; timestamp?: number; url?: string; lineNumber?: number };
+      const e = p.entry as {
+        level?: string;
+        text?: string;
+        timestamp?: number;
+        url?: string;
+        lineNumber?: number;
+      };
       pushConsole(state, {
         timestamp: e.timestamp ?? Date.now(),
         level: e.level ?? 'log',
@@ -241,7 +247,10 @@ async function evaluateInTab<T = unknown>(tabId: number, expression: string): Pr
     returnByValue: true,
     awaitPromise: true,
     userGesture: true,
-  })) as { result: { value: T }; exceptionDetails?: { exception?: { description?: string }; text?: string } };
+  })) as {
+    result: { value: T };
+    exceptionDetails?: { exception?: { description?: string }; text?: string };
+  };
   if (result.exceptionDetails) {
     const ex = result.exceptionDetails;
     throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
@@ -273,7 +282,12 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
     switch (msg.tool) {
       case 'ping': {
         const tab = await chrome.tabs.get(tabId);
-        return { kind: 'tool.response', id: msg.id, ok: true, result: { title: tab.title ?? '', url: tab.url ?? '' } };
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { title: tab.title ?? '', url: tab.url ?? '' },
+        };
       }
 
       case 'navigate': {
@@ -282,7 +296,12 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         await cdp(tabId, 'Page.navigate', { url });
         if (waitForLoadFlag) await waitForLoad(tabId);
         const tab = await chrome.tabs.get(tabId);
-        return { kind: 'tool.response', id: msg.id, ok: true, result: { url: tab.url ?? '', title: tab.title ?? '' } };
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { url: tab.url ?? '', title: tab.title ?? '' },
+        };
       }
 
       case 'snapshot': {
@@ -308,7 +327,10 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'network_body': {
         const requestId = String(p.request_id);
-        const body = (await cdp(tabId, 'Network.getResponseBody', { requestId })) as { body: string; base64Encoded: boolean };
+        const body = (await cdp(tabId, 'Network.getResponseBody', { requestId })) as {
+          body: string;
+          base64Encoded: boolean;
+        };
         return { kind: 'tool.response', id: msg.id, ok: true, result: body };
       }
 
@@ -322,14 +344,44 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             const r = el.getBoundingClientRect();
             return { x: r.left + r.width / 2, y: r.top + r.height / 2, tag: el.tagName.toLowerCase() };
           })()`;
-        const coords = (await evaluateInTab(tabId, expr)) as { x: number; y: number; tag: string } | null;
+        const coords = (await evaluateInTab(tabId, expr)) as {
+          x: number;
+          y: number;
+          tag: string;
+        } | null;
         if (!coords) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: `Element not found: ${selector}` };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `Element not found: ${selector}`,
+          };
         }
-        await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: coords.x, y: coords.y });
-        await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: coords.x, y: coords.y, button: 'left', clickCount: 1 });
-        await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: coords.x, y: coords.y, button: 'left', clickCount: 1 });
-        return { kind: 'tool.response', id: msg.id, ok: true, result: { clicked: selector, tag: coords.tag } };
+        await cdp(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: coords.x,
+          y: coords.y,
+        });
+        await cdp(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: coords.x,
+          y: coords.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        await cdp(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: coords.x,
+          y: coords.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { clicked: selector, tag: coords.tag },
+        };
       }
 
       case 'type': {
@@ -346,10 +398,20 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           })()`;
         const focused = await evaluateInTab<boolean>(tabId, focusExpr);
         if (!focused) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: `Element not found: ${selector}` };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `Element not found: ${selector}`,
+          };
         }
         await cdp(tabId, 'Input.insertText', { text });
-        return { kind: 'tool.response', id: msg.id, ok: true, result: { typed: text.length, selector } };
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { typed: text.length, selector },
+        };
       }
 
       case 'evaluate': {
@@ -375,10 +437,14 @@ async function cleanup(tabId: number): Promise<void> {
   const state = tabStates.get(tabId);
   if (!state) return;
   if (state.ws && state.ws.readyState !== WebSocket.CLOSED) {
-    try { state.ws.close(); } catch {}
+    try {
+      state.ws.close();
+    } catch {}
   }
   if (state.debuggerAttached) {
-    try { await chrome.debugger.detach({ tabId }); } catch {}
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {}
   }
   tabStates.delete(tabId);
 }
@@ -403,7 +469,10 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
   try {
     await chrome.debugger.attach({ tabId }, CDP_VERSION);
   } catch (err) {
-    return { ok: false, error: `No se pudo attachar el debugger: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      error: `No se pudo attachar el debugger: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   const state: TabState = {
@@ -424,7 +493,10 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     await cdp(tabId, 'DOM.enable');
   } catch (err) {
     await cleanup(tabId);
-    return { ok: false, error: `No se pudo habilitar CDP: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      error: `No se pudo habilitar CDP: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   const ws = new WebSocket(WS_URL);

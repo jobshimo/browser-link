@@ -15,9 +15,13 @@
     "inspect": "npx @modelcontextprotocol/inspector npx tsx packages/server/src/cli.ts",
     "generate:icons": "npm run generate:icons -w @browser-link/extension",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"*.md\"",
+    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"*.md\"",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
+    "prettier": "^3.3.3",
     "typescript": "^5.6.0"
   }
 }

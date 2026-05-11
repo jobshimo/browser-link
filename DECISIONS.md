@@ -120,19 +120,19 @@ Cliente MCP <— stdio MCP —> Servidor MCP <— WebSocket localhost —> Exten
 
 **Tools comprometidos para el MVP:**
 
-| Tool | Categoría | Propósito |
-|---|---|---|
-| `browser.list_tabs` | Read | Listar pestañas conectadas (ID, URL, título) |
-| `browser.snapshot` | Read | Devolver a11y tree de la pestaña con refs |
-| `browser.inspect` | Read | HTML crudo + estilos computados de un ref |
-| `browser.console` | Read | Logs/errors/warnings acumulados |
-| `browser.network` | Read | Requests/responses con status, headers y body |
-| `browser.screenshot` | Read | Captura de la pestaña |
-| `browser.click` | Action | Click sobre un ref |
-| `browser.type` | Action | Escribir texto en un ref |
-| `browser.scroll` | Action | Scroll en pestaña o elemento |
-| `browser.navigate` | Action | Navegar a una URL |
-| `browser.wait_for` | Sync | Esperar a un selector/ref o tiempo |
+| Tool                 | Categoría | Propósito                                     |
+| -------------------- | --------- | --------------------------------------------- |
+| `browser.list_tabs`  | Read      | Listar pestañas conectadas (ID, URL, título)  |
+| `browser.snapshot`   | Read      | Devolver a11y tree de la pestaña con refs     |
+| `browser.inspect`    | Read      | HTML crudo + estilos computados de un ref     |
+| `browser.console`    | Read      | Logs/errors/warnings acumulados               |
+| `browser.network`    | Read      | Requests/responses con status, headers y body |
+| `browser.screenshot` | Read      | Captura de la pestaña                         |
+| `browser.click`      | Action    | Click sobre un ref                            |
+| `browser.type`       | Action    | Escribir texto en un ref                      |
+| `browser.scroll`     | Action    | Scroll en pestaña o elemento                  |
+| `browser.navigate`   | Action    | Navegar a una URL                             |
+| `browser.wait_for`   | Sync      | Esperar a un selector/ref o tiempo            |
 
 **Slice 1 (rebanada thin end-to-end):** solo `browser.ping(tab_id) → { title }`. Valida el bridge completo sin meter complejidad de tools reales.
 

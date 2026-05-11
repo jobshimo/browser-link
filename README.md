@@ -32,7 +32,7 @@
 ## Why
 
 When an LLM agent works on a web app, the usual flow is: it reads code, it
-reasons about what *should* happen, but it never sees what the browser is
+reasons about what _should_ happen, but it never sees what the browser is
 actually doing. `browser-link` closes that gap **without giving the agent
 control of your whole browser** — the user enables specific tabs, one by
 one, and disconnects them when they want.
@@ -137,44 +137,44 @@ The MCP server registers two families of tools.
 
 **Browser bridge** — operate on a connected tab:
 
-| Tool | Purpose |
-|---|---|
-| `browser.list_tabs` | List tabs currently connected through the extension |
-| `browser.ping` | Verify the bridge to a tab; returns its title and URL |
-| `browser.snapshot` | Title, URL, visible text and interactive elements with selectors |
-| `browser.navigate` | Send a tab to a different URL |
-| `browser.click` | Click an element by CSS selector |
-| `browser.type` | Focus an input and type text |
-| `browser.evaluate` | Run an arbitrary JavaScript expression in the page |
-| `browser.console` | Rolling buffer of recent console messages (last 200) |
-| `browser.network` | Rolling buffer of recent network requests (last 200) |
-| `browser.network_body` | Fetch the response body of a specific request |
+| Tool                   | Purpose                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| `browser.list_tabs`    | List tabs currently connected through the extension              |
+| `browser.ping`         | Verify the bridge to a tab; returns its title and URL            |
+| `browser.snapshot`     | Title, URL, visible text and interactive elements with selectors |
+| `browser.navigate`     | Send a tab to a different URL                                    |
+| `browser.click`        | Click an element by CSS selector                                 |
+| `browser.type`         | Focus an input and type text                                     |
+| `browser.evaluate`     | Run an arbitrary JavaScript expression in the page               |
+| `browser.console`      | Rolling buffer of recent console messages (last 200)             |
+| `browser.network`      | Rolling buffer of recent network requests (last 200)             |
+| `browser.network_body` | Fetch the response body of a specific request                    |
 
 **Persistent UI map** — local-only memory across sessions:
 
-| Tool | Purpose |
-|---|---|
-| `browser.map.recall` | Recall selectors / flows / gotchas known for an app+route |
-| `browser.map.save` | Persist a `selector`, `flow` or `gotcha` |
-| `browser.map.record_use` | Mark an entry as freshly verified or failed |
-| `browser.map.forget` | Delete an entry or an entire app |
-| `browser.map.rename_app` | Fix an auto-derived app_key |
-| `browser.map.apps` | List known apps |
+| Tool                     | Purpose                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `browser.map.recall`     | Recall selectors / flows / gotchas known for an app+route |
+| `browser.map.save`       | Persist a `selector`, `flow` or `gotcha`                  |
+| `browser.map.record_use` | Mark an entry as freshly verified or failed               |
+| `browser.map.forget`     | Delete an entry or an entire app                          |
+| `browser.map.rename_app` | Fix an auto-derived app_key                               |
+| `browser.map.apps`       | List known apps                                           |
 
 On every MCP `initialize` handshake the server also pushes a short usage
 protocol to the client (when to call `recall`, what kinds to save,
-what *never* to save) — no manual prompt configuration required.
+what _never_ to save) — no manual prompt configuration required.
 
 ## Where your data lives
 
 The persistent map is a single SQLite file on **your machine**, never
 uploaded:
 
-| OS | Path |
-|---|---|
-| macOS | `~/Library/Application Support/browser-link/map.db` |
-| Linux | `$XDG_DATA_HOME/browser-link/map.db` <br/> *(default `~/.local/share/browser-link/map.db`)* |
-| Windows | `%APPDATA%\browser-link\map.db` |
+| OS      | Path                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/browser-link/map.db`                                         |
+| Linux   | `$XDG_DATA_HOME/browser-link/map.db` <br/> _(default `~/.local/share/browser-link/map.db`)_ |
+| Windows | `%APPDATA%\browser-link\map.db`                                                             |
 
 Override with `BROWSER_LINK_DATA_DIR`. The same directory also holds
 `config.json` with UX preferences (e.g. dismissed welcome, chosen language).
@@ -219,16 +219,16 @@ npm run build
 
 Useful scripts (run from the repo root):
 
-| Script | What it does |
-|---|---|
-| `npm run build` | Build the server and the Chrome extension |
-| `npm run build:server` | Build only the server (`packages/server/dist/`) |
+| Script                    | What it does                                          |
+| ------------------------- | ----------------------------------------------------- |
+| `npm run build`           | Build the server and the Chrome extension             |
+| `npm run build:server`    | Build only the server (`packages/server/dist/`)       |
 | `npm run build:extension` | Build only the extension (`packages/extension/dist/`) |
-| `npm run dev` | Run the server in watch mode (recompiles on save) |
-| `npm run typecheck` | Type-check every workspace, no emit |
-| `npm run inspect` | Launch the MCP Inspector wired to the local server |
-| `npm run generate:icons` | Regenerate extension PNGs from `icons/icon.svg` |
-| `npm run clean` | Remove every `dist/` directory |
+| `npm run dev`             | Run the server in watch mode (recompiles on save)     |
+| `npm run typecheck`       | Type-check every workspace, no emit                   |
+| `npm run inspect`         | Launch the MCP Inspector wired to the local server    |
+| `npm run generate:icons`  | Regenerate extension PNGs from `icons/icon.svg`       |
+| `npm run clean`           | Remove every `dist/` directory                        |
 
 > ### ⚠️ Important note on `npm run dev`
 >

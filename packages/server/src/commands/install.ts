@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { SERVER_ENTRY_PATH } from '../entry-info.js';
 import { INSTALLERS, getInstaller, type ClientId } from '../installers/index.js';
 
 /**
@@ -23,14 +22,15 @@ function resolveServerCommand(): { command: string; args: string[] } {
 }
 
 /**
- * Same shape but using the absolute path to dist/index.js — useful as a
- * fallback when the bin is not yet on PATH (e.g. fresh clone without `npm link`).
+ * Same shape but using the absolute path to the compiled MCP entry — useful
+ * as a fallback when the bin is not yet on PATH (fresh clone, no `npm link`).
+ * The entry path is resolved at runtime by `entry-info.js` so this stays
+ * correct even if the dist layout changes.
  */
 export function resolveAbsoluteServerCommand(): { command: string; args: string[] } {
-  const here = dirname(fileURLToPath(import.meta.url));
-  // dist/commands/install.js → dist/index.js
-  const candidate = resolve(here, '..', 'index.js');
-  if (existsSync(candidate)) return { command: process.execPath, args: [candidate] };
+  if (existsSync(SERVER_ENTRY_PATH)) {
+    return { command: process.execPath, args: [SERVER_ENTRY_PATH] };
+  }
   return resolveServerCommand();
 }
 

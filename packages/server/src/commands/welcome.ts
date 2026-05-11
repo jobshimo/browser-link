@@ -147,7 +147,8 @@ export const I18N_WELCOME: Record<Language, I18n> = {
       swap: 'Cambiar a English',
       quit: 'Salir',
     },
-    prompt: 'Pulsá [A] para aceptar, [D] para aceptar y ocultar la próxima vez, [L] para English, [Q] para salir.',
+    prompt:
+      'Pulsá [A] para aceptar, [D] para aceptar y ocultar la próxima vez, [L] para English, [Q] para salir.',
     promptNoDismiss: 'Pulsá [A] para continuar, [L] para English, [Q] para salir.',
   },
 };
@@ -168,9 +169,7 @@ export function buildWelcomeScreen(t: I18n, hideDismiss: boolean): string {
   lines.push('');
 
   const acceptLine = `  ${ansi.green}[A]${ansi.reset} ${t.actions.accept}`;
-  const dismissLine = hideDismiss
-    ? ''
-    : `  ${ansi.green}[D]${ansi.reset} ${t.actions.dismiss}`;
+  const dismissLine = hideDismiss ? '' : `  ${ansi.green}[D]${ansi.reset} ${t.actions.dismiss}`;
   const langLine = `  ${ansi.cyan}[L]${ansi.reset} ${t.actions.swap}`;
   const quitLine = `  ${ansi.red}[Q]${ansi.reset} ${t.actions.quit}`;
 

@@ -86,8 +86,12 @@ export interface BoxOptions {
 }
 
 const B = {
-  tl: '╭', tr: '╮', bl: '╰', br: '╯',
-  h: '─', v: '│',
+  tl: '╭',
+  tr: '╮',
+  bl: '╰',
+  br: '╯',
+  h: '─',
+  v: '│',
 };
 
 /** Render an array of lines inside a rounded Unicode box. */
@@ -103,7 +107,9 @@ export function renderBox(lines: string[], opts: BoxOptions = {}): string {
   const reset = color ? ansi.reset : '';
   const top = `${color}${B.tl}${B.h.repeat(inner)}${B.tr}${reset}`;
   const bottom = `${color}${B.bl}${B.h.repeat(inner)}${B.br}${reset}`;
-  const body = wrapped.map((l) => `${color}${B.v}${reset} ${padRight(l, inner - 2)} ${color}${B.v}${reset}`);
+  const body = wrapped.map(
+    (l) => `${color}${B.v}${reset} ${padRight(l, inner - 2)} ${color}${B.v}${reset}`,
+  );
 
   return [top, ...body, bottom].join('\n');
 }
