@@ -24,8 +24,12 @@ export function loadConfig(): BrowserLinkConfig {
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object') return parsed as BrowserLinkConfig;
     return {};
-  } catch {
-    // Corrupt config: behave as if there were none, do not crash.
+  } catch (err) {
+    // Surface corruption rather than silently masking it: the file is
+    // small and user-owned, so a one-line stderr warning is the right
+    // signal. We still fall back to defaults so the CLI keeps working.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[browser-link] could not read config at ${path}: ${message}. Using defaults.`);
     return {};
   }
 }

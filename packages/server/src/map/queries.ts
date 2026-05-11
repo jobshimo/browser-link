@@ -219,29 +219,24 @@ export interface RecordUseInput {
   notes?: string | null;
 }
 
+// Two prepared statements with no string interpolation. ok=true clears
+// failed_at so a freshly verified entry is unambiguously healthy; ok=false
+// only stamps failed_at and leaves verified_at as a historical fact so we
+// can still tell whether the entry ever worked.
+const RECORD_USE_OK_SQL =
+  'UPDATE entries SET verified_at = ?, failed_at = NULL, notes = COALESCE(?, notes), updated_at = ? WHERE id = ?';
+const RECORD_USE_FAIL_SQL =
+  'UPDATE entries SET failed_at = ?, notes = COALESCE(?, notes), updated_at = ? WHERE id = ?';
+
 export function recordUse(input: RecordUseInput): EntryRow | null {
   const db = getDb();
   const ts = now();
-  const field = input.ok ? 'verified_at' : 'failed_at';
-  const otherField = input.ok ? 'failed_at' : null;
+  const sql = input.ok ? RECORD_USE_OK_SQL : RECORD_USE_FAIL_SQL;
+  db.prepare(sql).run(ts, input.notes ?? null, ts, input.entry_id);
 
-  if (otherField) {
-    db.prepare(`UPDATE entries SET ${field} = ?, ${otherField} = NULL, notes = COALESCE(?, notes), updated_at = ? WHERE id = ?`).run(
-      ts,
-      input.notes ?? null,
-      ts,
-      input.entry_id,
-    );
-  } else {
-    db.prepare(`UPDATE entries SET ${field} = ?, notes = COALESCE(?, notes), updated_at = ? WHERE id = ?`).run(
-      ts,
-      input.notes ?? null,
-      ts,
-      input.entry_id,
-    );
-  }
-
-  const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(input.entry_id) as RawEntryRow | undefined;
+  const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(input.entry_id) as
+    | RawEntryRow
+    | undefined;
   return row ? hydrate(row) : null;
 }
 

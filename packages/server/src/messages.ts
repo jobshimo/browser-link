@@ -40,8 +40,3 @@ export type ToolResponseMessage =
 
 export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage;
 export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage;
-
-export interface PingResult {
-  title: string;
-  url: string;
-}

@@ -23,8 +23,14 @@ export function getDb(): Database.Database {
  * Older versions of browser-link stored the map at ~/.browser-link/map.db.
  * On first boot with the new XDG/per-OS path, copy the legacy file over so
  * a user upgrading does not lose what they had learned.
+ *
+ * Only runs when the data dir was NOT overridden via BROWSER_LINK_DATA_DIR.
+ * Portable installs and tests that point to a custom dir should start empty.
  */
 function migrateLegacyDb(targetPath: string): void {
+  if (process.env.BROWSER_LINK_DATA_DIR && process.env.BROWSER_LINK_DATA_DIR.trim().length > 0) {
+    return;
+  }
   if (existsSync(targetPath)) return;
   const legacy = join(homedir(), '.browser-link', 'map.db');
   if (!existsSync(legacy)) return;
