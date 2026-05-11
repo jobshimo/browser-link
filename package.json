@@ -1,0 +1,23 @@
+{
+  "name": "browser-link",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Bridge between an MCP client (Claude Code) and a Chrome tab via per-tab manual activation",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:server": "npm run build -w @browser-link/server",
+    "build:extension": "npm run build -w @browser-link/extension",
+    "dev": "npm run dev:server",
+    "dev:server": "npm run dev -w @browser-link/server",
+    "inspect": "npx @modelcontextprotocol/inspector npx tsx packages/server/src/index.ts",
+    "generate:icons": "npm run generate:icons -w @browser-link/extension",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@browser-link/extension",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc && node copy-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "generate:icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@browser-link/shared": "*"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/chrome": "^0.0.287",
+    "typescript": "^5.6.0"
+  }
+}
