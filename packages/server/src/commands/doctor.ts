@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { INSTALLERS } from '../installers/index.js';
+import { getAllowedBrowsers } from '../auth/allowlist.js';
 import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
@@ -45,6 +46,7 @@ export interface DoctorReport {
   }[];
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
+  security: { allowedBrowsers: readonly string[] };
 }
 
 export async function runDoctor(): Promise<DoctorReport> {
@@ -73,6 +75,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
+    security: { allowedBrowsers: getAllowedBrowsers() },
   };
 }
 
@@ -118,6 +121,18 @@ export function formatDoctor(r: DoctorReport): string {
   } else {
     lines.push(`  size: ${r.map.sizeBytes} bytes`);
     lines.push(`  apps tracked: ${r.map.apps}`);
+  }
+  lines.push('');
+  lines.push('Process binding:');
+  if (r.security.allowedBrowsers.length === 0) {
+    lines.push(`  ✗ no allowlist for this OS — incoming WS connections will be rejected.`);
+  } else {
+    lines.push(
+      `  ✓ accepts WS connections from ${r.security.allowedBrowsers.length} known browser binaries.`,
+    );
+    lines.push(
+      `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
+    );
   }
   return lines.join('\n');
 }

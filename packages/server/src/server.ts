@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import type { ExtensionToServer, ServerToExtension } from './messages.js';
 import { MAP_TOOL_DEFINITIONS, handleMapTool, isMapTool } from './map/tools.js';
 import { closeDb } from './map/db.js';
+import { isAllowedBrowser } from './auth/allowlist.js';
+import { lookupPeerProcess } from './auth/process-identity.js';
 import { BROWSER_TOOL_DEFINITIONS } from './tools/browser-definitions.js';
 import {
   type BrowserToolDeps,
@@ -53,12 +55,60 @@ function send(ws: WebSocket, msg: ServerToExtension): void {
  * after the server is listening, so the caller can fail fast (and refuse
  * to expose the MCP transport) when the port is taken or any other bind
  * error happens. */
+/**
+ * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
+ * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
+ * IPv4 form lsof / netstat understand.
+ */
+function normaliseLoopback(addr: string): string {
+  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
+  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
+  return addr;
+}
+
 function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
 ): Promise<WebSocketServer> {
   return new Promise((resolve, reject) => {
-    const wss = new WebSocketServer({ host: WS_HOST, port: WS_PORT });
+    const wss = new WebSocketServer({
+      host: WS_HOST,
+      port: WS_PORT,
+      // Refuse the upgrade unless the OS confirms the peer is a Chromium-based
+      // browser. The check happens before any application bytes are exchanged.
+      verifyClient: (info, cb) => {
+        const remoteAddress = normaliseLoopback(info.req.socket.remoteAddress ?? '');
+        const remotePort = info.req.socket.remotePort;
+        if (!remoteAddress || remotePort == null) {
+          log('Rejected WS handshake: peer address/port not exposed by socket.');
+          cb(false, 403, 'Cannot identify peer');
+          return;
+        }
+        lookupPeerProcess(remoteAddress, remotePort)
+          .then((peer) => {
+            if (!peer) {
+              log(
+                `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process.`,
+              );
+              cb(false, 403, 'Peer process unknown');
+              return;
+            }
+            if (!isAllowedBrowser(peer.binaryName)) {
+              log(
+                `Rejected WS handshake from PID ${peer.pid} (${peer.binaryName}): not a Chromium-based browser.`,
+              );
+              cb(false, 403, 'Peer is not a Chromium-based browser');
+              return;
+            }
+            cb(true);
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(`Rejected WS handshake: process lookup failed (${msg}).`);
+            cb(false, 500, 'Process lookup failed');
+          });
+      },
+    });
 
     let settled = false;
 

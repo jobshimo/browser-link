@@ -150,20 +150,34 @@ Cliente MCP <— stdio MCP —> Servidor MCP <— WebSocket localhost —> Exten
 
 ---
 
-## 11. Seguridad: diferida en MVP local
+## 11. Seguridad: process binding por el kernel del SO
 
-**Estado:** decidida (provisional), revisar antes de Chrome Web Store
+**Estado:** decidida
 
-**Contexto.** El servidor MCP expondrá un WebSocket en localhost. Sin protección, cualquier proceso local podría conectarse.
+**Contexto.** El servidor MCP escucha en `127.0.0.1:17529`. Loopback ya impide conexiones desde fuera de la máquina, pero cualquier proceso local que corra como el mismo usuario podría conectarse y hacerse pasar por la extensión Chrome.
 
-**Decisión provisional.** Para uso local en la máquina del desarrollador, asumimos que el entorno es de confianza. El WS se liga a `127.0.0.1` y no requiere token de pairing.
+**Modelo de amenaza realista:** el atacante NO está ya dentro de Chrome (si lo estuviera, tiene acceso directo a las pestañas y no necesita browser-link). El atacante es un proceso local random — malware no-targeted, un script de otra herramienta mal configurada, un escaneador. Queremos cerrar ese vector sin pedirle al usuario ningún paso manual.
 
-**Pendiente de revisión.** Antes de distribuir la extensión (Chrome Web Store o instalación en otras máquinas), volver a esta decisión y evaluar:
+**Opciones evaluadas y descartadas:**
 
-- **Native Messaging:** patrón oficial de Chrome para extensión ↔ app local. Trust enforced por el sistema operativo + Chrome (manifest declara extension IDs autorizados). Sin tokens manuales. Requiere setup inicial (un script que registra el manifest en una ruta protegida del SO).
-- **Token de pairing one-shot:** alternativa más simple, requiere que el usuario pegue un token una vez al instalar.
+- **Native Messaging:** patrón oficial de Chrome. Requiere registrar un manifest en una ruta del SO con el extension ID autorizado. El ID cambia entre "Load unpacked" y publicación en el Chrome Web Store; obligaría a re-instalar el manifest tras cada cambio. Acopla el proyecto a Google y agrega ~300 líneas + un installer por OS. Rechazado: queremos no depender de Google.
+- **Token de pairing one-shot:** el server genera un token, el usuario lo copia y lo pega en el popup de la extensión. Falla bajo el modelo de amenaza: cualquier proceso que corre como el mismo usuario puede leer el token del disco (perms 0600 protegen contra otros UIDs, no contra malware tuyo). Y agrega fricción visible.
 
-**Consecuencias.** En MVP avanzamos rápido. Hay un riesgo aceptado para entornos no-confiables que se cierra antes de cualquier distribución.
+**Decisión.** El servidor valida el peer de cada handshake WebSocket consultando al kernel quién abrió la conexión TCP entrante.
+
+- **macOS / Linux:** `lsof -nP -F pc -iTCP@host:port -sTCP:ESTABLISHED` devuelve PID + command name del proceso al otro extremo del socket. Output con campos prefijados sobrevive nombres con espacios (típico en macOS: `Google Chrome Helper`).
+- **Windows:** `netstat -ano` correlaciona host:port → PID. `tasklist /FI "PID eq <pid>" /FO CSV /NH` traduce PID → image name.
+
+El nombre del binario se compara contra una allowlist per-OS de binarios Chromium-based (`packages/server/src/auth/allowlist.ts`): Chrome, Chromium, Edge, Brave, Vivaldi (más sus procesos helper en macOS, donde la stack de red vive en `Google Chrome Helper`). Match estricto, case-sensitive, sin path.
+
+Si el lookup falla o el peer no está en la allowlist, el upgrade se rechaza con HTTP 403 antes de intercambiar bytes de aplicación.
+
+**Consecuencias.**
+
+- Cero acción del usuario: instalar la extensión + click "Conectar" sigue siendo el único setup.
+- Cierra "cualquier proceso local random" como vector de ataque.
+- NO cierra "malware ya inyectado dentro de Chrome" (chrome.debugger desde otra extensión maliciosa, dylib injection). Eso está fuera del scope de un bridge userspace y queda documentado en el About / README.
+- Si en el futuro alguien usa un browser custom (un fork con otro binary name), tiene que añadirlo a la allowlist a mano. El `doctor` muestra la allowlist activa por OS para que sea obvio cuando algo no está pasando.
 
 ---
 

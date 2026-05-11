@@ -165,6 +165,33 @@ On every MCP `initialize` handshake the server also pushes a short usage
 protocol to the client (when to call `recall`, what kinds to save,
 what _never_ to save) — no manual prompt configuration required.
 
+## Security model
+
+The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never on a
+public interface. On top of that, before accepting any WebSocket handshake
+the server asks the operating-system kernel **which process** opened the
+incoming TCP connection. If the owning binary is not a known Chromium-based
+browser (Chrome, Chromium, Edge, Brave, Vivaldi) the handshake is refused
+with HTTP 403 before any application bytes are exchanged.
+
+- **macOS / Linux** → `lsof` (`/proc/net/tcp` on Linux is enough too).
+- **Windows** → `netstat -ano` + `tasklist`.
+
+Concretely this means:
+
+- ✔ Random local processes (curl, other Node scripts, scanners) cannot talk
+  to the bridge even if they figured out the port.
+- ✔ A process that crafts a fake `Origin: chrome-extension://...` header is
+  still rejected: the kernel reports its real binary name.
+- ✘ Malware that has already injected itself **inside Chrome** (via
+  `chrome.debugger` from another extension, dylib injection, gdb attach…)
+  passes the check. But that attacker already controls the browser
+  directly — the bridge gives them nothing they did not already have.
+
+The setup has **no tokens to paste**, **no manifests to register**, and
+**no manual step beyond clicking "Conectar"** in the extension popup.
+`browser-link doctor` lists the current allowlist on your OS.
+
 ## Where your data lives
 
 The persistent map is a single SQLite file on **your machine**, never
