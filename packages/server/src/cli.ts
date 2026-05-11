@@ -7,22 +7,19 @@ import { printAbout } from './commands/about.js';
 import { loadConfig } from './config.js';
 import type { ClientId } from './installers/index.js';
 
-const HELP = `browser-link — bridge an MCP client (Claude Code, OpenCode) to a Chrome tab.
+const HELP = `browser-link — bridge Claude Code to the Chrome tabs you enable.
 
 Usage:
   browser-link                  When invoked from an interactive terminal,
-                                opens a setup menu (register MCP client,
-                                show extension steps, run doctor).
-                                When invoked by an MCP client (no TTY),
-                                starts the server over stdio.
-  browser-link install [--client claude|opencode]
-                                Register browser-link with the MCP client(s).
-                                With no flag, installs into every detected client.
-  browser-link uninstall [--client claude|opencode]
-                                Remove the registration. Without --client, all.
+                                opens a setup menu (register Claude Code,
+                                show extension steps, run doctor, about).
+                                When invoked by Claude Code (no TTY),
+                                starts the MCP server over stdio.
+  browser-link install          Register browser-link with Claude Code.
+  browser-link uninstall        Remove the registration.
   browser-link extension        Show the path of the Chrome extension assets
                                 and per-OS install instructions.
-  browser-link doctor           Diagnose current setup (clients, server, extension, map DB).
+  browser-link doctor           Diagnose current setup (Claude Code, server, extension, map DB).
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link help             This message.
 

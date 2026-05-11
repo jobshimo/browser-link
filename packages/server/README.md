@@ -1,8 +1,22 @@
 # @jobshimo/browser-link
 
-MCP server that bridges an AI assistant (Claude Code, OpenCode, …) to a Chrome
-tab through a small WebSocket relay and a companion Chrome extension. Comes
-with a persistent UI map so the assistant remembers selectors, flows and
+> ⚠️  **Read this before installing**
+>
+> This package opens a bridge between Claude Code and the Chrome tabs you
+> explicitly enable through a companion extension. On every tab where you
+> press "Conectar" in the extension popup, the agent can read its DOM,
+> click, type, run arbitrary JavaScript, and follow links — including any
+> logged-in session, saved card, wallet, banking page or admin panel that
+> tab is currently showing.
+>
+> Treat the agent like a junior dev with remote control of those tabs.
+> Only enable tabs where you would let an automated process act on your
+> behalf, and disconnect them when you are done. You are responsible for
+> every action the agent performs on the tabs you explicitly enable.
+
+MCP server that bridges Claude Code to the Chrome tabs you grant access to,
+through a small WebSocket relay and a companion Chrome extension. Ships
+with a persistent UI map so the agent remembers selectors, flows and
 gotchas it learned about each app, across sessions.
 
 ## Install
@@ -15,15 +29,29 @@ This puts the `browser-link` binary on your PATH on macOS, Linux and Windows.
 
 ## Set it up
 
+The fastest path is the interactive menu:
+
 ```bash
-browser-link install        # register browser-link in every detected MCP client
-browser-link extension      # show the path of the Chrome extension assets and OS-specific install steps
-browser-link doctor         # diagnose current setup
+browser-link
 ```
 
-After `install`, restart your MCP client. After `extension`, follow the
-printed steps to load the unpacked extension in Chrome and click "Conectar"
-on any tab.
+That opens the welcome / disclaimer screen (English or Spanish), and then
+the setup menu where you can register browser-link with Claude Code, see
+the Chrome extension install steps, run a doctor diagnose, and open the
+about / help page.
+
+If you prefer direct commands:
+
+```bash
+browser-link install        # register browser-link in Claude Code
+browser-link extension      # show the Chrome extension assets path + steps
+browser-link doctor         # diagnose current setup
+browser-link about          # what this is, how it works, every tool
+```
+
+After `install`, restart Claude Code. After `extension`, follow the printed
+steps to load the unpacked extension in Chrome. Then click "Conectar" on
+every tab you want the agent to reach — and only on those.
 
 ## Tools exposed
 
@@ -35,7 +63,7 @@ UI map (persistent across sessions): `browser.map.recall`,
 `browser.map.save`, `browser.map.record_use`, `browser.map.forget`,
 `browser.map.rename_app`, `browser.map.apps`.
 
-The server also ships usage instructions for the assistant via the MCP
+The server also ships usage instructions for the agent via the MCP
 `initialize` handshake — no manual prompt setup required.
 
 ## Where the data lives
@@ -47,7 +75,8 @@ Windows  %APPDATA%/browser-link/map.db
 ```
 
 Override with `BROWSER_LINK_DATA_DIR`. The database is local to your
-machine and never uploaded anywhere.
+machine and never uploaded anywhere by this package. The WebSocket relay
+binds to `127.0.0.1:17529` (loopback only).
 
 ## License
 
