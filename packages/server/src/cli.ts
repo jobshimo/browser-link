@@ -8,7 +8,11 @@ import type { ClientId } from './installers/index.js';
 const HELP = `browser-link — bridge an MCP client (Claude Code, OpenCode) to a Chrome tab.
 
 Usage:
-  browser-link                  Start the MCP server (used by clients via stdio).
+  browser-link                  When invoked from an interactive terminal,
+                                opens a setup menu (register MCP client,
+                                show extension steps, run doctor).
+                                When invoked by an MCP client (no TTY),
+                                starts the server over stdio.
   browser-link install [--client claude|opencode]
                                 Register browser-link with the MCP client(s).
                                 With no flag, installs into every detected client.
@@ -86,10 +90,11 @@ async function dispatch(argv: string[]): Promise<void> {
 
 const argv = process.argv.slice(2);
 
-// No args + stdin is a pipe (the MCP client launched us) → start server.
-// No args + interactive TTY → show help so the human knows what to do.
-if (argv.length === 0 && process.stdin.isTTY) {
-  console.log(HELP);
+// No args + both stdin and stdout are TTYs → human in a terminal, show setup menu.
+// Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
+if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
+  const { runMenu } = await import('./commands/menu.js');
+  await runMenu();
   process.exit(0);
 }
 
