@@ -3,6 +3,8 @@ import { formatDoctor, runDoctor } from './commands/doctor.js';
 import { installAll, installFor } from './commands/install.js';
 import { uninstallAll, uninstallFor } from './commands/uninstall.js';
 import { printExtensionInstructions } from './commands/extension.js';
+import { printAbout } from './commands/about.js';
+import { loadConfig } from './config.js';
 import type { ClientId } from './installers/index.js';
 
 const HELP = `browser-link — bridge an MCP client (Claude Code, OpenCode) to a Chrome tab.
@@ -21,6 +23,7 @@ Usage:
   browser-link extension        Show the path of the Chrome extension assets
                                 and per-OS install instructions.
   browser-link doctor           Diagnose current setup (clients, server, extension, map DB).
+  browser-link about            Show the full explanation of what this is and how it works.
   browser-link help             This message.
 
 Environment:
@@ -79,6 +82,11 @@ async function dispatch(argv: string[]): Promise<void> {
       console.log(formatDoctor(report));
       return;
     }
+    case 'about': {
+      const cfg = loadConfig();
+      printAbout(cfg.language ?? 'en');
+      return;
+    }
     default: {
       console.error(`Unknown command: ${cmd}`);
       console.error('');
@@ -91,15 +99,20 @@ async function dispatch(argv: string[]): Promise<void> {
 const argv = process.argv.slice(2);
 
 // No args + both stdin and stdout are TTYs → human in a terminal: show the
-// welcome / disclaimer screen, then the setup menu (in the chosen language).
+// welcome / disclaimer screen (unless previously dismissed) and then the
+// setup menu in the chosen language.
 // Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
 if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
-  const { runWelcome } = await import('./commands/welcome.js');
+  const cfg = loadConfig();
   const { runMenu } = await import('./commands/menu.js');
-  const welcome = await runWelcome('en');
-  if (welcome.action === 'continue') {
-    await runMenu(welcome.language);
+  let language = cfg.language ?? 'en';
+  if (!cfg.skipWelcome) {
+    const { runWelcome } = await import('./commands/welcome.js');
+    const welcome = await runWelcome({ initial: language });
+    if (welcome.action === 'quit') process.exit(0);
+    language = welcome.language;
   }
+  await runMenu(language);
   process.exit(0);
 }
 

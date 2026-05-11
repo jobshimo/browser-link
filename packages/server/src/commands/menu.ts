@@ -3,7 +3,8 @@ import { claudeInstaller } from '../installers/claude.js';
 import { installFor } from './install.js';
 import { formatDoctor, runDoctor } from './doctor.js';
 import { printExtensionInstructions } from './extension.js';
-import type { Language } from './welcome.js';
+import { runWelcome, type Language } from './welcome.js';
+import { runAbout } from './about.js';
 import {
   ansi,
   classifyKey,
@@ -18,14 +19,21 @@ interface MenuI18n {
   title: string;
   prompt: string;
   pressEnter: string;
-  options: { register: string; extension: string; doctor: string; quit: string };
+  options: {
+    register: string;
+    extension: string;
+    doctor: string;
+    welcome: string;
+    about: string;
+    quit: string;
+  };
   statusRegistered: string;
   statusNotRegistered: string;
   statusClientMissing: string;
   registerSuccessHint: string;
 }
 
-const I18N: Record<Language, MenuI18n> = {
+export const I18N_MENU: Record<Language, MenuI18n> = {
   en: {
     title: 'browser-link — setup',
     prompt: '↑/↓ to move, Enter to select, q to quit',
@@ -34,6 +42,8 @@ const I18N: Record<Language, MenuI18n> = {
       register: 'Register browser-link in Claude Code',
       extension: 'Show Chrome extension install steps',
       doctor: 'Run doctor (diagnose current setup)',
+      welcome: 'Show welcome screen',
+      about: 'About / Help — what is this and how it works',
       quit: 'Quit',
     },
     statusRegistered: 'already registered',
@@ -49,6 +59,8 @@ const I18N: Record<Language, MenuI18n> = {
       register: 'Registrar browser-link en Claude Code',
       extension: 'Ver pasos para instalar la extensión de Chrome',
       doctor: 'Diagnóstico (estado actual de la instalación)',
+      welcome: 'Mostrar pantalla de bienvenida',
+      about: 'Información / ayuda — qué es esto y cómo funciona',
       quit: 'Salir',
     },
     statusRegistered: 'ya registrado',
@@ -58,13 +70,13 @@ const I18N: Record<Language, MenuI18n> = {
   },
 };
 
-function claudeStatus(t: MenuI18n): string {
+export function claudeStatus(t: MenuI18n): string {
   const d = claudeInstaller.detect();
   if (!d.installed) return t.statusClientMissing;
   return d.registered ? t.statusRegistered : t.statusNotRegistered;
 }
 
-function renderMenu(t: MenuI18n, selectedIndex: number, options: string[]): string {
+export function renderMenuScreen(t: MenuI18n, selectedIndex: number, options: string[]): string {
   const lines: string[] = [];
   lines.push(`${ansi.bold}${ansi.cyan}${t.title}${ansi.reset}`);
   lines.push('');
@@ -87,8 +99,12 @@ async function pressEnter(t: MenuI18n): Promise<void> {
   }
 }
 
-async function runOption(t: MenuI18n, index: number): Promise<boolean> {
-  // returns true to keep looping, false to exit
+async function runOption(
+  t: MenuI18n,
+  index: number,
+  language: Language,
+): Promise<{ keep: boolean; language: Language }> {
+  let lang = language;
   switch (index) {
     case 0: {
       clearScreen();
@@ -97,43 +113,58 @@ async function runOption(t: MenuI18n, index: number): Promise<boolean> {
       console.log(`${mark} ${ansi.bold}${report.displayName}${ansi.reset}: ${report.message}`);
       if (report.installedClient) console.log(`  ${ansi.cyan}→${ansi.reset} ${t.registerSuccessHint}`);
       await pressEnter(t);
-      return true;
+      return { keep: true, language: lang };
     }
     case 1: {
       clearScreen();
       printExtensionInstructions();
       await pressEnter(t);
-      return true;
+      return { keep: true, language: lang };
     }
     case 2: {
       clearScreen();
       const r = await runDoctor();
       console.log(formatDoctor(r));
       await pressEnter(t);
-      return true;
+      return { keep: true, language: lang };
     }
-    case 3:
-      return false;
+    case 3: {
+      // Show welcome again (forced; hides "Don't show again" because the
+      // user explicitly asked to see it).
+      const result = await runWelcome({ initial: lang, hideDismiss: true });
+      if (result.action === 'quit') return { keep: false, language: lang };
+      lang = result.language;
+      return { keep: true, language: lang };
+    }
+    case 4: {
+      await runAbout(lang);
+      return { keep: true, language: lang };
+    }
+    case 5:
+      return { keep: false, language: lang };
     default:
-      return true;
+      return { keep: true, language: lang };
   }
 }
 
-export async function runMenu(language: Language = 'en'): Promise<void> {
-  const t = I18N[language];
+export async function runMenu(initialLanguage: Language = 'en'): Promise<void> {
+  let language = initialLanguage;
   let selected = 0;
 
   hideCursor();
   try {
     while (true) {
+      const t = I18N_MENU[language];
       const opts = [
         `${t.options.register}   ${ansi.dim}(${claudeStatus(t)})${ansi.reset}`,
         t.options.extension,
         t.options.doctor,
+        t.options.welcome,
+        t.options.about,
         t.options.quit,
       ];
       clearScreen();
-      stdout.write(renderMenu(t, selected, opts));
+      stdout.write(renderMenuScreen(t, selected, opts));
       stdout.write('\n');
 
       const key = classifyKey(await readKey());
@@ -148,11 +179,11 @@ export async function runMenu(language: Language = 'en'): Promise<void> {
       }
       if (key === 'enter') {
         showCursor();
-        const keepGoing = await runOption(t, selected);
-        if (!keepGoing) return;
+        const result = await runOption(t, selected, language);
+        if (!result.keep) return;
+        language = result.language;
         hideCursor();
       }
-      // ignore other keys
     }
   } finally {
     showCursor();

@@ -93,7 +93,9 @@ const B = {
 /** Render an array of lines inside a rounded Unicode box. */
 export function renderBox(lines: string[], opts: BoxOptions = {}): string {
   const termWidth = stdout.columns ?? 80;
-  const width = Math.min(opts.width ?? 78, Math.max(40, termWidth - 2));
+  // 86 cols comfortably fits the longest pre-formatted line in About
+  // (tool name + padded description). Smaller terminals still get the cap.
+  const width = Math.min(opts.width ?? 86, Math.max(40, termWidth - 2));
   const inner = width - 2; // 2 columns for the vertical borders
   const wrapped = lines.flatMap((l) => wrap(l, inner - 2)); // padding 1 each side
 

@@ -1,4 +1,5 @@
 import { stdout } from 'node:process';
+import { saveConfig } from '../config.js';
 import {
   ansi,
   classifyKey,
@@ -14,6 +15,15 @@ export type Language = 'en' | 'es';
 export interface WelcomeResult {
   action: 'continue' | 'quit';
   language: Language;
+  persisted: boolean;
+}
+
+export interface WelcomeOptions {
+  /** Initial language to render. */
+  initial?: Language;
+  /** When true, hide the "Accept and don't show again" option. Used when
+   * the user explicitly asks to see the welcome from the menu. */
+  hideDismiss?: boolean;
 }
 
 interface I18n {
@@ -23,11 +33,12 @@ interface I18n {
   warning: string[];
   responsibility: string;
   extensionNote: string;
-  actions: { accept: string; swap: string; quit: string };
+  actions: { accept: string; dismiss: string; swap: string; quit: string };
   prompt: string;
+  promptNoDismiss: string;
 }
 
-const I18N: Record<Language, I18n> = {
+export const I18N_WELCOME: Record<Language, I18n> = {
   en: {
     title: 'browser-link',
     intro: [
@@ -67,8 +78,14 @@ const I18N: Record<Language, I18n> = {
       'The Chrome extension is custom and ships inside this package. ' +
       'The setup menu after this screen will tell you where it lives so ' +
       'you can load it via chrome://extensions → Load unpacked.',
-    actions: { accept: 'I understand, continue', swap: 'Switch to español', quit: 'Quit' },
-    prompt: 'Press [A] to accept, [L] for español, [Q] to quit.',
+    actions: {
+      accept: 'I understand, continue',
+      dismiss: "Accept and don't show again",
+      swap: 'Switch to español',
+      quit: 'Quit',
+    },
+    prompt: 'Press [A] to accept, [D] to accept & hide next time, [L] for español, [Q] to quit.',
+    promptNoDismiss: 'Press [A] to continue, [L] for español, [Q] to quit.',
   },
   es: {
     title: 'browser-link',
@@ -112,12 +129,18 @@ const I18N: Record<Language, I18n> = {
       'La extensión de Chrome es custom y viene incluida en este paquete. ' +
       'El menú que aparece después de esta pantalla te dice exactamente dónde ' +
       'está para que la cargues vía chrome://extensions → Cargar sin empaquetar.',
-    actions: { accept: 'Entendido, continuar', swap: 'Cambiar a English', quit: 'Salir' },
-    prompt: 'Pulsá [A] para aceptar, [L] para English, [Q] para salir.',
+    actions: {
+      accept: 'Entendido, continuar',
+      dismiss: 'Aceptar y no volver a mostrar',
+      swap: 'Cambiar a English',
+      quit: 'Salir',
+    },
+    prompt: 'Pulsá [A] para aceptar, [D] para aceptar y ocultar la próxima vez, [L] para English, [Q] para salir.',
+    promptNoDismiss: 'Pulsá [A] para continuar, [L] para English, [Q] para salir.',
   },
 };
 
-function buildScreen(t: I18n): string {
+export function buildWelcomeScreen(t: I18n, hideDismiss: boolean): string {
   const lines: string[] = [];
   lines.push(`${ansi.bold}${ansi.cyan}${t.title}${ansi.reset}`);
   lines.push('');
@@ -131,36 +154,51 @@ function buildScreen(t: I18n): string {
   lines.push('');
   lines.push(`${ansi.dim}${t.extensionNote}${ansi.reset}`);
   lines.push('');
-  lines.push(
-    `  ${ansi.green}[A]${ansi.reset} ${t.actions.accept}     ` +
-      `${ansi.cyan}[L]${ansi.reset} ${t.actions.swap}     ` +
-      `${ansi.red}[Q]${ansi.reset} ${t.actions.quit}`,
-  );
+
+  const acceptLine = `  ${ansi.green}[A]${ansi.reset} ${t.actions.accept}`;
+  const dismissLine = hideDismiss
+    ? ''
+    : `  ${ansi.green}[D]${ansi.reset} ${t.actions.dismiss}`;
+  const langLine = `  ${ansi.cyan}[L]${ansi.reset} ${t.actions.swap}`;
+  const quitLine = `  ${ansi.red}[Q]${ansi.reset} ${t.actions.quit}`;
+
+  if (hideDismiss) {
+    lines.push(`${acceptLine}     ${langLine}     ${quitLine}`);
+  } else {
+    lines.push(acceptLine);
+    lines.push(dismissLine);
+    lines.push(`${langLine}     ${quitLine}`);
+  }
   return renderBox(lines, { borderColor: ansi.gray });
 }
 
-export async function runWelcome(initial: Language = 'en'): Promise<WelcomeResult> {
-  let lang: Language = initial;
+export async function runWelcome(opts: WelcomeOptions = {}): Promise<WelcomeResult> {
+  let lang: Language = opts.initial ?? 'en';
+  const hideDismiss = opts.hideDismiss === true;
   hideCursor();
   try {
     while (true) {
+      const t = I18N_WELCOME[lang];
       clearScreen();
-      stdout.write(buildScreen(I18N[lang]));
+      stdout.write(buildWelcomeScreen(t, hideDismiss));
       stdout.write('\n\n');
-      stdout.write(`${ansi.dim}${I18N[lang].prompt}${ansi.reset} `);
+      stdout.write(`${ansi.dim}${hideDismiss ? t.promptNoDismiss : t.prompt}${ansi.reset} `);
 
-      const raw = await readKey();
-      const key = classifyKey(raw);
+      const key = classifyKey(await readKey());
 
-      if (key === 'a') return { action: 'continue', language: lang };
+      if (key === 'a') return { action: 'continue', language: lang, persisted: false };
+      if (key === 'd' && !hideDismiss) {
+        saveConfig({ skipWelcome: true, language: lang });
+        return { action: 'continue', language: lang, persisted: true };
+      }
       if (key === 'l') {
         lang = lang === 'en' ? 'es' : 'en';
         continue;
       }
       if (key === 'q' || key === 'esc' || key === 'ctrl-c') {
-        return { action: 'quit', language: lang };
+        return { action: 'quit', language: lang, persisted: false };
       }
-      // ignore anything else and re-render
+      // ignore other keys
     }
   } finally {
     showCursor();
