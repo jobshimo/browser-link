@@ -5,6 +5,9 @@ import { formatDoctor, runDoctor } from './doctor.js';
 import { printExtensionInstructions } from './extension.js';
 import { runWelcome, type Language } from './welcome.js';
 import { runAbout } from './about.js';
+import { openUrl } from '../utils/open-url.js';
+
+const REPO_URL = 'https://github.com/jobshimo/browser-link';
 import {
   ansi,
   classifyKey,
@@ -25,12 +28,15 @@ interface MenuI18n {
     doctor: string;
     welcome: string;
     about: string;
+    repo: string;
     quit: string;
   };
   statusRegistered: string;
   statusNotRegistered: string;
   statusClientMissing: string;
   registerSuccessHint: string;
+  repoOpened: string;
+  repoFallback: string;
 }
 
 export const I18N_MENU: Record<Language, MenuI18n> = {
@@ -44,12 +50,15 @@ export const I18N_MENU: Record<Language, MenuI18n> = {
       doctor: 'Run doctor (diagnose current setup)',
       welcome: 'Show welcome screen',
       about: 'About / Help — what is this and how it works',
+      repo: 'Open the GitHub repository (view code, report issues, contribute)',
       quit: 'Quit',
     },
     statusRegistered: 'already registered',
     statusNotRegistered: 'not registered',
     statusClientMissing: 'Claude config not found',
     registerSuccessHint: 'Restart Claude Code so it picks up the new MCP entry.',
+    repoOpened: 'Opening the repository in your browser…',
+    repoFallback: 'Could not open a browser automatically. Visit:',
   },
   es: {
     title: 'browser-link — configuración',
@@ -61,12 +70,15 @@ export const I18N_MENU: Record<Language, MenuI18n> = {
       doctor: 'Diagnóstico (estado actual de la instalación)',
       welcome: 'Mostrar pantalla de bienvenida',
       about: 'Información / ayuda — qué es esto y cómo funciona',
+      repo: 'Abrir el repositorio en GitHub (ver código, reportar bugs, contribuir)',
       quit: 'Salir',
     },
     statusRegistered: 'ya registrado',
     statusNotRegistered: 'no registrado',
     statusClientMissing: 'config de Claude no encontrada',
     registerSuccessHint: 'Reiniciá Claude Code para que tome el nuevo MCP.',
+    repoOpened: 'Abriendo el repositorio en tu navegador…',
+    repoFallback: 'No se pudo abrir el navegador automáticamente. Visitá:',
   },
 };
 
@@ -140,7 +152,20 @@ async function runOption(
       await runAbout(lang);
       return { keep: true, language: lang };
     }
-    case 5:
+    case 5: {
+      clearScreen();
+      const ok = openUrl(REPO_URL);
+      if (ok) {
+        console.log(`${ansi.cyan}→${ansi.reset} ${t.repoOpened}`);
+        console.log(`  ${ansi.dim}${REPO_URL}${ansi.reset}`);
+      } else {
+        console.log(`${ansi.yellow}!${ansi.reset} ${t.repoFallback}`);
+        console.log(`  ${ansi.cyan}${REPO_URL}${ansi.reset}`);
+      }
+      await pressEnter(t);
+      return { keep: true, language: lang };
+    }
+    case 6:
       return { keep: false, language: lang };
     default:
       return { keep: true, language: lang };
@@ -161,6 +186,7 @@ export async function runMenu(initialLanguage: Language = 'en'): Promise<void> {
         t.options.doctor,
         t.options.welcome,
         t.options.about,
+        t.options.repo,
         t.options.quit,
       ];
       clearScreen();

@@ -1,148 +1,263 @@
-# browser-link
+<div align="center">
 
-Puente entre un cliente MCP (por ejemplo Claude Code) y una pestaña activa de Chrome, controlado mediante una extensión que el usuario habilita manualmente por tab.
+# 🔗 browser-link
 
-## Qué resuelve
+**Bridge Claude Code to the Chrome tabs you explicitly enable.**
 
-Cuando un agente LLM trabaja sobre una aplicación web, lo habitual es que diagnostique a ciegas: lee el código, intenta razonar sobre el bug, pero no ve lo que realmente ocurre en el navegador. `browser-link` cierra esa brecha sin obligar al usuario a ceder el control de su sesión.
+[![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg)](https://www.npmjs.com/package/@jobshimo/browser-link)
+[![npm downloads](https://img.shields.io/npm/dm/@jobshimo/browser-link.svg)](https://www.npmjs.com/package/@jobshimo/browser-link)
+[![license](https://img.shields.io/npm/l/@jobshimo/browser-link.svg)](./LICENSE)
+[![issues](https://img.shields.io/github/issues/jobshimo/browser-link.svg)](https://github.com/jobshimo/browser-link/issues)
 
-Casos de uso típicos:
+</div>
 
-- Reproducir un bug reportado en un ticket y verificar que existe.
-- Comprobar, una vez aplicada una solución, que el problema quedó resuelto.
-- Dar al agente contexto real (DOM, consola, network) sobre lo que sucede en una vista.
+---
 
-## Cómo funciona
+> ### ⚠️ Read this before installing
+>
+> `browser-link` opens a bridge between Claude Code and the Chrome tabs you
+> explicitly enable through a companion extension. On every tab where you
+> press **"Conectar"** in the extension popup, the agent can read its DOM,
+> click, type, run arbitrary JavaScript, and follow links — **including any
+> logged-in session, saved card, wallet, banking page or admin panel that
+> tab is currently showing**.
+>
+> Treat the agent like a junior dev with remote control of those tabs.
+> Only enable tabs where you would let an automated process act on your
+> behalf, and disconnect them when you are done. **You are responsible for
+> every action the agent performs on the tabs you explicitly enable.**
+
+---
+
+## Why
+
+When an LLM agent works on a web app, the usual flow is: it reads code, it
+reasons about what *should* happen, but it never sees what the browser is
+actually doing. `browser-link` closes that gap **without giving the agent
+control of your whole browser** — the user enables specific tabs, one by
+one, and disconnects them when they want.
+
+Typical use cases:
+
+- Reproduce a reported bug on a tab and verify it exists.
+- Validate that a fix actually solved a bug, end-to-end, in the real UI.
+- Give the agent real context (DOM, console, network) about what is
+  happening in a view it is investigating.
+- Persistent UI knowledge: the agent learns selectors, flows and gotchas
+  for each app and remembers them across sessions.
+
+## Quick start
+
+```bash
+npm install -g @jobshimo/browser-link
+browser-link
+```
+
+That second command opens an interactive setup menu (English / Spanish):
 
 ```
-Cliente MCP (Claude Code)
-        │  stdio MCP
-        ▼
-Servidor MCP local (Node + TypeScript)
-        │  WebSocket localhost (127.0.0.1:17529)
-        ▼
-Extensión Chrome (Manifest V3)
-        │  chrome.debugger / Chrome DevTools Protocol
-        ▼
-Pestaña activa del navegador del usuario
+╭─────────────────────────────────────────────────────────────╮
+│ browser-link — setup                                        │
+│                                                             │
+│ ❯ Register browser-link in Claude Code                      │
+│     (status: not registered)                                │
+│   Show Chrome extension install steps                       │
+│   Run doctor (diagnose current setup)                       │
+│   Show welcome screen                                       │
+│   About / Help — what is this and how it works              │
+│   Open the GitHub repository                                │
+│   Quit                                                      │
+│                                                             │
+│ ↑/↓ to move, Enter to select, q to quit                     │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
-- La extensión usa `chrome.debugger` (no mueve el mouse físico). Las acciones se inyectan como eventos sintéticos a nivel de protocolo.
-- La activación es manual y por pestaña: el usuario abre el popup de la extensión y hace click en "Conectar" en la pestaña que quiere exponer. Sin activación, el agente no tiene acceso.
-- Soporta múltiples pestañas simultáneas. Cada pestaña conectada recibe un ID corto del servidor (`tab_1`, `tab_2`, …).
+It walks you through:
 
-## Estado
+1. **Registering `browser-link` with Claude Code.** Writes the MCP entry to
+   `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows). Restart
+   Claude Code afterwards.
+2. **Installing the Chrome extension.** Shows the absolute path to the
+   bundled assets and the OS-specific steps (`chrome://extensions` →
+   Developer mode → Load unpacked).
+3. **A doctor command.** Reports what is and is not set up.
+4. **An About / Help page.** Full breakdown of every tool, where data is
+   stored, and how the bridge works.
 
-`slice 1` implementado, pendiente de verificación end-to-end en máquina.
+You can also use the subcommands directly without the menu:
 
-- Servidor MCP funcional con dos tools: `browser.list_tabs` y `browser.ping`.
-- Extensión MV3 con popup, service worker, conexión WS y attach del debugger.
-- Próximos slices: a11y snapshot, console, network, acciones (click/type/scroll), screenshot, inspect.
+```bash
+browser-link install     # register in Claude Code
+browser-link extension   # show extension assets path + steps
+browser-link doctor      # diagnose current setup
+browser-link about       # the full help page
+browser-link help        # list every subcommand
+```
 
-## Estructura
+## How it works
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Claude Code (or any MCP-compatible client)                      │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │  stdio (MCP)
+                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  browser-link MCP server (Node 22+)                              │
+│  ─ listens on 127.0.0.1:17529  (loopback only)                   │
+│  ─ exposes browser.* tools + browser.map.* persistent UI map     │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │  WebSocket (loopback)
+                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Chrome extension (Manifest V3, custom, ships with the package)  │
+│  ─ inert by default                                              │
+│  ─ activates per-tab when the user clicks "Conectar" in the      │
+│    extension popup                                               │
+│  ─ uses chrome.debugger (Chrome DevTools Protocol) under the hood│
+└──────────────────────┬───────────────────────────────────────────┘
+                       │
+                       ▼
+                  Browser tab
+              (only the connected ones)
+```
+
+Important details:
+
+- The WebSocket bridge **only binds to `127.0.0.1`** — never on a public
+  interface, never reachable from anywhere outside your machine.
+- Tabs you do **not** explicitly connect remain invisible to the agent.
+  You can connect as many as you want; each one is enabled one by one.
+- Disconnecting a tab from the extension popup immediately revokes the
+  bridge for that tab.
+
+## Tools exposed to the agent
+
+The MCP server registers two families of tools.
+
+**Browser bridge** — operate on a connected tab:
+
+| Tool | Purpose |
+|---|---|
+| `browser.list_tabs` | List tabs currently connected through the extension |
+| `browser.ping` | Verify the bridge to a tab; returns its title and URL |
+| `browser.snapshot` | Title, URL, visible text and interactive elements with selectors |
+| `browser.navigate` | Send a tab to a different URL |
+| `browser.click` | Click an element by CSS selector |
+| `browser.type` | Focus an input and type text |
+| `browser.evaluate` | Run an arbitrary JavaScript expression in the page |
+| `browser.console` | Rolling buffer of recent console messages (last 200) |
+| `browser.network` | Rolling buffer of recent network requests (last 200) |
+| `browser.network_body` | Fetch the response body of a specific request |
+
+**Persistent UI map** — local-only memory across sessions:
+
+| Tool | Purpose |
+|---|---|
+| `browser.map.recall` | Recall selectors / flows / gotchas known for an app+route |
+| `browser.map.save` | Persist a `selector`, `flow` or `gotcha` |
+| `browser.map.record_use` | Mark an entry as freshly verified or failed |
+| `browser.map.forget` | Delete an entry or an entire app |
+| `browser.map.rename_app` | Fix an auto-derived app_key |
+| `browser.map.apps` | List known apps |
+
+On every MCP `initialize` handshake the server also pushes a short usage
+protocol to the client (when to call `recall`, what kinds to save,
+what *never* to save) — no manual prompt configuration required.
+
+## Where your data lives
+
+The persistent map is a single SQLite file on **your machine**, never
+uploaded:
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/browser-link/map.db` |
+| Linux | `$XDG_DATA_HOME/browser-link/map.db` <br/> *(default `~/.local/share/browser-link/map.db`)* |
+| Windows | `%APPDATA%\browser-link\map.db` |
+
+Override with `BROWSER_LINK_DATA_DIR`. The same directory also holds
+`config.json` with UX preferences (e.g. dismissed welcome, chosen language).
+
+Nothing in this package phones home. The WebSocket bridge talks loopback
+only.
+
+## Repository layout
 
 ```
 browser-link/
-├── package.json              # workspace root (npm workspaces)
-├── tsconfig.base.json        # config TypeScript compartida
-├── DECISIONS.md              # registro vivo de decisiones de arquitectura
-└── packages/
-    ├── shared/               # tipos del protocolo WebSocket compartidos
-    ├── server/               # servidor MCP + bridge WebSocket
-    └── extension/            # extensión Chrome MV3
+├── packages/
+│   ├── server/      # MCP server + CLI binary published as @jobshimo/browser-link
+│   ├── extension/   # Manifest V3 Chrome extension, bundled into the npm tarball
+│   └── shared/      # workspace-internal type-only package
+├── LICENSE
+├── README.md        # this file
+└── DECISIONS.md     # living architecture / design-decision log
 ```
 
-## Scripts disponibles
+## Contributing
 
-Todos se ejecutan desde la raíz del repo (`browser-link/`).
+This is an open project and contributions are welcome. Code is the
+quickest way, but bug reports, repro cases, and ideas in the issue
+tracker are just as useful.
 
-| Script | Qué hace |
-|---|---|
-| `npm install` | Instala dependencias de todos los packages |
-| `npm run build` | Buildea server + extension |
-| `npm run build:server` | Buildea solo el servidor MCP a `packages/server/dist/` |
-| `npm run build:extension` | Buildea solo la extensión a `packages/extension/dist/` (manifest, popup, JS, iconos) |
-| `npm run dev` | Alias de `dev:server` |
-| `npm run dev:server` | Arranca el servidor MCP en modo watch (recarga al cambiar código) |
-| `npm run inspect` | Levanta MCP Inspector apuntando al servidor (UI web para probar tools manualmente) |
-| `npm run generate:icons` | Regenera los PNGs de la extensión desde `icons/icon.svg` |
-| `npm run typecheck` | Type-check de todos los packages, sin emitir |
-| `npm run clean` | Limpia `dist/` de cada package |
+- **Bug report or feature idea**: open an issue at
+  [github.com/jobshimo/browser-link/issues](https://github.com/jobshimo/browser-link/issues).
+- **Pull request**: fork the repo, branch from `main`, push, open a PR.
+  All merges go through review.
 
-## Setup y prueba (slice 1)
+### Development setup
 
-### 1. Instalar dependencias
+Requires Node 22+ (any modern LTS / current works).
 
 ```bash
+git clone https://github.com/jobshimo/browser-link.git
+cd browser-link
 npm install
+npm run build
 ```
 
-### 2. Buildear la extensión
+Useful scripts (run from the repo root):
 
-```bash
-npm run build:extension
-```
+| Script | What it does |
+|---|---|
+| `npm run build` | Build the server and the Chrome extension |
+| `npm run build:server` | Build only the server (`packages/server/dist/`) |
+| `npm run build:extension` | Build only the extension (`packages/extension/dist/`) |
+| `npm run dev` | Run the server in watch mode (recompiles on save) |
+| `npm run typecheck` | Type-check every workspace, no emit |
+| `npm run inspect` | Launch the MCP Inspector wired to the local server |
+| `npm run generate:icons` | Regenerate extension PNGs from `icons/icon.svg` |
+| `npm run clean` | Remove every `dist/` directory |
 
-Genera `packages/extension/dist/` con `manifest.json`, `popup.html`, `popup.js`, `background.js` e `icons/`.
+> ### ⚠️ Important note on `npm run dev`
+>
+> `npm run dev` opens its own WebSocket on `127.0.0.1:17529` — the same
+> port the registered MCP server uses. **Two processes cannot bind the
+> same port at the same time.**
+>
+> So while you are developing locally:
+>
+> - If Claude Code is open **and** has `browser-link` registered as an MCP,
+>   Claude already spawned the server and owns the port. `npm run dev`
+>   will crash with `EADDRINUSE`.
+> - If `npm run dev` is the one holding the port, Claude Code's
+>   `browser-link` MCP will fail to start (`✗ Failed to connect`).
+>
+> Recommended dev flow:
+>
+> 1. Quit Claude Code (or `kill` the `node …/dist/index.js` PID that
+>    Claude spawned — find it with `lsof -iTCP:17529 -sTCP:LISTEN -nP`).
+> 2. Now run `npm run dev` — port is free, tsx watch picks up your edits.
+> 3. When you are done coding, stop `npm run dev` and reopen Claude Code
+>    so it can spawn its own server again.
+>
+> `npm run build` (without watch) does **not** touch the port, so you can
+> always rebuild while Claude Code is open. Only the live `dev` server
+> needs the port.
 
-### 3. Cargar la extensión en Chrome
+Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
 
-1. Abrir `chrome://extensions/`.
-2. Activar "Developer mode" (arriba a la derecha).
-3. Click en "Load unpacked".
-4. Seleccionar la carpeta `packages/extension/dist`.
-5. La extensión aparece en la lista y en la barra de extensiones.
+## License
 
-Para ver logs del service worker: en la card de la extensión, click en el link "service worker".
-
-### 4. Arrancar el servidor MCP
-
-En otra terminal:
-
-```bash
-npm run dev
-```
-
-Esperar a ver `WebSocket listening on ws://127.0.0.1:17529`.
-
-### 5. Conectar una pestaña
-
-1. Abrir cualquier pestaña en Chrome (ej. https://example.com).
-2. Click en el ícono de `browser-link` en la barra.
-3. Click en "Conectar".
-4. Chrome muestra la barra amarilla "DevTools is debugging this tab" — es esperado.
-5. El popup muestra el ID de la pestaña asignado por el servidor (`tab_1`).
-6. En la terminal del servidor aparece: `Tab registered: tab_1 -> https://example.com`.
-
-### 6. Probar los tools con MCP Inspector
-
-En otra terminal (detené primero el `npm run dev` — Inspector arranca su propia instancia del server):
-
-```bash
-npm run inspect
-```
-
-Abre la UI web donde podés:
-- Listar los tools disponibles.
-- Llamar `browser.list_tabs` y ver la pestaña conectada.
-- Llamar `browser.ping` con `tab_id: "tab_1"` y recibir `{ title, url }` de la pestaña.
-
-### 7. Probar desde Claude Code
-
-Buildear el servidor:
-
-```bash
-npm run build:server
-```
-
-Registrarlo en Claude Code:
-
-```bash
-claude mcp add browser-link node /Users/martin.bernal/repos/browser-link/packages/server/dist/index.js
-```
-
-Las tools `browser.list_tabs` y `browser.ping` quedan disponibles. Cuando la extensión tenga una pestaña conectada, el agente puede usarlas.
-
-## Decisiones de arquitectura
-
-Las decisiones tomadas durante el diseño están registradas en [`DECISIONS.md`](./DECISIONS.md). Ese documento se mantiene vivo y se actualiza con cada decisión nueva.
+[MIT](./LICENSE) — © 2026 Martín Miguel Bernal
