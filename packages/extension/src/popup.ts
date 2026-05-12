@@ -9,6 +9,8 @@ interface ConnectResult {
   serverTabId?: string;
 }
 
+type CardState = 'connected' | 'idle' | 'error';
+
 async function getCurrentTab(): Promise<chrome.tabs.Tab | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab ?? null;
@@ -20,16 +22,38 @@ function $(id: string): HTMLElement {
   return el;
 }
 
+function setCardState(state: CardState): void {
+  $('card').dataset.state = state;
+}
+
+function setStatus(state: CardState, label: string, tabId?: string): void {
+  setCardState(state);
+  $('status-label').textContent = label;
+  const tabIdEl = $('tab-id');
+  if (tabId) {
+    tabIdEl.textContent = tabId;
+    tabIdEl.hidden = false;
+  } else {
+    tabIdEl.hidden = true;
+    tabIdEl.textContent = '';
+  }
+}
+
+function setAction(label: string, variant: 'primary' | 'danger', disabled = false): void {
+  const btn = $('action') as HTMLButtonElement;
+  btn.textContent = label;
+  btn.className = variant;
+  btn.disabled = disabled;
+}
+
 async function refresh(): Promise<void> {
   const tab = await getCurrentTab();
-  const statusEl = $('status');
   const urlEl = $('url');
-  const actionBtn = $('action') as HTMLButtonElement;
 
   if (!tab?.id) {
-    statusEl.className = 'status error';
-    statusEl.textContent = 'No hay pestaña activa';
-    actionBtn.disabled = true;
+    setStatus('error', 'No active tab');
+    setAction('Open a tab first', 'primary', true);
+    urlEl.textContent = '';
     return;
   }
 
@@ -40,18 +64,12 @@ async function refresh(): Promise<void> {
     tabId: tab.id,
   })) as StatusResult;
 
-  actionBtn.disabled = false;
-
   if (status.connected) {
-    statusEl.className = 'status connected';
-    statusEl.innerHTML = `Conectada · <span class="tab-id">${status.serverTabId ?? '…'}</span>`;
-    actionBtn.textContent = 'Desconectar';
-    actionBtn.className = 'danger';
+    setStatus('connected', 'Connected', status.serverTabId);
+    setAction('Disconnect', 'danger');
   } else {
-    statusEl.className = 'status disconnected';
-    statusEl.textContent = 'No conectada';
-    actionBtn.textContent = 'Conectar';
-    actionBtn.className = 'primary';
+    setStatus('idle', 'Not connected');
+    setAction('Connect', 'primary');
   }
 }
 
@@ -59,9 +77,7 @@ async function onAction(): Promise<void> {
   const tab = await getCurrentTab();
   if (!tab?.id) return;
 
-  const actionBtn = $('action') as HTMLButtonElement;
-  const statusEl = $('status');
-  actionBtn.disabled = true;
+  setAction('Working…', 'primary', true);
 
   const status = (await chrome.runtime.sendMessage({
     action: 'status',
@@ -77,9 +93,8 @@ async function onAction(): Promise<void> {
     })) as ConnectResult;
 
     if (!result.ok) {
-      statusEl.className = 'status error';
-      statusEl.textContent = result.error ?? 'Error desconocido';
-      actionBtn.disabled = false;
+      setStatus('error', result.error ?? 'Unknown error');
+      setAction('Retry', 'primary');
       return;
     }
   }
@@ -89,10 +104,11 @@ async function onAction(): Promise<void> {
 
 $('action').addEventListener('click', () => {
   onAction().catch((err) => {
-    const statusEl = $('status');
-    statusEl.className = 'status error';
-    statusEl.textContent = err instanceof Error ? err.message : String(err);
+    setStatus('error', err instanceof Error ? err.message : String(err));
+    setAction('Retry', 'primary');
   });
 });
 
-refresh().catch(() => {});
+refresh().catch((err) => {
+  setStatus('error', err instanceof Error ? err.message : String(err));
+});

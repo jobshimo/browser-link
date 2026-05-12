@@ -498,12 +498,12 @@ async function forgetTabId(chromeTabId: number): Promise<void> {
 
 async function connectTab(tabId: number): Promise<ConnectResult> {
   if (tabStates.has(tabId)) {
-    return { ok: false, error: 'Esta pestaña ya está conectada' };
+    return { ok: false, error: 'This tab is already connected' };
   }
 
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !tab.title) {
-    return { ok: false, error: 'La pestaña no tiene URL o título' };
+    return { ok: false, error: 'Tab has no URL or title' };
   }
 
   const previousTabId = await readPreviousTabId(tabId);
@@ -513,7 +513,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
   } catch (err) {
     return {
       ok: false,
-      error: `No se pudo attachar el debugger: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Could not attach debugger: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -537,7 +537,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     await cleanup(tabId);
     return {
       ok: false,
-      error: `No se pudo habilitar CDP: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Could not enable CDP: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -579,7 +579,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
 
     ws.addEventListener('error', () => {
       cleanup(tabId).catch(() => {});
-      settle({ ok: false, error: 'WebSocket connection failed. ¿Está corriendo el servidor MCP?' });
+      settle({ ok: false, error: 'WebSocket connection failed. Is the MCP server running?' });
     });
 
     ws.addEventListener('close', () => {
@@ -592,7 +592,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
 async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
   await cleanup(tabId);
   // Explicit user-driven disconnect → forget the previous tab id so the
-  // next "Conectar" starts from a clean slate (vs. an involuntary
+  // next "Connect" starts from a clean slate (vs. an involuntary
   // reconnect where we WANT to keep the id for continuity).
   await forgetTabId(tabId);
   return { ok: true };
