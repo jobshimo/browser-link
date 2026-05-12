@@ -8,6 +8,7 @@ import {
   InstallResultView,
   LanguageView,
   MainMenu,
+  MultiAgentView,
   PermissionsView,
   UpdatesView,
   WelcomeScreen,
@@ -27,6 +28,7 @@ type Screen =
   | { kind: 'pick-client' }
   | { kind: 'install-result'; report: InstallReport }
   | { kind: 'permissions' }
+  | { kind: 'multi-agent' }
   | { kind: 'extension' }
   | { kind: 'doctor' }
   | { kind: 'updates' }
@@ -77,6 +79,7 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
           onSelect={(action: MenuAction) => {
             if (action === 'register') setScreen({ kind: 'pick-client' });
             else if (action === 'permissions') setScreen({ kind: 'permissions' });
+            else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
             else if (action === 'extension') setScreen({ kind: 'extension' });
             else if (action === 'doctor') setScreen({ kind: 'doctor' });
             else if (action === 'updates') setScreen({ kind: 'updates' });
@@ -108,6 +111,9 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
 
     case 'permissions':
       return <PermissionsView language={language} onBack={backToMenu} />;
+
+    case 'multi-agent':
+      return <MultiAgentView language={language} onBack={backToMenu} />;
 
     case 'extension':
       return <ExtensionView language={language} onBack={backToMenu} />;

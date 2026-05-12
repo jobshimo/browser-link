@@ -4,21 +4,16 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { WebSocket, WebSocketServer } from 'ws';
 import { randomUUID } from 'node:crypto';
 import type { ExtensionToServer, ServerToExtension } from './messages.js';
-import { MAP_TOOL_DEFINITIONS, handleMapTool, isMapTool } from './map/tools.js';
 import { closeDb } from './map/db.js';
 import { isAllowedBrowser } from './auth/allowlist.js';
 import { lookupPeerProcess } from './auth/process-identity.js';
-import { BROWSER_TOOL_DEFINITIONS } from './tools/browser-definitions.js';
-import {
-  type BrowserToolDeps,
-  type TabSnapshot,
-  handleBrowserTool,
-  isBrowserTool,
-} from './tools/browser-dispatch.js';
-import { toolError, toolResponse } from './tools/responses.js';
+import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
-import { isToolEnabled } from './permissions.js';
 import { loadConfig } from './config.js';
+import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dispatch.js';
+import { IpcServer } from './bridge/server.js';
+import { runProxy } from './bridge/client.js';
+import { BridgeEventLog } from './bridge/events.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -71,6 +66,7 @@ function normaliseLoopback(addr: string): string {
 function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
+  events: BridgeEventLog,
 ): Promise<WebSocketServer> {
   return new Promise((resolve, reject) => {
     const wss = new WebSocketServer({
@@ -139,7 +135,20 @@ function startWsBridge(
         if (!msg) return;
 
         if (msg.kind === 'tab.register' && !assignedTabId) {
-          assignedTabId = assignTabId();
+          // The extension may pass `previousTabId` so we can preserve the
+          // browser-link tab id across primary swaps. We honour it when it
+          // is free; otherwise we assign a new id and emit `tab-renamed`
+          // so the agent can recover.
+          const previousTabId =
+            typeof msg.payload.previousTabId === 'string' ? msg.payload.previousTabId : undefined;
+          if (previousTabId && !tabs.has(previousTabId) && /^tab_\d+$/.test(previousTabId)) {
+            assignedTabId = previousTabId;
+            // Bump the counter so future fresh assignments don't collide.
+            const n = parseInt(previousTabId.slice('tab_'.length), 10);
+            if (Number.isFinite(n) && n > tabIdCounter) tabIdCounter = n;
+          } else {
+            assignedTabId = assignTabId();
+          }
           tabs.set(assignedTabId, {
             tabId: assignedTabId,
             url: msg.payload.url,
@@ -148,6 +157,21 @@ function startWsBridge(
           });
           send(ws, { kind: 'tab.registered', payload: { tabId: assignedTabId } });
           log(`Tab registered: ${assignedTabId} -> ${msg.payload.url}`);
+          if (previousTabId && previousTabId !== assignedTabId) {
+            events.add('tab-renamed', {
+              previous: previousTabId,
+              current: assignedTabId,
+              url: msg.payload.url,
+              title: msg.payload.title,
+            });
+            log(`Tab id renamed: ${previousTabId} -> ${assignedTabId}`);
+          } else {
+            events.add('tab-registered', {
+              tabId: assignedTabId,
+              url: msg.payload.url,
+              title: msg.payload.title,
+            });
+          }
           return;
         }
 
@@ -164,6 +188,7 @@ function startWsBridge(
       ws.on('close', () => {
         if (assignedTabId) {
           tabs.delete(assignedTabId);
+          events.add('tab-disconnected', { tabId: assignedTabId });
           log(`Tab disconnected: ${assignedTabId}`);
         }
       });
@@ -181,15 +206,22 @@ function assignTabId(): string {
   return `tab_${tabIdCounter}`;
 }
 
-function translateBindError(err: NodeJS.ErrnoException): Error {
-  if (err.code === 'EADDRINUSE') {
-    return new Error(
-      `browser-link: port ${WS_HOST}:${WS_PORT} is already in use. ` +
-        `Another browser-link server is likely running. Stop it (and any ` +
-        `\`npm run dev\` running this project) before launching this one.`,
-    );
+/** Sentinel error used by runServer() to detect a port-in-use and decide
+ * whether to fall back to proxy mode. Anything else propagates unchanged. */
+class AddrInUseError extends Error {
+  constructor() {
+    super(`browser-link: port ${WS_HOST}:${WS_PORT} is already in use.`);
+    this.name = 'AddrInUseError';
   }
+}
+
+function translateBindError(err: NodeJS.ErrnoException): Error {
+  if (err.code === 'EADDRINUSE') return new AddrInUseError();
   return err;
+}
+
+function isAddrInUse(err: unknown): boolean {
+  return err instanceof AddrInUseError;
 }
 
 function buildCallBrowserTool(
@@ -198,7 +230,18 @@ function buildCallBrowserTool(
 ): BrowserToolDeps['callBrowserTool'] {
   return (tabId, tool, params, timeoutMs = DEFAULT_TIMEOUT_MS) => {
     const session = tabs.get(tabId);
-    if (!session) return Promise.reject(new Error(`Tab not connected: ${tabId}`));
+    if (!session) {
+      // Auto-hint pointing the agent at `browser.events`. The event log
+      // tracks tab-renamed entries that explain stale tab_ids after a
+      // primary swap, so the agent can self-recover instead of failing.
+      return Promise.reject(
+        new Error(
+          `Tab not connected: ${tabId}. The Chrome extension may have re-registered with a new id ` +
+            `after a primary change. Call browser.events (look for tab-renamed entries with previous=${tabId}) ` +
+            `to find the current id, then retry the call on it.`,
+        ),
+      );
+    }
     const id = randomUUID();
     return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -220,70 +263,147 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
     }));
 }
 
-/** Start the MCP server (stdio transport) and the WebSocket bridge.
- * Resolves only when both are ready. If the WebSocket bind fails the
- * MCP transport is never exposed and the caller sees a clear error. */
+/**
+ * Entry point used by the MCP client over stdio. Decides whether THIS
+ * process becomes the primary (binds 17529, runs the WS bridge + MCP
+ * server + optional IPC server) or — when multi-agent mode is enabled
+ * and another primary is already running — becomes a thin proxy that
+ * forwards MCP stdio frames to the primary over IPC.
+ */
 export async function runServer(): Promise<void> {
+  const cfg = loadConfig();
+  try {
+    await runPrimary(cfg);
+  } catch (err) {
+    if (!isAddrInUse(err)) throw err;
+    if (cfg.multiAgent === true) {
+      // Another primary is already running — degrade to proxy mode so this
+      // MCP client can still reach the bridge.
+      await runProxyMode();
+      return;
+    }
+    throw new Error(
+      `browser-link: port ${WS_HOST}:${WS_PORT} is already in use by another browser-link instance.\n` +
+        `\n` +
+        `Enable multi-agent mode if you want multiple MCP clients (Claude + Copilot + OpenCode) to share one bridge:\n` +
+        `  • From a terminal: \`browser-link multi-agent enable\`\n` +
+        `  • Or open the setup menu: \`browser-link\` → Multi-agent\n` +
+        `\n` +
+        `Then restart your MCP client. With multi-agent on, this process would have become a proxy instead of erroring.`,
+    );
+  }
+}
+
+async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   const tabs = new Map<string, TabSession>();
   const pendingRequests = new Map<string, PendingRequest>();
+  const events = new BridgeEventLog();
+  // First event of every primary: who am I and when did I start. The agent
+  // sees this when calling browser.events after a "Tab not connected".
+  events.add('primary-elected', {
+    pid: process.pid,
+    multiAgent: cfg.multiAgent === true,
+  });
 
-  // Bind the WS bridge first. If this throws, runServer() rejects and the
-  // MCP client receives a fail-fast exit instead of a half-started server.
-  await startWsBridge(tabs, pendingRequests);
+  // Bind the WS bridge first. AddrInUseError propagates up to runServer()
+  // so the caller can decide between proxy mode and a clear error.
+  await startWsBridge(tabs, pendingRequests, events);
 
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
+    recentEvents: (opts) => events.recent(opts),
   };
 
   // Snapshot the user's deny-list at boot. Changes made via the standalone
   // CLI/UI while the MCP server is already running do NOT take effect until
   // the MCP client restarts — the welcome and permissions screens both warn
   // the user about that.
-  const cfg = loadConfig();
   const disabledTools = cfg.disabledTools ?? [];
   if (disabledTools.length > 0) {
     log(`Tool filter active — ${disabledTools.length} disabled: ${disabledTools.join(', ')}`);
   }
+
+  const dispatchDeps: DispatchDeps = { browserTools: deps, disabledTools };
 
   const mcpServer = new Server(
     { name: 'browser-link', version: '0.0.1' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
-  mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS].filter((t) =>
-      isToolEnabled(t.name, disabledTools),
-    ),
-  }));
+  // The SDK's request-handler return types include task/streaming variants we
+  // never produce. Cast keeps the shared dispatch module SDK-agnostic.
+  mcpServer.setRequestHandler(
+    ListToolsRequestSchema,
+    async () => handleToolsList(dispatchDeps) as never,
+  );
+  mcpServer.setRequestHandler(
+    CallToolRequestSchema,
+    async (req) => (await handleToolCall(req.params, dispatchDeps)) as never,
+  );
 
-  mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const { name, arguments: args } = req.params;
-    if (!isToolEnabled(name, disabledTools)) {
-      // Defence in depth: a client that cached the previous tools/list could
-      // still try to call a now-disabled tool. Refuse with a clear reason.
-      return toolError(
-        `Tool "${name}" is disabled in this browser-link config. ` +
-          `Re-enable it via the setup UI (Permissions) or \`browser-link tools enable ${name}\`.`,
-      );
-    }
+  // Optional: open the IPC bridge for proxy connections, but only when
+  // multi-agent mode is opt-in via config. Default is off — this keeps
+  // behaviour identical for users who never enable the feature.
+  let ipcServer: IpcServer | null = null;
+  if (cfg.multiAgent === true) {
+    ipcServer = new IpcServer(dispatchDeps);
     try {
-      if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
-      if (isBrowserTool(name)) return toolResponse(await handleBrowserTool(name, args, deps));
-      return toolError(`Unknown tool: ${name}`);
+      await ipcServer.start();
     } catch (err) {
-      return toolError(err instanceof Error ? err.message : String(err));
+      // Surface and keep going. The primary MCP server still works for the
+      // current client even if multi-agent failed to come up.
+      log(`Multi-agent IPC failed to start: ${err instanceof Error ? err.message : String(err)}`);
+      ipcServer = null;
     }
-  });
+  }
 
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
-  log('MCP server ready on stdio');
+  log(`MCP server ready on stdio (role=primary${ipcServer ? ', multi-agent=on' : ''})`);
 
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
+      if (ipcServer) {
+        // Best-effort: tell connected proxies we're going down so they can
+        // trigger auto-reelect (phase 4) and not just hit a dead socket.
+        ipcServer.stop().catch(() => {
+          /* shutting down; ignore */
+        });
+      }
       closeDb();
       process.exit(0);
     });
   }
+}
+
+/** Connect to the running primary as a proxy and pipe MCP stdio through.
+ * When autoReelect is enabled in config, the proxy survives IPC drops
+ * by waiting for a fresh primary to appear and reconnecting. */
+async function runProxyMode(): Promise<void> {
+  const cfg = loadConfig();
+  const autoReelect = cfg.autoReelect === true;
+  log(
+    `Port in use — connecting as proxy to the running primary` +
+      (autoReelect ? ' (auto-reelect on).' : '.'),
+  );
+  let exiting = false;
+  const handle = await runProxy({
+    autoReelect,
+    onClose: (reason) => {
+      if (exiting) return;
+      exiting = true;
+      log(`Primary connection closed (${reason}). Exiting so the MCP client can respawn.`);
+      // Exit with non-zero so the MCP client knows something abnormal happened.
+      process.exit(reason === 'primary-closing' ? 0 : 1);
+    },
+  });
+  log(
+    `Proxy ready — forwarding MCP frames to the primary` +
+      (autoReelect ? ' (auto-reelect on).' : '.'),
+  );
+  // Wait until the IPC connection drops AND any reelect window expires;
+  // runProxy resolves once the pipe is wired so this await holds the
+  // process alive.
+  await handle.closed;
 }

@@ -17,6 +17,22 @@ export interface BrowserLinkConfig {
    * tool renames or removals.
    */
   disabledTools?: string[];
+  /**
+   * Multi-agent mode. When false (default), only one MCP client can have
+   * browser-link active at a time; a second client trying to spawn the
+   * server crashes with EADDRINUSE. When true, the second instance becomes
+   * a proxy that forwards MCP requests to the first one over an internal
+   * IPC port (127.0.0.1:17530). All agents end up sharing the same Chrome
+   * tabs and the same persistent UI map.
+   */
+  multiAgent?: boolean;
+  /**
+   * Only honoured when multiAgent === true. When false (default), if the
+   * primary's MCP client closes, secondary clients lose the bridge and
+   * have to be relaunched manually. When true, one of the secondaries
+   * takes over the primary role automatically (race on bind(17529)).
+   */
+  autoReelect?: boolean;
 }
 
 function configFile(): string {
@@ -28,11 +44,31 @@ function normalise(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // and on write — so unknown names from a downgraded build, a typo, or a
   // manual edit never reach the server filter.
   const sanitized = sanitizeDisabledTools(cfg.disabledTools);
+  let next: BrowserLinkConfig;
   if (sanitized.length === 0) {
     const { disabledTools: _omit, ...rest } = cfg;
-    return rest;
+    next = rest;
+  } else {
+    next = { ...cfg, disabledTools: sanitized };
   }
-  return { ...cfg, disabledTools: sanitized };
+  // autoReelect only makes sense when multiAgent is on. Drop a stray
+  // autoReelect:true if multiAgent is off, so the config file never has
+  // an inert flag advertising a behaviour it does not produce.
+  if (next.autoReelect && !next.multiAgent) {
+    const { autoReelect: _omit2, ...rest2 } = next;
+    next = rest2;
+  }
+  // Drop explicit `false` for the two new flags too — the default is false,
+  // so storing it just adds noise.
+  if (next.multiAgent === false) {
+    const { multiAgent: _omit3, ...rest3 } = next;
+    next = rest3;
+  }
+  if (next.autoReelect === false) {
+    const { autoReelect: _omit4, ...rest4 } = next;
+    next = rest4;
+  }
+  return next;
 }
 
 export function loadConfig(): BrowserLinkConfig {

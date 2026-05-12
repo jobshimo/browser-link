@@ -11,6 +11,13 @@ export type TabId = string;
 export interface TabRegisterPayload {
   url: string;
   title: string;
+  /**
+   * Optional. The browser-link tab_id this Chrome tab last had, as
+   * remembered by the extension across primary swaps. The primary honours
+   * it if free; otherwise it assigns a new id and emits a `tab-renamed`
+   * event the agent can pick up via the `browser.events` tool.
+   */
+  previousTabId?: TabId;
 }
 
 export interface TabRegisteredPayload {

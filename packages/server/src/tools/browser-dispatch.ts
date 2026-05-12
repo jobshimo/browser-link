@@ -9,6 +9,7 @@
  */
 
 import { requireTabId } from './responses.js';
+import type { BridgeEvent } from '../bridge/events.js';
 
 export interface TabSnapshot {
   tab_id: string;
@@ -24,6 +25,9 @@ export interface BrowserToolDeps {
     params: unknown,
     timeoutMs?: number,
   ): Promise<unknown>;
+  /** Optional event-log accessor — when present, `browser.events` returns
+   * its slice. When absent (e.g. in unit tests), the tool returns []. */
+  recentEvents?(opts: { sinceId?: number; limit?: number }): BridgeEvent[];
 }
 
 export function isBrowserTool(name: string): boolean {
@@ -98,6 +102,16 @@ const BROWSER_TOOL_HANDLERS: ReadonlyMap<string, Handler> = new Map<string, Hand
     (args, deps) => {
       const { expression } = args as { expression: string };
       return deps.callBrowserTool(requireTabId(args), 'evaluate', { expression });
+    },
+  ],
+  [
+    'browser.events',
+    (args, deps) => {
+      const { since_id, limit } = (args as { since_id?: number; limit?: number }) ?? {};
+      if (!deps.recentEvents) return { events: [], latest_id: 0 };
+      const events = deps.recentEvents({ sinceId: since_id, limit });
+      const latest_id = events.length > 0 ? events[events.length - 1]!.id : (since_id ?? 0);
+      return { events, latest_id };
     },
   ],
 ]);

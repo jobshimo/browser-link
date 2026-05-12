@@ -44,6 +44,10 @@ and per-machine; never persisted in any repo.
   one, save it (upsert on purpose).
 - A whole app got refactored → \`browser.map.forget\` the app_id and let
   the map repopulate as you learn the new structure.
+- A tool call fails with "Tab not connected: tab_X" → call
+  \`browser.events\` to see whether the bridge changed primary (the
+  Chrome tab probably got a new tab_id after a reconnect). Look for a
+  \`tab-renamed\` event with previous=tab_X and resume on the current id.
 
 The map is a cache of navigation, not a substitute for \`browser.snapshot\`.
 The live snapshot is always the source of truth.`;

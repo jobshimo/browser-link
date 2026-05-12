@@ -61,13 +61,36 @@ browser-link about                         # what this is, how it works, every t
 
 ## Per-tool permissions
 
-`browser-link` exposes 16 MCP tools by default — 10 to drive the connected
-Chrome tab and 6 to read/write the local UI map. You can disable any subset
-per machine, either through the **Permissions** screen in the interactive
-menu (toggle with Space, apply a preset with Enter, save with `s`) or
-through the scriptable `browser-link tools` subcommand. Available presets:
-`all` (default), `readonly`, `no-eval`, `no-map`. Changes take effect the
-next time your MCP client starts the server.
+`browser-link` exposes 17 MCP tools by default — 10 browser-bridge tools,
+6 UI-map tools, and `browser.events` for bridge traceability. You can
+disable any subset per machine, either through the **Permissions** screen
+in the interactive menu (toggle with Space, apply a preset with Enter,
+save with `s`) or through the scriptable `browser-link tools` subcommand.
+Available presets: `all` (default), `readonly`, `no-eval`, `no-map`.
+Changes take effect the next time your MCP client starts the server.
+
+## Multi-agent mode
+
+By default only one MCP client can have browser-link active at a time
+(EADDRINUSE on the second). Enable multi-agent mode and the second
+`browser-link` spawn becomes a proxy that forwards MCP requests to the
+first via `127.0.0.1:17530`, with the same kernel-level process binding
+the WS port already uses. All connected clients share the same Chrome
+tabs and persistent UI map.
+
+```bash
+browser-link multi-agent enable
+browser-link multi-agent auto-reelect enable     # optional
+```
+
+With `auto-reelect` on, secondary proxies survive the primary closing:
+they enter a 5-second reconnect window, return `-32001 "temporarily
+unavailable"` for in-flight requests, and hot-swap to the fresh primary
+once it appears. The agent self-recovers from stale tab ids via the new
+`browser.events` tool, which surfaces a ring buffer of bridge lifecycle
+events (`primary-elected`, `tab-registered`, `tab-disconnected`,
+`tab-renamed`). The Chrome extension preserves the per-tab id across
+primary swaps via `chrome.storage.session`.
 
 After `install`, restart the MCP client so it picks up the new entry.
 After `extension`, follow the printed steps to load the unpacked extension

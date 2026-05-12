@@ -134,4 +134,23 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'browser.events',
+    description:
+      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since_id: {
+          type: 'number',
+          description: 'Only return events with id > since_id. Omit to get the most recent slice.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of events to return (default 20, max 200).',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];

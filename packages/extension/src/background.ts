@@ -456,6 +456,42 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   state.debuggerListener(method, params);
 });
 
+/**
+ * Look up the previous browser-link tab_id this Chrome tab had, if any.
+ * Stored in chrome.storage.session (cleared when the browser restarts).
+ * Used to ask the primary to keep the same tab_id across primary swaps
+ * — a key piece of the v0.4 multi-agent UX so the agent does not see
+ * stale tab_ids after a re-election.
+ */
+async function readPreviousTabId(chromeTabId: number): Promise<string | undefined> {
+  const key = `prevTabId:${chromeTabId}`;
+  try {
+    const data = await chrome.storage.session.get(key);
+    const v = data[key];
+    return typeof v === 'string' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function storeTabId(chromeTabId: number, serverTabId: string): Promise<void> {
+  const key = `prevTabId:${chromeTabId}`;
+  try {
+    await chrome.storage.session.set({ [key]: serverTabId });
+  } catch {
+    /* storage failure is non-fatal — worst case the next reconnect gets a fresh id */
+  }
+}
+
+async function forgetTabId(chromeTabId: number): Promise<void> {
+  const key = `prevTabId:${chromeTabId}`;
+  try {
+    await chrome.storage.session.remove(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 async function connectTab(tabId: number): Promise<ConnectResult> {
   if (tabStates.has(tabId)) {
     return { ok: false, error: 'Esta pestaña ya está conectada' };
@@ -465,6 +501,8 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
   if (!tab.url || !tab.title) {
     return { ok: false, error: 'La pestaña no tiene URL o título' };
   }
+
+  const previousTabId = await readPreviousTabId(tabId);
 
   try {
     await chrome.debugger.attach({ tabId }, CDP_VERSION);
@@ -511,7 +549,10 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     };
 
     ws.addEventListener('open', () => {
-      send(ws, { kind: 'tab.register', payload: { url: tab.url!, title: tab.title! } });
+      send(ws, {
+        kind: 'tab.register',
+        payload: { url: tab.url!, title: tab.title!, previousTabId },
+      });
     });
 
     ws.addEventListener('message', async (ev: MessageEvent) => {
@@ -519,6 +560,10 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
       if (!msg) return;
       if (msg.kind === 'tab.registered') {
         state.serverTabId = msg.payload.tabId;
+        // Remember this id so the next reconnect (after a primary swap)
+        // asks the new primary to honour it. The primary emits
+        // `tab-renamed` in the bridge event log if it can't.
+        void storeTabId(tabId, msg.payload.tabId);
         settle({ ok: true, serverTabId: msg.payload.tabId });
         return;
       }
@@ -542,6 +587,10 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
 
 async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
   await cleanup(tabId);
+  // Explicit user-driven disconnect → forget the previous tab id so the
+  // next "Conectar" starts from a clean slate (vs. an involuntary
+  // reconnect where we WANT to keep the id for continuity).
+  await forgetTabId(tabId);
   return { ok: true };
 }
 
@@ -569,6 +618,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   cleanup(tabId).catch(() => {});
+  // The Chrome tab is gone — drop any cached browser-link id for it.
+  void forgetTabId(tabId);
 });
 
 chrome.debugger.onDetach.addListener((source) => {

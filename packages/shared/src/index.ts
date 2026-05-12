@@ -3,6 +3,15 @@ export type TabId = string;
 export interface TabRegisterPayload {
   url: string;
   title: string;
+  /**
+   * Optional. The browser-link tab_id this Chrome tab had on its last
+   * registration with a primary, remembered via chrome.storage.session.
+   * Set on reconnect (e.g. after a primary swap) so the primary can
+   * reuse the same id when free. When the id is taken the primary
+   * assigns a new one and emits a `tab-renamed` event the agent can
+   * pick up via the `browser.events` MCP tool.
+   */
+  previousTabId?: TabId;
 }
 
 export interface TabRegisteredPayload {

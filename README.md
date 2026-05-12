@@ -139,6 +139,47 @@ effect the **next time the MCP client starts the server** (restart the
 client to apply). Disabled tools are removed from `tools/list` and any
 client that still tries to call them gets a clear error.
 
+## Multi-agent mode (Claude + OpenCode + Copilot in parallel)
+
+By default only one MCP client can have `browser-link` active at a time;
+the second one to start gets a clear "port in use" error. Enable
+multi-agent mode and a second `browser-link` spawn becomes a thin proxy
+that forwards MCP requests to the first one over an internal IPC port:
+
+```bash
+browser-link multi-agent enable
+browser-link multi-agent auto-reelect enable     # optional, see below
+```
+
+(Or from the setup menu → **Multi-agent**.)
+
+With it on, every client sees the **same** connected Chrome tabs and the
+**same** persistent UI map. The IPC bridge listens on `127.0.0.1:17530`
+and applies the same kernel-level process-binding check as the WS port:
+only Node-family binaries that present a fresh token from
+`config-dir/multi-agent-token` are accepted.
+
+**Auto-reelect on primary close**: if the primary's MCP client closes,
+secondary proxies lose the bridge. With `auto-reelect` enabled, the
+proxies enter a 5-second reconnect window — requests in flight get a
+clear `-32001 "temporarily unavailable"` envelope while the proxy waits
+for the freshly-respawned primary (the MCP client of the primary will
+respawn its server, racing to bind the WS port). When the new primary
+appears, the proxy hot-swaps to it and traffic resumes.
+
+**Traceability — `browser.events`**: every primary keeps an in-memory
+ring buffer of bridge events (`primary-elected`, `tab-registered`,
+`tab-disconnected`, `tab-renamed`) and exposes it through a new MCP
+tool. When a tool call fails with "Tab not connected: tab_X" the error
+message itself tells the agent to call `browser.events`, where a
+`tab-renamed` entry maps the old id to the new one — so the agent
+recovers on its own after a primary swap.
+
+The Chrome extension cooperates: it remembers the last `browser-link`
+tab_id per Chrome tab in `chrome.storage.session` and asks the new
+primary to keep the same id on reconnect. The primary honours it when
+free, otherwise emits the `tab-renamed` event.
+
 ## How it works
 
 ```

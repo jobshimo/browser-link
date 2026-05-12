@@ -6,6 +6,8 @@ import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
 import type { Language } from './welcome.js';
+import { loadConfig } from '../config.js';
+import { IPC_HOST, IPC_PORT } from '../bridge/protocol.js';
 
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 17529;
@@ -38,6 +40,8 @@ function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortSta
 
 export interface DoctorReport {
   ws: { listening: boolean; detail: string; host: string; port: number };
+  ipc: { listening: boolean; detail: string; host: string; port: number };
+  multiAgent: { enabled: boolean; autoReelect: boolean };
   clients: {
     id: string;
     displayName: string;
@@ -52,6 +56,7 @@ export interface DoctorReport {
 
 export async function runDoctor(): Promise<DoctorReport> {
   const ws = await checkPort(WS_HOST, WS_PORT);
+  const ipc = await checkPort(IPC_HOST, IPC_PORT);
 
   const clients = INSTALLERS.map((i) => {
     const d = i.detect();
@@ -70,9 +75,12 @@ export async function runDoctor(): Promise<DoctorReport> {
       apps = -1;
     }
   }
+  const cfg = loadConfig();
 
   return {
     ws: { ...ws, host: WS_HOST, port: WS_PORT },
+    ipc: { ...ipc, host: IPC_HOST, port: IPC_PORT },
+    multiAgent: { enabled: cfg.multiAgent === true, autoReelect: cfg.autoReelect === true },
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
@@ -103,6 +111,14 @@ interface DoctorI18n {
   processBinding: string;
   processBindingNone: string;
   processBindingOk: (n: number) => string;
+  multiAgentHeader: string;
+  multiAgentMode: string;
+  autoReelect: string;
+  on: string;
+  off: string;
+  ipcLine: string;
+  ipcListening: string;
+  ipcFree: string;
 }
 
 const DOCTOR_I18N: Record<Language, DoctorI18n> = {
@@ -126,6 +142,14 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processBinding: 'Process binding:',
     processBindingNone: '  ✗ no allowlist for this OS — incoming WS connections will be rejected.',
     processBindingOk: (n) => `  ✓ accepts WS connections from ${n} known browser binaries.`,
+    multiAgentHeader: 'Multi-agent:',
+    multiAgentMode: '  Mode             ',
+    autoReelect: '  Auto-reelect     ',
+    on: 'on',
+    off: 'off',
+    ipcLine: '  IPC port         ',
+    ipcListening: 'listening (a primary is running)',
+    ipcFree: 'free (no primary on this machine)',
   },
   es: {
     title: 'browser-link doctor',
@@ -147,6 +171,14 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processBinding: 'Validación por proceso:',
     processBindingNone: '  ✗ sin allowlist para este SO — las conexiones WS entrantes se rechazan.',
     processBindingOk: (n) => `  ✓ acepta conexiones WS desde ${n} binarios de navegador conocidos.`,
+    multiAgentHeader: 'Multi-agente:',
+    multiAgentMode: '  Modo             ',
+    autoReelect: '  Re-elección auto ',
+    on: 'activado',
+    off: 'desactivado',
+    ipcLine: '  Puerto IPC       ',
+    ipcListening: 'escuchando (hay un primary corriendo)',
+    ipcFree: 'libre (no hay primary en esta máquina)',
   },
 };
 
@@ -196,5 +228,10 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
       `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
     );
   }
+  lines.push('');
+  lines.push(t.multiAgentHeader);
+  lines.push(`${t.multiAgentMode}${r.multiAgent.enabled ? t.on : t.off}`);
+  lines.push(`${t.autoReelect}${r.multiAgent.autoReelect ? t.on : t.off}`);
+  lines.push(`${t.ipcLine}${r.ipc.listening ? t.ipcListening : t.ipcFree}`);
   return lines.join('\n');
 }

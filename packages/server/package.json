@@ -1,7 +1,7 @@
 {
   "name": "@jobshimo/browser-link",
-  "version": "0.3.1",
-  "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab. Per-tool permissions, persistent UI map of selectors, flows and gotchas across sessions.",
+  "version": "0.4.0",
+  "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab. Per-tool permissions, multi-agent mode (multiple MCP clients sharing one bridge), persistent UI map across sessions.",
   "keywords": [
     "mcp",
     "model-context-protocol",

@@ -6,6 +6,7 @@ import { printExtensionInstructions } from './commands/extension.js';
 import { printAbout } from './commands/about.js';
 import { checkUpdates, formatUpdate } from './commands/updates.js';
 import { runToolsCommand } from './commands/tools.js';
+import { runMultiAgentCommand } from './commands/multi-agent.js';
 import { loadConfig } from './config.js';
 import { VERSION } from './version.js';
 import type { ClientId } from './installers/index.js';
@@ -45,6 +46,9 @@ Uso:
   browser-link tools enable <nombre…>   Vuelve a habilitar tools concretas.
   browser-link tools disable <nombre…>  Deshabilita tools concretas.
   browser-link tools preset <id>        Aplica un preset: all | readonly | no-eval | no-map.
+  browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
+  browser-link multi-agent enable | disable
+  browser-link multi-agent auto-reelect enable | disable
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
   browser-link help             Este mensaje.
@@ -78,6 +82,9 @@ Usage:
   browser-link tools enable <name…>   Re-enable specific tools.
   browser-link tools disable <name…>  Disable specific tools.
   browser-link tools preset <id>      Apply a preset: all | readonly | no-eval | no-map.
+  browser-link multi-agent      Show multi-agent mode + auto-reelect status.
+  browser-link multi-agent enable | disable
+  browser-link multi-agent auto-reelect enable | disable
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
   browser-link help             This message.
@@ -179,6 +186,10 @@ async function dispatch(argv: string[]): Promise<void> {
       console.log(runToolsCommand(rest, language));
       console.log('');
       console.log(t.toolsRestart);
+      return;
+    }
+    case 'multi-agent': {
+      console.log(runMultiAgentCommand(rest, language));
       return;
     }
     case 'version':
