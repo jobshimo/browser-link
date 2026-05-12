@@ -22,6 +22,7 @@ export function AboutView({ language, onBack }: AboutViewProps) {
       <AboutSection title={t.mapToolsTitle} body={t.mapTools} />
       <AboutSection title={t.privacyTitle} body={t.privacy} />
       <AboutSection title={t.helpTitle} body={t.help} />
+      <AboutSection title={t.authorTitle} body={t.author} />
     </Frame>
   );
 }

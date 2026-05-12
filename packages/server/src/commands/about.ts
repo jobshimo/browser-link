@@ -16,6 +16,8 @@ export interface AboutI18n {
   privacy: string;
   helpTitle: string;
   help: string;
+  authorTitle: string;
+  author: string;
 }
 
 export const I18N_ABOUT: Record<Language, AboutI18n> = {
@@ -106,6 +108,8 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
       '  browser-link about       show this page',
       '  browser-link help        list every subcommand',
     ].join('\n'),
+    authorTitle: 'Author',
+    author: 'Built and maintained by Martín Miguel Bernal.',
   },
   es: {
     title: 'browser-link — información',
@@ -199,6 +203,8 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
       '  browser-link about       mostrar esta página',
       '  browser-link help        listar todos los subcomandos',
     ].join('\n'),
+    authorTitle: 'Autor',
+    author: 'Hecho y mantenido por Martín Miguel Bernal.',
   },
 };
 
@@ -214,6 +220,7 @@ export function printAbout(language: Language = 'en'): void {
     { title: t.mapToolsTitle, body: t.mapTools },
     { title: t.privacyTitle, body: t.privacy },
     { title: t.helpTitle, body: t.help },
+    { title: t.authorTitle, body: t.author },
   ];
   console.log(t.title);
   console.log('='.repeat(t.title.length));
