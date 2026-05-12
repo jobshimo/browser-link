@@ -71,8 +71,12 @@ function safeParse(raw: string): ServerToExtension | null {
   }
 }
 
-function cdp<T = unknown>(tabId: number, method: string, params: object = {}): Promise<T> {
-  return chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>;
+function cdp<T = unknown>(
+  tabId: number,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  return chrome.debugger.sendCommand({ tabId }, method, params) as unknown as Promise<T>;
 }
 
 function pushConsole(state: TabState, entry: ConsoleEntry): void {
@@ -264,7 +268,7 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
       chrome.tabs.onUpdated.removeListener(handler);
       reject(new Error('navigation timed out'));
     }, timeoutMs);
-    const handler = (updatedId: number, info: chrome.tabs.TabChangeInfo): void => {
+    const handler: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (updatedId, info) => {
       if (updatedId === tabId && info.status === 'complete') {
         clearTimeout(t);
         chrome.tabs.onUpdated.removeListener(handler);
