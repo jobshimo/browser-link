@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
   "name": "browser-link",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Bridge between Chrome and an MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …). Per-tab manual activation.",
-  "permissions": ["debugger", "activeTab", "storage", "tabs"],
+  "permissions": [
+    "debugger",
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
   "host_permissions": [],
   "icons": {
     "16": "icons/icon-16.png",
