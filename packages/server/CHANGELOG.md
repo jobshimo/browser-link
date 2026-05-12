@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.1](https://github.com/jobshimo/browser-link/compare/v0.7.0...v0.7.1) (2026-05-12)
+
+
+### Features
+
+* **ci:** automate `npm publish` from the release-finalize workflow. After CI on `main` is green and the tag + GitHub Release are created, the same workflow now publishes the package to npm via [Trusted Publisher](https://docs.npmjs.com/trusted-publishers) (OIDC). No `NPM_TOKEN` is stored in GitHub secrets — the npm package is configured to trust this specific workflow file, and the OIDC handshake mints a short-lived credential per publish. The publish includes `--provenance`, so npm attaches a verifiable [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) that ties each tarball to the workflow run + commit that produced it.
+
+### Miscellaneous
+
+* idempotent publish: the workflow runs `npm view @jobshimo/browser-link@$VERSION` first and skips the publish step if the version is already on the registry. A partial-failure re-run (tag created, publish failed) can therefore retry publish without re-creating the tag.
+
 ## [0.7.0](https://github.com/jobshimo/browser-link/compare/v0.6.0...v0.7.0) (2026-05-12)
 
 

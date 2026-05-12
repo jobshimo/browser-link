@@ -1,12 +1,13 @@
 name: Release Finalize
 
-# Tags + creates the GitHub Release whenever a fresh version lands on main.
+# Tags + creates the GitHub Release whenever a fresh version lands on
+# main, then publishes the package to npm.
 #
 # Trigger model — why workflow_run and not push:
-#   - We MUST NOT tag a broken commit. workflow_run lets us wait for the
-#     CI workflow to finish on main and gate the rest of the job on
-#     `conclusion == 'success'`. Cleaner than polling check-runs from
-#     inside a `push` workflow.
+#   - We MUST NOT tag or publish a broken commit. workflow_run lets us
+#     wait for the CI workflow to finish on main and gate the rest of
+#     the job on `conclusion == 'success'`. Cleaner than polling
+#     check-runs from inside a `push` workflow.
 #   - The Version Gate guarantees that anything landing on main has a
 #     fresh, aligned version. So the rule is simply: if main moves, and
 #     CI is green, there is exactly one release to cut — the one whose
@@ -22,6 +23,14 @@ name: Release Finalize
 #   `gh release create --target $SHA` creates the tag via the REST API
 #   and the GitHub Release in one call. Zero pushes. Branch protection
 #   on main (or any other branch) is irrelevant to this flow.
+#
+# npm publish — Trusted Publisher (OIDC):
+#   The npmjs package `@jobshimo/browser-link` is configured to trust
+#   this workflow file (Owner: jobshimo, Repo: browser-link, Workflow:
+#   release-finalize.yml). The job exchanges its GitHub OIDC token for
+#   a short-lived npm token at publish time. No NPM_TOKEN stored in
+#   secrets. `--provenance` makes npm attach a verifiable attestation
+#   tying the published tarball to this exact workflow run.
 
 on:
   workflow_run:
@@ -31,6 +40,10 @@ on:
 
 permissions:
   contents: write
+  # Required by npm's Trusted Publisher flow — lets `npm publish` request
+  # an OIDC token from GitHub that npm verifies against the configured
+  # trusted publisher.
+  id-token: write
 
 concurrency:
   # Serialize finalize runs so two near-simultaneous merges don't race on
@@ -64,6 +77,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "  → version on main: $VERSION"
 
+      # === GitHub Release half ============================================
       - name: Skip if release already exists
         id: tagcheck
         env:
@@ -125,3 +139,58 @@ jobs:
             --title "v$VERSION" \
             --notes-file "$NOTES_FILE"
           echo "  → created release v$VERSION targeting $SHA"
+
+      # === npm publish half ===============================================
+      # Independent skip path so a partial-failure re-run (tag created but
+      # publish failed last time) can publish without re-creating the tag.
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Skip if npm has this version already
+        id: npmcheck
+        env:
+          VERSION: ${{ steps.read.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@jobshimo/browser-link@$VERSION" version >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "  → npm already has @jobshimo/browser-link@$VERSION, skipping publish"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "  → @jobshimo/browser-link@$VERSION is not on npm yet, will publish"
+          fi
+
+      - name: Install dependencies
+        if: steps.npmcheck.outputs.skip == 'false'
+        run: pnpm install --frozen-lockfile
+
+      - name: Publish to npm with provenance
+        if: steps.npmcheck.outputs.skip == 'false'
+        working-directory: packages/server
+        env:
+          VERSION: ${{ steps.read.outputs.version }}
+        run: |
+          set -euo pipefail
+          # No NPM_TOKEN — Trusted Publisher exchanges the GitHub OIDC
+          # token (granted via permissions.id-token: write above) for a
+          # short-lived npm credential. --provenance attaches a signed
+          # attestation showing this exact workflow run published the
+          # tarball.
+          #
+          # npm publish (not pnpm publish) is intentional here: npm CLI
+          # has the most mature Trusted Publishing implementation. The
+          # `prepublishOnly` script in packages/server/package.json still
+          # invokes pnpm internally for the clean/build steps; npm just
+          # drives the publish itself.
+          npm publish --provenance --access public
+          echo "  → published @jobshimo/browser-link@$VERSION"
