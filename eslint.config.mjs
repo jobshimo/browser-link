@@ -59,59 +59,31 @@ export default tseslint.config(
         },
       ],
 
-      // Existing-debt rules — keep visible as warnings so CI doesn't
-      // turn red on the introduction of this config. Each one will be
-      // promoted back to `error` in a follow-up PR that fixes its
-      // cluster of violations. Counts as of the introduction commit:
+      // `restrict-template-expressions`: promoted to `error` with
+      // `allowNumber: true` + `allowBoolean: true`. Interpolating a
+      // number into a string is a normal, safe pattern — the rule's
+      // raison d'être is to catch `unknown`/`any`/object stringification
+      // (which still ERROR out under this config).
       //
-      //   62 @typescript-eslint/restrict-template-expressions
-      //   22 @typescript-eslint/no-unsafe-member-access
-      //   19 @typescript-eslint/no-unnecessary-condition
-      //   18 @typescript-eslint/no-non-null-assertion
-      //   16 @typescript-eslint/no-unsafe-assignment
-      //   15 @typescript-eslint/no-unnecessary-type-assertion
-      //   12 @typescript-eslint/no-confusing-void-expression
-      //   10 @typescript-eslint/no-unsafe-argument
-      //    6 @typescript-eslint/use-unknown-in-catch-callback-variable
-      //    5 @typescript-eslint/no-explicit-any
-      //    4 @typescript-eslint/no-floating-promises
-      //    4 @typescript-eslint/no-dynamic-delete
-      //    2 @typescript-eslint/no-misused-promises
-      //    2 @typescript-eslint/no-base-to-string
-      //    2 @typescript-eslint/require-await
-      //    2 no-useless-escape
-      //    2 no-empty
-      //    1 @typescript-eslint/no-deprecated
-      //    1 preserve-caught-error
-      //
-      // Total: 205 warnings.
-      // Everything not listed below stays at `strictTypeChecked` defaults
-      // (i.e. `error`) — that protects against NEW violations of rules
-      // we already comply with.
-      //
-      // Everything not listed below stays at `strictTypeChecked` defaults
-      // (i.e. `error`) — that protects against NEW violations of rules
-      // we already comply with.
-      '@typescript-eslint/restrict-template-expressions': 'warn',
-      '@typescript-eslint/no-unsafe-member-access': 'warn',
-      '@typescript-eslint/no-unsafe-assignment': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
-      '@typescript-eslint/no-unsafe-return': 'warn',
-      '@typescript-eslint/no-unnecessary-condition': 'warn',
-      '@typescript-eslint/no-non-null-assertion': 'warn',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/use-unknown-in-catch-callback-variable': 'warn',
-      '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-dynamic-delete': 'warn',
-      '@typescript-eslint/require-await': 'warn',
-      '@typescript-eslint/no-misused-promises': 'warn',
-      '@typescript-eslint/no-base-to-string': 'warn',
-      '@typescript-eslint/no-deprecated': 'warn',
-      '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
-      '@typescript-eslint/no-confusing-void-expression': 'warn',
-      'no-useless-escape': 'warn',
-      'no-empty': 'warn',
-      'preserve-caught-error': 'warn',
+      // Counts at v0.7.6, before this PR:
+      //   50 Invalid type "number"
+      //   11 Invalid type "17529"  (the WS port literal)
+      //    1 Invalid type "number | null"
+      // → all 62 cleared by `allowNumber: true`.
+      '@typescript-eslint/restrict-template-expressions': [
+        'error',
+        {
+          allowNumber: true,
+          allowBoolean: true,
+          // Other options keep their stricter defaults: allowAny: false,
+          // allowNullish: false, allowRegExp: false, allowNever: false.
+        },
+      ],
+
+      // All other strictTypeChecked rules stay at their default (error).
+      // The codebase is at zero violations across them as of v0.7.7;
+      // future regressions will fail CI rather than accumulate as
+      // silent warnings.
     },
   },
 

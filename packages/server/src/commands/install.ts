@@ -13,8 +13,8 @@ function resolveServerCommand(): { command: string; args: string[] } {
   // For dev runs (no global install) the user can override via env var.
   const override = process.env.BROWSER_LINK_BIN;
   if (override) {
-    const parts = override.split(' ').filter(Boolean);
-    return { command: parts[0]!, args: parts.slice(1) };
+    const [command, ...args] = override.split(' ').filter(Boolean);
+    if (command) return { command, args };
   }
   // Default: rely on the PATH lookup. This works on Windows because npm
   // creates a `browser-link.cmd` shim alongside the global node binary.

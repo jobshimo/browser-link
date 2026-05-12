@@ -127,7 +127,7 @@ function parseClient(argv: string[], language: Language): ClientId | null {
   if (idx === -1 || idx === argv.length - 1) return null;
   const val = argv[idx + 1];
   if (val === 'claude' || val === 'opencode' || val === 'copilot') return val;
-  throw new Error(CLI_I18N[language].unknownClient(val ?? ''));
+  throw new Error(CLI_I18N[language].unknownClient(val));
 }
 
 async function dispatch(argv: string[]): Promise<void> {
@@ -137,6 +137,10 @@ async function dispatch(argv: string[]): Promise<void> {
   const t = CLI_I18N[language];
 
   switch (cmd) {
+    // 'cmd' is typed as 'string' because the tsconfig leaves
+    // noUncheckedIndexedAccess off, but at runtime argv[0] really can
+    // be undefined (no args = bare CLI invocation). Keep the case.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     case undefined:
     case 'start': {
       const { runServer } = await import('./server.js');
@@ -229,7 +233,7 @@ if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
   process.exit(0);
 }
 
-dispatch(argv).catch((err) => {
+dispatch(argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });

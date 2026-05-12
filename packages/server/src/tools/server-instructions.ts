@@ -3,9 +3,9 @@
 export const SERVER_INSTRUCTIONS = `browser-link bridges Claude Code to the Chrome tabs the user has
 explicitly connected through the companion extension, and ships a
 persistent UI map backed by a local SQLite DB. The data dir resolves
-per-OS via env-paths (\$XDG_DATA_HOME/browser-link on Linux,
+per-OS via env-paths ($XDG_DATA_HOME/browser-link on Linux,
 ~/Library/Application Support/browser-link on macOS, %APPDATA%/browser-link
-on Windows). Override with \$BROWSER_LINK_DATA_DIR. The map is private
+on Windows). Override with $BROWSER_LINK_DATA_DIR. The map is private
 and per-machine; never persisted in any repo.
 
 ## When operating on a tab

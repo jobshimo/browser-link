@@ -64,7 +64,7 @@ export function WelcomeScreen({
     if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
     else if (key.downArrow) setIdx((i) => (i + 1) % items.length);
     else if (key.return) {
-      const v = items[idx]!.value;
+      const v = items[idx].value;
       if (v === 'accept') onAccept();
       else if (v === 'dismiss') onDismiss();
       else if (v === 'swap') onSwapLang();
@@ -213,7 +213,7 @@ export function MainMenu({ language, onSelect, onSwapLang, onQuit }: MainMenuPro
     if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
     else if (key.downArrow) setIdx((i) => (i + 1) % items.length);
     else if (key.return) {
-      const v = items[idx]!.value;
+      const v = items[idx].value;
       if (v === 'quit') onQuit();
       else onSelect(v);
     } else if (input === 'q' || key.escape) onQuit();
@@ -273,7 +273,7 @@ export function ClientPicker({ language, onPick, onBack }: ClientPickerProps) {
   useInput((input, key) => {
     if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
     else if (key.downArrow) setIdx((i) => (i + 1) % items.length);
-    else if (key.return) onPick(items[idx]!.value);
+    else if (key.return) onPick(items[idx].value);
     else if (input === 'q' || key.escape) onBack();
   });
 
@@ -432,7 +432,7 @@ export function DoctorView({ language, onBack }: DoctorViewProps) {
   useEffect(() => {
     let cancelled = false;
     setOutput(null);
-    runDoctor().then((r) => {
+    void runDoctor().then((r) => {
       if (!cancelled) setOutput(formatDoctor(r));
     });
     return () => {
@@ -575,7 +575,7 @@ export function PermissionsView({ language, onBack }: PermissionsViewProps) {
       let i = idx;
       for (let n = 0; n < rows.length; n++) {
         i = (i + dir + rows.length) % rows.length;
-        if (rows[i]!.kind !== 'header') return i;
+        if (rows[i].kind !== 'header') return i;
       }
       return idx;
     });
@@ -608,10 +608,10 @@ export function PermissionsView({ language, onBack }: PermissionsViewProps) {
     else if (key.downArrow) move(1);
     else if (input === ' ') {
       const row = rows[cursor];
-      if (row?.kind === 'tool') toggleTool(row.tool.name);
+      if (row.kind === 'tool') toggleTool(row.tool.name);
     } else if (key.return) {
       const row = rows[cursor];
-      if (row?.kind === 'preset') applyPreset(row.preset);
+      if (row.kind === 'preset') applyPreset(row.preset);
     } else if (input === 's' || input === 'S') {
       save();
     } else if (input === 'q' || key.escape) onBack();
@@ -761,7 +761,7 @@ export function UpdatesView({ language, onBack }: UpdatesViewProps) {
     let cancelled = false;
     setInfo(null);
     setUpdate({ kind: 'idle' });
-    checkUpdates().then((r) => {
+    void checkUpdates().then((r) => {
       if (!cancelled) setInfo(r);
     });
     return () => {
@@ -773,8 +773,14 @@ export function UpdatesView({ language, onBack }: UpdatesViewProps) {
   const canUpdate = info !== null && info.newer === true && info.latest !== null && !isUpdating;
 
   const startUpdate = (): void => {
-    if (!canUpdate || info === null || info.latest === null) return;
+    // Guard against the type-system view (info: UpdateInfo | null,
+    // info.latest: string | null) — these are real runtime checks even
+    // though `canUpdate` already implies both. Without them TS won't
+    // narrow `info.latest` to `string` in the closure scope.
+    if (info === null) return;
     const target = info.latest;
+    if (target === null) return;
+    if (!canUpdate) return;
     setUpdate({ kind: 'running', stage: 'preflight', message: t.updateRunning });
     runSelfUpdate(target, language, (event) => {
       setUpdate({ kind: 'running', stage: event.stage, message: event.message });
@@ -913,7 +919,7 @@ export function LanguageView({ language, onPick, onBack }: LanguageViewProps) {
     if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
     else if (key.downArrow) setIdx((i) => (i + 1) % items.length);
     else if (key.return) {
-      const next = items[idx]!.value;
+      const next = items[idx].value;
       onPick(next);
       setSaved(true);
     } else if (key.escape) onBack();
@@ -1205,7 +1211,7 @@ export function FreePortView({ language, onBack }: FreePortViewProps) {
       if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
       else if (key.downArrow) setIdx((i) => (i + 1) % items.length);
       else if (key.return) {
-        const v = items[idx]!.value;
+        const v = items[idx].value;
         if (v === 'no') onBack();
         else {
           setPhase('running');

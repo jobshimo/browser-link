@@ -113,7 +113,7 @@ export class IpcServer {
       const host = this.options.host ?? IPC_HOST;
       const port = this.options.port ?? IPC_PORT;
       const server = createServer((socket) => {
-        this.handleConnection(socket).catch((err) => {
+        this.handleConnection(socket).catch((err: unknown) => {
           log(`Connection handler error: ${err instanceof Error ? err.message : String(err)}`);
           socket.destroy();
         });
@@ -173,8 +173,13 @@ export class IpcServer {
     }
     this.sessions.clear();
     if (this.server) {
-      await new Promise<void>((res) => this.server!.close(() => res()));
+      const server = this.server;
       this.server = null;
+      await new Promise<void>((res) => {
+        server.close(() => {
+          res();
+        });
+      });
     }
   }
 
@@ -259,7 +264,9 @@ export class IpcServer {
         const session: ProxySession = {
           id: sid,
           socket,
-          pingTimer: setInterval(() => this.heartbeat(sid), IPC_PING_INTERVAL_MS),
+          pingTimer: setInterval(() => {
+            this.heartbeat(sid);
+          }, IPC_PING_INTERVAL_MS),
           pongDeadline: null,
           caller,
         };
@@ -267,7 +274,11 @@ export class IpcServer {
         log(`Proxy connected: session=${sid} pid=${peer.pid}`);
         return;
       }
-      void this.handleFrame(frame, sessionId!, socket);
+      // After the hello branch above, `authenticated` is true and
+      // `sessionId` is set — but TS can't carry that pair across
+      // closure invocations, so re-check defensively.
+      if (sessionId === null) return;
+      void this.handleFrame(frame, sessionId, socket);
     };
 
     socket.on('data', (chunk: Buffer) => {

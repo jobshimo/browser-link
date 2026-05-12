@@ -187,10 +187,10 @@ function handleEvents(
   args: unknown,
   deps: BrowserToolDeps,
 ): { events: BridgeEvent[]; latest_id: number } {
-  const { since_id, limit } = (args as { since_id?: number; limit?: number }) ?? {};
+  const { since_id, limit } = (args ?? {}) as { since_id?: number; limit?: number };
   if (!deps.recentEvents) return { events: [], latest_id: 0 };
   const events = deps.recentEvents({ sinceId: since_id, limit });
-  const latest_id = events.length > 0 ? events[events.length - 1]!.id : (since_id ?? 0);
+  const latest_id = events.length > 0 ? events[events.length - 1].id : (since_id ?? 0);
   return { events, latest_id };
 }
 
@@ -237,11 +237,11 @@ export async function handleBrowserTool(
     case 'browser.snapshot':
       return deps.callBrowserTool(requireTabId(args), 'snapshot', {});
     case 'browser.console': {
-      const { level } = (args as { level?: string }) ?? {};
+      const { level } = (args ?? {}) as { level?: string };
       return deps.callBrowserTool(requireTabId(args), 'console', { level });
     }
     case 'browser.network': {
-      const { url_filter } = (args as { url_filter?: string }) ?? {};
+      const { url_filter } = (args ?? {}) as { url_filter?: string };
       return deps.callBrowserTool(requireTabId(args), 'network', { url_filter });
     }
     case 'browser.network_body': {

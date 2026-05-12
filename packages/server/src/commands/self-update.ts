@@ -143,11 +143,13 @@ export async function runSelfUpdate(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
-    child.stderr?.on('data', (chunk: Buffer) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString();
     });
     // Drain stdout to avoid blocking npm on large logs.
-    child.stdout?.on('data', () => {});
+    child.stdout.on('data', () => {
+      /* drain */
+    });
     child.on('error', (err) => {
       resolve({ code: 1, stderr: err.message });
     });

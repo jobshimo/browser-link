@@ -99,7 +99,7 @@ export function loadConfig(): BrowserLinkConfig {
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return withDefaults(parsed as BrowserLinkConfig);
+    if (parsed && typeof parsed === 'object') return withDefaults(parsed);
     return withDefaults({});
   } catch (err) {
     // Surface corruption rather than silently masking it: the file is
@@ -128,7 +128,7 @@ function readPersisted(): BrowserLinkConfig {
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return parsed as BrowserLinkConfig;
+    if (parsed && typeof parsed === 'object') return parsed;
     return {};
   } catch {
     return {};

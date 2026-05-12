@@ -68,14 +68,24 @@ export class IpcClient {
 
     const socket = await new Promise<Socket>((resolve, reject) => {
       const s = connect({ host, port });
-      s.once('connect', () => resolve(s));
-      s.once('error', (err) => reject(err));
+      s.once('connect', () => {
+        resolve(s);
+      });
+      s.once('error', (err) => {
+        reject(err);
+      });
     });
 
     this.socket = socket;
-    socket.on('data', (chunk: Buffer) => this.ingest(chunk));
-    socket.on('close', () => this.onSocketClose('remote'));
-    socket.on('error', (err) => log(`Socket error: ${err.message}`));
+    socket.on('data', (chunk: Buffer) => {
+      this.ingest(chunk);
+    });
+    socket.on('close', () => {
+      this.onSocketClose('remote');
+    });
+    socket.on('error', (err) => {
+      log(`Socket error: ${err.message}`);
+    });
 
     // Send hello, wait for ack or reject or timeout.
     const ack = await new Promise<ConnectionInfo>((resolve, reject) => {
@@ -101,8 +111,8 @@ export class IpcClient {
         clearTimeout(timer);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
-    }).catch((err) => {
-      this.disconnect().catch(() => {
+    }).catch((err: unknown) => {
+      void this.disconnect().catch(() => {
         /* ignore */
       });
       throw err;
@@ -118,22 +128,21 @@ export class IpcClient {
   /** Forward a JSON-RPC request as an mcp.request frame. Resolves with the
    * primary's JSON-RPC response payload. Rejects if the socket closes. */
   sendMcpRequest(jsonRpcPayload: unknown): Promise<unknown> {
-    if (!this.socket || this.closed) {
+    const socket = this.socket;
+    if (!socket || this.closed) {
       return Promise.reject(new Error('Proxy is not connected.'));
     }
     const requestId = this.nextRequestId++;
     return new Promise<unknown>((resolve, reject) => {
       this.pendingRequests.set(requestId, resolve);
-      const onCloseHandler = () => {
+      const onCloseHandler = (): void => {
         if (this.pendingRequests.delete(requestId)) {
           reject(new Error('Primary connection closed while a request was in flight.'));
         }
       };
       this.onClose(onCloseHandler);
       try {
-        this.socket!.write(
-          encodeFrame({ kind: 'mcp.request', requestId, payload: jsonRpcPayload }),
-        );
+        socket.write(encodeFrame({ kind: 'mcp.request', requestId, payload: jsonRpcPayload }));
       } catch (err) {
         this.pendingRequests.delete(requestId);
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -166,8 +175,8 @@ export class IpcClient {
   }
 
   /** Close the IPC connection. */
-  async disconnect(): Promise<void> {
-    if (this.closed) return;
+  disconnect(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     this.closed = true;
     if (this.socket) {
       const s = this.socket;
@@ -181,6 +190,7 @@ export class IpcClient {
       // Fire close listeners with reason=local (we initiated it).
       this.notifyClose('local');
     }
+    return Promise.resolve();
   }
 
   private ingest(chunk: Buffer): void {
@@ -340,7 +350,9 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   let reconnecting = false;
   let stopped = false;
 
-  let closedResolve: () => void = () => {};
+  let closedResolve: () => void = () => {
+    /* replaced synchronously in the Promise executor below */
+  };
   const closed = new Promise<void>((resolve) => {
     closedResolve = resolve;
   });
@@ -348,7 +360,7 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   const fail = (reason: 'remote' | 'local' | 'primary-closing') => {
     if (stopped) return;
     stopped = true;
-    input.off?.('data', onData);
+    input.off('data', onData);
     if (opts.onClose) {
       try {
         opts.onClose(reason);
@@ -375,8 +387,8 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
     }
   };
 
-  const handleLine = (line: string) => {
-    let msg: { id?: number | string | null } | null;
+  const handleLine = (line: string): void => {
+    let msg: { id?: number | string | null };
     try {
       msg = JSON.parse(line) as { id?: number | string | null };
     } catch {
@@ -389,7 +401,7 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
       );
       return;
     }
-    if (!msg || typeof msg !== 'object') return;
+    if (typeof msg !== 'object') return;
 
     if (msg.id === undefined || msg.id === null) {
       // Notification — fire and forget when connected; drop during reconnect.
@@ -413,16 +425,20 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
       return;
     }
 
+    // Capture the id NOW; by the time the catch fires the closure scope
+    // still has `msg`, but TS narrowing of `msg` inside the catch is
+    // weaker than reading the field upfront.
+    const incomingId = msg.id;
     client
       .sendMcpRequest(msg)
       .then((responsePayload) => {
         output.write(JSON.stringify(responsePayload) + '\n');
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         output.write(
           JSON.stringify({
             jsonrpc: '2.0',
-            id: msg!.id,
+            id: incomingId,
             error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
           }) + '\n',
         );
@@ -431,48 +447,57 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
 
   input.on('data', onData);
 
-  const wireCloseHandler = (c: IpcClient) => {
-    c.onClose(async (reason) => {
-      if (stopped) return;
-      if (!autoReelect) {
-        fail(reason);
-        return;
-      }
-      // Enter reconnect mode and try to find a new primary.
-      reconnecting = true;
-      opts.onReelectStart?.();
-      log(`Primary closed (${reason}); reelect window opened for ${reelectTimeoutMs}ms.`);
-      const newClient = await reconnectLoop(
-        opts.host,
-        opts.port,
-        reelectTimeoutMs,
-        reelectIntervalMs,
-      );
-      if (stopped) {
-        if (newClient) await newClient.disconnect();
-        return;
-      }
-      if (!newClient) {
-        log('Reelect window exhausted; closing proxy.');
-        opts.onReelectExhausted?.();
+  const wireCloseHandler = (c: IpcClient): void => {
+    // The onClose contract is sync (returns void). The body needs awaits
+    // for the reconnect loop, so we kick off an async IIFE inside.
+    c.onClose((reason) => {
+      void (async () => {
+        if (stopped) return;
+        if (!autoReelect) {
+          fail(reason);
+          return;
+        }
+        // Enter reconnect mode and try to find a new primary.
+        reconnecting = true;
+        opts.onReelectStart?.();
+        log(`Primary closed (${reason}); reelect window opened for ${reelectTimeoutMs}ms.`);
+        const newClient = await reconnectLoop(
+          opts.host,
+          opts.port,
+          reelectTimeoutMs,
+          reelectIntervalMs,
+        );
+        // TS narrows `stopped` to false from the check at the top of
+        // this IIFE, but the value can flip during the `await` above
+        // when `stop()` runs concurrently — the runtime re-check is
+        // real, ESLint just can't model it.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (stopped) {
+          if (newClient) await newClient.disconnect();
+          return;
+        }
+        if (!newClient) {
+          log('Reelect window exhausted; closing proxy.');
+          opts.onReelectExhausted?.();
+          reconnecting = false;
+          fail(reason);
+          return;
+        }
+        // Hot-swap clients. The old one is already torn down by its close
+        // handler chain; we just install the new one and wire it up.
+        log('Reconnected to new primary.');
+        opts.onReelectSuccess?.();
+        client = newClient;
         reconnecting = false;
-        fail(reason);
-        return;
-      }
-      // Hot-swap clients. The old one is already torn down by its close
-      // handler chain; we just install the new one and wire it up.
-      log('Reconnected to new primary.');
-      opts.onReelectSuccess?.();
-      client = newClient;
-      reconnecting = false;
-      wireCloseHandler(client);
+        wireCloseHandler(client);
+      })();
     });
   };
   wireCloseHandler(client);
 
   const stop = async (): Promise<void> => {
     stopped = true;
-    input.off?.('data', onData);
+    input.off('data', onData);
     await client.disconnect();
     closedResolve();
   };

@@ -25,7 +25,9 @@ function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortSta
       socket.destroy();
       resolve({ listening, detail });
     };
-    const timer = setTimeout(() => settle(false, `no response within ${timeoutMs}ms`), timeoutMs);
+    const timer = setTimeout(() => {
+      settle(false, `no response within ${timeoutMs}ms`);
+    }, timeoutMs);
     socket.once('connect', () => {
       clearTimeout(timer);
       settle(true, `something is listening on ${host}:${port}`);

@@ -55,8 +55,12 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
     if (key.ctrl && _input === 'c') exit();
   });
 
-  const swapLang = () => setLanguage((l) => (l === 'en' ? 'es' : 'en'));
-  const backToMenu = () => setScreen({ kind: 'menu' });
+  const swapLang = () => {
+    setLanguage((l) => (l === 'en' ? 'es' : 'en'));
+  };
+  const backToMenu = () => {
+    setScreen({ kind: 'menu' });
+  };
 
   switch (screen.kind) {
     case 'welcome':
@@ -64,7 +68,9 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
         <WelcomeScreen
           language={language}
           hideDismiss={screen.hideDismiss}
-          onAccept={() => backToMenu()}
+          onAccept={() => {
+            backToMenu();
+          }}
           onDismiss={() => {
             saveConfig({ skipWelcome: true, language });
             backToMenu();

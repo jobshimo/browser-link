@@ -66,10 +66,10 @@ export const opencodeInstaller: Installer = {
     const cfg = readConfig(path);
     if (!cfg.$schema) cfg.$schema = SCHEMA_URL;
     cfg.mcp = cfg.mcp ?? {};
-    const existing = cfg.mcp[SERVER_NAME];
+    const existed = SERVER_NAME in cfg.mcp;
     cfg.mcp[SERVER_NAME] = { type: 'local', command: [command, ...args] };
     writeConfig(path, cfg);
-    return existing
+    return existed
       ? `Updated ${SERVER_NAME} entry in ${path}.`
       : `Added ${SERVER_NAME} entry to ${path}.`;
   },
@@ -78,8 +78,11 @@ export const opencodeInstaller: Installer = {
     const path = configFile();
     if (!existsSync(path)) return `No OpenCode config at ${path}; nothing to remove.`;
     const cfg = readConfig(path);
-    if (!cfg.mcp?.[SERVER_NAME]) return `${SERVER_NAME} was not registered in ${path}.`;
-    delete cfg.mcp[SERVER_NAME];
+    if (!cfg.mcp || !(SERVER_NAME in cfg.mcp)) {
+      return `${SERVER_NAME} was not registered in ${path}.`;
+    }
+    const { [SERVER_NAME]: _removed, ...rest } = cfg.mcp;
+    cfg.mcp = rest;
     writeConfig(path, cfg);
     return `Removed ${SERVER_NAME} entry from ${path}.`;
   },

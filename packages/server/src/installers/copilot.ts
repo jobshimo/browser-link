@@ -66,7 +66,7 @@ export const copilotInstaller: Installer = {
     const path = configFile();
     const cfg = readConfig(path);
     cfg.mcpServers = cfg.mcpServers ?? {};
-    const existing = cfg.mcpServers[SERVER_NAME];
+    const existed = SERVER_NAME in cfg.mcpServers;
     // Copilot requires `env` and `tools` even when empty/wildcard.
     cfg.mcpServers[SERVER_NAME] = {
       type: 'local',
@@ -76,7 +76,7 @@ export const copilotInstaller: Installer = {
       tools: ['*'],
     };
     writeConfig(path, cfg);
-    return existing
+    return existed
       ? `Updated ${SERVER_NAME} entry in ${path}.`
       : `Added ${SERVER_NAME} entry to ${path}.`;
   },
@@ -85,8 +85,11 @@ export const copilotInstaller: Installer = {
     const path = configFile();
     if (!existsSync(path)) return `No Copilot CLI config at ${path}; nothing to remove.`;
     const cfg = readConfig(path);
-    if (!cfg.mcpServers?.[SERVER_NAME]) return `${SERVER_NAME} was not registered in ${path}.`;
-    delete cfg.mcpServers[SERVER_NAME];
+    if (!cfg.mcpServers || !(SERVER_NAME in cfg.mcpServers)) {
+      return `${SERVER_NAME} was not registered in ${path}.`;
+    }
+    const { [SERVER_NAME]: _removed, ...rest } = cfg.mcpServers;
+    cfg.mcpServers = rest;
     writeConfig(path, cfg);
     return `Removed ${SERVER_NAME} entry from ${path}.`;
   },

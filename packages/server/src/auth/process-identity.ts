@@ -116,7 +116,7 @@ export function parseLsofOutput(out: string, host: string, port: number): PeerPr
 
 /** lsof escapes spaces and tabs in command names as \xHH. Reverse that. */
 export function decodeLsofString(s: string): string {
-  return s.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
+  return s.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex: string) =>
     String.fromCharCode(Number.parseInt(hex, 16)),
   );
 }

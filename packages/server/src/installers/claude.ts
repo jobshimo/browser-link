@@ -69,10 +69,10 @@ export const claudeInstaller: Installer = {
     const path = configFile();
     const cfg = readConfig(path);
     cfg.mcpServers = cfg.mcpServers ?? {};
-    const existing = cfg.mcpServers[SERVER_NAME];
+    const existed = SERVER_NAME in cfg.mcpServers;
     cfg.mcpServers[SERVER_NAME] = { type: 'stdio', command, args };
     writeConfig(path, cfg);
-    return existing
+    return existed
       ? `Updated ${SERVER_NAME} entry (user scope) in ${path}.`
       : `Added ${SERVER_NAME} entry (user scope) to ${path}.`;
   },
@@ -82,14 +82,16 @@ export const claudeInstaller: Installer = {
     if (!existsSync(path)) return `No Claude config at ${path}; nothing to remove.`;
     const cfg = readConfig(path);
     let removed = false;
-    if (cfg.mcpServers?.[SERVER_NAME]) {
-      delete cfg.mcpServers[SERVER_NAME];
+    if (cfg.mcpServers && SERVER_NAME in cfg.mcpServers) {
+      const { [SERVER_NAME]: _removed, ...rest } = cfg.mcpServers;
+      cfg.mcpServers = rest;
       removed = true;
     }
     const projects = cfg.projects ?? {};
     for (const proj of Object.values(projects)) {
-      if (proj.mcpServers?.[SERVER_NAME]) {
-        delete proj.mcpServers[SERVER_NAME];
+      if (proj.mcpServers && SERVER_NAME in proj.mcpServers) {
+        const { [SERVER_NAME]: _removed, ...rest } = proj.mcpServers;
+        proj.mcpServers = rest;
         removed = true;
       }
     }

@@ -61,9 +61,9 @@ describe('sanitizeDisabledTools', () => {
   test('ignores non-string entries defensively', () => {
     const out = sanitizeDisabledTools([
       'browser.evaluate',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       123 as unknown as string,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       null as unknown as string,
     ]);
     expect(out).toEqual(['browser.evaluate']);
@@ -124,7 +124,6 @@ describe('PRESETS', () => {
   });
 
   test('getPreset throws for unknown ids', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => getPreset('bogus' as any)).toThrow(/Unknown preset/);
   });
 });

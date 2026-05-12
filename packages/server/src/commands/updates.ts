@@ -50,7 +50,9 @@ export async function checkUpdates(timeoutMs = 4000): Promise<UpdateInfo> {
   }
   const url = `https://registry.npmjs.org/-/package/${safeName}/dist-tags`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
   try {
     const res = await fetch(url, {
       headers: { accept: 'application/json' },

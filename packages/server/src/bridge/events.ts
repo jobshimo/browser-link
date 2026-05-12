@@ -54,14 +54,15 @@ export class BridgeEventLog {
    * back in as sinceId to get only what's new. */
   recent(opts: { sinceId?: number; limit?: number } = {}): BridgeEvent[] {
     const limit = Math.max(1, Math.min(opts.limit ?? 20, MAX_EVENTS));
+    const sinceId = opts.sinceId;
     const filtered =
-      opts.sinceId === undefined ? this.buffer : this.buffer.filter((e) => e.id > opts.sinceId!);
+      sinceId === undefined ? this.buffer : this.buffer.filter((e) => e.id > sinceId);
     return filtered.slice(-limit);
   }
 
   /** The highest id currently in the buffer (0 if empty). */
   latestId(): number {
-    return this.buffer.length === 0 ? 0 : this.buffer[this.buffer.length - 1]!.id;
+    return this.buffer.length === 0 ? 0 : this.buffer[this.buffer.length - 1].id;
   }
 
   /** Total number of events in the buffer. */

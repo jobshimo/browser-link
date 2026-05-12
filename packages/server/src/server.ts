@@ -132,7 +132,15 @@ function startWsBridge(
       let assignedTabId: string | null = null;
 
       ws.on('message', (raw) => {
-        const msg = safeParse(raw.toString());
+        // `raw` from ws is Buffer | ArrayBuffer | Buffer[]. Normalize to
+        // a single utf-8 string so safeParse can't see '[object Object]'
+        // when the platform hands us an unexpected shape.
+        const text = Buffer.isBuffer(raw)
+          ? raw.toString('utf8')
+          : Array.isArray(raw)
+            ? Buffer.concat(raw).toString('utf8')
+            : Buffer.from(raw).toString('utf8');
+        const msg = safeParse(text);
         if (!msg) return;
 
         if (msg.kind === 'tab.register' && !assignedTabId) {
@@ -325,6 +333,7 @@ export async function runServer(): Promise<void> {
         `  • Or open the setup menu: \`browser-link\` → Multi-agent\n` +
         `\n` +
         `Then restart your MCP client. With multi-agent on, this process would have become a proxy instead of erroring.`,
+      { cause: err },
     );
   }
 }
@@ -412,6 +421,12 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   const dispatchDeps: DispatchDeps = { browserTools: deps, disabledTools };
 
+  // We deliberately use the low-level `Server` class instead of the
+  // higher-level `McpServer` wrapper. The wrapper exposes a different
+  // tool-registration surface (per-tool callbacks) while we run a single
+  // dispatch entry point — migrating would be a sizeable refactor and is
+  // tracked separately. Re-enabling the rule will require that move.
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   const mcpServer = new Server(
     { name: 'browser-link', version: '0.0.1' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
@@ -419,9 +434,8 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   // The SDK's request-handler return types include task/streaming variants we
   // never produce. Cast keeps the shared dispatch module SDK-agnostic.
-  mcpServer.setRequestHandler(
-    ListToolsRequestSchema,
-    async () => handleToolsList(dispatchDeps) as never,
+  mcpServer.setRequestHandler(ListToolsRequestSchema, () =>
+    Promise.resolve(handleToolsList(dispatchDeps) as never),
   );
   mcpServer.setRequestHandler(
     CallToolRequestSchema,

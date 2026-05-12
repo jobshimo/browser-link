@@ -57,6 +57,85 @@ interface StatusResult {
   serverTabId?: string;
 }
 
+// === CDP types — only the fields we actually read ======================
+// The real Chrome DevTools Protocol surface is huge; the chrome.debugger
+// API hands us back `unknown` and leaves the typing to us. These shapes
+// describe just the slices we use, so the rest of the file can drop
+// `Record<string, any>` casts and `unknown` member access entirely.
+
+interface CdpRuntimeEvaluateResponse<T = unknown> {
+  result: { value: T };
+  exceptionDetails?: {
+    exception?: { description?: string };
+    text?: string;
+  };
+}
+
+interface CdpRuntimeConsoleAPICalled {
+  args?: { value?: unknown; description?: string }[];
+  timestamp?: number;
+  type?: string;
+}
+
+interface CdpLogEntryAdded {
+  entry?: {
+    level?: string;
+    text?: string;
+    timestamp?: number;
+    url?: string;
+    lineNumber?: number;
+  };
+}
+
+interface CdpNetworkRequestWillBeSent {
+  requestId: string;
+  type?: string;
+  request?: {
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+    postData?: string;
+  };
+}
+
+interface CdpNetworkResponseReceived {
+  requestId: string;
+  response?: {
+    status?: number;
+    statusText?: string;
+    mimeType?: string;
+    headers?: Record<string, string>;
+  };
+}
+
+interface CdpNetworkLoadingFinished {
+  requestId: string;
+  encodedDataLength?: number;
+}
+
+interface CdpNetworkLoadingFailed {
+  requestId: string;
+  errorText?: string;
+}
+
+interface CdpNetworkGetResponseBody {
+  body: string;
+  base64Encoded: boolean;
+}
+
+// Runtime messages between popup.ts and this script.
+type RuntimeMessage =
+  | { action: 'connect'; tabId: number }
+  | { action: 'disconnect'; tabId: number }
+  | { action: 'status'; tabId: number };
+
+function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
+  if (typeof msg !== 'object' || msg === null) return false;
+  const m = msg as Record<string, unknown>;
+  if (typeof m.tabId !== 'number') return false;
+  return m.action === 'connect' || m.action === 'disconnect' || m.action === 'status';
+}
+
 const tabStates = new Map<number, TabState>();
 
 function send(ws: WebSocket, msg: ExtensionToServer): void {
@@ -79,6 +158,20 @@ function cdp<T = unknown>(
   return chrome.debugger.sendCommand({ tabId }, method, params) as unknown as Promise<T>;
 }
 
+// Convert an arbitrary console arg (`unknown`) into something printable
+// without leaking `[object Object]`. Used by the console buffer when CDP
+// hands us values we don't statically know.
+function stringifyConsoleArg(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v === null || v === undefined) return String(v);
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return Object.prototype.toString.call(v);
+  }
+}
+
 function pushConsole(state: TabState, entry: ConsoleEntry): void {
   state.consoleBuffer.push(entry);
   if (state.consoleBuffer.length > CONSOLE_BUFFER_MAX) {
@@ -93,8 +186,8 @@ function ensureNetworkEntry(state: TabState, requestId: string): NetworkEntry {
     state.networkBuffer.set(requestId, entry);
     state.networkOrder.push(requestId);
     while (state.networkOrder.length > NETWORK_BUFFER_MAX) {
-      const oldId = state.networkOrder.shift()!;
-      state.networkBuffer.delete(oldId);
+      const oldId = state.networkOrder.shift();
+      if (oldId !== undefined) state.networkBuffer.delete(oldId);
     }
   }
   return entry;
@@ -102,11 +195,11 @@ function ensureNetworkEntry(state: TabState, requestId: string): NetworkEntry {
 
 function attachDebuggerListener(state: TabState): void {
   const listener = (method: string, params: unknown): void => {
-    const p = params as Record<string, any>;
     if (method === 'Runtime.consoleAPICalled') {
-      const args = (p.args ?? []) as { value?: unknown; description?: string }[];
+      const p = params as CdpRuntimeConsoleAPICalled;
+      const args = p.args ?? [];
       const text = args
-        .map((a) => (a.value !== undefined ? String(a.value) : (a.description ?? '')))
+        .map((a) => (a.value !== undefined ? stringifyConsoleArg(a.value) : (a.description ?? '')))
         .join(' ');
       pushConsole(state, {
         timestamp: p.timestamp ?? Date.now(),
@@ -117,13 +210,8 @@ function attachDebuggerListener(state: TabState): void {
       return;
     }
     if (method === 'Log.entryAdded') {
-      const e = p.entry as {
-        level?: string;
-        text?: string;
-        timestamp?: number;
-        url?: string;
-        lineNumber?: number;
-      };
+      const p = params as CdpLogEntryAdded;
+      const e = p.entry ?? {};
       pushConsole(state, {
         timestamp: e.timestamp ?? Date.now(),
         level: e.level ?? 'log',
@@ -135,6 +223,7 @@ function attachDebuggerListener(state: TabState): void {
       return;
     }
     if (method === 'Network.requestWillBeSent') {
+      const p = params as CdpNetworkRequestWillBeSent;
       const entry = ensureNetworkEntry(state, p.requestId);
       entry.url = p.request?.url ?? entry.url;
       entry.method = p.request?.method ?? entry.method;
@@ -144,6 +233,7 @@ function attachDebuggerListener(state: TabState): void {
       return;
     }
     if (method === 'Network.responseReceived') {
+      const p = params as CdpNetworkResponseReceived;
       const entry = ensureNetworkEntry(state, p.requestId);
       entry.status = p.response?.status;
       entry.status_text = p.response?.statusText;
@@ -152,12 +242,14 @@ function attachDebuggerListener(state: TabState): void {
       return;
     }
     if (method === 'Network.loadingFinished') {
+      const p = params as CdpNetworkLoadingFinished;
       const entry = ensureNetworkEntry(state, p.requestId);
       entry.finished_at = Date.now();
       entry.encoded_data_length = p.encodedDataLength;
       return;
     }
     if (method === 'Network.loadingFailed') {
+      const p = params as CdpNetworkLoadingFailed;
       const entry = ensureNetworkEntry(state, p.requestId);
       entry.finished_at = Date.now();
       entry.failed = p.errorText ?? 'failed';
@@ -246,15 +338,12 @@ const SNAPSHOT_JS = `
 `;
 
 async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
-  const result = (await cdp(tabId, 'Runtime.evaluate', {
+  const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
     expression,
     returnByValue: true,
     awaitPromise: true,
     userGesture: true,
-  })) as {
-    result: { value: T };
-    exceptionDetails?: { exception?: { description?: string }; text?: string };
-  };
+  });
   if (result.exceptionDetails) {
     const ex = result.exceptionDetails;
     throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
@@ -281,7 +370,13 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
 
 async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<ExtensionToServer> {
   const tabId = state.tabId;
-  const p = (msg.params ?? {}) as Record<string, any>;
+  // Params come over the wire as JSON: each field is unknown until we
+  // narrow it. The local helpers below give one-line, type-safe reads
+  // for the shapes we accept.
+  const p = (msg.params ?? {}) as Record<string, unknown>;
+  const str = (key: string): string => (typeof p[key] === 'string' ? p[key] : String(p[key]));
+  const optStr = (key: string): string | undefined =>
+    typeof p[key] === 'string' ? p[key] : undefined;
   try {
     switch (msg.tool) {
       case 'ping': {
@@ -295,7 +390,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'navigate': {
-        const url = String(p.url);
+        const url = str('url');
         const waitForLoadFlag = p.wait_for_load !== false;
         await cdp(tabId, 'Page.navigate', { url });
         if (waitForLoadFlag) await waitForLoad(tabId);
@@ -314,7 +409,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'console': {
-        const level = p.level as string | undefined;
+        const level = optStr('level');
         const entries = level
           ? state.consoleBuffer.filter((e) => e.level === level)
           : state.consoleBuffer;
@@ -322,24 +417,24 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'network': {
-        const filter = (p.url_filter as string | undefined)?.toLowerCase();
+        const filter = optStr('url_filter')?.toLowerCase();
         const list = state.networkOrder
-          .map((id) => state.networkBuffer.get(id)!)
+          .map((id) => state.networkBuffer.get(id))
+          .filter((e): e is NetworkEntry => e !== undefined)
           .filter((e) => (filter ? e.url.toLowerCase().includes(filter) : true));
         return { kind: 'tool.response', id: msg.id, ok: true, result: list };
       }
 
       case 'network_body': {
-        const requestId = String(p.request_id);
-        const body = (await cdp(tabId, 'Network.getResponseBody', { requestId })) as {
-          body: string;
-          base64Encoded: boolean;
-        };
+        const requestId = str('request_id');
+        const body = await cdp<CdpNetworkGetResponseBody>(tabId, 'Network.getResponseBody', {
+          requestId,
+        });
         return { kind: 'tool.response', id: msg.id, ok: true, result: body };
       }
 
       case 'click': {
-        const selector = String(p.selector);
+        const selector = str('selector');
         const expr = `
           (() => {
             const el = document.querySelector(${JSON.stringify(selector)});
@@ -348,11 +443,10 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             const r = el.getBoundingClientRect();
             return { x: r.left + r.width / 2, y: r.top + r.height / 2, tag: el.tagName.toLowerCase() };
           })()`;
-        const coords = (await evaluateInTab(tabId, expr)) as {
-          x: number;
-          y: number;
-          tag: string;
-        } | null;
+        const coords = await evaluateInTab<{ x: number; y: number; tag: string } | null>(
+          tabId,
+          expr,
+        );
         if (!coords) {
           return {
             kind: 'tool.response',
@@ -389,9 +483,9 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'type': {
-        const selector = String(p.selector);
-        const text = String(p.text);
-        const clear = !!p.clear;
+        const selector = str('selector');
+        const text = str('text');
+        const clear = p.clear === true;
         const focusExpr = `
           (() => {
             const el = document.querySelector(${JSON.stringify(selector)});
@@ -419,7 +513,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'evaluate': {
-        const expression = String(p.expression);
+        const expression = str('expression');
         const value = await evaluateInTab(tabId, expression);
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
@@ -443,12 +537,16 @@ async function cleanup(tabId: number): Promise<void> {
   if (state.ws && state.ws.readyState !== WebSocket.CLOSED) {
     try {
       state.ws.close();
-    } catch {}
+    } catch {
+      // Best effort — the resource may already be detached/closed.
+    }
   }
   if (state.debuggerAttached) {
     try {
       await chrome.debugger.detach({ tabId });
-    } catch {}
+    } catch {
+      // Best effort — the resource may already be detached/closed.
+    }
   }
   tabStates.delete(tabId);
 }
@@ -544,6 +642,12 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
   const ws = new WebSocket(WS_URL);
   state.ws = ws;
 
+  // Capture the fields we'll send over the wire NOW that we've already
+  // null-checked them above. This avoids `!` non-null assertions in the
+  // event handler closure where TS can't re-prove the narrowing.
+  const registerUrl = tab.url;
+  const registerTitle = tab.title;
+
   return new Promise<ConnectResult>((resolve) => {
     let settled = false;
     const settle = (result: ConnectResult): void => {
@@ -555,35 +659,41 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     ws.addEventListener('open', () => {
       send(ws, {
         kind: 'tab.register',
-        payload: { url: tab.url!, title: tab.title!, previousTabId },
+        payload: { url: registerUrl, title: registerTitle, previousTabId },
       });
     });
 
-    ws.addEventListener('message', async (ev: MessageEvent) => {
-      const msg = safeParse(typeof ev.data === 'string' ? ev.data : '');
-      if (!msg) return;
-      if (msg.kind === 'tab.registered') {
-        state.serverTabId = msg.payload.tabId;
-        // Remember this id so the next reconnect (after a primary swap)
-        // asks the new primary to honour it. The primary emits
-        // `tab-renamed` in the bridge event log if it can't.
-        void storeTabId(tabId, msg.payload.tabId);
-        settle({ ok: true, serverTabId: msg.payload.tabId });
-        return;
-      }
-      if (msg.kind === 'tool.request') {
+    ws.addEventListener('message', (ev: MessageEvent) => {
+      void (async () => {
+        const msg = safeParse(typeof ev.data === 'string' ? ev.data : '');
+        if (!msg) return;
+        if (msg.kind === 'tab.registered') {
+          state.serverTabId = msg.payload.tabId;
+          // Remember this id so the next reconnect (after a primary swap)
+          // asks the new primary to honour it. The primary emits
+          // `tab-renamed` in the bridge event log if it can't.
+          void storeTabId(tabId, msg.payload.tabId);
+          settle({ ok: true, serverTabId: msg.payload.tabId });
+          return;
+        }
+        // ServerToExtension is the union { tab.registered | tool.request },
+        // so by elimination this branch handles the tool.request case.
         const response = await handleTool(state, msg);
         if (ws.readyState === WebSocket.OPEN) send(ws, response);
-      }
+      })();
     });
 
     ws.addEventListener('error', () => {
-      cleanup(tabId).catch(() => {});
+      void cleanup(tabId).catch(() => {
+        // Best effort — already-detached state is fine.
+      });
       settle({ ok: false, error: 'WebSocket connection failed. Is the MCP server running?' });
     });
 
     ws.addEventListener('close', () => {
-      cleanup(tabId).catch(() => {});
+      void cleanup(tabId).catch(() => {
+        // Best effort — already-detached state is fine.
+      });
       settle({ ok: false, error: 'WebSocket closed before registration' });
     });
   });
@@ -604,24 +714,25 @@ function getTabStatus(tabId: number): StatusResult {
   return { connected: true, serverTabId: state.serverTabId };
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.action === 'connect' && typeof msg.tabId === 'number') {
-    connectTab(msg.tabId).then(sendResponse);
+chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
+  if (!isRuntimeMessage(msg)) return false;
+  if (msg.action === 'connect') {
+    void connectTab(msg.tabId).then(sendResponse);
     return true;
   }
-  if (msg?.action === 'disconnect' && typeof msg.tabId === 'number') {
-    disconnectTab(msg.tabId).then(sendResponse);
+  if (msg.action === 'disconnect') {
+    void disconnectTab(msg.tabId).then(sendResponse);
     return true;
   }
-  if (msg?.action === 'status' && typeof msg.tabId === 'number') {
-    sendResponse(getTabStatus(msg.tabId));
-    return false;
-  }
+  // 'status'
+  sendResponse(getTabStatus(msg.tabId));
   return false;
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  cleanup(tabId).catch(() => {});
+  void cleanup(tabId).catch(() => {
+    // Best effort.
+  });
   // The Chrome tab is gone — drop any cached browser-link id for it.
   void forgetTabId(tabId);
 });
@@ -631,5 +742,7 @@ chrome.debugger.onDetach.addListener((source) => {
   const state = tabStates.get(source.tabId);
   if (!state) return;
   state.debuggerAttached = false;
-  cleanup(source.tabId).catch(() => {});
+  void cleanup(source.tabId).catch(() => {
+    // Best effort.
+  });
 });
