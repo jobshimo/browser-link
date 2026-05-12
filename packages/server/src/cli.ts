@@ -7,6 +7,7 @@ import { printAbout } from './commands/about.js';
 import { checkUpdates, formatUpdate } from './commands/updates.js';
 import { runToolsCommand } from './commands/tools.js';
 import { runMultiAgentCommand } from './commands/multi-agent.js';
+import { runFreePort } from './commands/free-port.js';
 import { loadConfig } from './config.js';
 import { VERSION } from './version.js';
 import type { ClientId } from './installers/index.js';
@@ -49,6 +50,8 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link stop             Mata el proceso browser-link que esté ocupando el
+                                puerto 17529 (útil si un cliente MCP quedó zombie).
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
   browser-link help             Este mensaje.
@@ -85,6 +88,8 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link stop             Kill the browser-link process holding port 17529
+                                (useful when an MCP client left a zombie behind).
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
   browser-link help             This message.
@@ -190,6 +195,12 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'multi-agent': {
       console.log(runMultiAgentCommand(rest, language));
+      return;
+    }
+    case 'stop': {
+      const result = runFreePort(language);
+      console.log(result.message);
+      if (!result.ok) process.exit(2);
       return;
     }
     case 'version':

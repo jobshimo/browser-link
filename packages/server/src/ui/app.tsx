@@ -5,6 +5,7 @@ import {
   ClientPicker,
   DoctorView,
   ExtensionView,
+  FreePortView,
   InstallResultView,
   LanguageView,
   MainMenu,
@@ -32,6 +33,7 @@ type Screen =
   | { kind: 'extension' }
   | { kind: 'doctor' }
   | { kind: 'updates' }
+  | { kind: 'free-port' }
   | { kind: 'language' }
   | { kind: 'about' };
 
@@ -83,6 +85,7 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
             else if (action === 'extension') setScreen({ kind: 'extension' });
             else if (action === 'doctor') setScreen({ kind: 'doctor' });
             else if (action === 'updates') setScreen({ kind: 'updates' });
+            else if (action === 'freePort') setScreen({ kind: 'free-port' });
             else if (action === 'language') setScreen({ kind: 'language' });
             else if (action === 'about') setScreen({ kind: 'about' });
             else if (action === 'welcome') setScreen({ kind: 'welcome', hideDismiss: true });
@@ -123,6 +126,9 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
 
     case 'updates':
       return <UpdatesView language={language} onBack={backToMenu} />;
+
+    case 'free-port':
+      return <FreePortView language={language} onBack={backToMenu} />;
 
     case 'language':
       return (
