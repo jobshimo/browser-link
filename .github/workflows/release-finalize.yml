@@ -37,7 +37,11 @@ jobs:
           set -euo pipefail
           MSG=$(git log -1 --pretty=format:%s)
           echo "subject=$MSG" >> "$GITHUB_OUTPUT"
-          if [[ "$MSG" =~ ^chore\(release\):[[:space:]]+v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          # Accept both shapes the release PR can land with:
+          #   - rebase / merge-commit: "chore(release): v0.5.3"
+          #   - squash merge (GitHub default): "chore(release): v0.5.3 (#34)"
+          # The optional `(#NNN)` suffix was the reason v0.5.3 did not auto-tag.
+          if [[ "$MSG" =~ ^chore\(release\):[[:space:]]+v([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]+\(#[0-9]+\))?$ ]]; then
             VERSION="${BASH_REMATCH[1]}"
             echo "is_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
