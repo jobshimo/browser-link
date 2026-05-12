@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.0](https://github.com/jobshimo/browser-link/compare/v0.6.0...v0.7.0) (2026-05-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **node:** `engines.node` is now `>=22.13`. Users running Node 20 or earlier will get a hard refusal from `npm install -g @jobshimo/browser-link`. Upgrade to Node 22.13+ (current LTS). The README already documented Node 22+ as a requirement; this release makes it formal at the package level.
+
+### Features
+
+* **build:** migrate the monorepo to **pnpm 11.1.1**. The published tarball is identical — consumers keep installing with `npm i -g @jobshimo/browser-link` exactly as before. Maintainer-side, `npm install` becomes `pnpm install`, the lockfile is now `pnpm-lock.yaml`, and the pinned version lives in `packageManager` (so Corepack picks it up automatically — devs only need `corepack enable` once).
+* **security:** explicit `allowBuilds` allowlist in `pnpm-workspace.yaml`. Only `better-sqlite3` and `esbuild` are allowed to run postinstall scripts; anything else in the dependency tree is silently blocked. This closes a supply-chain class of attacks that npm leaves wide open by default.
+
+### Bug Fixes
+
+* **ci:** drop Node 20 from the matrix. The README already required Node 22+, so the Node 20 jobs were testing a configuration we don't officially support — and they were the source of intermittent `actions/setup-node@v6` cache flakes on `windows-latest`. The matrix is now `[ubuntu-latest, windows-latest] × [22]`.
+
+### Refactor
+
+* **release:** `scripts/release.mjs` now invokes `pnpm install --lockfile-only` and stages `pnpm-lock.yaml`; `scripts/version-gate.mjs` error messages now suggest `pnpm run release`. `packages/server/scripts/prepare-publish.mjs` spawns `pnpm run build` instead of `npm run build` when rebuilding the extension during `pnpm publish`.
+
+### Miscellaneous
+
+* added `.npmrc` (`engine-strict=true`, `auto-install-peers=true`) and `pnpm-workspace.yaml`. Removed `package-lock.json`. README "Development setup" section updated to reflect the new toolchain (`corepack enable && pnpm install`).
+
 ## [0.6.0](https://github.com/jobshimo/browser-link/compare/v0.5.4...v0.6.0) (2026-05-12)
 
 

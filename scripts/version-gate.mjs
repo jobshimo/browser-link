@@ -69,7 +69,7 @@ function main() {
     fail(
       `Version fields are not aligned across the monorepo:\n${lines}\n\n` +
         `Every PR must bump ALL of these to the same number.\n` +
-        `Run \`npm run release -- <patch|minor|major>\` to do it correctly,\n` +
+        `Run \`pnpm run release -- <patch|minor|major>\` to do it correctly,\n` +
         `or edit each file by hand.`,
     );
   }
@@ -93,7 +93,7 @@ function main() {
     fail(
       `Version on this PR (${headRaw}) is not strictly greater than origin/main (${mainRaw}).\n\n` +
         `Every PR merged to main MUST bump the version.\n` +
-        `Run \`npm run release -- <patch|minor|major>\` on a clean main,\n` +
+        `Run \`pnpm run release -- <patch|minor|major>\` on a clean main,\n` +
         `or bump the ${VERSIONED_FILES.length} versioned files by hand.`,
     );
   }

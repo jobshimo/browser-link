@@ -412,31 +412,35 @@ tracker are just as useful.
 
 ### Development setup
 
-Requires Node 22+ (any modern LTS / current works).
+Requires **Node 22.13+** and **pnpm 11+**. The exact pnpm version is
+pinned in `package.json` via the `packageManager` field — `corepack`
+(bundled with Node ≥ 16) reads that field and uses the matching pnpm
+version automatically, so you don't have to install pnpm manually.
 
 ```bash
 git clone https://github.com/jobshimo/browser-link.git
 cd browser-link
-npm install
-npm run build
+corepack enable          # one-time, picks up the pinned pnpm version
+pnpm install
+pnpm run build
 ```
 
 Useful scripts (run from the repo root):
 
-| Script                    | What it does                                          |
-| ------------------------- | ----------------------------------------------------- |
-| `npm run build`           | Build the server and the Chrome extension             |
-| `npm run build:server`    | Build only the server (`packages/server/dist/`)       |
-| `npm run build:extension` | Build only the extension (`packages/extension/dist/`) |
-| `npm run dev`             | Run the server in watch mode (recompiles on save)     |
-| `npm run typecheck`       | Type-check every workspace, no emit                   |
-| `npm run inspect`         | Launch the MCP Inspector wired to the local server    |
-| `npm run generate:icons`  | Regenerate extension PNGs from `icons/icon.svg`       |
-| `npm run clean`           | Remove every `dist/` directory                        |
+| Script                     | What it does                                          |
+| -------------------------- | ----------------------------------------------------- |
+| `pnpm run build`           | Build the server and the Chrome extension             |
+| `pnpm run build:server`    | Build only the server (`packages/server/dist/`)       |
+| `pnpm run build:extension` | Build only the extension (`packages/extension/dist/`) |
+| `pnpm run dev`             | Run the server in watch mode (recompiles on save)     |
+| `pnpm run typecheck`       | Type-check every workspace, no emit                   |
+| `pnpm run inspect`         | Launch the MCP Inspector wired to the local server    |
+| `pnpm run generate:icons`  | Regenerate extension PNGs from `icons/icon.svg`       |
+| `pnpm run clean`           | Remove every `dist/` directory                        |
 
-> ### ⚠️ Important note on `npm run dev`
+> ### ⚠️ Important note on `pnpm run dev`
 >
-> `npm run dev` opens its own WebSocket on `127.0.0.1:17529` — the same
+> `pnpm run dev` opens its own WebSocket on `127.0.0.1:17529` — the same
 > port the registered MCP server uses. **Two processes cannot bind the
 > same port at the same time.**
 >
@@ -444,19 +448,19 @@ Useful scripts (run from the repo root):
 >
 > - If your MCP client (Claude Code, OpenCode, …) is open **and** has
 >   `browser-link` registered, it already spawned the server and owns the
->   port. `npm run dev` will crash with `EADDRINUSE`.
-> - If `npm run dev` is the one holding the port, the client's
+>   port. `pnpm run dev` will crash with `EADDRINUSE`.
+> - If `pnpm run dev` is the one holding the port, the client's
 >   `browser-link` MCP will fail to start (`✗ Failed to connect`).
 >
 > Recommended dev flow:
 >
 > 1. Quit the MCP client (or `kill` the `node …/dist/index.js` PID that
 >    it spawned — find it with `lsof -iTCP:17529 -sTCP:LISTEN -nP`).
-> 2. Now run `npm run dev` — port is free, tsx watch picks up your edits.
-> 3. When you are done coding, stop `npm run dev` and reopen the MCP client
+> 2. Now run `pnpm run dev` — port is free, tsx watch picks up your edits.
+> 3. When you are done coding, stop `pnpm run dev` and reopen the MCP client
 >    so it can spawn its own server again.
 >
-> `npm run build` (without watch) does **not** touch the port, so you can
+> `pnpm run build` (without watch) does **not** touch the port, so you can
 > always rebuild while the client is open. Only the live `dev` server
 > needs the port.
 
@@ -474,10 +478,10 @@ In other words: every merge to `main` is a release. There is no path to
 `main` that doesn't ship a new version.
 
 ```bash
-npm run release -- patch     # 0.5.4 → 0.5.5
-npm run release -- minor     # 0.5.4 → 0.6.0
-npm run release -- major     # 0.5.4 → 1.0.0
-npm run release -- 0.6.0     # explicit version
+pnpm run release -- patch    # 0.7.0 → 0.7.1
+pnpm run release -- minor    # 0.7.0 → 0.8.0
+pnpm run release -- major    # 0.7.0 → 1.0.0
+pnpm run release -- 0.7.1    # explicit version
 ```
 
 What `scripts/release.mjs` does, in order:
@@ -487,7 +491,7 @@ What `scripts/release.mjs` does, in order:
 2. Refuses to start unless every `version` field across the monorepo is
    already aligned.
 3. Bumps every version field to the new number.
-4. Runs `npm install --package-lock-only` so the lockfile matches.
+4. Runs `pnpm install --lockfile-only` so `pnpm-lock.yaml` matches.
 5. Generates a CHANGELOG entry at the top of
    `packages/server/CHANGELOG.md` from conventional commits since the
    previous tag, grouped by section.
@@ -508,8 +512,12 @@ already exists, it does nothing.
 
 ```bash
 cd packages/server
-npm publish
+pnpm publish
 ```
+
+(The tarball uploaded to `registry.npmjs.org` is identical regardless
+of the package manager. Consumers can keep installing with `npm i -g
+@jobshimo/browser-link` — see the [Quick start](#quick-start) section.)
 
 ## License
 

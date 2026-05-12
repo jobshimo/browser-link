@@ -1,0 +1,15 @@
+packages:
+  - 'packages/*'
+
+# Explicit allowlist for postinstall scripts. Anything not listed here is
+# silently blocked by pnpm. This is the supply-chain mitigation we get
+# from migrating off npm (npm runs every postinstall in the dep tree by
+# default; pnpm 11 inverts that).
+#
+# - better-sqlite3: compiles its native binding via prebuild-install /
+#   node-gyp fallback. Required for the sqlite-backed UI map.
+# - esbuild: ships native binaries per platform; the postinstall picks
+#   the right one. Pulled in transitively by tsx.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true

@@ -27,7 +27,9 @@
  *     so the trigger is the *file*, not the commit message.
  *   - Create the GitHub Release. Same — handled by the finalize workflow.
  *   - Publish to npm. That stays a deliberate manual step
- *     (`cd packages/server && npm publish`).
+ *     (`cd packages/server && pnpm publish`). The tarball uploaded to
+ *     registry.npmjs.org is identical regardless of the package manager;
+ *     consumers can still install with `npm i -g @jobshimo/browser-link`.
  *
  * Preconditions checked before any write:
  *   - working tree is clean
@@ -313,15 +315,15 @@ function main() {
     info(`bumped ${f}`);
   }
 
-  step('Sync lockfile (package-lock-only)');
-  run('npm', ['install', '--package-lock-only'], { inheritStdout: true });
+  step('Sync lockfile (lockfile-only)');
+  run('pnpm', ['install', '--lockfile-only'], { inheritStdout: true });
 
   step('Update CHANGELOG');
   prependChangelog(entry);
   info(`prepended new section to ${CHANGELOG_PATH}`);
 
   step('Commit and push release branch');
-  run('git', ['add', ...VERSIONED_FILES, CHANGELOG_PATH, 'package-lock.json']);
+  run('git', ['add', ...VERSIONED_FILES, CHANGELOG_PATH, 'pnpm-lock.yaml']);
   run('git', ['commit', '-m', `chore(release): v${nextRaw}`], { inheritStdout: true });
   run('git', ['push', '-u', 'origin', branch], { inheritStdout: true });
 
@@ -336,7 +338,7 @@ function main() {
     'npm publish remains manual:',
     '```bash',
     'cd packages/server',
-    'npm publish',
+    'pnpm publish',
     '```',
     '',
     '---',
@@ -363,7 +365,7 @@ function main() {
   step('Done');
   info(`Release PR opened for v${nextRaw}.`);
   info('Review the diff, then merge via GitHub UI to trigger the tag/release.');
-  info('After the GH Release lands, run `cd packages/server && npm publish` to push to npm.');
+  info('After the GH Release lands, run `cd packages/server && pnpm publish` to push to npm.');
 }
 
 main();

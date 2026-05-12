@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Pre-publish step run by `npm publish`:
-//  1) Build the Chrome extension if its dist is missing, then bundle the
-//     assets into the server's dist/extension.
+// Pre-publish step run by `pnpm publish` (or `npm publish` if you prefer
+// the legacy command — the tarball uploaded to registry.npmjs.org is
+// identical either way):
+//  1) Build the Chrome extension, then bundle the assets into the server's
+//     dist/extension.
 //  2) Copy the repo-root LICENSE next to package.json so npm includes it.
 // Cross-platform — only node:fs / node:path / node:child_process, no shell.
 
@@ -30,10 +32,10 @@ const extensionTarget = join(serverPkgDir, 'dist', 'extension');
 // extension's own dist/ first to make sure no stale file lingers.
 console.log('[prepare-publish] cleaning + rebuilding the extension…');
 if (existsSync(extensionDist)) rmSync(extensionDist, { recursive: true, force: true });
-const r = spawnSync('npm', ['run', 'build'], {
+const r = spawnSync('pnpm', ['run', 'build'], {
   cwd: extensionPkgDir,
   stdio: 'inherit',
-  // shell:true lets Windows resolve npm.cmd via PATHEXT — without it
+  // shell:true lets Windows resolve pnpm.cmd via PATHEXT — without it
   // spawnSync can't execute .cmd files. Args are static so there's no
   // shell-injection surface.
   shell: true,
@@ -53,7 +55,7 @@ if (extensionManifest.version !== serverPkg.version) {
     '[prepare-publish] version mismatch — refusing to bundle.\n' +
       `  server  package.json: ${serverPkg.version}\n` +
       `  extension manifest:   ${extensionManifest.version}\n` +
-      'Align both (use `npm run release` or edit by hand) and try again.',
+      'Align both (use `pnpm run release` or edit by hand) and try again.',
   );
   process.exit(1);
 }
