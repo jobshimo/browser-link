@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/jobshimo/browser-link/compare/v0.7.4...v0.7.5) (2026-05-12)
+
+
+### Bug Fixes
+
+* **ci:** v0.7.4 verified the OIDC handshake was already correct (the dumped claims show `workflow_ref: …/ci.yml@refs/heads/main`, `event_name: push`, `repository_owner: jobshimo`, `environment: null` — exactly what the Trusted Publisher expects). The publish step never ran because the diagnostic step right before it returned `exit 1`: GNU `base64 -d` on a JWT base64url segment (which has no padding) exits non-zero even when it prints the decoded output correctly, and the step's `set -euo pipefail` propagated that. By default GitHub Actions skips downstream steps when the previous one fails — that's why "Publish to npm" showed 0s and never executed. Fix: triple-belt the diagnostic step — drop `-e` from `set`, wrap the brittle pipe in `(...) || true`, add `continue-on-error: true` at the step level, and end the script with `exit 0`. The diagnostic step CAN NEVER block the publish anymore.
+
 ## [0.7.4](https://github.com/jobshimo/browser-link/compare/v0.7.3...v0.7.4) (2026-05-12)
 
 

@@ -194,18 +194,20 @@ jobs:
         if: steps.npmcheck.outputs.skip == 'false'
         run: pnpm install --frozen-lockfile
 
-      # Diagnostic preamble — surface the bundled npm version and the
-      # OIDC claims so future failures can be debugged without another
-      # PR cycle. The token is printed payload-only (no signature) and
-      # only the audience-bound copy is dumped; the actual publish
-      # request uses a fresh token down below.
+      # Diagnostic preamble — print bundled tool versions and OIDC claims
+      # for future debugging. NEVER allowed to block the publish:
+      # `continue-on-error: true` plus `|| true` on the brittle pipe
+      # (`base64 -d` against a padding-less JWT segment exits non-zero
+      # on GNU base64 even when the output is correct — that was the
+      # exact bug that swallowed v0.7.4).
       - name: Inspect publish environment + OIDC claims
         if: steps.npmcheck.outputs.skip == 'false'
+        continue-on-error: true
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
           ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           echo "::group::Bundled tool versions"
           echo "node     $(node --version)"
           echo "npm      $(npm --version)"
@@ -217,7 +219,7 @@ jobs:
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" \
             | jq -r '.value')
-          echo "$TOKEN" \
+          (echo "$TOKEN" \
             | cut -d. -f2 \
             | tr '_-' '/+' \
             | base64 -d 2>/dev/null \
@@ -226,8 +228,9 @@ jobs:
                 repository, repository_owner, repository_id,
                 workflow, workflow_ref, job_workflow_ref,
                 event_name, ref, sha, environment, runner_environment
-              }'
+              }') || true
           echo "::endgroup::"
+          exit 0
 
       - name: Publish to npm with provenance (npm 11+ via npx)
         if: steps.npmcheck.outputs.skip == 'false'
