@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.4](https://github.com/jobshimo/browser-link/compare/v0.7.3...v0.7.4) (2026-05-12)
+
+
+### Bug Fixes
+
+* **ci:** v0.7.3 failed on a different step: `npm install -g npm@latest` broke the global npm install mid-upgrade with `Cannot find module 'promise-retry'`. Classic "npm mutates its own install dir while running" failure mode. Fix: stop mutating the runner's global npm. Drive the publish with `npx --package=npm@latest -- npm publish --provenance --access public`, so a fresh npm 11+ is pulled into npx's cache for this single invocation and the bundled npm stays untouched.
+* **ci:** added a diagnostic step before the publish that prints the bundled tool versions and the OIDC token claims (payload only, no signature). If a future Trusted Publishing handshake fails, the logs already carry the exact `workflow_ref`, `event_name`, `repository_owner`, `sub` etc. claims that npm validates against — no more guessing.
+
 ## [0.7.3](https://github.com/jobshimo/browser-link/compare/v0.7.2...v0.7.3) (2026-05-12)
 
 

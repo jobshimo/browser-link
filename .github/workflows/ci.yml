@@ -194,38 +194,62 @@ jobs:
         if: steps.npmcheck.outputs.skip == 'false'
         run: pnpm install --frozen-lockfile
 
-      # Trusted Publishing on npm requires npm >= 11.5.1. The npm bundled
-      # with Node 22 LTS today ships as 10.8.2, which silently fails the
-      # OIDC handshake and surfaces it as a misleading "404 Not Found
-      # PUT" against the registry. Track:
-      # https://github.com/npm/cli/issues/9088
-      # https://github.com/npm/cli/issues/8976
-      # Once the Node 22 LTS line ships a bundled npm >= 11.5.1, this
-      # step can be removed.
-      - name: Upgrade npm CLI for Trusted Publishing
+      # Diagnostic preamble — surface the bundled npm version and the
+      # OIDC claims so future failures can be debugged without another
+      # PR cycle. The token is printed payload-only (no signature) and
+      # only the audience-bound copy is dumped; the actual publish
+      # request uses a fresh token down below.
+      - name: Inspect publish environment + OIDC claims
         if: steps.npmcheck.outputs.skip == 'false'
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
         run: |
           set -euo pipefail
-          npm install -g npm@latest
-          npm --version
+          echo "::group::Bundled tool versions"
+          echo "node     $(node --version)"
+          echo "npm      $(npm --version)"
+          echo "pnpm     $(pnpm --version)"
+          echo "::endgroup::"
+          echo "::group::OIDC token claims (payload only, no signature)"
+          TOKEN=$(curl -sLS \
+            -H "User-Agent: actions/oidc-client" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" \
+            | jq -r '.value')
+          echo "$TOKEN" \
+            | cut -d. -f2 \
+            | tr '_-' '/+' \
+            | base64 -d 2>/dev/null \
+            | jq '{
+                iss, aud, sub,
+                repository, repository_owner, repository_id,
+                workflow, workflow_ref, job_workflow_ref,
+                event_name, ref, sha, environment, runner_environment
+              }'
+          echo "::endgroup::"
 
-      - name: Publish to npm with provenance
+      - name: Publish to npm with provenance (npm 11+ via npx)
         if: steps.npmcheck.outputs.skip == 'false'
         working-directory: packages/server
         env:
           VERSION: ${{ steps.read.outputs.version }}
         run: |
           set -euo pipefail
+          # Trusted Publishing requires npm >= 11.5.1 for the OIDC
+          # handshake (older npm silently fails and emits a misleading
+          # 404 against the registry — see npm/cli#9088 and #8976).
+          # Node 22 LTS bundles npm 10.x today. We drive the publish
+          # with a fresh npm via npx so the runner's globally installed
+          # npm stays untouched. Mutating the global npm during a
+          # release run was the failure mode on v0.7.3 (`npm install -g
+          # npm@latest` broke npm mid-upgrade — `Cannot find module
+          # 'promise-retry'`).
+          #
+          # --package=npm@latest pulls the newest npm into npx's cache
+          # for this single invocation only.
           # No NPM_TOKEN — Trusted Publisher exchanges the GitHub OIDC
           # token (granted via permissions.id-token: write above) for a
-          # short-lived npm credential. --provenance attaches a signed
-          # attestation showing this exact workflow run published the
-          # tarball.
-          #
-          # npm publish (not pnpm publish) is intentional: npm CLI has
-          # the most mature Trusted Publishing implementation. The
-          # `prepublishOnly` script in packages/server/package.json still
-          # invokes pnpm internally for the clean/build steps; npm just
-          # drives the publish itself.
-          npm publish --provenance --access public
+          # short-lived npm credential at publish time.
+          npx --yes --package=npm@latest -- npm publish --provenance --access public
           echo "  → published @jobshimo/browser-link@$VERSION"
