@@ -464,15 +464,20 @@ Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
 
 ### Cutting a release
 
-Releases never push commits straight to `main` — they always go through a
-PR, so branch protection rules can stay as strict as you like (today and
-tomorrow).
+**Hard rule enforced by CI**: every PR merged into `main` MUST bump the
+version, and the five versioned files in the monorepo (root, server,
+extension `package.json`, extension `manifest.json`, shared) MUST agree
+on the same number. The `Version Gate` workflow blocks any PR that
+doesn't comply, and is a required check on `main`.
+
+In other words: every merge to `main` is a release. There is no path to
+`main` that doesn't ship a new version.
 
 ```bash
-npm run release -- patch     # 0.5.2 → 0.5.3
-npm run release -- minor     # 0.5.2 → 0.6.0
-npm run release -- major     # 0.5.2 → 1.0.0
-npm run release -- 0.5.3     # explicit version
+npm run release -- patch     # 0.5.4 → 0.5.5
+npm run release -- minor     # 0.5.4 → 0.6.0
+npm run release -- major     # 0.5.4 → 1.0.0
+npm run release -- 0.6.0     # explicit version
 ```
 
 What `scripts/release.mjs` does, in order:
@@ -480,41 +485,31 @@ What `scripts/release.mjs` does, in order:
 1. Refuses to start unless your working tree is clean, you are on `main`,
    and `main` is in sync with `origin/main`.
 2. Refuses to start unless every `version` field across the monorepo is
-   already aligned (root `package.json`, each workspace `package.json`,
-   `packages/extension/manifest.json`). Misalignment is treated as the
-   user's call to fix manually before releasing.
+   already aligned.
 3. Bumps every version field to the new number.
 4. Runs `npm install --package-lock-only` so the lockfile matches.
 5. Generates a CHANGELOG entry at the top of
    `packages/server/CHANGELOG.md` from conventional commits since the
    previous tag, grouped by section.
-6. Commits the lot on a new branch `release/vX.Y.Z` with the message
-   `chore(release): vX.Y.Z`.
-7. Pushes the branch and opens a PR against `main` with the CHANGELOG
-   entry in the body.
+6. Commits the lot on a new branch `release/vX.Y.Z` and pushes it.
+7. Opens a PR against `main` with the CHANGELOG entry in the body.
 
 You then review the PR and merge it via the GitHub UI like any other.
-After the merge, `.github/workflows/release-finalize.yml` watches `main`,
-detects the `chore(release): vX.Y.Z` commit, creates the matching tag and
-GitHub Release with the same notes. **npm publish stays manual**:
+After the merge, the CI matrix runs on `main`; when it goes green,
+`.github/workflows/release-finalize.yml` reads the version straight from
+`packages/server/package.json`, then creates the tag `vX.Y.Z` and the
+matching GitHub Release through the REST API (no `git push` anywhere).
+The CHANGELOG section for that version is used as the release notes.
+
+The finalize workflow is idempotent: if the release for that version
+already exists, it does nothing.
+
+**npm publish stays manual** for now:
 
 ```bash
 cd packages/server
 npm publish
 ```
-
-#### Optional: be reminded at push time
-
-A pre-push hook can ask you whether to cut a release whenever
-`origin/main` has accumulated conventional commits since the last tag.
-Saying _no_ is a single Enter — the hook never blocks anything.
-
-```bash
-git config core.hooksPath .githooks
-```
-
-Run that once per clone. To opt out, run
-`git config --unset core.hooksPath`.
 
 ## License
 

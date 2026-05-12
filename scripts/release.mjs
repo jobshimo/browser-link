@@ -22,8 +22,9 @@
  *   - Push to main. Releases always go through a PR — that respects branch
  *     protection now and forever, with zero bypass tricks.
  *   - Create the git tag. The `.github/workflows/release-finalize.yml`
- *     workflow does that after the PR merges (it watches main for
- *     `chore(release):` commits).
+ *     workflow does that after the PR merges and CI passes on main — it
+ *     reads the version straight out of `packages/server/package.json`,
+ *     so the trigger is the *file*, not the commit message.
  *   - Create the GitHub Release. Same — handled by the finalize workflow.
  *   - Publish to npm. That stays a deliberate manual step
  *     (`cd packages/server && npm publish`).
@@ -38,18 +39,19 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-const VERSIONED_FILES = [
-  'package.json',
-  'packages/server/package.json',
-  'packages/extension/package.json',
-  'packages/extension/manifest.json',
-  'packages/shared/package.json',
-];
+import {
+  REPO_ROOT,
+  VERSIONED_FILES,
+  bump,
+  checkAlignment,
+  formatSemver,
+  parseSemver,
+  readAllVersions,
+  readJson,
+  writeJson,
+} from './lib/versions.mjs';
 
 const CHANGELOG_PATH = 'packages/server/CHANGELOG.md';
 const CHANGELOG_REPO_URL = 'https://github.com/jobshimo/browser-link';
@@ -80,16 +82,6 @@ function tryRun(cmd, args, opts = {}) {
   }
 }
 
-function readJson(relPath) {
-  return JSON.parse(readFileSync(join(REPO_ROOT, relPath), 'utf8'));
-}
-
-function writeJson(relPath, value) {
-  const full = join(REPO_ROOT, relPath);
-  // Preserve the trailing newline used elsewhere in the repo.
-  writeFileSync(full, JSON.stringify(value, null, 2) + '\n', 'utf8');
-}
-
 function fail(msg) {
   process.stderr.write(`\n✘ ${msg}\n\n`);
   process.exit(1);
@@ -103,23 +95,10 @@ function step(msg) {
   process.stdout.write(`\n→ ${msg}\n`);
 }
 
-function parseSemver(v) {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-  if (!m) return null;
-  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
-}
-
-function formatSemver(v) {
-  return `${v.major}.${v.minor}.${v.patch}`;
-}
-
-function bump(current, kind) {
-  if (kind === 'patch') return { ...current, patch: current.patch + 1 };
-  if (kind === 'minor') return { major: current.major, minor: current.minor + 1, patch: 0 };
-  if (kind === 'major') return { major: current.major + 1, minor: 0, patch: 0 };
-  const explicit = parseSemver(kind);
-  if (explicit) return explicit;
-  fail(`Invalid bump type: "${kind}". Use patch, minor, major, or X.Y.Z.`);
+function bumpOrFail(current, kind) {
+  const next = bump(current, kind);
+  if (!next) fail(`Invalid bump type: "${kind}". Use patch, minor, major, or X.Y.Z.`);
+  return next;
 }
 
 function assertCleanTree() {
@@ -149,19 +128,10 @@ function assertInSyncWithOrigin() {
   }
 }
 
-function readAllVersions() {
-  const out = {};
-  for (const f of VERSIONED_FILES) {
-    const data = readJson(f);
-    out[f] = data.version;
-  }
-  return out;
-}
-
 function assertVersionsAligned() {
   const versions = readAllVersions();
-  const distinct = new Set(Object.values(versions));
-  if (distinct.size !== 1) {
+  const result = checkAlignment(versions);
+  if (!result.aligned) {
     const lines = Object.entries(versions)
       .map(([f, v]) => `  ${v}  ${f}`)
       .join('\n');
@@ -170,7 +140,7 @@ function assertVersionsAligned() {
         `Align them by hand (pick the correct number, edit each file, commit) before running release.`,
     );
   }
-  return [...distinct][0];
+  return result.version;
 }
 
 function lastReleaseTag() {
@@ -310,7 +280,7 @@ function main() {
   if (!current) fail(`Current version "${currentRaw}" is not semver MAJOR.MINOR.PATCH.`);
   info(`current aligned version: ${currentRaw}`);
 
-  const next = bump(current, bumpArg);
+  const next = bumpOrFail(current, bumpArg);
   const nextRaw = formatSemver(next);
   if (formatSemver(current) === nextRaw) {
     fail(`Computed next version equals current (${nextRaw}). Nothing to release.`);

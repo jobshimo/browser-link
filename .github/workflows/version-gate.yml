@@ -1,0 +1,44 @@
+name: Version Gate
+
+# Hard rule for every PR targeting main:
+#   - All five versioned files in the monorepo must agree on the same
+#     version (lockstep), AND
+#   - That version must be strictly greater than the version on origin/main.
+#
+# In other words: every merge into main is a release. There is no path to
+# main that doesn't bump the version. This is the contract `release-finalize`
+# leans on — if this gate passes, the version in `packages/server/package.json`
+# at HEAD~ (after the merge lands) is guaranteed to be a fresh number, so
+# the finalize workflow can read it and tag/release deterministically.
+#
+# Make this check required in branch protection on `main`.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: version-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-gate:
+    name: Version Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # Check out the PR head exactly (not the synthesised merge commit).
+          # We want to validate what the developer authored.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Validate versions
+        run: node scripts/version-gate.mjs
