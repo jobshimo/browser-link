@@ -14,7 +14,7 @@ import {
   UpdatesView,
   WelcomeScreen,
   type MenuAction,
-} from './screens.js';
+} from './screens/index.js';
 import type { Language } from '../commands/welcome.js';
 import { saveConfig } from '../config.js';
 import { installFor, type InstallReport } from '../commands/install.js';
