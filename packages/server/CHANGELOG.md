@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/jobshimo/browser-link/compare/v0.7.2...v0.7.3) (2026-05-12)
+
+
+### Bug Fixes
+
+* **ci:** publish still failed on v0.7.2 with the same misleading `404 Not Found - PUT https://registry.npmjs.org/...` after the workflow refactor. Root cause turned out to be unrelated to the chained-workflow hypothesis: the npm CLI bundled with Node 22 LTS today is **10.8.2**, and npm Trusted Publishing requires **npm >= 11.5.1** to perform the OIDC handshake correctly. Older npm silently fails the auth exchange and surfaces it as either a 404 or an ENEEDAUTH against the registry. Confirmed against [npm/cli#9088](https://github.com/npm/cli/issues/9088) ("Trusted publishing failures report misleading 404 / ENEEDAUTH errors instead of trusted-publishing diagnostics") and [npm/cli#8976](https://github.com/npm/cli/issues/8976) ("OIDC trusted publishing E404 when publishing scoped packages"). Fix: `npm install -g npm@latest` immediately before the publish step. When Node 22 LTS catches up with a bundled npm >= 11.5.1, the upgrade step can be removed.
+
 ## [0.7.2](https://github.com/jobshimo/browser-link/compare/v0.7.1...v0.7.2) (2026-05-12)
 
 

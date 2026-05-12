@@ -194,6 +194,21 @@ jobs:
         if: steps.npmcheck.outputs.skip == 'false'
         run: pnpm install --frozen-lockfile
 
+      # Trusted Publishing on npm requires npm >= 11.5.1. The npm bundled
+      # with Node 22 LTS today ships as 10.8.2, which silently fails the
+      # OIDC handshake and surfaces it as a misleading "404 Not Found
+      # PUT" against the registry. Track:
+      # https://github.com/npm/cli/issues/9088
+      # https://github.com/npm/cli/issues/8976
+      # Once the Node 22 LTS line ships a bundled npm >= 11.5.1, this
+      # step can be removed.
+      - name: Upgrade npm CLI for Trusted Publishing
+        if: steps.npmcheck.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          npm --version
+
       - name: Publish to npm with provenance
         if: steps.npmcheck.outputs.skip == 'false'
         working-directory: packages/server
