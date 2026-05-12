@@ -17,11 +17,14 @@ import {
   type BrowserToolDeps,
 } from '../tools/browser-dispatch.js';
 import { toolError, toolResponse } from '../tools/responses.js';
+import type { AgentCaller } from '../tools/tab-claims.js';
 
 export interface DispatchDeps {
   browserTools: BrowserToolDeps;
   disabledTools: readonly string[];
 }
+
+export type { AgentCaller };
 
 /** Mirror of MCP `tools/list` shape. Kept minimal so the IPC layer can
  * forward it as a JSON-RPC result without any SDK-specific transformations. */
@@ -44,10 +47,14 @@ export function handleToolsList(deps: DispatchDeps): ToolsListResult {
 export interface ToolCallRequest {
   name: string;
   arguments?: unknown;
+  /** Identity of the MCP client whose request this is. The transport layer
+   * (primary's stdio handler or IPC server) is responsible for filling it in
+   * — handlers that need to enforce per-agent ownership read from here. */
+  caller: AgentCaller;
 }
 
 export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
-  const { name, arguments: args } = req;
+  const { name, arguments: args, caller } = req;
   if (!isToolEnabled(name, deps.disabledTools)) {
     // Defence in depth: a client that cached the previous tools/list could
     // still try to call a now-disabled tool. Refuse with a clear reason.
@@ -59,7 +66,7 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
   try {
     if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
     if (isBrowserTool(name))
-      return toolResponse(await handleBrowserTool(name, args, deps.browserTools));
+      return toolResponse(await handleBrowserTool(name, args, deps.browserTools, caller));
     return toolError(`Unknown tool: ${name}`);
   } catch (err) {
     return toolError(err instanceof Error ? err.message : String(err));

@@ -1,6 +1,24 @@
 import { PACKAGE_NAME, VERSION } from '../version.js';
 import type { Language } from './welcome.js';
 
+/**
+ * Conservative subset of npm's official name grammar — lowercase ASCII,
+ * digits, dash/underscore/dot, optional `@scope/` prefix. PACKAGE_NAME is
+ * read from package.json at runtime; routing that string into a URL without
+ * a validation gate would let a tampered package.json point the registry
+ * lookup elsewhere. Refusing to query at all is the safer failure mode.
+ */
+const NPM_NAME_REGEX = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+function assertSafeNpmName(name: string): string {
+  if (!NPM_NAME_REGEX.test(name)) {
+    throw new Error(
+      `Refusing to query registry: package name "${name}" does not match the npm grammar.`,
+    );
+  }
+  return name;
+}
+
 export interface UpdateInfo {
   current: string;
   latest: string | null;
@@ -19,7 +37,18 @@ export interface UpdateInfo {
  * consistent ordering, just not the semver-correct one.
  */
 export async function checkUpdates(timeoutMs = 4000): Promise<UpdateInfo> {
-  const url = `https://registry.npmjs.org/-/package/${PACKAGE_NAME}/dist-tags`;
+  let safeName: string;
+  try {
+    safeName = assertSafeNpmName(PACKAGE_NAME);
+  } catch (err) {
+    return {
+      current: VERSION,
+      latest: null,
+      newer: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const url = `https://registry.npmjs.org/-/package/${safeName}/dist-tags`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

@@ -1,0 +1,109 @@
+name: Release Finalize
+
+# Triggered on every push to main. Inspects the head commit; if its message
+# matches `chore(release): vX.Y.Z` (the shape `scripts/release.mjs` writes),
+# the workflow cuts the tag and the GitHub Release from the merged commit.
+#
+# This is the post-merge half of the release flow. The pre-merge half lives
+# in `scripts/release.mjs` — it opens a PR with the version bump + CHANGELOG
+# entry. When that PR is merged, the merge commit lands here and the tag +
+# release happen automatically. Branch protection on main is preserved end
+# to end — neither the script nor this workflow ever pushes a commit to a
+# protected branch.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-finalize-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Detect release commit
+        id: detect
+        run: |
+          set -euo pipefail
+          MSG=$(git log -1 --pretty=format:%s)
+          echo "subject=$MSG" >> "$GITHUB_OUTPUT"
+          if [[ "$MSG" =~ ^chore\(release\):[[:space:]]+v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "  → release commit detected, version=$VERSION"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "  → not a release commit, skipping"
+          fi
+
+      - name: Skip — not a release commit
+        if: steps.detect.outputs.is_release != 'true'
+        run: echo "Nothing to do."
+
+      - name: Extract changelog section for this version
+        if: steps.detect.outputs.is_release == 'true'
+        id: notes
+        env:
+          VERSION: ${{ steps.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          awk -v ver="$VERSION" '
+            # Find the "## [VERSION]" header.
+            /^##[[:space:]]+\[/ {
+              if (in_section) { exit }
+              if ($0 ~ "\\["ver"\\]") { in_section = 1; next }
+            }
+            in_section { print }
+          ' packages/server/CHANGELOG.md > "$NOTES_FILE"
+          # Strip leading/trailing blank lines.
+          awk 'BEGIN{p=0} /[^[:space:]]/{p=1} p{print}' "$NOTES_FILE" \
+            | sed -e :a -e '/^\s*$/{$d;N;ba' -e '}' > "$NOTES_FILE.trim"
+          mv "$NOTES_FILE.trim" "$NOTES_FILE"
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "--- notes preview ---"
+          head -n 40 "$NOTES_FILE"
+
+      - name: Tag the release commit
+        if: steps.detect.outputs.is_release == 'true'
+        env:
+          VERSION: ${{ steps.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists, skipping creation."
+          else
+            git tag -a "v$VERSION" -m "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.detect.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.detect.outputs.version }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists, skipping creation."
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v$VERSION" \
+            --notes-file "$NOTES_FILE" \
+            --target "$GITHUB_SHA"

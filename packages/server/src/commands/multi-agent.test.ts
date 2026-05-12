@@ -27,98 +27,105 @@ afterEach(() => {
 });
 
 describe('enableMultiAgent / disableMultiAgent', () => {
-  test('enable flips multiAgent to true', () => {
-    enableMultiAgent();
-    expect(loadConfig().multiAgent).toBe(true);
+  test('multi-agent and auto-reelect are ON by default for a fresh install', () => {
+    // Empty config → both flags read as true via the runtime defaults applied
+    // by loadConfig. The config file on disk stays empty until the user opts
+    // out, so the diff is minimal.
+    const cfg = loadConfig();
+    expect(cfg.multiAgent).toBe(true);
+    expect(cfg.autoReelect).toBe(true);
   });
 
-  test('enable is idempotent', () => {
-    enableMultiAgent();
+  test('enable is a no-op when multi-agent is already on (the default)', () => {
     const msg = enableMultiAgent();
     expect(msg).toMatch(/No change/);
   });
 
-  test('disable clears multiAgent and autoReelect together', () => {
+  test('enable after an explicit disable flips multi-agent back on', () => {
+    disableMultiAgent();
+    expect(loadConfig().multiAgent).toBe(false);
     enableMultiAgent();
-    enableAutoReelect();
-    expect(loadConfig().autoReelect).toBe(true);
+    expect(loadConfig().multiAgent).toBe(true);
+  });
+
+  test('disable forces multi-agent and auto-reelect off and persists the override', () => {
     disableMultiAgent();
     const cfg = loadConfig();
-    expect(cfg.multiAgent).toBeUndefined();
-    expect(cfg.autoReelect).toBeUndefined();
+    expect(cfg.multiAgent).toBe(false);
+    // autoReelect gates on multiAgent — when multi-agent is off the effective
+    // value is forced to false regardless of any prior explicit value.
+    expect(cfg.autoReelect).toBe(false);
   });
 
   test('disable when already off reports no-change', () => {
+    disableMultiAgent();
     const msg = disableMultiAgent();
     expect(msg).toMatch(/No change/);
   });
 });
 
 describe('enableAutoReelect / disableAutoReelect', () => {
-  test('enabling auto-reelect with multi-agent off throws', () => {
+  test('enabling auto-reelect after multi-agent has been turned off throws', () => {
+    disableMultiAgent();
     expect(() => enableAutoReelect()).toThrow(/Cannot enable auto-reelect/);
   });
 
-  test('enabling auto-reelect after multi-agent works', () => {
-    enableMultiAgent();
-    enableAutoReelect();
+  test('auto-reelect is on by default whenever multi-agent is on', () => {
     expect(loadConfig().autoReelect).toBe(true);
   });
 
-  test('disable auto-reelect leaves multi-agent on', () => {
-    enableMultiAgent();
-    enableAutoReelect();
+  test('enabling auto-reelect on the default state is a no-op', () => {
+    const msg = enableAutoReelect();
+    expect(msg).toMatch(/No change/);
+  });
+
+  test('disable auto-reelect leaves multi-agent on and persists the override', () => {
     disableAutoReelect();
     const cfg = loadConfig();
     expect(cfg.multiAgent).toBe(true);
-    expect(cfg.autoReelect).toBeUndefined();
+    expect(cfg.autoReelect).toBe(false);
   });
 
-  test('enabling auto-reelect twice is idempotent', () => {
-    enableMultiAgent();
+  test('enabling auto-reelect after an explicit disable flips it back on', () => {
+    disableAutoReelect();
     enableAutoReelect();
-    const msg = enableAutoReelect();
-    expect(msg).toMatch(/No change/);
+    expect(loadConfig().autoReelect).toBe(true);
   });
 });
 
 describe('config normalisation', () => {
-  test('autoReelect alone (without multiAgent) is dropped on write', () => {
-    // Force a write through saveConfig directly. The normalise step in
-    // config.ts must strip autoReelect when multiAgent is missing/false.
-    enableMultiAgent();
-    enableAutoReelect();
-    disableMultiAgent(); // clears both, but verify the normalisation explicitly
-    expect(loadConfig().autoReelect).toBeUndefined();
+  test('autoReelect is forced to false when multi-agent is explicitly disabled', () => {
+    disableMultiAgent();
+    expect(loadConfig().autoReelect).toBe(false);
   });
 });
 
 describe('listMultiAgentStatus', () => {
-  test('reports both flags off by default', () => {
+  test('reports both flags ON by default (fresh install)', () => {
     const out = listMultiAgentStatus();
     expect(out).toContain('Multi-agent settings');
-    expect(out).toMatch(/Multi-agent mode\s+off/);
-    expect(out).toMatch(/Auto-reelect.*off/);
-  });
-
-  test('reports on when both are enabled', () => {
-    enableMultiAgent();
-    enableAutoReelect();
-    const out = listMultiAgentStatus();
     expect(out).toMatch(/Multi-agent mode\s+on/);
     expect(out).toMatch(/Auto-reelect.*on/);
+  });
+
+  test('reports off after an explicit disable', () => {
+    disableMultiAgent();
+    const out = listMultiAgentStatus();
+    expect(out).toMatch(/Multi-agent mode\s+off/);
+    expect(out).toMatch(/Auto-reelect.*off/);
   });
 });
 
 describe('runMultiAgentCommand integration', () => {
-  test('enable → list reflects the change', () => {
-    runMultiAgentCommand(['enable']);
-    expect(loadConfig().multiAgent).toBe(true);
+  test('disable → list reflects the explicit override', () => {
+    runMultiAgentCommand(['disable']);
+    expect(loadConfig().multiAgent).toBe(false);
     const out = runMultiAgentCommand([]);
-    expect(out).toMatch(/Multi-agent mode\s+on/);
+    expect(out).toMatch(/Multi-agent mode\s+off/);
   });
 
-  test('auto-reelect enable requires multi-agent first', () => {
+  test('auto-reelect enable after disabling multi-agent throws', () => {
+    runMultiAgentCommand(['disable']);
     expect(() => runMultiAgentCommand(['auto-reelect', 'enable'])).toThrow(
       /Cannot enable auto-reelect/,
     );
@@ -133,14 +140,15 @@ describe('runMultiAgentCommand integration', () => {
 });
 
 describe('i18n (es path)', () => {
-  test('listMultiAgentStatus in es uses Spanish labels', () => {
+  test('listMultiAgentStatus in es uses Spanish labels and reports activado by default', () => {
     const out = listMultiAgentStatus('es');
     expect(out).toContain('Configuración multi-agente');
     expect(out).toContain('Modo multi-agente');
-    expect(out).toMatch(/desactivado/);
+    expect(out).toMatch(/activado/);
   });
 
-  test('error for auto-reelect without multi-agent is in Spanish', () => {
+  test('error for auto-reelect after disabling multi-agent is in Spanish', () => {
+    disableMultiAgent('es');
     expect(() => enableAutoReelect('es')).toThrow(/re-elección automática/);
   });
 });

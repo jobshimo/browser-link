@@ -17,9 +17,10 @@
     "generate:icons": "npm run generate:icons -w @browser-link/extension",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
-    "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"*.md\"",
-    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"*.md\"",
-    "clean": "npm run clean --workspaces --if-present"
+    "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"scripts/**/*.mjs\" \"*.md\"",
+    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"scripts/**/*.mjs\" \"*.md\"",
+    "clean": "npm run clean --workspaces --if-present",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "prettier": "^3.3.3",

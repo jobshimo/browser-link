@@ -10,7 +10,46 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.list_tabs',
     description:
-      'List Chrome tabs currently connected to browser-link. A tab is connected only after the user clicks Conectar in the extension popup. Returns tab_id, url and title for each.',
+      'List Chrome tabs currently connected to browser-link. A tab is connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it) and claimed_by_me (true when YOU hold the claim).',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'browser.claim_tab',
+    description:
+      'Claim a tab so other agents stop touching it. Returns ok:true with your claim, or ok:false reason:"conflict" with the existing claim. Pass an optional label (eg "claude-code") that other agents will see in browser.list_tabs. Pass ttl_minutes (default 10, max 60) — the claim auto-expires after that many minutes of inactivity. Action tools (click/type/navigate/evaluate) auto-claim free tabs, so an explicit claim_tab is only needed when you want to reserve a tab before you start, or to refresh the label/TTL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        ttl_minutes: {
+          type: 'number',
+          description: 'Inactivity timeout for the claim, in minutes. Default 10, capped at 60.',
+        },
+        label: {
+          type: 'string',
+          description:
+            'Optional self-declared display label (eg "claude-code", "opencode"). Visible to other agents in browser.list_tabs. Display only — not used for enforcement.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'browser.release_tab',
+    description:
+      'Release a tab claim you hold. Returns ok:true on success, ok:false reason:"not-owner" if another agent holds it, or ok:false reason:"not-claimed" if the tab is free. Releasing is also automatic on agent disconnect and when the inactivity TTL elapses, so calling this explicitly is only needed for early hand-off.',
+    inputSchema: {
+      type: 'object',
+      properties: { tab_id: { type: 'string' } },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'browser.my_tabs',
+    description:
+      'List the tabs YOU currently hold a claim on. Returns { claims: [{ tab_id, claimed_at, last_activity_at, ttl_ms, label? }] } sorted by claimed_at. Use this to answer the user when they ask which tabs you are working on.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {

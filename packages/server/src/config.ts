@@ -18,31 +18,53 @@ export interface BrowserLinkConfig {
    */
   disabledTools?: string[];
   /**
-   * Multi-agent mode. When false (default), only one MCP client can have
-   * browser-link active at a time; a second client trying to spawn the
-   * server crashes with EADDRINUSE. When true, the second instance becomes
-   * a proxy that forwards MCP requests to the first one over an internal
-   * IPC port (127.0.0.1:17530). All agents end up sharing the same Chrome
-   * tabs and the same persistent UI map.
+   * Multi-agent mode. Default ON. When true (default), several MCP clients
+   * (Claude Code + OpenCode + Copilot, …) can share the same browser-link
+   * primary: the second `browser-link` spawn becomes a thin proxy that
+   * forwards MCP traffic to the first one over an internal IPC port
+   * (127.0.0.1:17530), and all agents see the same Chrome tabs and the
+   * same persistent UI map. Set explicitly to false to disable.
    */
   multiAgent?: boolean;
   /**
-   * Only honoured when multiAgent === true. When false (default), if the
-   * primary's MCP client closes, secondary clients lose the bridge and
-   * have to be relaunched manually. When true, one of the secondaries
-   * takes over the primary role automatically (race on bind(17529)).
+   * Auto-reelect. Default ON, gated by `multiAgent`. When true and the
+   * current primary's MCP client closes, the secondary proxies enter a
+   * short reconnect window and race to become the new primary; clients
+   * recover automatically instead of needing a manual relaunch. Set
+   * explicitly to false to keep the previous behaviour (proxies die when
+   * the primary does). Has no effect when multiAgent is false.
    */
   autoReelect?: boolean;
 }
+
+/** Defaults applied at load time so consumers can read `cfg.multiAgent`
+ * directly. Persisted form (see `normaliseForWrite`) only carries the field
+ * when the user overrides the default, keeping the on-disk config minimal. */
+const DEFAULT_MULTI_AGENT = true;
+const DEFAULT_AUTO_REELECT = true;
 
 function configFile(): string {
   return join(getDataDir(), 'config.json');
 }
 
-function normalise(cfg: BrowserLinkConfig): BrowserLinkConfig {
-  // Always run the disabled-tools list through the sanitizer — both on read
-  // and on write — so unknown names from a downgraded build, a typo, or a
-  // manual edit never reach the server filter.
+/** Apply the runtime defaults so every consumer of loadConfig() reads the
+ * effective configuration directly — no per-call `?? true` plumbing. */
+function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
+  const multiAgent = cfg.multiAgent ?? DEFAULT_MULTI_AGENT;
+  // autoReelect is gated on multiAgent: when multi-agent is off, the flag
+  // has no effect, so the effective value is forced to false to avoid any
+  // ambiguity for the consumer.
+  const autoReelect = multiAgent ? (cfg.autoReelect ?? DEFAULT_AUTO_REELECT) : false;
+  return { ...cfg, multiAgent, autoReelect };
+}
+
+/** Strip fields that hold their default value before writing — the on-disk
+ * config only carries explicit overrides. Keeps the file diff-friendly and
+ * forward-compatible when defaults shift in a future release. */
+function normaliseForWrite(cfg: BrowserLinkConfig): BrowserLinkConfig {
+  // Always run the disabled-tools list through the sanitizer so unknown
+  // names from a downgraded build, a typo, or a manual edit never reach
+  // the server filter.
   const sanitized = sanitizeDisabledTools(cfg.disabledTools);
   let next: BrowserLinkConfig;
   if (sanitized.length === 0) {
@@ -51,20 +73,20 @@ function normalise(cfg: BrowserLinkConfig): BrowserLinkConfig {
   } else {
     next = { ...cfg, disabledTools: sanitized };
   }
-  // autoReelect only makes sense when multiAgent is on. Drop a stray
-  // autoReelect:true if multiAgent is off, so the config file never has
-  // an inert flag advertising a behaviour it does not produce.
-  if (next.autoReelect && !next.multiAgent) {
+  // autoReelect only makes sense when multiAgent is on. Drop the flag
+  // entirely when multiAgent has been turned off so the file never carries
+  // an inert override.
+  if (next.multiAgent === false && 'autoReelect' in next) {
     const { autoReelect: _omit2, ...rest2 } = next;
     next = rest2;
   }
-  // Drop explicit `false` for the two new flags too — the default is false,
-  // so storing it just adds noise.
-  if (next.multiAgent === false) {
+  // Drop fields whose value matches the runtime default — they are the
+  // implicit state; the file should only show user-chosen overrides.
+  if (next.multiAgent === DEFAULT_MULTI_AGENT) {
     const { multiAgent: _omit3, ...rest3 } = next;
     next = rest3;
   }
-  if (next.autoReelect === false) {
+  if (next.autoReelect === DEFAULT_AUTO_REELECT) {
     const { autoReelect: _omit4, ...rest4 } = next;
     next = rest4;
   }
@@ -73,27 +95,42 @@ function normalise(cfg: BrowserLinkConfig): BrowserLinkConfig {
 
 export function loadConfig(): BrowserLinkConfig {
   const path = configFile();
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return withDefaults({});
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return normalise(parsed as BrowserLinkConfig);
-    return {};
+    if (parsed && typeof parsed === 'object') return withDefaults(parsed as BrowserLinkConfig);
+    return withDefaults({});
   } catch (err) {
     // Surface corruption rather than silently masking it: the file is
     // small and user-owned, so a one-line stderr warning is the right
     // signal. We still fall back to defaults so the CLI keeps working.
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[browser-link] could not read config at ${path}: ${message}. Using defaults.`);
-    return {};
+    return withDefaults({});
   }
 }
 
 export function saveConfig(patch: Partial<BrowserLinkConfig>): BrowserLinkConfig {
   const path = configFile();
   mkdirSync(dirname(path), { recursive: true });
-  const current = loadConfig();
-  const next = normalise({ ...current, ...patch });
-  writeFileSync(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
-  return next;
+  // Read the persisted form (pre-defaults) so merging the patch doesn't
+  // accidentally promote a default into an explicit field on disk.
+  const persisted = readPersisted();
+  const stripped = normaliseForWrite({ ...persisted, ...patch });
+  writeFileSync(path, JSON.stringify(stripped, null, 2) + '\n', 'utf8');
+  return loadConfig();
+}
+
+function readPersisted(): BrowserLinkConfig {
+  const path = configFile();
+  if (!existsSync(path)) return {};
+  try {
+    const raw = readFileSync(path, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object') return parsed as BrowserLinkConfig;
+    return {};
+  } catch {
+    return {};
+  }
 }

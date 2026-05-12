@@ -14,6 +14,7 @@ import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dis
 import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/client.js';
 import { BridgeEventLog } from './bridge/events.js';
+import { TabClaimRegistry, type AgentCaller } from './tools/tab-claims.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -343,10 +344,61 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // so the caller can decide between proxy mode and a clear error.
   await startWsBridge(tabs, pendingRequests, events);
 
+  // Cooperative tab ownership across MCP clients. Claim events are mirrored
+  // into the bridge event log so `browser.events` doubles as an audit trail.
+  const tabClaims = new TabClaimRegistry({
+    onEvent: (e) => {
+      switch (e.kind) {
+        case 'tab-claimed':
+          events.add('tab-claimed', {
+            tab_id: e.tab_id,
+            agent_id: e.agent_id,
+            pid: e.pid,
+            binary: e.binary,
+            label: e.label,
+            ttl_ms: e.ttl_ms,
+            auto: e.auto,
+          });
+          return;
+        case 'tab-released':
+          events.add('tab-released', {
+            tab_id: e.tab_id,
+            agent_id: e.agent_id,
+            reason: e.reason,
+          });
+          return;
+        case 'tab-claim-rejected':
+          events.add('tab-claim-rejected', {
+            tab_id: e.tab_id,
+            requester_agent_id: e.requester_agent_id,
+            existing_agent_id: e.existing_agent_id,
+          });
+          return;
+      }
+    },
+  });
+
+  // Sweep stale claims once a minute. Inactivity-based TTL — claims of agents
+  // that crashed or went silent without disconnecting their IPC eventually
+  // free up the tabs for someone else.
+  const pruneTimer = setInterval(() => tabClaims.pruneStale(), 60_000);
+  pruneTimer.unref();
+
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
     recentEvents: (opts) => events.recent(opts),
+    tabClaims,
+  };
+
+  // The primary's own MCP client (Claude/Copilot/OpenCode connecting via stdio
+  // directly to THIS process) always uses this caller identity. Proxies that
+  // arrive over IPC get their own per-session AgentCaller (see bridge/server.ts).
+  const PRIMARY_CALLER: AgentCaller = {
+    agent_id: 'primary',
+    pid: process.pid,
+    binary: 'node',
+    label: 'primary',
   };
 
   // Snapshot the user's deny-list at boot. Changes made via the standalone
@@ -373,7 +425,11 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   );
   mcpServer.setRequestHandler(
     CallToolRequestSchema,
-    async (req) => (await handleToolCall(req.params, dispatchDeps)) as never,
+    async (req) =>
+      (await handleToolCall(
+        { name: req.params.name, arguments: req.params.arguments, caller: PRIMARY_CALLER },
+        dispatchDeps,
+      )) as never,
   );
 
   // Optional: open the IPC bridge for proxy connections, but only when

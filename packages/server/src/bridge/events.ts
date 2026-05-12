@@ -15,7 +15,10 @@ export type BridgeEventKind =
   | 'primary-elected'
   | 'tab-registered'
   | 'tab-disconnected'
-  | 'tab-renamed';
+  | 'tab-renamed'
+  | 'tab-claimed'
+  | 'tab-released'
+  | 'tab-claim-rejected';
 
 export interface BridgeEvent {
   /** Monotonic id assigned by addEvent. */

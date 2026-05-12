@@ -4,10 +4,15 @@ import { Frame, Menu, type MenuItem } from './components.js';
 import { I18N_WELCOME, type Language } from '../commands/welcome.js';
 import { I18N_ABOUT } from '../commands/about.js';
 import { INSTALLERS, type ClientId } from '../installers/index.js';
-import { installFor, type InstallReport } from '../commands/install.js';
+import { type InstallReport } from '../commands/install.js';
 import { runDoctor, formatDoctor } from '../commands/doctor.js';
 import { getExtensionInfo } from '../commands/extension.js';
 import { checkUpdates, type UpdateInfo } from '../commands/updates.js';
+import {
+  runSelfUpdate,
+  type SelfUpdateProgress,
+  type SelfUpdateResult,
+} from '../commands/self-update.js';
 import { runFreePort, type FreePortResult } from '../commands/free-port.js';
 import { PACKAGE_NAME } from '../version.js';
 import { loadConfig, saveConfig } from '../config.js';
@@ -688,8 +693,14 @@ const UPDATES_I18N: Record<
     upToDate: string;
     available: string;
     upgradeCmd: string;
+    updateKeyHint: string;
+    updateRunning: string;
     error: string;
-    footer: string;
+    footerIdle: string;
+    footerWithUpdate: string;
+    footerUpdating: string;
+    footerDone: string;
+    footerFailed: string;
   }
 > = {
   en: {
@@ -699,9 +710,15 @@ const UPDATES_I18N: Record<
     latest: 'Latest on npm  ',
     upToDate: '✓ You are on the latest published version.',
     available: '⚠ A newer version is available.',
-    upgradeCmd: 'To upgrade, run:',
+    upgradeCmd: 'Or, to upgrade manually, run:',
+    updateKeyHint: 'Press u to update now (stops any running primary, then installs).',
+    updateRunning: 'Updating…',
     error: 'Could not check the registry',
-    footer: 'r retry · ↵ / Esc back to menu',
+    footerIdle: 'r retry · ↵ / Esc back to menu',
+    footerWithUpdate: 'u update · r retry · ↵ / Esc back to menu',
+    footerUpdating: 'updating — please wait…',
+    footerDone: '↵ / Esc back to menu — restart your MCP client to pick up the new version',
+    footerFailed: 'r retry check · ↵ / Esc back to menu',
   },
   es: {
     title: 'Buscar actualizaciones',
@@ -710,9 +727,15 @@ const UPDATES_I18N: Record<
     latest: 'Última en npm    ',
     upToDate: '✓ Estás en la última versión publicada.',
     available: '⚠ Hay una versión más nueva disponible.',
-    upgradeCmd: 'Para actualizar, corré:',
+    upgradeCmd: 'O, para actualizar a mano, corré:',
+    updateKeyHint: 'Tocá u para actualizar ahora (corta el primary en uso e instala).',
+    updateRunning: 'Actualizando…',
     error: 'No se pudo consultar el registry',
-    footer: 'r reintentar · ↵ / Esc volver al menú',
+    footerIdle: 'r reintentar · ↵ / Esc volver al menú',
+    footerWithUpdate: 'u actualizar · r reintentar · ↵ / Esc volver al menú',
+    footerUpdating: 'actualizando — esperá…',
+    footerDone: '↵ / Esc volver al menú — reiniciá tu cliente MCP para que tome la nueva versión',
+    footerFailed: 'r reintentar el chequeo · ↵ / Esc volver al menú',
   },
 };
 
@@ -720,14 +743,24 @@ interface UpdatesViewProps extends CommonProps {
   onBack: () => void;
 }
 
+/** Local UI state for an in-flight self-update. Drives both the body and
+ * the footer so the user sees one consistent stage label. */
+type UpdatePhase =
+  | { kind: 'idle' }
+  | { kind: 'running'; stage: SelfUpdateProgress['stage']; message: string }
+  | { kind: 'done'; message: string }
+  | { kind: 'failed'; message: string };
+
 export function UpdatesView({ language, onBack }: UpdatesViewProps) {
   const t = UPDATES_I18N[language];
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [update, setUpdate] = useState<UpdatePhase>({ kind: 'idle' });
 
   useEffect(() => {
     let cancelled = false;
     setInfo(null);
+    setUpdate({ kind: 'idle' });
     checkUpdates().then((r) => {
       if (!cancelled) setInfo(r);
     });
@@ -736,13 +769,50 @@ export function UpdatesView({ language, onBack }: UpdatesViewProps) {
     };
   }, [refreshKey]);
 
+  const isUpdating = update.kind === 'running';
+  const canUpdate = info !== null && info.newer === true && info.latest !== null && !isUpdating;
+
+  const startUpdate = (): void => {
+    if (!canUpdate || info === null || info.latest === null) return;
+    const target = info.latest;
+    setUpdate({ kind: 'running', stage: 'preflight', message: t.updateRunning });
+    runSelfUpdate(target, language, (event) => {
+      setUpdate({ kind: 'running', stage: event.stage, message: event.message });
+    })
+      .then((result: SelfUpdateResult) => {
+        setUpdate({
+          kind: result.ok ? 'done' : 'failed',
+          message: result.message,
+        });
+      })
+      .catch((err: unknown) => {
+        setUpdate({
+          kind: 'failed',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+  };
+
   useInput((input, key) => {
+    if (isUpdating) return; // ignore keys while the install is in flight
     if (key.return || key.escape) onBack();
-    else if (input === 'r') setRefreshKey((k) => k + 1);
+    else if (input === 'r' && update.kind !== 'done') setRefreshKey((k) => k + 1);
+    else if (input === 'u') startUpdate();
   });
 
+  const footer =
+    update.kind === 'running'
+      ? t.footerUpdating
+      : update.kind === 'done'
+        ? t.footerDone
+        : update.kind === 'failed'
+          ? t.footerFailed
+          : canUpdate
+            ? t.footerWithUpdate
+            : t.footerIdle;
+
   return (
-    <Frame title={t.title} footer={t.footer}>
+    <Frame title={t.title} footer={footer}>
       {info === null ? (
         <Text color="gray">{t.checking}</Text>
       ) : info.error || info.latest === null ? (
@@ -774,10 +844,29 @@ export function UpdatesView({ language, onBack }: UpdatesViewProps) {
               {info.newer ? t.available : t.upToDate}
             </Text>
           </Box>
-          {info.newer && (
+          {info.newer && update.kind === 'idle' && (
             <Box flexDirection="column" marginTop={1}>
-              <Text color="gray">{t.upgradeCmd}</Text>
-              <Text color="cyan">{`npm install -g ${PACKAGE_NAME}@latest`}</Text>
+              <Text color="cyan">{t.updateKeyHint}</Text>
+              <Box marginTop={1} flexDirection="column">
+                <Text color="gray">{t.upgradeCmd}</Text>
+                <Text color="cyan">{`npm install -g ${PACKAGE_NAME}@latest`}</Text>
+              </Box>
+            </Box>
+          )}
+          {update.kind === 'running' && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="cyan">{t.updateRunning}</Text>
+              <Text color="gray">{update.message}</Text>
+            </Box>
+          )}
+          {update.kind === 'done' && (
+            <Box marginTop={1}>
+              <Text color="green">{update.message}</Text>
+            </Box>
+          )}
+          {update.kind === 'failed' && (
+            <Box marginTop={1}>
+              <Text color="red">{update.message}</Text>
             </Box>
           )}
         </Box>

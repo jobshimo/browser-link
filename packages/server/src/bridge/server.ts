@@ -16,6 +16,7 @@ import {
 } from './protocol.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.js';
 import { rotateToken } from './token.js';
+import type { AgentCaller } from '../tools/tab-claims.js';
 
 /**
  * Primary's side of the IPC bridge. Listens on 127.0.0.1:17530, validates
@@ -26,9 +27,23 @@ import { rotateToken } from './token.js';
  * Construction does NOT bind the port. Call `start()` and await.
  */
 
+/** Strip ASCII control characters from anything we put through `log()`.
+ * Some of what we log includes data that originally came from a peer
+ * (binary names, error messages, frame kinds), so a malicious or just
+ * quirky value with embedded newlines / ANSI escapes / NULs could forge
+ * additional log lines or hide context. Replacing them with `?` makes
+ * every entry survive a single line and a single visible character per
+ * source character. */
+function sanitizeLogValue(s: string): string {
+  // ASCII C0 (U+0000-U+001F) plus DEL (U+007F). Stops embedded newlines /
+  // NUL / ANSI escapes from forging extra log lines or hiding text.
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\x00-\x1f\x7f]/g, '?');
+}
+
 function log(msg: string): void {
   // stderr — stdout belongs to the MCP transport.
-  console.error(`[browser-link ipc] ${msg}`);
+  console.error(`[browser-link ipc] ${sanitizeLogValue(msg)}`);
 }
 
 /** Binaries we'll accept as legitimate peers. The token is the real auth;
@@ -55,6 +70,10 @@ interface ProxySession {
   socket: Socket;
   pingTimer: NodeJS.Timeout;
   pongDeadline: NodeJS.Timeout | null;
+  /** Cached caller for this session — built once at handshake and reused on
+   * every MCP request so we don't re-derive it per call. The agent_id is
+   * the session id (UUID minted at auth), tied to the connection lifetime. */
+  caller: AgentCaller;
 }
 
 export interface IpcServerOptions {
@@ -232,11 +251,17 @@ export class IpcServer {
         sessionId = randomUUID();
         socket.write(encodeFrame({ kind: 'hello-ack', version: IPC_PROTOCOL_VERSION, sessionId }));
         const sid = sessionId;
+        const caller: AgentCaller = {
+          agent_id: sid,
+          pid: peer.pid,
+          binary: peer.binaryName,
+        };
         const session: ProxySession = {
           id: sid,
           socket,
           pingTimer: setInterval(() => this.heartbeat(sid), IPC_PING_INTERVAL_MS),
           pongDeadline: null,
+          caller,
         };
         this.sessions.set(sid, session);
         log(`Proxy connected: session=${sid} pid=${peer.pid}`);
@@ -261,6 +286,10 @@ export class IpcServer {
           clearInterval(session.pingTimer);
           if (session.pongDeadline) clearTimeout(session.pongDeadline);
           this.sessions.delete(sessionId);
+          // Drop every claim the agent held. The registry emits one
+          // tab-released event per dropped claim, which surfaces in
+          // browser.events for the remaining agents.
+          this.deps.browserTools.tabClaims?.onAgentDisconnect(sessionId);
           log(`Proxy disconnected: session=${sessionId}`);
         }
       }
@@ -298,7 +327,7 @@ export class IpcServer {
         return;
       }
       case 'mcp.request': {
-        const response = await this.dispatchMcpRequest(frame.payload);
+        const response = await this.dispatchMcpRequest(frame.payload, sessionId);
         try {
           socket.write(
             encodeFrame({ kind: 'mcp.response', requestId: frame.requestId, payload: response }),
@@ -331,8 +360,14 @@ export class IpcServer {
 
   /** Dispatch a JSON-RPC 2.0 MCP request to the shared handlers and return
    * a JSON-RPC 2.0 response object. Errors are converted to JSON-RPC error
-   * envelopes — never thrown back to the socket layer. */
-  private async dispatchMcpRequest(payload: unknown): Promise<unknown> {
+   * envelopes — never thrown back to the socket layer.
+   *
+   * `sessionId` ties the call back to the IPC session that originated it,
+   * so handlers that care about per-agent ownership (tab claims) see the
+   * right identity. The session is the authentication scope: only the agent
+   * that passed the handshake gets a session id, and the id dies with the
+   * connection. */
+  private async dispatchMcpRequest(payload: unknown, sessionId: string): Promise<unknown> {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } };
     }
@@ -368,8 +403,16 @@ export class IpcServer {
               error: { code: -32602, message: 'Missing tool name in params' },
             };
           }
+          const session = this.sessions.get(sessionId);
+          if (!session) {
+            return {
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32603, message: 'Session not found for tools/call' },
+            };
+          }
           const result = await handleToolCall(
-            { name: params.name, arguments: params.arguments },
+            { name: params.name, arguments: params.arguments, caller: session.caller },
             this.deps,
           );
           return { jsonrpc: '2.0', id, result };
