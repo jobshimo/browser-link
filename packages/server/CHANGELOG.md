@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.2](https://github.com/jobshimo/browser-link/compare/v0.7.1...v0.7.2) (2026-05-12)
+
+
+### Bug Fixes
+
+* **ci:** publish step on v0.7.1 failed with a misleading `404 Not Found` from npm. The `--provenance` attestation was signed and accepted by Sigstore, but the subsequent `PUT` to the registry was rejected. Diagnosis: npm Trusted Publishers validates the OIDC token's `workflow_ref` and `event_name` claims, and chained-workflow events (`workflow_run`, similar to `workflow_call`) ship claims that the direct-trigger contract on npmjs.com does not accept. Fix: collapse the release pipeline into `ci.yml` as a `release` job downstream of the test matrix (`needs: ci`, `if: event_name == 'push' && ref == refs/heads/main`). The OIDC token now carries `event_name: push` and `workflow_ref: …/ci.yml@…`, matching the Trusted Publisher contract.
+
+### Refactor
+
+* **ci:** delete `.github/workflows/release-finalize.yml`. Its three concerns (tag, GitHub Release, npm publish) live in the new `release` job inside `ci.yml`. One fewer workflow file, zero `workflow_run` chains, simpler OIDC story.
+
 ## [0.7.1](https://github.com/jobshimo/browser-link/compare/v0.7.0...v0.7.1) (2026-05-12)
 
 
