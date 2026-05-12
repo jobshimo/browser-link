@@ -18,26 +18,88 @@ describe('decodeLsofString', () => {
 });
 
 describe('parseLsofOutput', () => {
-  test('returns the first PID/command pair from a -F pc dump', () => {
-    const out = 'p1234\ncGoogle\\x20Chrome\\x20Helper\np5678\ncchrome\n';
-    expect(parseLsofOutput(out)).toEqual({ pid: 1234, binaryName: 'Google Chrome Helper' });
+  // Regression for the loopback ambiguity bug: on a localhost connection,
+  // lsof -i @host:port matches BOTH ends of the socket — the peer's local
+  // side AND the server's remote side. The parser must pick the entry whose
+  // local endpoint matches the queried host:port, never the other one.
+  test('returns the peer whose local endpoint matches host:port (loopback)', () => {
+    const out = [
+      'p1061',
+      'cnode',
+      'n127.0.0.1:17529->127.0.0.1:64836',
+      'p3532',
+      'cGoogle\\x20Chrome\\x20Helper',
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      '',
+    ].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toEqual({
+      pid: 3532,
+      binaryName: 'Google Chrome Helper',
+    });
   });
 
-  test('handles a single-process dump', () => {
-    const out = 'p1\ncchrome\n';
-    expect(parseLsofOutput(out)).toEqual({ pid: 1, binaryName: 'chrome' });
+  test('does not flip when the peer prints first', () => {
+    const out = [
+      'p3532',
+      'cGoogle\\x20Chrome\\x20Helper',
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      'p1061',
+      'cnode',
+      'n127.0.0.1:17529->127.0.0.1:64836',
+      '',
+    ].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toEqual({
+      pid: 3532,
+      binaryName: 'Google Chrome Helper',
+    });
   });
 
-  test('returns null when output is empty', () => {
-    expect(parseLsofOutput('')).toBeNull();
+  test('returns the single owner in a non-loopback dump', () => {
+    const out = ['p42', 'cchrome', 'n10.0.0.5:54321->1.2.3.4:80', ''].join('\n');
+    expect(parseLsofOutput(out, '10.0.0.5', 54321)).toEqual({ pid: 42, binaryName: 'chrome' });
   });
 
-  test('returns null when there is no command line after the pid', () => {
-    expect(parseLsofOutput('p1234\n')).toBeNull();
+  test('returns null when no entry has a local endpoint matching host:port', () => {
+    const out = ['p1', 'cchrome', 'n127.0.0.1:9999->127.0.0.1:17529', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
+  });
+
+  test('fails closed when two distinct PIDs claim the same local endpoint', () => {
+    // Kernel-impossible in practice but defensive: never guess in the auth path.
+    const out = [
+      'p1',
+      'cnode',
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      'p2',
+      'cchrome',
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      '',
+    ].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
+  });
+
+  test('returns null on empty output', () => {
+    expect(parseLsofOutput('', '127.0.0.1', 1)).toBeNull();
+  });
+
+  test('returns null when the command line is missing', () => {
+    const out = ['p1234', 'n127.0.0.1:64836->127.0.0.1:17529', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
+  });
+
+  test('returns null when the n field is missing', () => {
+    const out = ['p1234', 'cchrome', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
   });
 
   test('ignores malformed pid lines', () => {
-    expect(parseLsofOutput('pNOT_A_NUMBER\ncchrome\n')).toBeNull();
+    const out = ['pNOT_A_NUMBER', 'cchrome', 'n127.0.0.1:64836->127.0.0.1:17529', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
+  });
+
+  test('skips n lines without an arrow (e.g. LISTEN sockets that leaked through)', () => {
+    const out = ['p1', 'cnginx', 'n127.0.0.1:64836', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 64836)).toBeNull();
   });
 });
 
