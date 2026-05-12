@@ -1,14 +1,3 @@
-interface StatusResult {
-  connected: boolean;
-  serverTabId?: string;
-}
-
-interface ConnectResult {
-  ok: boolean;
-  error?: string;
-  serverTabId?: string;
-}
-
 type CardState = 'connected' | 'idle' | 'error';
 
 async function getCurrentTab(): Promise<chrome.tabs.Tab | null> {
@@ -59,10 +48,10 @@ async function refresh(): Promise<void> {
 
   urlEl.textContent = tab.url ?? '';
 
-  const status = (await chrome.runtime.sendMessage({
+  const status = await chrome.runtime.sendMessage({
     action: 'status',
     tabId: tab.id,
-  })) as StatusResult;
+  });
 
   if (status.connected) {
     setStatus('connected', 'Connected', status.serverTabId);
@@ -79,18 +68,18 @@ async function onAction(): Promise<void> {
 
   setAction('Working…', 'primary', true);
 
-  const status = (await chrome.runtime.sendMessage({
+  const status = await chrome.runtime.sendMessage({
     action: 'status',
     tabId: tab.id,
-  })) as StatusResult;
+  });
 
   if (status.connected) {
     await chrome.runtime.sendMessage({ action: 'disconnect', tabId: tab.id });
   } else {
-    const result = (await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       action: 'connect',
       tabId: tab.id,
-    })) as ConnectResult;
+    });
 
     if (!result.ok) {
       setStatus('error', result.error ?? 'Unknown error');

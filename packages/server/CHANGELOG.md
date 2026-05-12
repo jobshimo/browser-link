@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.6](https://github.com/jobshimo/browser-link/compare/v0.7.5...v0.7.6) (2026-05-13)
+
+
+### Features
+
+* **ci:** add ESLint 10 + typescript-eslint 8 with the `strictTypeChecked` ruleset. New `pnpm run lint` script and a `Lint` step in CI between Format check and Typecheck. Source TypeScript is type-aware-linted (full strict suite: no-explicit-any, no-unsafe-*, no-floating-promises, etc); test files get syntax-only lint with relaxed rules because `tsconfig.json` excludes them from the TS project. The flat config lives at `eslint.config.mjs`.
+
+### Bug Fixes
+
+* **extension:** remove dead duplicate interface declarations from `popup.ts` (`StatusResult`, `ConnectResult` were declared but never used; the real, used copies live in `background.ts`).
+
+### Refactor
+
+* **ci:** initial ESLint introduction. 18 rules with pre-existing violations are temporarily set to `warn` (205 warnings total — counts per-rule documented at the top of `eslint.config.mjs`). Every other strict-type-checked rule stays at `error`, so the config protects against NEW violations of rules we already comply with. Follow-up PRs will promote each warned rule back to `error` after fixing its violation cluster.
+
 ## [0.7.5](https://github.com/jobshimo/browser-link/compare/v0.7.4...v0.7.5) (2026-05-12)
 
 
