@@ -8,6 +8,13 @@ import { IpcServer } from './server.js';
 import { IpcClient, runProxy } from './client.js';
 import { IPC_PROTOCOL_VERSION } from './protocol.js';
 import type { DispatchDeps } from './dispatch.js';
+import type { PeerProcess } from '../auth/process-identity.js';
+
+/** Deterministic peer-lookup stub. The real lookup shells out to lsof/netstat,
+ * which is flaky or unavailable on CI runners; for these integration tests we
+ * only care that the handshake + dispatch logic is correct. */
+const TEST_PEER_LOOKUP = (): Promise<PeerProcess> =>
+  Promise.resolve({ pid: process.pid, binaryName: 'node' });
 
 /* End-to-end integration: real IpcServer + real IpcClient over a real TCP
  * socket on 127.0.0.1:17530, plus the runProxy() wrapper that pipes
@@ -50,7 +57,7 @@ afterEach(async () => {
 
 describe('IpcClient.connect', () => {
   test('handshakes successfully with a valid token', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
     const client = new IpcClient();
@@ -61,7 +68,7 @@ describe('IpcClient.connect', () => {
   });
 
   test('throws HandshakeError on wrong token', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const client = new IpcClient();
     clients.push(client);
@@ -74,7 +81,7 @@ describe('IpcClient.connect', () => {
     // To test version mismatch we'd need to corrupt the version. Instead
     // we lean on the server.test.ts coverage and just verify the client
     // surfaces hello-reject reasons through HandshakeError.
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const client = new IpcClient();
     clients.push(client);
@@ -92,7 +99,7 @@ describe('IpcClient.connect', () => {
 
 describe('IpcClient.sendMcpRequest', () => {
   test('round-trips a tools/list through the IPC bridge', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
     const client = new IpcClient();
@@ -112,7 +119,7 @@ describe('IpcClient.sendMcpRequest', () => {
   });
 
   test('returns a JSON-RPC error envelope when the socket dies mid-flight', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
     const client = new IpcClient();
@@ -137,7 +144,7 @@ describe('IpcClient.sendMcpRequest', () => {
 
 describe('IpcClient.onClose', () => {
   test('fires "primary-closing" when the primary broadcasts shutdown', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
     const client = new IpcClient();
@@ -160,7 +167,7 @@ describe('IpcClient.onClose', () => {
 
 describe('runProxy', () => {
   test('forwards an MCP request from stdin → primary → stdout', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
 
@@ -195,7 +202,7 @@ describe('runProxy', () => {
   });
 
   test('writes a JSON-RPC parse error when stdin gets garbage', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
 
@@ -221,7 +228,7 @@ describe('runProxy', () => {
   });
 
   test('forwards notifications without expecting a response', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
 
@@ -245,7 +252,7 @@ describe('runProxy', () => {
   });
 
   test('calls onClose when the primary shuts down', async () => {
-    server = new IpcServer(STUB_DEPS, { port: 0 });
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await server.start();
     const token = server.currentToken();
 
@@ -282,7 +289,7 @@ describe('runProxy without a token file', () => {
 describe('runProxy auto-reelect', () => {
   test('reconnects to a fresh primary on the same port', async () => {
     // Phase A: spin up a primary, connect proxy with auto-reelect on.
-    const primaryA = new IpcServer(STUB_DEPS, { port: 0 });
+    const primaryA = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await primaryA.start();
     const addr = primaryA.boundAddress();
     const tokenA = primaryA.currentToken();
@@ -319,7 +326,7 @@ describe('runProxy auto-reelect', () => {
     expect(reelectStarts).toBe(1);
 
     // Phase C: a new primary appears on the same port.
-    const primaryB = new IpcServer(STUB_DEPS, { port: addr.port });
+    const primaryB = new IpcServer(STUB_DEPS, { port: addr.port, peerLookup: TEST_PEER_LOOKUP });
     await primaryB.start();
 
     // Wait for the reconnect to complete.
@@ -359,7 +366,7 @@ describe('runProxy auto-reelect', () => {
   });
 
   test('responds with a JSON-RPC error to requests received while reconnecting', async () => {
-    const primaryA = new IpcServer(STUB_DEPS, { port: 0 });
+    const primaryA = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await primaryA.start();
     const addr = primaryA.boundAddress();
     const tokenA = primaryA.currentToken();
@@ -396,7 +403,7 @@ describe('runProxy auto-reelect', () => {
   });
 
   test('fires onClose after the reelect window exhausts', async () => {
-    const primary = new IpcServer(STUB_DEPS, { port: 0 });
+    const primary = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
     await primary.start();
     const addr = primary.boundAddress();
     const token = primary.currentToken();

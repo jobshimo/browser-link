@@ -1,6 +1,6 @@
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { lookupPeerProcess } from '../auth/process-identity.js';
+import { lookupPeerProcess, type PeerProcess } from '../auth/process-identity.js';
 import { SERVER_INSTRUCTIONS } from '../tools/server-instructions.js';
 import { VERSION } from '../version.js';
 import {
@@ -64,6 +64,11 @@ export interface IpcServerOptions {
   /** Override the bind port. Default 17530. Pass 0 to let the OS pick a
    * free port; the chosen port is exposed via boundPort() after start(). */
   port?: number;
+  /** Override the kernel-level peer process lookup. Production callers never
+   * set this — defaults to the real lsof/netstat-backed lookup. Tests inject
+   * a deterministic stub so they don't depend on those tools being available
+   * or fast enough on CI runners. */
+  peerLookup?: (host: string, port: number) => Promise<PeerProcess | null>;
 }
 
 export class IpcServer {
@@ -177,7 +182,8 @@ export class IpcServer {
     // Kernel-level process binding. Same trick as the WS bridge: we ask the
     // OS which process owns the peer's TCP port, and reject anything that
     // does not look like a Node-family binary.
-    const peer = await lookupPeerProcess(remoteAddr, remotePort).catch(() => null);
+    const lookup = this.options.peerLookup ?? lookupPeerProcess;
+    const peer = await lookup(remoteAddr, remotePort).catch(() => null);
     if (!peer || !NODE_PROCESS_NAMES.has(peer.binaryName.toLowerCase())) {
       log(
         `Rejected IPC connection from ${remoteAddr}:${remotePort}: not a known Node process (${

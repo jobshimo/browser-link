@@ -8,6 +8,13 @@ import { IpcServer } from './server.js';
 import { IPC_PROTOCOL_VERSION, encodeFrame, parseFrame, type Frame } from './protocol.js';
 import { readToken } from './token.js';
 import type { DispatchDeps } from './dispatch.js';
+import type { PeerProcess } from '../auth/process-identity.js';
+
+/** Deterministic peer-lookup stub. The real lookup shells out to lsof/netstat,
+ * which is flaky or unavailable on CI runners; for these integration tests we
+ * only care that the handshake + dispatch logic is correct. */
+const TEST_PEER_LOOKUP = (): Promise<PeerProcess> =>
+  Promise.resolve({ pid: process.pid, binaryName: 'node' });
 
 /* Integration test for the IPC server's accept loop + handshake. Spawns a
  * real listening server on an OS-assigned ephemeral port and connects to
@@ -60,7 +67,7 @@ function dial(addr: { host: string; port: number }): Promise<Socket> {
 
 /** Spin up an IpcServer on a free OS-assigned port. */
 async function startEphemeral(deps: DispatchDeps = STUB_DEPS): Promise<IpcServer> {
-  const s = new IpcServer(deps, { port: 0 });
+  const s = new IpcServer(deps, { port: 0, peerLookup: TEST_PEER_LOOKUP });
   await s.start();
   return s;
 }
@@ -106,7 +113,7 @@ describe('IpcServer.start', () => {
   test('rejects EADDRINUSE on a second start of the same port', async () => {
     server = await startEphemeral();
     const { port } = server.boundAddress();
-    const second = new IpcServer(STUB_DEPS, { port });
+    const second = new IpcServer(STUB_DEPS, { port, peerLookup: TEST_PEER_LOOKUP });
     await expect(second.start()).rejects.toThrow(/already in use/i);
   });
 });

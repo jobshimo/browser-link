@@ -43,11 +43,10 @@ function findPidOnPort(port: number): number | null {
       return null;
     }
     // Unix-likes: lsof gives just the PID with -t.
-    const out = execFileSync(
-      'lsof',
-      ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
+    const out = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
     const pid = Number.parseInt(out.trim().split('\n')[0] ?? '', 10);
     return Number.isFinite(pid) && pid > 0 ? pid : null;
   } catch {
@@ -67,11 +66,10 @@ function imageNameOf(pid: number): string | null {
     if (platform() === 'win32') {
       // tasklist /FI "PID eq 13212" /FO CSV /NH produces:
       //   "node.exe","13212","Console","1","45,000 K"
-      const out = execFileSync(
-        'tasklist',
-        ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      ).trim();
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
       if (!out || out.startsWith('INFO:')) return null;
       // Strip leading quote, then take up to next quote.
       const first = out.indexOf('"');
