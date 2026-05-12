@@ -1,8 +1,8 @@
 {
-  "name": "browser-link",
-  "version": "0.4.0",
+  "name": "browser-link-monorepo",
+  "version": "0.5.2",
   "private": true,
-  "description": "Bridge between an MCP client (Claude Code, OpenCode, GitHub Copilot CLI) and a Chrome tab via per-tab manual activation. Per-tool permissions + multi-agent mode for multiple clients sharing one bridge.",
+  "description": "Monorepo workspace root for browser-link. The published npm package is @jobshimo/browser-link in packages/server.",
   "workspaces": [
     "packages/*"
   ],
@@ -22,10 +22,7 @@
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/git": "^10.0.1",
     "prettier": "^3.3.3",
-    "semantic-release": "^25.0.3",
     "typescript": "^6.0.3"
   }
 }
