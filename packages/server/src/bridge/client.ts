@@ -346,9 +346,18 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   /* When the IPC drops AND autoReelect is on, we enter "reconnecting"
    * mode. While reconnecting, the data pipe stays attached but requests
    * are answered immediately with an error envelope so the MCP client
-   * does not stall on a missing reply. */
-  let reconnecting = false;
-  let stopped = false;
+   * does not stall on a missing reply.
+   *
+   * The flags live behind a getter pair on purpose: any read pattern
+   * TS can statically narrow (let-binding, object literal property)
+   * gets refined after the first `if (flag) return` and stays narrowed
+   * across the subsequent `await reconnectLoop(...)`, even though
+   * `stop()` can flip the value concurrently. TS does NOT narrow the
+   * return type of a function call, which is exactly the safety net
+   * we need for the post-await re-check. */
+  const flags = { stopped: false, reconnecting: false };
+  const isStopped = (): boolean => flags.stopped;
+  const isReconnecting = (): boolean => flags.reconnecting;
 
   let closedResolve: () => void = () => {
     /* replaced synchronously in the Promise executor below */
@@ -358,8 +367,8 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   });
 
   const fail = (reason: 'remote' | 'local' | 'primary-closing') => {
-    if (stopped) return;
-    stopped = true;
+    if (isStopped()) return;
+    flags.stopped = true;
     input.off('data', onData);
     if (opts.onClose) {
       try {
@@ -405,11 +414,11 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
 
     if (msg.id === undefined || msg.id === null) {
       // Notification — fire and forget when connected; drop during reconnect.
-      if (!reconnecting) client.sendMcpNotification(msg);
+      if (!isReconnecting()) client.sendMcpNotification(msg);
       return;
     }
 
-    if (reconnecting) {
+    if (isReconnecting()) {
       // Fail fast so the MCP client can decide to retry.
       output.write(
         JSON.stringify({
@@ -452,13 +461,13 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
     // for the reconnect loop, so we kick off an async IIFE inside.
     c.onClose((reason) => {
       void (async () => {
-        if (stopped) return;
+        if (isStopped()) return;
         if (!autoReelect) {
           fail(reason);
           return;
         }
         // Enter reconnect mode and try to find a new primary.
-        reconnecting = true;
+        flags.reconnecting = true;
         opts.onReelectStart?.();
         log(`Primary closed (${reason}); reelect window opened for ${reelectTimeoutMs}ms.`);
         const newClient = await reconnectLoop(
@@ -467,19 +476,18 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
           reelectTimeoutMs,
           reelectIntervalMs,
         );
-        // TS narrows `stopped` to false from the check at the top of
-        // this IIFE, but the value can flip during the `await` above
-        // when `stop()` runs concurrently — the runtime re-check is
-        // real, ESLint just can't model it.
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (stopped) {
+        // `stop()` may have run during the await above and flipped
+        // `flags.stopped`. The `isStopped()` call dodges TS narrowing
+        // from the check at the top of this IIFE so the runtime guard
+        // stays real.
+        if (isStopped()) {
           if (newClient) await newClient.disconnect();
           return;
         }
         if (!newClient) {
           log('Reelect window exhausted; closing proxy.');
           opts.onReelectExhausted?.();
-          reconnecting = false;
+          flags.reconnecting = false;
           fail(reason);
           return;
         }
@@ -488,7 +496,7 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
         log('Reconnected to new primary.');
         opts.onReelectSuccess?.();
         client = newClient;
-        reconnecting = false;
+        flags.reconnecting = false;
         wireCloseHandler(client);
       })();
     });
@@ -496,7 +504,7 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   wireCloseHandler(client);
 
   const stop = async (): Promise<void> => {
-    stopped = true;
+    flags.stopped = true;
     input.off('data', onData);
     await client.disconnect();
     closedResolve();

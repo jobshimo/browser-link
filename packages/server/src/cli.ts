@@ -131,16 +131,18 @@ function parseClient(argv: string[], language: Language): ClientId | null {
 }
 
 async function dispatch(argv: string[]): Promise<void> {
-  const [cmd, ...rest] = argv;
+  // `argv.at(0)` returns `string | undefined`, which is what we want
+  // here — at runtime the array really can be empty (bare invocation
+  // of the CLI). Destructuring `const [cmd] = argv` would have typed
+  // `cmd` as `string` (the tsconfig leaves `noUncheckedIndexedAccess`
+  // off) and forced an eslint-disable on the `case undefined` branch.
+  const cmd = argv.at(0);
+  const rest = argv.slice(1);
   const cfg = loadConfig();
   const language: Language = cfg.language ?? 'en';
   const t = CLI_I18N[language];
 
   switch (cmd) {
-    // 'cmd' is typed as 'string' because the tsconfig leaves
-    // noUncheckedIndexedAccess off, but at runtime argv[0] really can
-    // be undefined (no args = bare CLI invocation). Keep the case.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     case undefined:
     case 'start': {
       const { runServer } = await import('./server.js');

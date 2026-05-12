@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.8](https://github.com/jobshimo/browser-link/compare/v0.7.7...v0.7.8) (2026-05-13)
+
+
+### Refactor
+
+* **bridge/client:** route the `stopped` / `reconnecting` flags through `isStopped()` / `isReconnecting()` helper functions. TS narrows bare `let` booleans (and even literal object properties) to `false` after the first `if (flag) return`, and that narrowing persists across the `await reconnectLoop(...)` boundary even though `stop()` can flip the value concurrently. TS does NOT narrow function-call return types — so reading through the helpers keeps the post-await re-check honest and drops the previous `eslint-disable-next-line @typescript-eslint/no-unnecessary-condition`.
+* **cli:** swap `const [cmd, ...rest] = argv` for `const cmd = argv.at(0)` so `cmd` is `string | undefined` instead of `string`. Removes the `eslint-disable` on the `case undefined` branch — the type now genuinely admits the runtime case where the CLI is invoked with no args.
+* **server:** migrate `new Server(...)` (deprecated) to `new McpServer(...).server` (the high-level wrapper exposes the underlying low-level Server for `setRequestHandler`-based dispatch, which is exactly what we use). Removes the `eslint-disable-next-line @typescript-eslint/no-deprecated`. All three `setRequestHandler` call sites work as before — same `ListToolsRequestSchema` / `CallToolRequestSchema` handlers, same dispatch deps. The published MCP surface is byte-identical.
+
+### Miscellaneous
+
+* `pnpm lint` is now 0 errors / 0 warnings with **zero `eslint-disable-next-line` directives** anywhere in the source. Every prior suppression has been replaced by a structural change to the code, not a comment.
+
 ## [0.7.7](https://github.com/jobshimo/browser-link/compare/v0.7.6...v0.7.7) (2026-05-13)
 
 

@@ -1,4 +1,4 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -421,23 +421,23 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   const dispatchDeps: DispatchDeps = { browserTools: deps, disabledTools };
 
-  // We deliberately use the low-level `Server` class instead of the
-  // higher-level `McpServer` wrapper. The wrapper exposes a different
-  // tool-registration surface (per-tool callbacks) while we run a single
-  // dispatch entry point — migrating would be a sizeable refactor and is
-  // tracked separately. Re-enabling the rule will require that move.
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  const mcpServer = new Server(
+  // We use `McpServer` (the non-deprecated high-level class) but reach
+  // through `.server` for `setRequestHandler` — the SDK docs explicitly
+  // expose the underlying Server for "advanced usage like sending
+  // notifications or setting custom request handlers", which is exactly
+  // what we need: one dispatcher for tools/list and tools/call instead
+  // of per-tool callbacks.
+  const mcpServer = new McpServer(
     { name: 'browser-link', version: '0.0.1' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   // The SDK's request-handler return types include task/streaming variants we
   // never produce. Cast keeps the shared dispatch module SDK-agnostic.
-  mcpServer.setRequestHandler(ListToolsRequestSchema, () =>
+  mcpServer.server.setRequestHandler(ListToolsRequestSchema, () =>
     Promise.resolve(handleToolsList(dispatchDeps) as never),
   );
-  mcpServer.setRequestHandler(
+  mcpServer.server.setRequestHandler(
     CallToolRequestSchema,
     async (req) =>
       (await handleToolCall(
