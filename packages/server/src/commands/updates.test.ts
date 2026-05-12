@@ -92,4 +92,20 @@ describe('formatUpdate', () => {
     expect(out).toContain('Could not check the registry');
     expect(out).toContain('timed out');
   });
+
+  test('es path uses Spanish labels and messages', () => {
+    const upToDate = formatUpdate({ current: '0.3.1', latest: '0.3.1', newer: false }, 'es');
+    expect(upToDate).toContain('Instalada:');
+    expect(upToDate).toContain('Última:');
+    expect(upToDate).toContain('última versión');
+
+    const available = formatUpdate({ current: '0.3.0', latest: '0.3.1', newer: true }, 'es');
+    expect(available).toContain('actualización disponible');
+
+    const cannotReach = formatUpdate(
+      { current: '0.3.1', latest: null, newer: null, error: 'timed out' },
+      'es',
+    );
+    expect(cannotReach).toContain('No se pudo consultar');
+  });
 });

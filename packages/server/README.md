@@ -52,8 +52,22 @@ browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
 browser-link extension                     # show the Chrome extension assets path + steps
 browser-link doctor                        # diagnose current setup
+browser-link tools                         # show which MCP tools are enabled / disabled
+browser-link tools disable browser.evaluate
+browser-link tools preset readonly         # all | readonly | no-eval | no-map
+browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # what this is, how it works, every tool
 ```
+
+## Per-tool permissions
+
+`browser-link` exposes 16 MCP tools by default — 10 to drive the connected
+Chrome tab and 6 to read/write the local UI map. You can disable any subset
+per machine, either through the **Permissions** screen in the interactive
+menu (toggle with Space, apply a preset with Enter, save with `s`) or
+through the scriptable `browser-link tools` subcommand. Available presets:
+`all` (default), `readonly`, `no-eval`, `no-map`. Changes take effect the
+next time your MCP client starts the server.
 
 After `install`, restart the MCP client so it picks up the new entry.
 After `extension`, follow the printed steps to load the unpacked extension

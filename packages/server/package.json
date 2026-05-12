@@ -1,7 +1,7 @@
 {
   "name": "@jobshimo/browser-link",
-  "version": "0.2.0",
-  "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab, with a persistent UI map of selectors, flows and gotchas across sessions.",
+  "version": "0.3.1",
+  "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab. Per-tool permissions, persistent UI map of selectors, flows and gotchas across sessions.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -12,7 +12,8 @@
     "copilot-cli",
     "chrome",
     "browser-automation",
-    "ai-tools"
+    "ai-tools",
+    "permissions"
   ],
   "homepage": "https://github.com/jobshimo/browser-link#readme",
   "bugs": {

@@ -1,4 +1,5 @@
 import { PACKAGE_NAME, VERSION } from '../version.js';
+import type { Language } from './welcome.js';
 
 export interface UpdateInfo {
   current: string;
@@ -71,20 +72,50 @@ function isNewer(latest: string, current: string): boolean {
   return false;
 }
 
+interface UpdatesCliI18n {
+  /** Prefix including colon + trailing whitespace so the version aligns. */
+  currentLabel: string;
+  /** Prefix including colon + trailing whitespace so the version aligns. */
+  latestLabel: string;
+  cantReach: string;
+  upToDate: string;
+  available: (cmd: string) => string;
+}
+
+const UPDATES_CLI_I18N: Record<Language, UpdatesCliI18n> = {
+  en: {
+    currentLabel: 'Current: ',
+    latestLabel: 'Latest:  ',
+    cantReach: 'Could not check the registry',
+    upToDate: 'You are up to date.',
+    available: (cmd) => `Update available. Run: ${cmd}`,
+  },
+  es: {
+    currentLabel: 'Instalada: ',
+    latestLabel: 'Última:    ',
+    cantReach: 'No se pudo consultar el registry',
+    upToDate: 'Estás en la última versión.',
+    available: (cmd) => `Hay una actualización disponible. Corré: ${cmd}`,
+  },
+};
+
 /** Plain-text formatter for the non-interactive `browser-link updates`. */
-export function formatUpdate(info: UpdateInfo): string {
+export function formatUpdate(info: UpdateInfo, language: Language = 'en'): string {
+  const t = UPDATES_CLI_I18N[language];
   if (info.error || info.latest === null) {
     return [
-      `Current: ${info.current}`,
-      `Could not check the registry: ${info.error ?? 'unknown error'}`,
+      `${t.currentLabel}${info.current}`,
+      `${t.cantReach}: ${info.error ?? 'unknown error'}`,
     ].join('\n');
   }
   if (info.newer) {
     return [
-      `Current: ${info.current}`,
-      `Latest:  ${info.latest}`,
-      `Update available. Run: npm install -g ${PACKAGE_NAME}@latest`,
+      `${t.currentLabel}${info.current}`,
+      `${t.latestLabel}${info.latest}`,
+      t.available(`npm install -g ${PACKAGE_NAME}@latest`),
     ].join('\n');
   }
-  return [`Current: ${info.current}`, `Latest:  ${info.latest}`, `You are up to date.`].join('\n');
+  return [`${t.currentLabel}${info.current}`, `${t.latestLabel}${info.latest}`, t.upToDate].join(
+    '\n',
+  );
 }

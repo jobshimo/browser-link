@@ -17,6 +17,8 @@ import {
 } from './tools/browser-dispatch.js';
 import { toolError, toolResponse } from './tools/responses.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
+import { isToolEnabled } from './permissions.js';
+import { loadConfig } from './config.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -234,17 +236,37 @@ export async function runServer(): Promise<void> {
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
   };
 
+  // Snapshot the user's deny-list at boot. Changes made via the standalone
+  // CLI/UI while the MCP server is already running do NOT take effect until
+  // the MCP client restarts — the welcome and permissions screens both warn
+  // the user about that.
+  const cfg = loadConfig();
+  const disabledTools = cfg.disabledTools ?? [];
+  if (disabledTools.length > 0) {
+    log(`Tool filter active — ${disabledTools.length} disabled: ${disabledTools.join(', ')}`);
+  }
+
   const mcpServer = new Server(
     { name: 'browser-link', version: '0.0.1' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS],
+    tools: [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS].filter((t) =>
+      isToolEnabled(t.name, disabledTools),
+    ),
   }));
 
   mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    if (!isToolEnabled(name, disabledTools)) {
+      // Defence in depth: a client that cached the previous tools/list could
+      // still try to call a now-disabled tool. Refuse with a clear reason.
+      return toolError(
+        `Tool "${name}" is disabled in this browser-link config. ` +
+          `Re-enable it via the setup UI (Permissions) or \`browser-link tools enable ${name}\`.`,
+      );
+    }
     try {
       if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
       if (isBrowserTool(name)) return toolResponse(await handleBrowserTool(name, args, deps));

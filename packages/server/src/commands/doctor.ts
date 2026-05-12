@@ -5,6 +5,7 @@ import { getAllowedBrowsers } from '../auth/allowlist.js';
 import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
+import type { Language } from './welcome.js';
 
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 17529;
@@ -83,53 +84,114 @@ function symbol(ok: boolean): string {
   return ok ? '✓' : '✗';
 }
 
-export function formatDoctor(r: DoctorReport): string {
+interface DoctorI18n {
+  title: string;
+  wsBridge: string;
+  wsHint: string;
+  clientsHeader: string;
+  clientNotInstalled: string;
+  clientRegistered: string;
+  clientNotRegistered: string;
+  clientConfig: string;
+  extensionHeader: string;
+  extensionNotFound: string;
+  mapHeader: string;
+  mapPath: string;
+  mapNotCreated: string;
+  mapSize: string;
+  mapApps: string;
+  processBinding: string;
+  processBindingNone: string;
+  processBindingOk: (n: number) => string;
+}
+
+const DOCTOR_I18N: Record<Language, DoctorI18n> = {
+  en: {
+    title: 'browser-link doctor',
+    wsBridge: 'WebSocket bridge',
+    wsHint:
+      '                   (the server is launched by your MCP client; open Claude Code / OpenCode / Copilot CLI to start it)',
+    clientsHeader: 'MCP clients:',
+    clientNotInstalled: '✗ not installed',
+    clientRegistered: '✓ registered',
+    clientNotRegistered: '⚠ installed but not registered',
+    clientConfig: 'config:',
+    extensionHeader: 'Chrome extension assets:',
+    extensionNotFound: 'not found (run `browser-link extension` for guidance)',
+    mapHeader: 'Map DB:',
+    mapPath: 'path:',
+    mapNotCreated: '  (not created yet — will be initialized on first run)',
+    mapSize: 'size:',
+    mapApps: 'apps tracked:',
+    processBinding: 'Process binding:',
+    processBindingNone: '  ✗ no allowlist for this OS — incoming WS connections will be rejected.',
+    processBindingOk: (n) => `  ✓ accepts WS connections from ${n} known browser binaries.`,
+  },
+  es: {
+    title: 'browser-link doctor',
+    wsBridge: 'Puente WebSocket',
+    wsHint:
+      '                   (lo arranca tu cliente MCP; abrí Claude Code / OpenCode / Copilot CLI para iniciarlo)',
+    clientsHeader: 'Clientes MCP:',
+    clientNotInstalled: '✗ no instalado',
+    clientRegistered: '✓ registrado',
+    clientNotRegistered: '⚠ instalado pero no registrado',
+    clientConfig: 'config:',
+    extensionHeader: 'Assets de la extensión de Chrome:',
+    extensionNotFound: 'no encontrada (corré `browser-link extension` para la guía)',
+    mapHeader: 'Base de datos del mapa:',
+    mapPath: 'ruta:',
+    mapNotCreated: '  (todavía no se creó — se inicializa en el primer arranque)',
+    mapSize: 'tamaño:',
+    mapApps: 'apps registradas:',
+    processBinding: 'Validación por proceso:',
+    processBindingNone: '  ✗ sin allowlist para este SO — las conexiones WS entrantes se rechazan.',
+    processBindingOk: (n) => `  ✓ acepta conexiones WS desde ${n} binarios de navegador conocidos.`,
+  },
+};
+
+export function formatDoctor(r: DoctorReport, language: Language = 'en'): string {
+  const t = DOCTOR_I18N[language];
   const lines: string[] = [];
-  lines.push('browser-link doctor');
+  lines.push(t.title);
   lines.push('');
-  lines.push(
-    `WebSocket bridge  ${symbol(r.ws.listening)} ${r.ws.host}:${r.ws.port} — ${r.ws.detail}`,
-  );
+  lines.push(`${t.wsBridge}  ${symbol(r.ws.listening)} ${r.ws.host}:${r.ws.port} — ${r.ws.detail}`);
   if (!r.ws.listening) {
-    lines.push(
-      '                   (the server is launched by your MCP client; open Claude Code / OpenCode to start it)',
-    );
+    lines.push(t.wsHint);
   }
   lines.push('');
-  lines.push('MCP clients:');
+  lines.push(t.clientsHeader);
   for (const c of r.clients) {
     const status = !c.installed
-      ? '✗ not installed'
+      ? t.clientNotInstalled
       : c.registered
-        ? '✓ registered'
-        : '⚠ installed but not registered';
-    lines.push(`  ${c.displayName.padEnd(14)} ${status}`);
-    lines.push(`  ${' '.repeat(14)} config: ${c.configPath}`);
+        ? t.clientRegistered
+        : t.clientNotRegistered;
+    lines.push(`  ${c.displayName.padEnd(20)} ${status}`);
+    lines.push(`  ${' '.repeat(20)} ${t.clientConfig} ${c.configPath}`);
   }
   lines.push('');
-  lines.push('Chrome extension assets:');
+  lines.push(t.extensionHeader);
   if (r.extension.path) {
     lines.push(`  ${symbol(true)} ${r.extension.path}`);
   } else {
-    lines.push(`  ${symbol(false)} not found (run \`browser-link extension\` for guidance)`);
+    lines.push(`  ${symbol(false)} ${t.extensionNotFound}`);
   }
   lines.push('');
-  lines.push('Map DB:');
-  lines.push(`  path: ${r.map.dbPath}`);
+  lines.push(t.mapHeader);
+  lines.push(`  ${t.mapPath} ${r.map.dbPath}`);
   if (!r.map.exists) {
-    lines.push('  (not created yet — will be initialized on first run)');
+    lines.push(t.mapNotCreated);
   } else {
-    lines.push(`  size: ${r.map.sizeBytes} bytes`);
-    lines.push(`  apps tracked: ${r.map.apps}`);
+    lines.push(`  ${t.mapSize} ${r.map.sizeBytes} bytes`);
+    lines.push(`  ${t.mapApps} ${r.map.apps}`);
   }
   lines.push('');
-  lines.push('Process binding:');
+  lines.push(t.processBinding);
   if (r.security.allowedBrowsers.length === 0) {
-    lines.push(`  ✗ no allowlist for this OS — incoming WS connections will be rejected.`);
+    lines.push(t.processBindingNone);
   } else {
-    lines.push(
-      `  ✓ accepts WS connections from ${r.security.allowedBrowsers.length} known browser binaries.`,
-    );
+    lines.push(t.processBindingOk(r.security.allowedBrowsers.length));
     lines.push(
       `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
     );

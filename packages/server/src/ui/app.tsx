@@ -6,7 +6,9 @@ import {
   DoctorView,
   ExtensionView,
   InstallResultView,
+  LanguageView,
   MainMenu,
+  PermissionsView,
   UpdatesView,
   WelcomeScreen,
   type MenuAction,
@@ -24,9 +26,11 @@ type Screen =
   | { kind: 'menu' }
   | { kind: 'pick-client' }
   | { kind: 'install-result'; report: InstallReport }
+  | { kind: 'permissions' }
   | { kind: 'extension' }
   | { kind: 'doctor' }
   | { kind: 'updates' }
+  | { kind: 'language' }
   | { kind: 'about' };
 
 interface AppProps {
@@ -72,9 +76,11 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
           language={language}
           onSelect={(action: MenuAction) => {
             if (action === 'register') setScreen({ kind: 'pick-client' });
+            else if (action === 'permissions') setScreen({ kind: 'permissions' });
             else if (action === 'extension') setScreen({ kind: 'extension' });
             else if (action === 'doctor') setScreen({ kind: 'doctor' });
             else if (action === 'updates') setScreen({ kind: 'updates' });
+            else if (action === 'language') setScreen({ kind: 'language' });
             else if (action === 'about') setScreen({ kind: 'about' });
             else if (action === 'welcome') setScreen({ kind: 'welcome', hideDismiss: true });
             else if (action === 'repo') openUrl(REPO_URL);
@@ -100,6 +106,9 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
     case 'install-result':
       return <InstallResultView language={language} report={screen.report} onBack={backToMenu} />;
 
+    case 'permissions':
+      return <PermissionsView language={language} onBack={backToMenu} />;
+
     case 'extension':
       return <ExtensionView language={language} onBack={backToMenu} />;
 
@@ -108,6 +117,18 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
 
     case 'updates':
       return <UpdatesView language={language} onBack={backToMenu} />;
+
+    case 'language':
+      return (
+        <LanguageView
+          language={language}
+          onPick={(next) => {
+            setLanguage(next);
+            saveConfig({ language: next });
+          }}
+          onBack={backToMenu}
+        />
+      );
 
     case 'about':
       return <AboutView language={language} onBack={backToMenu} />;

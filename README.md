@@ -68,9 +68,10 @@ PowerShell, Windows Terminal, macOS Terminal, iTerm and every Linux TTY:
 │ Pick an action                                                  │
 │                                                                 │
 │ ❯ Register browser-link with an MCP client                      │
+│   Permissions — pick which MCP tools to expose                  │
 │   Show Chrome extension install steps                           │
 │   Run doctor (diagnose current setup)                           │
-│   Show the welcome screen                                       │
+│   Check for updates on npm                                      │
 │   About / Help — what is this and how it works                  │
 │   Open the GitHub repository                                    │
 │   Quit                                                          │
@@ -104,9 +105,39 @@ browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
 browser-link extension                     # show extension assets path + steps
 browser-link doctor                        # diagnose current setup
+browser-link tools                         # show which MCP tools are enabled
+browser-link tools disable browser.evaluate
+browser-link tools preset readonly         # all | readonly | no-eval | no-map
+browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
 ```
+
+## Per-tool permissions
+
+By default `browser-link` exposes 16 MCP tools — 10 to drive the connected
+Chrome tab and 6 to read/write the persistent UI map. You can narrow that
+down per machine:
+
+- **In the menu**, pick "Permissions". Toggle individual tools with **Space**
+  or apply a preset with **Enter**:
+  - `All enabled` (default)
+  - `Read-only` — no actions, no `evaluate`, no map writes
+  - `No evaluate` — everything except arbitrary JS
+  - `No persistent map` — bridge tools on, map tools off
+    Press **s** to save.
+- **From the shell**, the same controls are scriptable:
+  ```bash
+  browser-link tools                              # show current state
+  browser-link tools disable browser.evaluate     # block JS execution
+  browser-link tools preset readonly              # observation-only profile
+  browser-link tools enable browser.click         # turn one back on
+  ```
+
+The deny list is stored in `config.json` next to the map DB. Changes take
+effect the **next time the MCP client starts the server** (restart the
+client to apply). Disabled tools are removed from `tools/list` and any
+client that still tries to call them gets a clear error.
 
 ## How it works
 

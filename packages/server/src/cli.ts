@@ -5,11 +5,58 @@ import { uninstallAll, uninstallFor } from './commands/uninstall.js';
 import { printExtensionInstructions } from './commands/extension.js';
 import { printAbout } from './commands/about.js';
 import { checkUpdates, formatUpdate } from './commands/updates.js';
+import { runToolsCommand } from './commands/tools.js';
 import { loadConfig } from './config.js';
 import { VERSION } from './version.js';
 import type { ClientId } from './installers/index.js';
+import type { Language } from './commands/welcome.js';
 
-const HELP = `browser-link ${VERSION} — bridge any MCP client to the Chrome tabs you enable.
+interface CliI18n {
+  help: string;
+  restartHint: string;
+  installNext: string;
+  toolsRestart: string;
+  unknownCommand: (cmd: string) => string;
+  unknownClient: (val: string) => string;
+}
+
+function buildHelp(language: Language): string {
+  if (language === 'es') {
+    return `browser-link ${VERSION} — puente entre cualquier cliente MCP y las pestañas de Chrome que vos habilites.
+
+Uso:
+  browser-link                  Abre el setup interactivo (registrar un
+                                cliente, ver pasos de la extensión, doctor,
+                                buscar actualizaciones) cuando se invoca
+                                desde una terminal.
+                                Cuando lo invoca un cliente MCP por stdio,
+                                arranca el servidor MCP.
+  browser-link install          Registra browser-link en todos los clientes detectados.
+  browser-link install --client <claude|opencode|copilot>
+                                Registra sólo en el cliente nombrado.
+  browser-link uninstall        Elimina todos los registros.
+  browser-link uninstall --client <id>
+                                Elimina sólo el registro nombrado.
+  browser-link extension        Muestra la ruta de los assets de la extensión
+                                de Chrome y los pasos por SO.
+  browser-link doctor           Diagnostica el setup actual (clientes, servidor, extensión, base del mapa).
+  browser-link updates          Consulta el registry de npm en busca de versión nueva.
+  browser-link tools            Muestra qué tools MCP están habilitadas / deshabilitadas.
+  browser-link tools enable <nombre…>   Vuelve a habilitar tools concretas.
+  browser-link tools disable <nombre…>  Deshabilita tools concretas.
+  browser-link tools preset <id>        Aplica un preset: all | readonly | no-eval | no-map.
+  browser-link about            Muestra la explicación completa.
+  browser-link version          Muestra la versión instalada (también: --version, -v).
+  browser-link help             Este mensaje.
+
+Variables de entorno:
+  BROWSER_LINK_DATA_DIR         Sobreescribe la ruta de la base (default por SO).
+  BROWSER_LINK_BIN              Sobreescribe el comando guardado en los configs
+                                de los clientes (p. ej. "node /path/to/dist/index.js" en dev).
+  COPILOT_HOME                  Sobreescribe el directorio de config del CLI de
+                                GitHub Copilot (default ~/.copilot).`;
+  }
+  return `browser-link ${VERSION} — bridge any MCP client to the Chrome tabs you enable.
 
 Usage:
   browser-link                  When invoked from an interactive terminal,
@@ -27,6 +74,10 @@ Usage:
                                 per-OS install instructions.
   browser-link doctor           Diagnose current setup (clients, server, extension, map DB).
   browser-link updates          Check the npm registry for a newer version.
+  browser-link tools            Show which MCP tools are enabled / disabled.
+  browser-link tools enable <name…>   Re-enable specific tools.
+  browser-link tools disable <name…>  Disable specific tools.
+  browser-link tools preset <id>      Apply a preset: all | readonly | no-eval | no-map.
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
   browser-link help             This message.
@@ -37,17 +88,41 @@ Environment:
                                 (e.g. "node /path/to/dist/index.js" for dev).
   COPILOT_HOME                  Override GitHub Copilot CLI's config dir
                                 (default ~/.copilot).`;
+}
 
-function parseClient(argv: string[]): ClientId | null {
+const CLI_I18N: Record<Language, CliI18n> = {
+  en: {
+    help: '',
+    restartHint: 'Restart the MCP client so it picks up the registration.',
+    installNext: 'Next: install the Chrome extension — run `browser-link extension`.',
+    toolsRestart: 'Restart your MCP client so it picks up the change.',
+    unknownCommand: (cmd) => `Unknown command: ${cmd}`,
+    unknownClient: (val) => `Unknown --client value: ${val}. Use claude, opencode or copilot.`,
+  },
+  es: {
+    help: '',
+    restartHint: 'Reiniciá el cliente MCP para que tome el registro.',
+    installNext: 'Siguiente: instalá la extensión de Chrome — corré `browser-link extension`.',
+    toolsRestart: 'Reiniciá el cliente MCP para que tome el cambio.',
+    unknownCommand: (cmd) => `Comando desconocido: ${cmd}`,
+    unknownClient: (val) =>
+      `Valor de --client desconocido: ${val}. Usá claude, opencode o copilot.`,
+  },
+};
+
+function parseClient(argv: string[], language: Language): ClientId | null {
   const idx = argv.findIndex((a) => a === '--client');
   if (idx === -1 || idx === argv.length - 1) return null;
   const val = argv[idx + 1];
   if (val === 'claude' || val === 'opencode' || val === 'copilot') return val;
-  throw new Error(`Unknown --client value: ${val}. Use claude, opencode or copilot.`);
+  throw new Error(CLI_I18N[language].unknownClient(val ?? ''));
 }
 
 async function dispatch(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
+  const cfg = loadConfig();
+  const language: Language = cfg.language ?? 'en';
+  const t = CLI_I18N[language];
 
   switch (cmd) {
     case undefined:
@@ -59,46 +134,51 @@ async function dispatch(argv: string[]): Promise<void> {
     case 'help':
     case '-h':
     case '--help': {
-      console.log(HELP);
+      console.log(buildHelp(language));
       return;
     }
     case 'install': {
-      const client = parseClient(rest);
+      const client = parseClient(rest, language);
       const reports = client ? [installFor(client)] : installAll();
       for (const r of reports) {
         const prefix = r.installedClient ? '✓' : '·';
         console.log(`${prefix} ${r.displayName}: ${r.message}`);
       }
       console.log('');
-      console.log('Restart the MCP client so it picks up the registration.');
-      console.log('Next: install the Chrome extension — run `browser-link extension`.');
+      console.log(t.restartHint);
+      console.log(t.installNext);
       return;
     }
     case 'uninstall': {
-      const client = parseClient(rest);
+      const client = parseClient(rest, language);
       const reports = client ? [uninstallFor(client)] : uninstallAll();
       for (const r of reports) console.log(`· ${r.displayName}: ${r.message}`);
       return;
     }
     case 'extension': {
-      printExtensionInstructions();
+      printExtensionInstructions(language);
       return;
     }
     case 'doctor': {
       const report = await runDoctor();
-      console.log(formatDoctor(report));
+      console.log(formatDoctor(report, language));
       return;
     }
     case 'about': {
-      const cfg = loadConfig();
-      printAbout(cfg.language ?? 'en');
+      printAbout(language);
       return;
     }
     case 'updates': {
       const info = await checkUpdates();
-      console.log(formatUpdate(info));
+      console.log(formatUpdate(info, language));
       // Non-zero exit when we could not reach the registry, so scripts can detect it.
       if (info.error || info.latest === null) process.exit(2);
+      return;
+    }
+    case 'tools': {
+      console.log(runToolsCommand(rest, language));
+      console.log('');
+      console.log(t.toolsRestart);
       return;
     }
     case 'version':
@@ -108,9 +188,9 @@ async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     default: {
-      console.error(`Unknown command: ${cmd}`);
+      console.error(t.unknownCommand(cmd));
       console.error('');
-      console.error(HELP);
+      console.error(buildHelp(language));
       process.exit(2);
     }
   }

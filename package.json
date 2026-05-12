@@ -1,8 +1,8 @@
 {
   "name": "browser-link",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "Bridge between an MCP client (Claude Code, OpenCode, GitHub Copilot CLI) and a Chrome tab via per-tab manual activation",
+  "description": "Bridge between an MCP client (Claude Code, OpenCode, GitHub Copilot CLI) and a Chrome tab via per-tab manual activation. Per-tool permissions configurable from the setup UI.",
   "workspaces": [
     "packages/*"
   ],
