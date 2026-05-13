@@ -22,6 +22,10 @@ export interface WelcomeOptions {
 
 interface I18n {
   title: string;
+  /** One-paragraph mission statement for the compact (default) view. */
+  shortAbout: string;
+  /** One-line critical warning for the compact (default) view. */
+  shortWarning: string;
   aboutTitle: string;
   about: string;
   capabilitiesTitle: string;
@@ -31,12 +35,32 @@ interface I18n {
   responsibility: string;
   extensionNote: string;
   prompt: string;
+  /** Trailing hint pointing at where the full breakdown lives. */
+  detailHint: string;
   options: { accept: string; dismiss: string; swap: string; quit: string };
+  /** Footer keycap labels — language-stable except for the verb. */
+  footerKeys: {
+    navigate: string;
+    select: string;
+    lang: string;
+    quit: string;
+    info: string;
+    hide: string;
+  };
 }
 
 export const I18N_WELCOME: Record<Language, I18n> = {
   en: {
     title: 'browser-link',
+    shortAbout: [
+      'MCP bridge between your editor agent and the Chrome tabs you',
+      'explicitly enable through a companion extension.',
+    ].join('\n'),
+    shortWarning: [
+      'The agent can read and write whatever is on a connected tab —',
+      'sessions, wallets, admin panels. Only connect tabs you would let',
+      'a remote junior dev touch.',
+    ].join('\n'),
     aboutTitle: 'What this is',
     about: [
       'An MCP server that opens a small WebSocket bridge between an MCP',
@@ -75,15 +99,36 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     extensionNote:
       'The Chrome extension is custom and ships inside this package. The setup menu after this screen will tell you where it lives so you can load it via chrome://extensions → Load unpacked.',
     prompt: 'How do you want to proceed?',
+    detailHint: 'Press i for the full breakdown · also available under About.',
     options: {
       accept: 'I understand, continue',
       dismiss: "Accept and don't show again",
-      swap: 'Switch to español',
+      // Label sits in the destination language so a monolingual user
+      // can still parse it — they recognise "Español" universally and
+      // the verb in the destination language confirms it is the switch.
+      swap: 'Cambiar a Español',
       quit: 'Quit',
+    },
+    footerKeys: {
+      navigate: 'navigate',
+      select: 'select',
+      lang: 'lang',
+      quit: 'quit',
+      info: 'info',
+      hide: 'hide',
     },
   },
   es: {
     title: 'browser-link',
+    shortAbout: [
+      'Puente MCP entre el agente de tu editor y las pestañas de Chrome',
+      'que vos habilitás explícitamente a través de una extensión.',
+    ].join('\n'),
+    shortWarning: [
+      'El agente puede leer y escribir todo lo que esté en una pestaña',
+      'conectada — sesiones, wallets, paneles de admin. Solo conectá',
+      'pestañas que dejarías tocar a un dev junior remoto.',
+    ].join('\n'),
     aboutTitle: 'Qué es esto',
     about: [
       'Un servidor MCP que abre un puente WebSocket entre un cliente MCP',
@@ -124,11 +169,23 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     extensionNote:
       'La extensión de Chrome es custom y viene incluida en este paquete. El menú que aparece después de esta pantalla te dice exactamente dónde está para que la cargues vía chrome://extensions → Cargar sin empaquetar.',
     prompt: '¿Cómo querés seguir?',
+    detailHint: 'Apretá i para ver el detalle completo · también disponible en About.',
     options: {
       accept: 'Entendido, continuar',
       dismiss: 'Aceptar y no volver a mostrar',
-      swap: 'Cambiar a English',
+      // El label vive en el idioma destino para que un user monolingüe
+      // lo lea sin esfuerzo — "English" se reconoce universalmente y el
+      // verbo en el idioma destino confirma que es el switch.
+      swap: 'Switch to English',
       quit: 'Salir',
+    },
+    footerKeys: {
+      navigate: 'moverse',
+      select: 'elegir',
+      lang: 'idioma',
+      quit: 'salir',
+      info: 'info',
+      hide: 'ocultar',
     },
   },
 };

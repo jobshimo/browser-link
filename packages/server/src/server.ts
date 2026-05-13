@@ -47,39 +47,6 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
 }
 
 /**
- * When the MCP client (Claude / OpenCode / Copilot) closes the stdio pipe,
- * the OS does NOT reliably deliver SIGTERM to this child — especially on
- * Windows, where signal forwarding from parent to child is best-effort.
- * Without this guard the server stays alive holding port 17529, and the
- * next client crashes with EADDRINUSE.
- *
- * Listening on `end`/`close` of stdin covers both roles (primary and proxy)
- * because both depend on the parent's stdio remaining open. The handler is
- * installed at the very top of runServer() so it's active during any
- * pre-bind awaits as well.
- */
-function installParentDeathGuard(): void {
-  let exiting = false;
-  const onParentGone = () => {
-    if (exiting) return;
-    exiting = true;
-    try {
-      closeDb();
-    } catch {
-      // Best effort during shutdown — the OS reclaims the handle on exit.
-    }
-    process.exit(0);
-  };
-  process.stdin.once('end', onParentGone);
-  process.stdin.once('close', onParentGone);
-  // Some Node versions on Windows surface parent-closed-stdio as an EPIPE
-  // on stdout writes. Don't crash the process for that — exit cleanly.
-  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EPIPE') onParentGone();
-  });
-}
-
-/**
  * Entry point used by the MCP client over stdio. Decides whether THIS
  * process becomes the primary (binds 17529, runs the WS bridge + MCP
  * server + optional IPC server) or — when multi-agent mode is enabled
@@ -87,7 +54,13 @@ function installParentDeathGuard(): void {
  * forwards MCP stdio frames to the primary over IPC.
  */
 export async function runServer(): Promise<void> {
-  installParentDeathGuard();
+  // The bridge stays alive when the MCP client closes its stdio. The
+  // connected Chrome tabs keep talking to the WS bridge until the user
+  // explicitly disconnects them from the extension popup, or the WS
+  // hits its inactivity TTL on the client side. If a zombie ever holds
+  // 17529 after a crash, `runPrimary` falls back to proxy mode (when
+  // multi-agent is on) or surfaces a clean EADDRINUSE error pointing
+  // the user at `browser-link stop`.
   const cfg = loadConfig();
   try {
     await runPrimary(cfg);
@@ -172,6 +145,42 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
     recentEvents: (opts) => events.recent(opts),
     tabClaims,
+    resetBridge: () => {
+      // Close every WS to the extension first so the client side flips to
+      // "Not connected" before we drop the local state. Best-effort: a tab
+      // whose socket already died just no-ops.
+      const droppedTabs = tabs.size;
+      for (const session of tabs.values()) {
+        try {
+          session.ws.close();
+        } catch {
+          /* socket already gone */
+        }
+      }
+      tabs.clear();
+      // Reject every pending tool request so the caller does not hang.
+      for (const pending of pendingRequests.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error('browser.reset: bridge state was wiped'));
+      }
+      pendingRequests.clear();
+      const releasedClaims = tabClaims.releaseAll().length;
+      const clearedEvents = events.clear();
+      // First event of the fresh state — keeps `browser.events` honest.
+      events.add('primary-elected', {
+        pid: process.pid,
+        multiAgent: cfg.multiAgent === true,
+        reason: 'reset',
+      });
+      log(
+        `browser.reset: dropped ${droppedTabs} tab(s), released ${releasedClaims} claim(s), cleared ${clearedEvents} event(s).`,
+      );
+      return {
+        dropped_tabs: droppedTabs,
+        released_claims: releasedClaims,
+        cleared_events: clearedEvents,
+      };
+    },
   };
 
   // The primary's own MCP client (Claude/Copilot/OpenCode connecting via stdio

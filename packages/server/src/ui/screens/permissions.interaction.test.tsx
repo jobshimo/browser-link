@@ -77,6 +77,17 @@ describe('PermissionsView — interaction', () => {
     expect(frame).toMatch(/Unsaved/);
   });
 
+  test('preset pills render at the top of the screen', async () => {
+    const { lastFrame } = render(<PermissionsView language="en" onBack={noop} />);
+    await tick();
+    const frame = lastFrame() ?? '';
+    expect(frame).toMatch(/Presets/);
+    /* The PRESETS entries appear on the same row as horizontal pills; we
+     * assert the second one ("Read-only") which is long enough that
+     * terminal wrapping doesn't split it across lines for the test width. */
+    expect(frame).toContain('Read-only');
+  });
+
   test('Esc calls onBack', async () => {
     let backCalls = 0;
     const onBack = () => {

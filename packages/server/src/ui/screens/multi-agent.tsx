@@ -1,23 +1,38 @@
 import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
 import { Frame } from '../components.js';
+import { COLORS, GLYPHS } from '../tokens.js';
+import { CheckRow, FooterKeys, SectionHead } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
 import { loadConfig, saveConfig } from '../../config.js';
 import type { CommonProps } from './types.js';
 
+/* Multi-agent toggle screen. v0.9.0 layout (screens2.jsx → ScreenMultiAgent):
+ *   - "Multi-agent mode" heading with a PRIMARY inverted badge next to it
+ *     when multi-agent is currently saved as ON.
+ *   - Body paragraph, then the main CheckRow toggle.
+ *   - "Auto-reelect on primary close" with `(advanced)` italic dim suffix,
+ *     body paragraph, dimmed-when-inert CheckRow.
+ *   - Save/feedback line under the toggles, FooterKeys at the bottom.
+ */
 interface MultiAgentI18n {
   title: string;
   multiHeader: string;
   multiBody: string;
   multiToggle: string;
   reelectHeader: string;
+  reelectAdvanced: string;
   reelectBody: string;
   reelectToggle: string;
   reelectDisabled: string;
   unsaved: string;
   saved: string;
   restart: string;
-  footer: string;
+  primaryBadge: string;
+  footerNav: string;
+  footerToggle: string;
+  footerSave: string;
+  footerBack: string;
 }
 
 const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
@@ -36,7 +51,8 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
       'persistent UI map.',
     ].join('\n'),
     multiToggle: 'Enable multi-agent mode',
-    reelectHeader: 'Auto-reelect on primary close (advanced)',
+    reelectHeader: 'Auto-reelect on primary close',
+    reelectAdvanced: '(advanced)',
     reelectBody: [
       'When the primary client closes, secondary clients lose the bridge.',
       'With auto-reelect ON, one of them takes over the primary role',
@@ -46,9 +62,13 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
     reelectToggle: 'Auto-reelect when primary closes',
     reelectDisabled: '(enable multi-agent first)',
     unsaved: '* Unsaved changes — press s to save',
-    saved: '✓ Saved.',
+    saved: 'Saved.',
     restart: 'Restart every MCP client for these changes to take effect.',
-    footer: '↑↓ navigate · Space toggle · s save · Esc back',
+    primaryBadge: ' PRIMARY ',
+    footerNav: 'navigate',
+    footerToggle: 'toggle',
+    footerSave: 'save',
+    footerBack: 'back',
   },
   es: {
     title: 'Multi-agente — varios clientes MCP comparten el mismo puente',
@@ -65,7 +85,8 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
       'y el mismo mapa persistente.',
     ].join('\n'),
     multiToggle: 'Activar modo multi-agente',
-    reelectHeader: 'Re-elección automática al cerrar el primary (avanzado)',
+    reelectHeader: 'Re-elección automática al cerrar el primary',
+    reelectAdvanced: '(avanzado)',
     reelectBody: [
       'Cuando el cliente primary cierra, los secundarios pierden el',
       'puente. Con re-elección automática activada, uno de ellos toma el',
@@ -76,9 +97,13 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
     reelectToggle: 'Re-elegir automáticamente al cerrar el primary',
     reelectDisabled: '(activá primero multi-agente)',
     unsaved: '* Cambios sin guardar — apretá s para guardar',
-    saved: '✓ Guardado.',
+    saved: 'Guardado.',
     restart: 'Reiniciá cada cliente MCP para que los cambios tengan efecto.',
-    footer: '↑↓ moverse · Espacio cambiar · s guardar · Esc volver',
+    primaryBadge: ' PRIMARY ',
+    footerNav: 'moverse',
+    footerToggle: 'cambiar',
+    footerSave: 'guardar',
+    footerBack: 'volver',
   },
 };
 
@@ -96,34 +121,30 @@ export function MultiAgentView({ language, onBack }: MultiAgentViewProps) {
   const [reelect, setReelect] = useState<boolean>(savedReelect);
   const [justSaved, setJustSaved] = useState(false);
 
-  // Only the two toggles are navigable.
   const [cursor, setCursor] = useState<'multi' | 'reelect'>('multi');
 
-  const move = (dir: 1 | -1) => {
+  const move = (dir: 1 | -1): void => {
     setCursor((c) => {
       if (dir === 1) return c === 'multi' ? 'reelect' : 'multi';
       return c === 'reelect' ? 'multi' : 'reelect';
     });
   };
 
-  const toggle = () => {
+  const toggle = (): void => {
     if (cursor === 'multi') {
       setMulti((m) => {
         const next = !m;
-        // Turning multi off also clears the working reelect state, matching
-        // the config normalisation rule (autoReelect implies multiAgent).
         if (!next) setReelect(false);
         return next;
       });
     } else {
-      // Auto-reelect can only be turned on when multi is on.
       if (!multi) return;
       setReelect((r) => !r);
     }
     setJustSaved(false);
   };
 
-  const save = () => {
+  const save = (): void => {
     saveConfig({ multiAgent: multi, autoReelect: multi ? reelect : false });
     setSavedMulti(multi);
     setSavedReelect(multi ? reelect : false);
@@ -140,60 +161,58 @@ export function MultiAgentView({ language, onBack }: MultiAgentViewProps) {
 
   const unsaved = multi !== savedMulti || reelect !== savedReelect;
 
-  const checkbox = (on: boolean, dim: boolean): { mark: string; color: string } => {
-    if (dim) return { mark: '[ ]', color: 'gray' };
-    return on ? { mark: '[x]', color: 'green' } : { mark: '[ ]', color: 'red' };
-  };
-
-  const multiBox = checkbox(multi, false);
-  const reelectBox = checkbox(multi ? reelect : false, !multi);
-
   return (
-    <Frame title={t.title} footer={t.footer}>
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color="cyan" bold>
+    <Frame
+      title={t.title}
+      footer={
+        <FooterKeys
+          items={[
+            { k: `${GLYPHS.up}${GLYPHS.down}`, label: t.footerNav },
+            { k: 'Sp', label: t.footerToggle },
+            { k: 's', label: t.footerSave },
+            { k: 'Esc', label: t.footerBack },
+          ]}
+        />
+      }
+    >
+      <Box>
+        <Text color={COLORS.heading} bold>
           {t.multiHeader}
         </Text>
-        <Text>{t.multiBody}</Text>
-      </Box>
-      <Box marginBottom={1}>
-        <Text color={cursor === 'multi' ? 'cyan' : 'gray'}>{cursor === 'multi' ? '❯ ' : '  '}</Text>
-        <Text color={multiBox.color}>{multiBox.mark} </Text>
-        <Text color={cursor === 'multi' ? 'white' : 'gray'} bold={cursor === 'multi'}>
-          {t.multiToggle}
-        </Text>
-      </Box>
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color="cyan" bold>
-          {t.reelectHeader}
-        </Text>
-        <Text>{t.reelectBody}</Text>
-      </Box>
-      <Box marginBottom={1}>
-        <Text color={cursor === 'reelect' ? 'cyan' : 'gray'}>
-          {cursor === 'reelect' ? '❯ ' : '  '}
-        </Text>
-        <Text color={reelectBox.color}>{reelectBox.mark} </Text>
-        <Text
-          color={!multi ? 'gray' : cursor === 'reelect' ? 'white' : 'gray'}
-          bold={cursor === 'reelect' && multi}
-        >
-          {t.reelectToggle}
-          {!multi && (
-            <Text color="gray" dimColor>
-              {' '}
-              {t.reelectDisabled}
+        {savedMulti && (
+          <Box marginLeft={2}>
+            <Text inverse bold color={COLORS.primary}>
+              {t.primaryBadge}
             </Text>
-          )}
-        </Text>
+          </Box>
+        )}
       </Box>
+      <Text>{t.multiBody}</Text>
+      <Box marginTop={1}>
+        <CheckRow selected={cursor === 'multi'} on={multi} label={t.multiToggle} />
+      </Box>
+
+      <SectionHead hint={t.reelectAdvanced}>{t.reelectHeader}</SectionHead>
+      <Text>{t.reelectBody}</Text>
+      <Box marginTop={1}>
+        <CheckRow
+          selected={cursor === 'reelect'}
+          on={multi ? reelect : false}
+          dimmed={!multi}
+          label={t.reelectToggle}
+          hint={!multi ? t.reelectDisabled : undefined}
+        />
+      </Box>
+
       <Box marginTop={1} flexDirection="column">
         {unsaved ? (
-          <Text color="yellow">{t.unsaved}</Text>
+          <Text color={COLORS.warn}>{t.unsaved}</Text>
         ) : justSaved ? (
-          <Text color="green">{t.saved}</Text>
+          <Text color={COLORS.success}>
+            {GLYPHS.success} {t.saved}
+          </Text>
         ) : null}
-        <Text color="gray" italic>
+        <Text color={COLORS.muted} italic>
           {t.restart}
         </Text>
       </Box>

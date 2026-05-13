@@ -330,4 +330,22 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
     },
   },
+  {
+    name: 'browser.reset',
+    description:
+      'Soft-reset the bridge state. Drops every connected tab session, releases every claim, and clears the in-memory event log — but does NOT kill the MCP server itself. The user has to re-press Connect in the extension popup for each tab they want back. Use this when the bridge state looks inconsistent (stale tab_ids that browser.events does not explain, tab.click that hangs, claims you cannot release through normal means) and you are sure a clean slate is the right move.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    doc: {
+      purpose:
+        'Soft-reset the bridge: drop tab sessions + claims + event log, keep the MCP server alive.',
+      when_to_use: [
+        'Bridge state looks inconsistent (stale tab_ids, hung action tools, claims you cannot release).',
+        'You explicitly want to start the bridge state from scratch without killing the MCP server.',
+      ],
+      gotchas: [
+        'This drops every tab the user had connected — they will need to re-press Connect in the extension popup for each one.',
+        'Use sparingly. Most "tab not connected" cases resolve via browser.events showing a tab-renamed entry, not via reset.',
+      ],
+    },
+  },
 ];

@@ -1,6 +1,8 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useMemo, useState } from 'react';
 import { Frame } from '../components.js';
+import { COLORS, GLYPHS } from '../tokens.js';
+import { Badge, FooterKeys, KeyCap, type BadgeKind } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
 import {
   INSTRUCTIONS_INSTALLERS,
@@ -17,22 +19,37 @@ import {
 } from '../../commands/instructions.js';
 import type { CommonProps } from './types.js';
 
+/* Agent instructions installer. v0.9.0 layout reshapes the row as:
+ *
+ *   ❯ Claude Code   [✓ installed (v3)]
+ *       ~/.claude/CLAUDE.md
+ *
+ * — cursor, client name padded to the column width, status badge inline
+ * (right of the name, NOT right-aligned to the frame), file path on a
+ * dim sub-row indented by two.
+ *
+ * Hint at the bottom is the existing describeState() copy.
+ */
 interface AgentInstructionsI18n {
   title: string;
   intro: string;
   installPrompt: string;
+  installPromptHint: string;
   installed: string;
   outdated: string;
   notInstalled: string;
   noFile: string;
   corrupt: string;
   legacySuffix: string;
-  footer: string;
   doneInstall: string;
   doneUninstall: string;
   failInstall: string;
   failUninstall: string;
   refreshHint: string;
+  footerNav: string;
+  footerInstall: string;
+  footerUninstall: string;
+  footerBack: string;
 }
 
 const I18N: Record<Language, AgentInstructionsI18n> = {
@@ -44,19 +61,24 @@ const I18N: Record<Language, AgentInstructionsI18n> = {
       'project CLAUDE.md required. The block lists triggers ("user reports a UI',
       'bug → call browser.snapshot first") and is rewritten in place on update.',
     ].join('\n'),
-    installPrompt: 'Pick a client to install / refresh the block. Press u to uninstall.',
-    installed: '✓ installed',
-    outdated: '⚠ outdated',
-    notInstalled: '· not installed',
-    noFile: '· no file yet',
-    corrupt: '⚠ corrupt (multiple blocks)',
+    installPrompt: 'Pick a client to install / refresh the block.',
+    installPromptHint: 'to uninstall.',
+    installed: 'installed',
+    outdated: 'outdated',
+    notInstalled: 'not installed',
+    noFile: 'no file yet',
+    corrupt: 'corrupt (multiple blocks)',
     legacySuffix: 'legacy',
-    footer: '↑↓ navigate · ↵ install/refresh · u uninstall · Esc back',
-    doneInstall: '✓ Done. Restart your MCP client to pick up the new instructions.',
-    doneUninstall: '✓ Removed. The rest of the file was left untouched.',
-    failInstall: '✗ Install failed.',
-    failUninstall: '✗ Uninstall failed.',
-    refreshHint: 'On install: the block is refreshed in place if it already exists.',
+    doneInstall: 'Done. Restart your MCP client to pick up the new instructions.',
+    doneUninstall: 'Removed. The rest of the file was left untouched.',
+    failInstall: 'Install failed.',
+    failUninstall: 'Uninstall failed.',
+    refreshHint:
+      'On install: the block is refreshed in place if it already exists. The rest of the file is left untouched.',
+    footerNav: 'navigate',
+    footerInstall: 'install / refresh',
+    footerUninstall: 'uninstall',
+    footerBack: 'back',
   },
   es: {
     title: 'Instrucciones del agente — browser-link en los .md globales de cada cliente',
@@ -67,20 +89,24 @@ const I18N: Record<Language, AgentInstructionsI18n> = {
       '("el usuario reporta un bug de UI → llamá a browser.snapshot primero") y',
       'se rescribe in place al actualizar.',
     ].join('\n'),
-    installPrompt:
-      'Elegí un cliente para instalar / refrescar el bloque. Apretá u para desinstalar.',
-    installed: '✓ instalado',
-    outdated: '⚠ desactualizado',
-    notInstalled: '· no instalado',
-    noFile: '· sin archivo todavía',
-    corrupt: '⚠ corrupto (múltiples bloques)',
+    installPrompt: 'Elegí un cliente para instalar / refrescar el bloque.',
+    installPromptHint: 'para desinstalar.',
+    installed: 'instalado',
+    outdated: 'desactualizado',
+    notInstalled: 'no instalado',
+    noFile: 'sin archivo todavía',
+    corrupt: 'corrupto (múltiples bloques)',
     legacySuffix: 'legacy',
-    footer: '↑↓ moverse · ↵ instalar/refrescar · u desinstalar · Esc volver',
-    doneInstall: '✓ Listo. Reiniciá tu cliente MCP para tomar las nuevas instrucciones.',
-    doneUninstall: '✓ Quitado. El resto del archivo quedó intacto.',
-    failInstall: '✗ Falló la instalación.',
-    failUninstall: '✗ Falló la desinstalación.',
-    refreshHint: 'En instalar: si el bloque ya existe, se reescribe en su lugar.',
+    doneInstall: 'Listo. Reiniciá tu cliente MCP para tomar las nuevas instrucciones.',
+    doneUninstall: 'Quitado. El resto del archivo quedó intacto.',
+    failInstall: 'Falló la instalación.',
+    failUninstall: 'Falló la desinstalación.',
+    refreshHint:
+      'En instalar: si el bloque ya existe, se reescribe en su lugar. El resto del archivo queda intacto.',
+    footerNav: 'moverse',
+    footerInstall: 'instalar / refrescar',
+    footerUninstall: 'desinstalar',
+    footerBack: 'volver',
   },
 };
 
@@ -93,27 +119,27 @@ interface AgentInstructionsViewProps extends CommonProps {
   initialCursorClient?: ClientId;
 }
 
-function statusBadge(
-  state: InstructionsState,
-  t: AgentInstructionsI18n,
-): { label: string; color: string } {
+interface BadgeSpec {
+  kind: BadgeKind;
+  label: string;
+}
+
+function statusBadge(state: InstructionsState, t: AgentInstructionsI18n): BadgeSpec {
   switch (state.kind) {
-    case 'installed':
-      return {
-        label: `${t.installed} (${state.version === null ? t.legacySuffix : `v${state.version}`})`,
-        color: 'green',
-      };
-    case 'installed-outdated':
-      return {
-        label: `${t.outdated} (${state.version === null ? t.legacySuffix : `v${state.version}`})`,
-        color: 'yellow',
-      };
+    case 'installed': {
+      const versionSuffix = state.version === null ? t.legacySuffix : `v${state.version}`;
+      return { kind: 'ok', label: `${t.installed} (${versionSuffix})` };
+    }
+    case 'installed-outdated': {
+      const versionSuffix = state.version === null ? t.legacySuffix : `v${state.version}`;
+      return { kind: 'warn', label: `${t.outdated} (${versionSuffix})` };
+    }
     case 'not-installed':
-      return { label: t.notInstalled, color: 'gray' };
+      return { kind: 'off', label: t.notInstalled };
     case 'no-file':
-      return { label: t.noFile, color: 'gray' };
+      return { kind: 'noFile', label: t.noFile };
     case 'corrupt':
-      return { label: t.corrupt, color: 'yellow' };
+      return { kind: 'warn', label: t.corrupt };
   }
 }
 
@@ -127,10 +153,7 @@ export function AgentInstructionsView({
   const t = I18N[language];
   const [reports, setReports] = useState<InstructionsReport[]>(() => statusAll());
   const items = useMemo(() => INSTRUCTIONS_INSTALLERS, []);
-  // If the caller asked us to focus a specific client, place the cursor on
-  // it; otherwise default to the first row. The lookup is done once on
-  // mount because the prop is the user's deliberate landing instruction —
-  // we should not pull the cursor away from where they navigated to next.
+
   const initialIndex = useMemo(() => {
     if (!initialCursorClient) return 0;
     const i = items.findIndex((it) => it.id === initialCursorClient);
@@ -138,12 +161,11 @@ export function AgentInstructionsView({
   }, [initialCursorClient, items]);
   const [cursor, setCursor] = useState(initialIndex);
   const [lastAction, setLastAction] = useState<LastAction>(null);
-  // Refresh status when we come back from an install/uninstall round-trip.
+
   useEffect(() => {
     if (lastAction) setReports(statusAll());
   }, [lastAction]);
-  // Column width is driven by the longest displayName so adding a fourth
-  // client never requires hand-tuning a magic padEnd value in two places.
+
   const nameColumnWidth = useMemo(
     () => displayNameColumnWidth(items.map((i) => i.displayName)),
     [items],
@@ -164,13 +186,35 @@ export function AgentInstructionsView({
   });
 
   return (
-    <Frame title={t.title} footer={t.footer}>
+    <Frame
+      title={t.title}
+      footer={
+        <FooterKeys
+          items={[
+            { k: `${GLYPHS.up}${GLYPHS.down}`, label: t.footerNav },
+            { k: GLYPHS.enter, label: t.footerInstall },
+            { k: 'u', label: t.footerUninstall },
+            { k: 'Esc', label: t.footerBack },
+          ]}
+        />
+      }
+    >
       <Box flexDirection="column" marginBottom={1}>
         <Text>{t.intro}</Text>
       </Box>
-      <Text color="white" bold>
-        {t.installPrompt}
-      </Text>
+      <Box>
+        <Text color="white" bold>
+          {t.installPrompt}
+        </Text>
+        <Text color={COLORS.muted} dimColor italic>
+          {'  '}Press{' '}
+        </Text>
+        <KeyCap label="u" />
+        <Text color={COLORS.muted} dimColor italic>
+          {' '}
+          {t.installPromptHint}
+        </Text>
+      </Box>
       <Box flexDirection="column" marginTop={1}>
         {items.map((inst, i) => {
           const r = reports[i];
@@ -179,14 +223,17 @@ export function AgentInstructionsView({
           return (
             <Box key={inst.id} flexDirection="column">
               <Box>
-                <Text color={isCursor ? 'cyan' : 'gray'}>{isCursor ? '❯ ' : '  '}</Text>
-                <Text color={isCursor ? 'white' : 'gray'} bold={isCursor}>
+                <Text color={isCursor ? COLORS.focus : COLORS.muted}>
+                  {isCursor ? `${GLYPHS.cursor} ` : '  '}
+                </Text>
+                <Text color={isCursor ? 'white' : COLORS.muted} bold={isCursor}>
                   {inst.displayName.padEnd(nameColumnWidth)}
                 </Text>
-                <Text color={badge.color}>{badge.label}</Text>
+                <Text> </Text>
+                <Badge kind={badge.kind} label={badge.label} />
               </Box>
-              <Box marginLeft={2}>
-                <Text color="gray" dimColor>
+              <Box marginLeft={4}>
+                <Text color={COLORS.muted} dimColor>
                   {r.filePath}
                 </Text>
               </Box>
@@ -198,23 +245,23 @@ export function AgentInstructionsView({
         <Box flexDirection="column" marginTop={1}>
           {lastAction.report.ok ? (
             <>
-              <Text color="green">
-                {lastAction.kind === 'install' ? t.doneInstall : t.doneUninstall}
+              <Text color={COLORS.success}>
+                {GLYPHS.success} {lastAction.kind === 'install' ? t.doneInstall : t.doneUninstall}
               </Text>
               {lastAction.report.message !== undefined && lastAction.report.message !== '' && (
-                <Text color="gray" dimColor>
+                <Text color={COLORS.muted} dimColor>
                   {lastAction.report.message}
                 </Text>
               )}
             </>
           ) : (
             <Box flexDirection="column">
-              <Text color="red">
-                {lastAction.kind === 'install' ? t.failInstall : t.failUninstall}
+              <Text color={COLORS.error}>
+                {GLYPHS.error} {lastAction.kind === 'install' ? t.failInstall : t.failUninstall}
               </Text>
               {lastAction.report.message !== undefined && lastAction.report.message !== '' && (
                 <Box>
-                  <Text color="red" wrap="wrap">
+                  <Text color={COLORS.error} wrap="wrap">
                     {lastAction.report.message}
                   </Text>
                 </Box>
@@ -224,7 +271,7 @@ export function AgentInstructionsView({
         </Box>
       )}
       <Box marginTop={1}>
-        <Text color="gray" italic dimColor>
+        <Text color={COLORS.muted} italic dimColor>
           {t.refreshHint} {describeState(reports[cursor]?.state ?? { kind: 'no-file' }, language)}
         </Text>
       </Box>

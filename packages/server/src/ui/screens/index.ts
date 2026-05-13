@@ -11,3 +11,5 @@ export { LanguageView } from './language.js';
 export { MultiAgentView } from './multi-agent.js';
 export { FreePortView } from './free-port.js';
 export { AgentInstructionsView } from './agent-instructions.js';
+export { EmptyClientsView } from './empty-clients.js';
+export { PortCollisionView, type PortCollisionInfo } from './port-collision.js';

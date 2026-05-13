@@ -9,6 +9,20 @@ const CDP_VERSION = '1.3';
 const CONSOLE_BUFFER_MAX = 200;
 const NETWORK_BUFFER_MAX = 200;
 
+/* Idle TTL for a tab's WebSocket bridge.
+ *
+ * After this many milliseconds without a tool.request from the server,
+ * the extension closes its side of the WS and detaches the debugger.
+ * The popup then shows "Not connected" again and the user explicitly
+ * re-presses Connect when they want to reactivate.
+ *
+ * This replaces the previous behaviour where the bridge implicitly
+ * died together with the MCP server subprocess (parent_death_guard,
+ * removed in v0.9.0). Lifecycle is now client-side: agent activity
+ * keeps the tab warm, silence eventually parks it. */
+const WS_IDLE_TTL_MS = 30 * 60 * 1000;
+const WS_IDLE_SWEEP_MS = 60 * 1000;
+
 interface ConsoleEntry {
   timestamp: number;
   level: string;
@@ -44,6 +58,11 @@ interface TabState {
   networkBuffer: Map<string, NetworkEntry>;
   networkOrder: string[];
   debuggerListener?: (method: string, params: unknown) => void;
+  /** Last time the server talked to this tab (a tool.request landed).
+   * Used by the WS-idle sweeper to disconnect tabs that have been
+   * silent for `WS_IDLE_TTL_MS`. Touched on every tool.request received
+   * AND once at connect time. */
+  lastActivityAt: number;
 }
 
 interface ConnectResult {
@@ -621,6 +640,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     consoleBuffer: [],
     networkBuffer: new Map(),
     networkOrder: [],
+    lastActivityAt: Date.now(),
   };
   tabStates.set(tabId, state);
   attachDebuggerListener(state);
@@ -677,7 +697,9 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
           return;
         }
         // ServerToExtension is the union { tab.registered | tool.request },
-        // so by elimination this branch handles the tool.request case.
+        // so by elimination this branch handles the tool.request case. Touch
+        // the activity timestamp so the WS-idle sweeper keeps this tab warm.
+        state.lastActivityAt = Date.now();
         const response = await handleTool(state, msg);
         if (ws.readyState === WebSocket.OPEN) send(ws, response);
       })();
@@ -746,3 +768,23 @@ chrome.debugger.onDetach.addListener((source) => {
     // Best effort.
   });
 });
+
+/* WS-idle sweeper.
+ *
+ * Every WS_IDLE_SWEEP_MS, walk every connected tab. Any tab whose last
+ * tool.request landed more than WS_IDLE_TTL_MS ago gets disconnected:
+ * the WS closes, the debugger detaches, the popup goes back to "Not
+ * connected". The user explicitly re-presses Connect to bring it back.
+ *
+ * This is the replacement for the parent_death_guard that used to kill
+ * the entire MCP server on stdio close — now the server stays alive and
+ * the bridge is parked tab-by-tab from the client side. */
+setInterval(() => {
+  const now = Date.now();
+  for (const [tabId, state] of tabStates) {
+    if (now - state.lastActivityAt < WS_IDLE_TTL_MS) continue;
+    void cleanup(tabId).catch(() => {
+      // Best effort.
+    });
+  }
+}, WS_IDLE_SWEEP_MS);

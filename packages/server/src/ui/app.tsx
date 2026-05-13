@@ -5,6 +5,7 @@ import {
   AgentInstructionsView,
   ClientPicker,
   DoctorView,
+  EmptyClientsView,
   ExtensionView,
   FreePortView,
   InstallResultView,
@@ -21,7 +22,7 @@ import { saveConfig } from '../config.js';
 import { installFor, type InstallReport } from '../commands/install.js';
 import { statusAll } from '../commands/instructions.js';
 import { openUrl } from '../utils/open-url.js';
-import type { ClientId } from '../installers/index.js';
+import { INSTALLERS, type ClientId } from '../installers/index.js';
 
 const REPO_URL = 'https://github.com/jobshimo/browser-link';
 
@@ -29,6 +30,7 @@ type Screen =
   | { kind: 'welcome'; hideDismiss: boolean }
   | { kind: 'menu' }
   | { kind: 'pick-client' }
+  | { kind: 'empty-clients' }
   | { kind: 'install-result'; report: InstallReport }
   | { kind: 'permissions' }
   | { kind: 'multi-agent' }
@@ -43,6 +45,16 @@ type Screen =
 interface AppProps {
   initialLanguage: Language;
   skipWelcome: boolean;
+}
+
+/* True when at least one of the supported MCP clients is detected on
+ * disk. When false, the register flow short-circuits to the
+ * EmptyClientsView instead of rendering a picker the user can't act on.
+ *
+ * `detect()` does a file existence check — cheap enough to run on every
+ * navigation to the picker, and accurate after a manual install. */
+function anyClientDetected(): boolean {
+  return INSTALLERS.some((i) => i.detect().installed);
 }
 
 export function App({ initialLanguage, skipWelcome }: AppProps) {
@@ -63,6 +75,16 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
   };
   const backToMenu = () => {
     setScreen({ kind: 'menu' });
+  };
+
+  /* When the user picks Register from the menu, we route to either the
+   * full picker or the empty state depending on whether any client is
+   * actually present. The detection runs at navigation time so a user
+   * that installs Claude in another terminal and comes back doesn't get
+   * stuck on the empty screen forever. */
+  const enterPickClient = (): void => {
+    if (anyClientDetected()) setScreen({ kind: 'pick-client' });
+    else setScreen({ kind: 'empty-clients' });
   };
 
   switch (screen.kind) {
@@ -88,7 +110,7 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
         <MainMenu
           language={language}
           onSelect={(action: MenuAction) => {
-            if (action === 'register') setScreen({ kind: 'pick-client' });
+            if (action === 'register') enterPickClient();
             else if (action === 'instructions') {
               // If at least one client is outdated, auto-focus the first one
               // so the next Enter refreshes it. The lookup is cheap (three
@@ -123,6 +145,18 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
           onPick={(id: ClientId) => {
             const report = installFor(id);
             setScreen({ kind: 'install-result', report });
+          }}
+          onBack={backToMenu}
+        />
+      );
+
+    case 'empty-clients':
+      return (
+        <EmptyClientsView
+          language={language}
+          onRescan={enterPickClient}
+          onOpenRepo={() => {
+            openUrl(REPO_URL);
           }}
           onBack={backToMenu}
         />

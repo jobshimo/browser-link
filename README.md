@@ -29,22 +29,39 @@
 
 ---
 
-## Why
+## Contents
 
-When an LLM agent works on a web app, the usual flow is: it reads code, it
-reasons about what _should_ happen, but it never sees what the browser is
-actually doing. `browser-link` closes that gap **without giving the agent
-control of your whole browser** — the user enables specific tabs, one by
-one, and disconnects them when they want.
+- [What it is](#what-it-is)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Use cases](#use-cases)
+- [What the agent can do](#what-the-agent-can-do)
+- [Persistent UI map](#persistent-ui-map)
+- [Customising](#customising)
+- [Security model](#security-model)
+- [Where your data lives](#where-your-data-lives)
+- [For contributors](#for-contributors)
+- [Author](#author)
+- [License](#license)
 
-Typical use cases:
+---
 
-- Reproduce a reported bug on a tab and verify it exists.
-- Validate that a fix actually solved a bug, end-to-end, in the real UI.
-- Give the agent real context (DOM, console, network) about what is
-  happening in a view it is investigating.
-- Persistent UI knowledge: the agent learns selectors, flows and gotchas
-  for each app and remembers them across sessions.
+## What it is
+
+An MCP server that lets your editor's agent see and act on a Chrome tab you
+explicitly enable — without giving it your whole browser.
+
+- ✅ **What it does** — exposes `browser.*` MCP tools (snapshot, click,
+  evaluate, navigate…) and a persistent UI map so the agent learns your
+  apps across sessions.
+- ✅ **What it needs** — Node ≥ 22.13 and Chrome / Chromium / Edge / Brave
+  / Vivaldi. No accounts, no telemetry, no outbound calls except `npm`
+  when you run `Check for updates`.
+- 🚫 **What it does NOT do** — touch tabs you have not pressed Connect on,
+  send anything off your machine, persist domain data in the map
+  (selectors and flows only).
+- 🔒 **How it stays private** — WebSocket bridge is loopback-only
+  (`127.0.0.1:17529`) and kernel-attested per connection.
 
 ## Quick start
 
@@ -53,12 +70,24 @@ npm install -g @jobshimo/browser-link
 browser-link
 ```
 
-That second command opens a full-screen interactive UI (English / Spanish)
-built on top of [Ink](https://github.com/vadimdemedes/ink) — the same React-for-terminal
-library that powers the Cloudflare Wrangler, Shopify CLI, AWS CDK and
-GitHub Copilot CLI installers. Diff-rendered (no flicker), pinned header
-with live client status, sub-screens that swap in place. Works in
-PowerShell, Windows Terminal, macOS Terminal, iTerm and every Linux TTY:
+The second command opens a full-screen interactive UI (English / Spanish)
+built on [Ink](https://github.com/vadimdemedes/ink). It walks you through
+the four-step setup:
+
+1. **Register `browser-link` with your MCP client.** Pick **Claude Code**
+   (writes `~/.claude.json` / `%USERPROFILE%\.claude.json`), **OpenCode**
+   (writes `~/.config/opencode/opencode.json` on every OS),
+   or **GitHub Copilot CLI** (writes `~/.copilot/mcp-config.json`,
+   override via `COPILOT_HOME`). Restart the client afterwards.
+2. **Drop the trigger block into the agent's global `.md`.** Optional but
+   recommended — see [Agent instructions](#agent-instructions) below.
+   Without it the agent has no reason to call `browser.snapshot` when you
+   say "the button is broken"; it will read code and guess.
+3. **Install the Chrome extension.** The UI prints the absolute path to the
+   bundled assets and the OS-specific steps (`chrome://extensions` →
+   Developer mode → Load unpacked).
+4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
+   and press **Conectar** on the tab you want the agent to see.
 
 ```
 ╭─ browser-link — setup ──────────────────────────────────────────╮
@@ -67,43 +96,28 @@ PowerShell, Windows Terminal, macOS Terminal, iTerm and every Linux TTY:
 │                                                                 │
 │ Pick an action                                                  │
 │                                                                 │
-│ ❯ Register browser-link with an MCP client                      │
-│   Permissions — pick which MCP tools to expose                  │
-│   Show Chrome extension install steps                           │
-│   Run doctor (diagnose current setup)                           │
-│   Check for updates on npm                                      │
-│   About / Help — what is this and how it works                  │
-│   Open the GitHub repository                                    │
-│   Quit                                                          │
+│ ❯ [r] Register browser-link with an MCP client                  │
+│   [i] Agent instructions                                        │
+│   [p] Permissions — pick which MCP tools to expose              │
+│   [m] Multi-agent — let MCP clients share one bridge            │
+│   [d] Doctor — diagnose current setup                           │
+│   [u] Check for updates on npm                                  │
+│   [f] Free port — stop a stuck browser-link holding 17529       │
+│   [e] Chrome extension install steps                            │
+│   [a] About / Help                                              │
+│   [q] Quit                                                      │
 │                                                                 │
-│ ↑↓ navigate · ↵ select · l language · q quit                    │
+│ ↑↓ navigate · ↵ select · a-z hotkey · l language · q quit       │
 ╰─────────────────────────────────────────────────────────────────╯
 ```
 
-It walks you through:
-
-1. **Registering `browser-link` with your MCP client.** Pick **Claude Code**
-   (writes `~/.claude.json` / `%USERPROFILE%\.claude.json`), **OpenCode**
-   (writes `~/.config/opencode/opencode.json` on every OS, Windows included),
-   or **GitHub Copilot CLI** (writes `~/.copilot/mcp-config.json`, override
-   via `COPILOT_HOME`). Restart the client afterwards.
-2. **Installing the Chrome extension.** Shows the absolute path to the
-   bundled assets and the OS-specific steps (`chrome://extensions` →
-   Developer mode → Load unpacked).
-3. **A doctor command.** Reports what is and is not set up, per client,
-   with live refresh.
-4. **An About / Help page.** Full breakdown of every tool, where data is
-   stored, and how the bridge works.
-
-You can also use the subcommands directly without the menu:
+Every action above is also a subcommand you can script:
 
 ```bash
 browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
-browser-link install --client opencode     # register only in OpenCode
-browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
-browser-link instructions                  # status: is the trigger block in each agent's global .md?
+browser-link instructions                  # status of the trigger block per client
 browser-link instructions install          # insert/refresh the block in every detected client
 browser-link instructions uninstall --client claude
 browser-link extension                     # show extension assets path + steps
@@ -111,21 +125,169 @@ browser-link doctor                        # diagnose current setup
 browser-link tools                         # show which MCP tools are enabled
 browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
+browser-link multi-agent enable            # let several MCP clients share one bridge
+browser-link multi-agent auto-reelect enable
+browser-link stop                          # kill a browser-link holding port 17529 (zombie)
 browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
 ```
 
-## Agent instructions — make the agent use browser-link reflexively
+## How it works
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Your MCP client (Claude Code, OpenCode, Copilot CLI, …)         │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │  stdio (MCP)
+                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  browser-link MCP server (Node ≥ 22.13)                          │
+│  ─ listens on 127.0.0.1:17529  (loopback only)                   │
+│  ─ exposes browser.* tools + browser.map.* persistent UI map     │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │  WebSocket (loopback)
+                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Chrome extension (Manifest V3, custom, ships with the package)  │
+│  ─ inert by default                                              │
+│  ─ activates per-tab when the user clicks "Conectar"             │
+│  ─ uses chrome.debugger (Chrome DevTools Protocol) underneath    │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │
+                       ▼
+                  Browser tab
+              (only the connected ones)
+```
+
+- The WebSocket bridge **only binds to `127.0.0.1`** — never on a public
+  interface, never reachable from anywhere outside your machine.
+- Tabs you do **not** connect remain invisible to the agent. You connect
+  them one by one, by hand.
+- Disconnecting a tab from the extension popup immediately revokes the
+  bridge for that tab. The bridge itself survives MCP client restarts —
+  if no tool call lands for 30 minutes, the extension parks the tab on
+  its own and you re-press Connect when you want it back.
+
+## Use cases
+
+- Reproduce a reported bug on a tab and verify it exists.
+- Validate that a fix actually solved a bug, end-to-end, in the real UI.
+- Give the agent real context (DOM, console, network) about what is
+  happening in a view it is investigating.
+- Build incremental UI knowledge: the agent learns selectors, flows and
+  gotchas for each app and remembers them across sessions.
+
+## What the agent can do
+
+The MCP server registers two families of tools.
+
+**Browser bridge** — operate on a connected tab:
+
+| Tool                   | Purpose                                                            |
+| ---------------------- | ------------------------------------------------------------------ |
+| `browser.list_tabs`    | List tabs currently connected through the extension                |
+| `browser.ping`         | Verify the bridge to a tab; returns its title and URL              |
+| `browser.snapshot`     | Title, URL, visible text and interactive elements with selectors   |
+| `browser.navigate`     | Send a tab to a different URL                                      |
+| `browser.click`        | Click an element by CSS selector                                   |
+| `browser.type`         | Focus an input and type text                                       |
+| `browser.evaluate`     | Run an arbitrary JavaScript expression in the page                 |
+| `browser.console`      | Rolling buffer of recent console messages (last 200)               |
+| `browser.network`      | Rolling buffer of recent network requests (last 200)               |
+| `browser.network_body` | Fetch the response body of a specific request                      |
+| `browser.claim_tab`    | Claim a tab for the current agent (cooperative ownership)          |
+| `browser.release_tab`  | Release a tab the current agent holds                              |
+| `browser.my_tabs`      | List tabs currently claimed by the current agent                   |
+| `browser.events`       | Read the primary's bridge-event ring buffer (recovery + audit)     |
+| `browser.reset`        | Soft-reset bridge state (drop tabs + claims + events; keep server) |
+
+**Persistent UI map** — local-only memory across sessions:
+
+| Tool                     | Purpose                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `browser.map.recall`     | Recall selectors / flows / gotchas known for an app+route |
+| `browser.map.save`       | Persist a `selector`, `flow` or `gotcha`                  |
+| `browser.map.record_use` | Mark an entry as freshly verified or failed               |
+| `browser.map.forget`     | Delete an entry or an entire app                          |
+| `browser.map.rename_app` | Fix an auto-derived app_key                               |
+| `browser.map.apps`       | List known apps                                           |
+
+On every MCP `initialize` handshake the server pushes a structured usage
+protocol to the client (when to call `recall`, what kinds to save, what
+to _never_ save) — no manual prompt engineering required.
+
+## Persistent UI map
+
+> Every time the agent figures something out about a web app (where a
+> button lives, which combination of events fires its handler, what
+> gotcha tripped it the first time), it can persist that knowledge in a
+> **local SQLite database** under your user folder. Next session, the
+> agent calls `browser.map.recall` and gets that knowledge back — instead
+> of rediscovering the same selectors and flows from scratch every
+> conversation. **This is what makes `browser-link` more than a remote
+> control.**
+
+### What gets remembered
+
+Three kinds of entries, indexed by `(app, route)`:
+
+| Kind         | What it looks like                                                                   | When the agent saves it                                             |
+| ------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| **selector** | `{ selector: "button[aria-label='Save']", evidence?: "found via snapshot" }`         | A CSS selector tied to a stable purpose                             |
+| **flow**     | `{ steps: [{action:'click', selector:'#chip'}, {action:'wait', ms:500}, …] }`        | An ordered sequence of actions that reaches an outcome end-to-end   |
+| **gotcha**   | `{ body: "Synthetic dblclick does not fire the React handler — use full sequence" }` | A non-obvious fact about the app that would take time to rediscover |
+
+Each entry has `verified_at` / `failed_at` timestamps so the agent
+knows whether the saved knowledge is fresh, stale, or known-broken.
+When a selector that used to work suddenly fails, the agent marks it
+via `record_use({ ok: false })` and stops trusting it until it relearns.
+
+### The loop, in plain English
+
+```
+You ask:
+    "Open the user detail dialog for user 42 and check the audit log"
+         │
+         ▼
+1) Agent → browser.map.recall({ origin, url })
+   returns selectors / flows / gotchas it learned for this app+route
+         │
+         ▼
+2) Agent reuses what it knows — saves time and tokens
+   stale entries fall back to snapshot and relearn; wrong ones get marked
+         │
+         ▼
+3) Agent does the task and saves any new learning via browser.map.save
+   so the next session starts even better-equipped
+```
+
+### Schema
+
+```sql
+CREATE TABLE apps (
+  id, origin, app_key, title, notes, created_at, last_seen_at
+);
+
+CREATE TABLE entries (
+  id, app_id, url_pattern, kind, purpose,
+  payload TEXT,                  -- JSON blob, shape depends on kind
+  verified_at, failed_at, notes,
+  created_at, updated_at
+);
+```
+
+## Customising
+
+Three knobs, all opt-in, all reversible.
+
+### Agent instructions
 
 Having the MCP tools registered is necessary but not sufficient. Agents
-(Claude Code, OpenCode, Copilot CLI, …) reach for what their
-instructions point at — and out of the box they have no reason to call
-`browser.snapshot` when you say "the button is broken". They will read
-the code and guess instead.
-
-`browser-link instructions install` drops a fenced trigger block into
-the agent's **global** instructions markdown:
+reach for what their global instructions point at — and out of the box
+they have no reason to call `browser.snapshot` when you say "the button
+is broken". `browser-link instructions install` drops a fenced trigger
+block into the agent's **global** instructions markdown:
 
 | Client             | File                                                 |
 | ------------------ | ---------------------------------------------------- |
@@ -133,63 +295,38 @@ the agent's **global** instructions markdown:
 | OpenCode           | `~/.config/opencode/AGENTS.md`                       |
 | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
 
-The block is fenced by HTML-comment markers so:
+The block is fenced by HTML-comment markers, so reinstall overwrites in
+place and uninstall removes exactly the span we manage. The version stamp
+in the begin marker lets future releases detect outdated blocks
+(`browser-link doctor` shows `⚠ outdated` until you re-run install).
 
-- it is idempotent — reinstall overwrites in place, leaving everything
-  else in the file untouched;
-- `browser-link instructions uninstall` removes exactly the span we
-  manage and nothing else;
-- the version stamp in the begin marker lets future releases detect
-  outdated blocks (the doctor shows `⚠ outdated` until you re-run install).
+### Per-tool permissions
 
-The content is a short list of triggers — when to call `browser.list_tabs`,
-when `browser.snapshot`, when `browser.map.recall`, what to do after a
-"Tab not connected" error — written in English so every LLM understands
-it regardless of the user's interactive language.
+By default `browser-link` exposes 16 MCP tools — 10 to drive the
+connected Chrome tab and 6 to read/write the persistent UI map. You can
+narrow that down per machine:
 
-Manage it from the setup menu (`Agent instructions` entry) or from the
-shell:
+- **In the menu** → `Permissions`. Toggle individual tools with **Space**
+  or apply a preset with **Enter** (`all` / `readonly` / `no-eval` /
+  `no-map`). Press **s** to save.
+- **From the shell**:
 
 ```bash
-browser-link instructions                          # status per client
-browser-link instructions install                  # all detected
-browser-link instructions install --client claude  # specific
-browser-link instructions uninstall --client copilot
+browser-link tools                              # current state
+browser-link tools disable browser.evaluate     # block JS execution
+browser-link tools preset readonly              # observation-only profile
+browser-link tools enable browser.click         # turn one back on
 ```
 
-`browser-link doctor` also reports per-client status alongside the MCP
-registration line.
+The deny list lives in `config.json` next to the map DB. Changes are
+**live**: the server re-reads the file on every `tools/list` and
+`tools/call`, so toggles take effect on the agent's next tool call — no
+MCP client restart needed.
 
-## Per-tool permissions
+### Multi-agent mode
 
-By default `browser-link` exposes 16 MCP tools — 10 to drive the connected
-Chrome tab and 6 to read/write the persistent UI map. You can narrow that
-down per machine:
-
-- **In the menu**, pick "Permissions". Toggle individual tools with **Space**
-  or apply a preset with **Enter**:
-  - `All enabled` (default)
-  - `Read-only` — no actions, no `evaluate`, no map writes
-  - `No evaluate` — everything except arbitrary JS
-  - `No persistent map` — bridge tools on, map tools off
-    Press **s** to save.
-- **From the shell**, the same controls are scriptable:
-  ```bash
-  browser-link tools                              # show current state
-  browser-link tools disable browser.evaluate     # block JS execution
-  browser-link tools preset readonly              # observation-only profile
-  browser-link tools enable browser.click         # turn one back on
-  ```
-
-The deny list is stored in `config.json` next to the map DB. Changes take
-effect the **next time the MCP client starts the server** (restart the
-client to apply). Disabled tools are removed from `tools/list` and any
-client that still tries to call them gets a clear error.
-
-## Multi-agent mode (Claude + OpenCode + Copilot in parallel)
-
-By default only one MCP client can have `browser-link` active at a time;
-the second one to start gets a clear "port in use" error. Enable
+By default only one MCP client can have `browser-link` active at a
+time; the second to start gets a clear "port in use" error. Enable
 multi-agent mode and a second `browser-link` spawn becomes a thin proxy
 that forwards MCP requests to the first one over an internal IPC port:
 
@@ -207,237 +344,63 @@ only Node-family binaries that present a fresh token from
 `config-dir/multi-agent-token` are accepted.
 
 **Auto-reelect on primary close**: if the primary's MCP client closes,
-secondary proxies lose the bridge. With `auto-reelect` enabled, the
-proxies enter a 5-second reconnect window — requests in flight get a
-clear `-32001 "temporarily unavailable"` envelope while the proxy waits
-for the freshly-respawned primary (the MCP client of the primary will
-respawn its server, racing to bind the WS port). When the new primary
-appears, the proxy hot-swaps to it and traffic resumes.
+secondary proxies enter a 5-second reconnect window — in-flight
+requests get a `-32001 "temporarily unavailable"` envelope while the
+proxy waits for the new primary to bind the WS port. When it appears,
+the proxy hot-swaps and traffic resumes.
 
 **Traceability — `browser.events`**: every primary keeps an in-memory
 ring buffer of bridge events (`primary-elected`, `tab-registered`,
-`tab-disconnected`, `tab-renamed`) and exposes it through a new MCP
-tool. When a tool call fails with "Tab not connected: tab_X" the error
-message itself tells the agent to call `browser.events`, where a
-`tab-renamed` entry maps the old id to the new one — so the agent
-recovers on its own after a primary swap.
+`tab-disconnected`, `tab-renamed`, `tab-claimed`, `tab-released`,
+`tab-claim-rejected`). When a tool call fails with "Tab not connected:
+tab_X" the error message itself tells the agent to call
+`browser.events`, where a `tab-renamed` entry maps the old id to the
+new one — the agent recovers on its own. The Chrome extension
+cooperates by remembering the last tab_id in `chrome.storage.session`
+and asking the new primary to honour it on reconnect.
 
-The Chrome extension cooperates: it remembers the last `browser-link`
-tab_id per Chrome tab in `chrome.storage.session` and asks the new
-primary to keep the same id on reconnect. The primary honours it when
-free, otherwise emits the `tab-renamed` event.
-
-### Claim registry — cooperative tab ownership
-
-When more than one MCP client shares the same bridge, two agents
-operating on the same tab can step on each other. The claim registry
-gives each tab a soft owner: an agent calls `browser.claim_tab` to mark
-it as theirs, gets exclusive access for an inactivity-based TTL, and
-`browser.release_tab` to hand it back. The primary sweeps stale claims
-in the background so a crashed agent never holds a tab forever, and
-emits `tab-claimed` / `tab-released` / `tab-claim-rejected` entries in
-the same event log `browser.events` returns. `browser.my_tabs` lists
-the tabs the calling agent currently owns. Claims are advisory — they
-inform; they do not block — so a single-client workflow never needs to
-think about them.
-
-## How it works
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Your MCP client (Claude Code, OpenCode, Copilot CLI, …)         │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │  stdio (MCP)
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  browser-link MCP server (Node 22+)                              │
-│  ─ listens on 127.0.0.1:17529  (loopback only)                   │
-│  ─ exposes browser.* tools + browser.map.* persistent UI map     │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │  WebSocket (loopback)
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Chrome extension (Manifest V3, custom, ships with the package)  │
-│  ─ inert by default                                              │
-│  ─ activates per-tab when the user clicks "Conectar" in the      │
-│    extension popup                                               │
-│  ─ uses chrome.debugger (Chrome DevTools Protocol) under the hood│
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-                  Browser tab
-              (only the connected ones)
-```
-
-Important details:
-
-- The WebSocket bridge **only binds to `127.0.0.1`** — never on a public
-  interface, never reachable from anywhere outside your machine.
-- Tabs you do **not** explicitly connect remain invisible to the agent.
-  You can connect as many as you want; each one is enabled one by one.
-- Disconnecting a tab from the extension popup immediately revokes the
-  bridge for that tab.
-
-## 🧠 The agent learns your apps — and remembers across sessions
-
-> **This is the feature that makes `browser-link` more than a remote
-> control.** Every time the agent figures something out about a web app
-> (where a button lives, which combination of events fires its handler,
-> what gotcha tripped it the first time), it can persist that piece of
-> knowledge in a **local SQLite database** under your user folder.
->
-> Next session, the agent calls `browser.map.recall` and gets that
-> knowledge back — instead of rediscovering the same selectors and
-> flows from scratch every conversation.
-
-### What gets remembered
-
-The map stores three kinds of entries, indexed by `(app, route)`:
-
-| Kind         | What it looks like                                                                   | When the agent saves it                                             |
-| ------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| **selector** | `{ selector: "button[aria-label='Save']", evidence?: "found via snapshot" }`         | A CSS selector tied to a stable purpose                             |
-| **flow**     | `{ steps: [{action:'click', selector:'#chip'}, {action:'wait', ms:500}, …] }`        | An ordered sequence of actions that reaches an outcome end-to-end   |
-| **gotcha**   | `{ body: "Synthetic dblclick does not fire the React handler — use full sequence" }` | A non-obvious fact about the app that would take time to rediscover |
-
-Each entry has `verified_at` / `failed_at` timestamps so the agent knows
-whether the saved knowledge is fresh, stale, or known-broken. When a
-selector that used to work suddenly fails, the agent marks it via
-`record_use({ ok: false })` and stops trusting it until it relearns.
-
-### The loop, in plain English
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  You ask:                                                            │
-│     "Open the user detail dialog for user 42 and check the audit log"│
-└────────────────────────────┬─────────────────────────────────────────┘
-                             │
-                             ▼
-     ┌────────────────────────────────────────────────────────┐
-     │  1) Agent calls browser.map.recall({ origin, url })    │
-     │     → returns the selectors / flows / gotchas it has   │
-     │       learned for this app + route in past sessions    │
-     └────────────────────────────┬───────────────────────────┘
-                                  │
-                                  ▼
-     ┌────────────────────────────────────────────────────────┐
-     │  2) Agent reuses what it knows — saves time and tokens │
-     │     If something is stale, it falls back to snapshot   │
-     │     and re-learns. If it's wrong, it marks failed.     │
-     └────────────────────────────┬───────────────────────────┘
-                                  │
-                                  ▼
-     ┌────────────────────────────────────────────────────────┐
-     │  3) Agent does the task and saves any new learning     │
-     │     via browser.map.save({ kind, purpose, payload })   │
-     │     so the next session starts even better-equipped.   │
-     └────────────────────────────────────────────────────────┘
-```
-
-### Where the database lives
-
-A single SQLite file (`map.db`) on your machine. **Nothing is ever
-uploaded** — the bridge talks loopback only and the map never leaves
-your laptop.
-
-| OS      | Default path                                                                                |
-| ------- | ------------------------------------------------------------------------------------------- |
-| macOS   | `~/Library/Application Support/browser-link/map.db`                                         |
-| Linux   | `$XDG_DATA_HOME/browser-link/map.db` <br/> _(default `~/.local/share/browser-link/map.db`)_ |
-| Windows | `%APPDATA%\browser-link\map.db`                                                             |
-
-Override with `BROWSER_LINK_DATA_DIR` if you want a portable install or
-need to inspect the DB out-of-the-way.
-
-### Schema, for the curious
-
-```sql
-CREATE TABLE apps (
-  id, origin, app_key, title, notes, created_at, last_seen_at
-);
-
-CREATE TABLE entries (
-  id, app_id, url_pattern, kind, purpose,
-  payload TEXT,                  -- JSON blob, shape depends on kind
-  verified_at, failed_at, notes,
-  created_at, updated_at
-);
-```
-
-The agent gets this protocol pushed automatically over the MCP
-`initialize` handshake — you do not need to prompt-engineer it to
-use the map. It just does.
-
-## Tools exposed to the agent
-
-The MCP server registers two families of tools.
-
-**Browser bridge** — operate on a connected tab:
-
-| Tool                   | Purpose                                                          |
-| ---------------------- | ---------------------------------------------------------------- |
-| `browser.list_tabs`    | List tabs currently connected through the extension              |
-| `browser.ping`         | Verify the bridge to a tab; returns its title and URL            |
-| `browser.snapshot`     | Title, URL, visible text and interactive elements with selectors |
-| `browser.navigate`     | Send a tab to a different URL                                    |
-| `browser.click`        | Click an element by CSS selector                                 |
-| `browser.type`         | Focus an input and type text                                     |
-| `browser.evaluate`     | Run an arbitrary JavaScript expression in the page               |
-| `browser.console`      | Rolling buffer of recent console messages (last 200)             |
-| `browser.network`      | Rolling buffer of recent network requests (last 200)             |
-| `browser.network_body` | Fetch the response body of a specific request                    |
-| `browser.claim_tab`    | Claim a tab for the current agent (cooperative ownership)        |
-| `browser.release_tab`  | Release a tab the current agent holds                            |
-| `browser.my_tabs`      | List tabs currently claimed by the current agent                 |
-| `browser.events`       | Read the primary's bridge-event ring buffer (recovery + audit)   |
-
-**Persistent UI map** — local-only memory across sessions:
-
-| Tool                     | Purpose                                                   |
-| ------------------------ | --------------------------------------------------------- |
-| `browser.map.recall`     | Recall selectors / flows / gotchas known for an app+route |
-| `browser.map.save`       | Persist a `selector`, `flow` or `gotcha`                  |
-| `browser.map.record_use` | Mark an entry as freshly verified or failed               |
-| `browser.map.forget`     | Delete an entry or an entire app                          |
-| `browser.map.rename_app` | Fix an auto-derived app_key                               |
-| `browser.map.apps`       | List known apps                                           |
-
-On every MCP `initialize` handshake the server also pushes a short usage
-protocol to the client (when to call `recall`, what kinds to save,
-what _never_ to save) — no manual prompt configuration required.
+**Claim registry — cooperative tab ownership**: in multi-agent mode,
+two agents touching the same tab can step on each other. Each tab
+gets a soft owner via `browser.claim_tab`; the agent gets exclusive
+access for an inactivity-based TTL and releases with
+`browser.release_tab`. The primary sweeps stale claims so a crashed
+agent never holds a tab forever. `browser.my_tabs` lists the tabs the
+calling agent currently owns. Claims are advisory — they inform, they
+do not block — so a single-client workflow never has to think about
+them.
 
 ## Security model
 
-The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never on a
-public interface. On top of that, before accepting any WebSocket handshake
-the server asks the operating-system kernel **which process** opened the
-incoming TCP connection. If the owning binary is not a known Chromium-based
-browser (Chrome, Chromium, Edge, Brave, Vivaldi) the handshake is refused
-with HTTP 403 before any application bytes are exchanged.
+The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never
+on a public interface. On top of that, before accepting any WebSocket
+handshake the server asks the operating-system kernel **which process**
+opened the incoming TCP connection. If the owning binary is not a known
+Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi) the
+handshake is refused with HTTP 403 before any application bytes are
+exchanged.
 
 - **macOS / Linux** → `lsof` (`/proc/net/tcp` on Linux is enough too).
 - **Windows** → `netstat -ano` + `tasklist`.
 
 Concretely this means:
 
-- ✔ Random local processes (curl, other Node scripts, scanners) cannot talk
-  to the bridge even if they figured out the port.
-- ✔ A process that crafts a fake `Origin: chrome-extension://...` header is
-  still rejected: the kernel reports its real binary name.
+- ✔ Random local processes (curl, other Node scripts, scanners) cannot
+  talk to the bridge even if they figured out the port.
+- ✔ A process that crafts a fake `Origin: chrome-extension://...` header
+  is still rejected: the kernel reports its real binary name.
 - ✘ Malware that has already injected itself **inside Chrome** (via
   `chrome.debugger` from another extension, dylib injection, gdb attach…)
   passes the check. But that attacker already controls the browser
   directly — the bridge gives them nothing they did not already have.
 
-The setup has **no tokens to paste**, **no manifests to register**, and
-**no manual step beyond clicking "Conectar"** in the extension popup.
-`browser-link doctor` lists the current allowlist on your OS.
+No tokens to paste, no manifests to register, no manual step beyond
+clicking "Conectar" in the extension popup. `browser-link doctor` lists
+the current allowlist on your OS.
 
 ## Where your data lives
 
-The persistent map is a single SQLite file on **your machine**, never
-uploaded:
+The persistent map is a single SQLite file (`map.db`) on **your
+machine**, never uploaded:
 
 | OS      | Path                                                                                        |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -445,13 +408,26 @@ uploaded:
 | Linux   | `$XDG_DATA_HOME/browser-link/map.db` <br/> _(default `~/.local/share/browser-link/map.db`)_ |
 | Windows | `%APPDATA%\browser-link\map.db`                                                             |
 
-Override with `BROWSER_LINK_DATA_DIR`. The same directory also holds
-`config.json` with UX preferences (e.g. dismissed welcome, chosen language).
+Override with `BROWSER_LINK_DATA_DIR` if you want a portable install
+or need to inspect the DB out-of-the-way. The same directory holds
+`config.json` (UX preferences) and `multi-agent-token` (rotated at
+every primary startup).
 
-Nothing in this package phones home. The WebSocket bridge talks loopback
-only.
+Nothing in this package phones home. The WebSocket bridge talks
+loopback only.
 
-## Repository layout
+## For contributors
+
+Open project, contributions welcome. Code is the quickest way, but
+bug reports, repro cases, and ideas in the issue tracker are just as
+useful.
+
+- **Bug or feature idea**: open an issue at
+  [github.com/jobshimo/browser-link/issues](https://github.com/jobshimo/browser-link/issues).
+- **Pull request**: fork, branch from `main`, push, open a PR. All
+  merges go through review.
+
+### Repository layout
 
 ```
 browser-link/
@@ -464,23 +440,12 @@ browser-link/
 └── DECISIONS.md     # living architecture / design-decision log
 ```
 
-## Contributing
-
-This is an open project and contributions are welcome. Code is the
-quickest way, but bug reports, repro cases, and ideas in the issue
-tracker are just as useful.
-
-- **Bug report or feature idea**: open an issue at
-  [github.com/jobshimo/browser-link/issues](https://github.com/jobshimo/browser-link/issues).
-- **Pull request**: fork the repo, branch from `main`, push, open a PR.
-  All merges go through review.
-
 ### Development setup
 
-Requires **Node 22.13+** and **pnpm 11+**. The exact pnpm version is
+Requires **Node ≥ 22.13** and **pnpm 11+**. The exact pnpm version is
 pinned in `package.json` via the `packageManager` field — `corepack`
 (bundled with Node ≥ 16) reads that field and uses the matching pnpm
-version automatically, so you don't have to install pnpm manually.
+version automatically.
 
 ```bash
 git clone https://github.com/jobshimo/browser-link.git
@@ -490,44 +455,35 @@ pnpm install
 pnpm run build
 ```
 
-Useful scripts (run from the repo root):
-
 | Script                     | What it does                                          |
 | -------------------------- | ----------------------------------------------------- |
 | `pnpm run build`           | Build the server and the Chrome extension             |
 | `pnpm run build:server`    | Build only the server (`packages/server/dist/`)       |
 | `pnpm run build:extension` | Build only the extension (`packages/extension/dist/`) |
 | `pnpm run dev`             | Run the server in watch mode (recompiles on save)     |
+| `pnpm run try`             | Run the TUI directly from source via `tsx`            |
 | `pnpm run typecheck`       | Type-check every workspace, no emit                   |
 | `pnpm run inspect`         | Launch the MCP Inspector wired to the local server    |
 | `pnpm run generate:icons`  | Regenerate extension PNGs from `icons/icon.svg`       |
 | `pnpm run clean`           | Remove every `dist/` directory                        |
 
-> ### ⚠️ Important note on `pnpm run dev`
+> ### ⚠️ `pnpm run dev` conflicts with a running MCP client
 >
-> `pnpm run dev` opens its own WebSocket on `127.0.0.1:17529` — the same
-> port the registered MCP server uses. **Two processes cannot bind the
-> same port at the same time.**
+> `pnpm run dev` binds the same `127.0.0.1:17529` the registered MCP
+> server uses. **Two processes cannot bind the same port at the same
+> time.** While developing locally:
 >
-> So while you are developing locally:
+> - If your MCP client (Claude Code, OpenCode, …) is open with
+>   `browser-link` registered, it already spawned the server and owns
+>   the port. `pnpm run dev` will crash with `EADDRINUSE`.
+> - If `pnpm run dev` is holding the port, the client's `browser-link`
+>   MCP will fail to start.
 >
-> - If your MCP client (Claude Code, OpenCode, …) is open **and** has
->   `browser-link` registered, it already spawned the server and owns the
->   port. `pnpm run dev` will crash with `EADDRINUSE`.
-> - If `pnpm run dev` is the one holding the port, the client's
->   `browser-link` MCP will fail to start (`✗ Failed to connect`).
->
-> Recommended dev flow:
->
-> 1. Quit the MCP client (or `kill` the `node …/dist/index.js` PID that
->    it spawned — find it with `lsof -iTCP:17529 -sTCP:LISTEN -nP`).
-> 2. Now run `pnpm run dev` — port is free, tsx watch picks up your edits.
-> 3. When you are done coding, stop `pnpm run dev` and reopen the MCP client
->    so it can spawn its own server again.
->
-> `pnpm run build` (without watch) does **not** touch the port, so you can
-> always rebuild while the client is open. Only the live `dev` server
-> needs the port.
+> Recommended dev flow: quit the MCP client (or `browser-link stop` to
+> kill the spawn it left holding the port) → run `pnpm run dev` → when
+> done, stop `pnpm run dev` and reopen the client so it can spawn its
+> own server. `pnpm run build` (no watch) does **not** touch the port,
+> so you can always rebuild while the client is open.
 
 Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
 
@@ -537,10 +493,8 @@ Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
 version, and the five versioned files in the monorepo (root, server,
 extension `package.json`, extension `manifest.json`, shared) MUST agree
 on the same number. The `Version Gate` workflow blocks any PR that
-doesn't comply, and is a required check on `main`.
-
-In other words: every merge to `main` is a release. There is no path to
-`main` that doesn't ship a new version.
+doesn't comply and is a required check on `main`. **Every merge to
+`main` is a release.**
 
 ```bash
 pnpm run release -- patch    # 0.7.0 → 0.7.1
@@ -563,26 +517,21 @@ What `scripts/release.mjs` does, in order:
 6. Commits the lot on a new branch `release/vX.Y.Z` and pushes it.
 7. Opens a PR against `main` with the CHANGELOG entry in the body.
 
-You then review the PR and merge it via the GitHub UI like any other.
-After the merge, the CI matrix runs on `main`; when it goes green,
-`.github/workflows/release-finalize.yml` reads the version straight from
-`packages/server/package.json`, then creates the tag `vX.Y.Z` and the
-matching GitHub Release through the REST API (no `git push` anywhere).
-The CHANGELOG section for that version is used as the release notes.
+You then review the PR and merge it via the GitHub UI. On merge, the
+`release` job in `.github/workflows/ci.yml`:
 
-The finalize workflow is idempotent: if the release for that version
-already exists, it does nothing.
+1. Reads the version from `packages/server/package.json`.
+2. Creates the tag `vX.Y.Z` and the matching GitHub Release.
+3. Publishes `@jobshimo/browser-link@vX.Y.Z` to npm via **OIDC Trusted
+   Publisher** — no `NPM_TOKEN` stored anywhere, the publish
+   credentials are short-lived and granted per-run by GitHub Actions.
 
-**npm publish stays manual** for now:
+The job is idempotent: if the release / tag for that version already
+exists, those steps are skipped.
 
-```bash
-cd packages/server
-pnpm publish
-```
+## Author
 
-(The tarball uploaded to `registry.npmjs.org` is identical regardless
-of the package manager. Consumers can keep installing with `npm i -g
-@jobshimo/browser-link` — see the [Quick start](#quick-start) section.)
+**Martín Miguel Bernal** — [github.com/jobshimo](https://github.com/jobshimo)
 
 ## License
 

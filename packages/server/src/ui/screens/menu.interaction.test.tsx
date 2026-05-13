@@ -183,6 +183,103 @@ describe('MainMenu — interaction', () => {
     expect(frame).not.toContain('available');
   });
 
+  test("'p' fires onSelect('permissions') (v0.9.0 group-row hotkey)", async () => {
+    const selected = [];
+    const onSelect = (a) => {
+      selected.push(a);
+    };
+    const { stdin } = render(
+      <MainMenu
+        language="en"
+        onSelect={onSelect}
+        onSwapLang={noop}
+        onQuit={noop}
+        outdatedClientNames={() => []}
+      />,
+    );
+    await tick();
+    stdin.write('p');
+    await tick();
+    expect(selected).toEqual(['permissions']);
+  });
+
+  test("'m' fires onSelect('multiAgent')", async () => {
+    const selected = [];
+    const onSelect = (a) => {
+      selected.push(a);
+    };
+    const { stdin } = render(
+      <MainMenu
+        language="en"
+        onSelect={onSelect}
+        onSwapLang={noop}
+        onQuit={noop}
+        outdatedClientNames={() => []}
+      />,
+    );
+    await tick();
+    stdin.write('m');
+    await tick();
+    expect(selected).toEqual(['multiAgent']);
+  });
+
+  test("'d' fires onSelect('doctor') (diagnose group hotkey)", async () => {
+    const selected = [];
+    const onSelect = (a) => {
+      selected.push(a);
+    };
+    const { stdin } = render(
+      <MainMenu
+        language="en"
+        onSelect={onSelect}
+        onSwapLang={noop}
+        onQuit={noop}
+        outdatedClientNames={() => []}
+      />,
+    );
+    await tick();
+    stdin.write('d');
+    await tick();
+    expect(selected).toEqual(['doctor']);
+  });
+
+  test("'f' fires onSelect('freePort')", async () => {
+    const selected = [];
+    const onSelect = (a) => {
+      selected.push(a);
+    };
+    const { stdin } = render(
+      <MainMenu
+        language="en"
+        onSelect={onSelect}
+        onSwapLang={noop}
+        onQuit={noop}
+        outdatedClientNames={() => []}
+      />,
+    );
+    await tick();
+    stdin.write('f');
+    await tick();
+    expect(selected).toEqual(['freePort']);
+  });
+
+  test('SETUP / DIAGNOSE / REFERENCE group headers render', async () => {
+    const { lastFrame } = render(
+      <MainMenu
+        language="en"
+        onSelect={noop}
+        onSwapLang={noop}
+        onQuit={noop}
+        outdatedClientNames={() => []}
+      />,
+    );
+    await tick();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('SETUP');
+    expect(frame).toContain('DIAGNOSE');
+    expect(frame).toContain('REFERENCE');
+  });
+
   test('ES update banner uses Rioplatense copy when language is es', async () => {
     const { lastFrame } = render(
       <MainMenu

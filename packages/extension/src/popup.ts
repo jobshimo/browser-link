@@ -13,7 +13,13 @@ interface StatusResult {
   serverTabId?: string;
 }
 
-type CardState = 'connected' | 'idle' | 'error';
+// 'connecting' is a transient client-side state while a connect/disconnect
+// round-trip is in flight; 'portCollision' is reserved for a future
+// background message that distinguishes "server unreachable, just retry"
+// from "another browser-link is already holding 127.0.0.1:17529". The
+// CSS already styles both — keeping the type ready avoids a refactor
+// when the message surface grows.
+type CardState = 'idle' | 'connecting' | 'connected' | 'error' | 'portCollision';
 
 async function getCurrentTab(): Promise<chrome.tabs.Tab | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -53,6 +59,20 @@ function setStatus(state: CardState, label: string, tabId?: string): void {
   }
 }
 
+// Optional explanation row, shown under the URL on portCollision (and
+// reserved for any future state that wants to teach the user what to do
+// next inside the popup). Pass null to hide.
+function setExplanation(html: string | null): void {
+  const el = $('explanation');
+  if (html === null) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = html;
+}
+
 function setAction(label: string, variant: 'primary' | 'danger', disabled = false): void {
   const btn = $('action') as HTMLButtonElement;
   btn.textContent = label;
@@ -68,10 +88,12 @@ async function refresh(): Promise<void> {
     setStatus('error', 'No active tab');
     setAction('Open a tab first', 'primary', true);
     urlEl.textContent = '';
+    setExplanation(null);
     return;
   }
 
   urlEl.textContent = tab.url ?? '';
+  setExplanation(null);
 
   const status = await send<StatusResult>({
     action: 'status',
@@ -80,10 +102,10 @@ async function refresh(): Promise<void> {
 
   if (status.connected) {
     setStatus('connected', 'Connected', status.serverTabId);
-    setAction('Disconnect', 'danger');
+    setAction('Disconnect this tab', 'danger');
   } else {
     setStatus('idle', 'Not connected');
-    setAction('Connect', 'primary');
+    setAction('Connect this tab', 'primary');
   }
 }
 
@@ -91,12 +113,16 @@ async function onAction(): Promise<void> {
   const tab = await getCurrentTab();
   if (!tab?.id) return;
 
-  setAction('Working…', 'primary', true);
-
   const status = await send<StatusResult>({
     action: 'status',
     tabId: tab.id,
   });
+
+  // Transient "connecting" state — the card flips to the blue palette so
+  // the user sees something is happening even if the round-trip to the
+  // server takes a beat.
+  setStatus('connecting', status.connected ? 'Disconnecting…' : 'Connecting…');
+  setAction(status.connected ? 'Disconnecting…' : 'Connecting…', 'primary', true);
 
   if (status.connected) {
     await send<{ ok: boolean }>({ action: 'disconnect', tabId: tab.id });

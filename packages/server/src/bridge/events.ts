@@ -69,4 +69,13 @@ export class BridgeEventLog {
   size(): number {
     return this.buffer.length;
   }
+
+  /** Drop every event in the buffer and reset the id counter. Returns the
+   * count dropped, so callers can surface it (used by `browser.reset`). */
+  clear(): number {
+    const dropped = this.buffer.length;
+    this.buffer = [];
+    this.nextId = 1;
+    return dropped;
+  }
 }

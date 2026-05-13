@@ -1,3 +1,15 @@
+function handleReset(
+  deps: BrowserToolDeps,
+):
+  | { ok: true; dropped_tabs: number; released_claims: number; cleared_events: number }
+  | { ok: false; reason: string } {
+  if (!deps.resetBridge) {
+    return { ok: false, reason: 'reset-not-supported' };
+  }
+  const result = deps.resetBridge();
+  return { ok: true, ...result };
+}
+
 /**
  * Dispatcher for browser.* tools. Mirrors the shape of the map dispatcher
  * (`handleMapTool` / `isMapTool`) so both families look the same from
@@ -61,6 +73,10 @@ export interface BrowserToolDeps {
    * absent the dispatcher behaves as before (no enforcement, list_tabs
    * returns claimed_by:null for every tab). */
   tabClaims?: TabClaimRegistry;
+  /** Soft-reset entry point for `browser.reset`. Drops every connected tab
+   * session, releases every claim, clears the event log — without killing
+   * the MCP server. Optional so unit tests can omit it. */
+  resetBridge?(): { dropped_tabs: number; released_claims: number; cleared_events: number };
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -82,6 +98,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.type',
   'browser.evaluate',
   'browser.events',
+  'browser.reset',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -266,6 +283,8 @@ export async function handleBrowserTool(
     }
     case 'browser.events':
       return handleEvents(args, deps);
+    case 'browser.reset':
+      return handleReset(deps);
     default: {
       // The earlier `isBrowserTool(name)` check makes this branch unreachable
       // for any value within `BrowserToolName`. The exhaustive cast surfaces a

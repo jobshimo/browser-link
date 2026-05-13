@@ -57,7 +57,7 @@ export type ClaimEvent =
       kind: 'tab-released';
       tab_id: string;
       agent_id: string;
-      reason: 'explicit' | 'agent-disconnect' | 'ttl';
+      reason: 'explicit' | 'agent-disconnect' | 'ttl' | 'reset';
     }
   | {
       kind: 'tab-claim-rejected';
@@ -197,6 +197,24 @@ export class TabClaimRegistry {
   /** Test helper. Production callers should not need this. */
   size(): number {
     return this.claims.size;
+  }
+
+  /** Drop every claim, emitting one `tab-released` event per dropped claim
+   * (reason: 'reset'). Used by `browser.reset` to wipe ownership in one
+   * step without iterating from the caller side. */
+  releaseAll(): TabClaim[] {
+    const released: TabClaim[] = [];
+    for (const [tabId, claim] of this.claims) {
+      released.push(claim);
+      this.onEvent({
+        kind: 'tab-released',
+        tab_id: tabId,
+        agent_id: claim.agent_id,
+        reason: 'reset',
+      });
+    }
+    this.claims.clear();
+    return released;
   }
 
   private isExpired(claim: TabClaim): boolean {

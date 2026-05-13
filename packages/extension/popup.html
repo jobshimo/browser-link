@@ -4,22 +4,42 @@
     <meta charset="UTF-8" />
     <title>browser-link</title>
     <style>
+      /* v0.9.0 popup — faithful to Claude Design's Bridge variant.
+       *
+       * Slate-blue palette (refined from the bright-cyan blues of the
+       * previous popup), cleaner SVG mark (viewBox 64, stroke 5), per-
+       * state coloured ring on the status card, capitalised "loopback
+       * only" sub-line. Visual refresh only — the popup ↔ background
+       * message protocol is unchanged. */
       :root {
-        --brand-from: #3b82f6;
-        --brand-to: #1d4ed8;
+        --brand-from: #5b8def;
+        --brand-to: #2a5fd6;
+        --brand-ring: rgba(29, 78, 216, 0.32);
+
         --bg: #ffffff;
         --bg-soft: #f8fafc;
         --border: #e2e8f0;
+
         --text: #0f172a;
         --text-muted: #64748b;
         --text-faint: #94a3b8;
-        --connected: #10b981;
+
+        --idle-fg: #b45309;
+        --idle-soft: #fffbeb;
+        --idle-ring: rgba(245, 158, 11, 0.18);
+
+        --connecting-fg: #1d4ed8;
+        --connecting-soft: #eff6ff;
+        --connecting-ring: rgba(29, 78, 216, 0.18);
+
+        --connected-fg: #047857;
         --connected-soft: #ecfdf5;
         --connected-ring: rgba(16, 185, 129, 0.18);
-        --idle: #f59e0b;
-        --idle-soft: #fffbeb;
-        --error: #ef4444;
+
+        --error-fg: #b91c1c;
         --error-soft: #fef2f2;
+        --error-ring: rgba(239, 68, 68, 0.18);
+
         --shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
       }
 
@@ -31,7 +51,14 @@
       body {
         margin: 0;
         padding: 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
+        font-family:
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Inter',
+          'Segoe UI',
+          system-ui,
+          sans-serif;
         font-size: 13px;
         color: var(--text);
         background: var(--bg);
@@ -41,29 +68,29 @@
       body {
         width: 320px;
         background:
-          radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 55%),
-          radial-gradient(circle at top left, rgba(29, 78, 216, 0.05), transparent 50%), var(--bg);
+          radial-gradient(circle at top right, rgba(91, 141, 239, 0.08), transparent 55%),
+          radial-gradient(circle at top left, rgba(42, 95, 214, 0.05), transparent 50%), var(--bg);
       }
 
       .shell {
-        padding: 16px;
+        padding: 14px 14px 12px;
       }
 
       header {
         display: flex;
         align-items: center;
         gap: 10px;
-        margin-bottom: 14px;
+        margin-bottom: 12px;
       }
 
       .mark {
         width: 28px;
         height: 28px;
         border-radius: 8px;
-        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
         box-shadow:
-          0 1px 0 rgba(255, 255, 255, 0.6) inset,
-          0 6px 14px rgba(29, 78, 216, 0.32);
+          0 1px 0 rgba(255, 255, 255, 0.5) inset,
+          0 6px 14px var(--brand-ring);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -78,7 +105,7 @@
       .title {
         display: flex;
         flex-direction: column;
-        line-height: 1.1;
+        line-height: 1.15;
       }
 
       .title strong {
@@ -90,7 +117,7 @@
       .title span {
         font-size: 11px;
         color: var(--text-faint);
-        margin-top: 2px;
+        margin-top: 1px;
       }
 
       .card {
@@ -99,13 +126,16 @@
         border-radius: 10px;
         padding: 12px 14px;
         box-shadow: var(--shadow);
+        transition:
+          background 0.18s ease,
+          border-color 0.18s ease;
       }
 
       .status-row {
         display: flex;
         align-items: center;
         gap: 8px;
-        font-weight: 500;
+        font-weight: 600;
         font-size: 12.5px;
       }
 
@@ -118,30 +148,56 @@
         position: relative;
       }
 
+      /* Per-state palette — background tints the card softly, the dot
+       * and the label match the state hue, and the connected state pulses
+       * a halo so the user spots it from across the screen. */
+      .card[data-state='idle'] {
+        background: var(--idle-soft);
+        border-color: var(--idle-ring);
+      }
+      .card[data-state='idle'] .dot {
+        background: var(--idle-fg);
+      }
+      .card[data-state='idle'] .status-label {
+        color: var(--idle-fg);
+      }
+
+      .card[data-state='connecting'] {
+        background: var(--connecting-soft);
+        border-color: var(--connecting-ring);
+      }
+      .card[data-state='connecting'] .dot {
+        background: var(--connecting-fg);
+      }
+      .card[data-state='connecting'] .status-label {
+        color: var(--connecting-fg);
+      }
+
+      .card[data-state='connected'] {
+        background: var(--connected-soft);
+        border-color: var(--connected-ring);
+      }
       .card[data-state='connected'] .dot {
-        background: var(--connected);
+        background: var(--connected-fg);
         box-shadow: 0 0 0 0 var(--connected-ring);
         animation: pulse 1.8s ease-in-out infinite;
       }
-
       .card[data-state='connected'] .status-label {
-        color: var(--connected);
+        color: var(--connected-fg);
       }
 
-      .card[data-state='idle'] .dot {
-        background: var(--idle);
+      .card[data-state='error'],
+      .card[data-state='portCollision'] {
+        background: var(--error-soft);
+        border-color: var(--error-ring);
       }
-
-      .card[data-state='idle'] .status-label {
-        color: var(--idle);
+      .card[data-state='error'] .dot,
+      .card[data-state='portCollision'] .dot {
+        background: var(--error-fg);
       }
-
-      .card[data-state='error'] .dot {
-        background: var(--error);
-      }
-
-      .card[data-state='error'] .status-label {
-        color: var(--error);
+      .card[data-state='error'] .status-label,
+      .card[data-state='portCollision'] .status-label {
+        color: var(--error-fg);
       }
 
       @keyframes pulse {
@@ -158,11 +214,12 @@
 
       .tab-id {
         margin-left: auto;
-        font-family: 'SFMono-Regular', ui-monospace, Menlo, monospace;
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
         font-size: 11px;
         padding: 2px 7px;
         border-radius: 5px;
-        background: rgba(15, 23, 42, 0.05);
+        background: rgba(15, 23, 42, 0.06);
         color: var(--text-muted);
         font-weight: 500;
         letter-spacing: 0.01em;
@@ -171,8 +228,9 @@
       .url {
         margin-top: 10px;
         padding-top: 10px;
-        border-top: 1px solid var(--border);
-        font-family: 'SFMono-Regular', ui-monospace, Menlo, monospace;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
         font-size: 11px;
         color: var(--text-muted);
         word-break: break-all;
@@ -183,6 +241,25 @@
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
+      }
+
+      /* Explanation slot — shown for portCollision, hidden otherwise.
+       * popup.ts toggles `.explanation` content + visibility. */
+      .explanation {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        font-size: 12px;
+        color: var(--text-muted);
+        line-height: 1.45;
+      }
+      .explanation code {
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+        font-size: 11px;
+        background: rgba(15, 23, 42, 0.06);
+        padding: 0 4px;
+        border-radius: 3px;
       }
 
       button {
@@ -207,9 +284,9 @@
       }
 
       button.primary {
-        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
         color: #ffffff;
-        box-shadow: 0 6px 14px rgba(29, 78, 216, 0.28);
+        box-shadow: 0 6px 14px var(--brand-ring);
       }
 
       button.primary:hover:not(:disabled) {
@@ -218,8 +295,8 @@
 
       button.danger {
         background: #ffffff;
-        color: var(--error);
-        border: 1px solid var(--error);
+        color: var(--error-fg);
+        box-shadow: inset 0 0 0 1px var(--error-fg);
       }
 
       button.danger:hover:not(:disabled) {
@@ -232,12 +309,13 @@
       }
 
       .footer {
-        margin-top: 12px;
+        margin-top: 10px;
         font-size: 10.5px;
         color: var(--text-faint);
         text-align: center;
-        letter-spacing: 0.03em;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
+        font-weight: 500;
       }
     </style>
   </head>
@@ -246,21 +324,20 @@
       <header>
         <div class="mark" aria-hidden="true">
           <svg
-            viewBox="0 0 128 128"
+            viewBox="0 0 64 64"
             fill="none"
             stroke="currentColor"
-            stroke-width="11"
+            stroke-width="5"
             stroke-linecap="round"
-            stroke-linejoin="round"
           >
-            <path d="M52 78 L36 78 A22 22 0 0 1 36 34 L52 34" />
-            <path d="M76 34 L92 34 A22 22 0 0 1 92 78 L76 78" />
-            <line x1="44" y1="56" x2="84" y2="56" />
+            <path d="M22 22 L14 22 A10 10 0 0 0 14 42 L22 42" />
+            <path d="M42 22 L50 22 A10 10 0 0 1 50 42 L42 42" />
+            <line x1="20" y1="32" x2="44" y2="32" />
           </svg>
         </div>
         <div class="title">
           <strong>browser-link</strong>
-          <span>MCP bridge for this tab</span>
+          <span>MCP bridge · per-tab manual</span>
         </div>
       </header>
 
@@ -271,11 +348,12 @@
           <span id="tab-id" class="tab-id" hidden></span>
         </div>
         <div id="url" class="url"></div>
+        <div id="explanation" class="explanation" hidden></div>
       </div>
 
       <button id="action" class="primary" disabled>…</button>
 
-      <div class="footer">manual · per-tab · loopback</div>
+      <div class="footer">manual · per-tab · loopback only</div>
     </div>
 
     <script type="module" src="popup.js"></script>
