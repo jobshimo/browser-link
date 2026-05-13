@@ -244,6 +244,18 @@ jobs:
         working-directory: packages/server
         env:
           VERSION: ${{ steps.read.outputs.version }}
+          # actions/setup-node@v6 with `registry-url` set installs a
+          # placeholder `NODE_AUTH_TOKEN: XXXXX-XXXXX-XXXXX-XXXXX` into
+          # the env even when no token input is given. Recent npm
+          # versions (post-11.5.1 server-side change) prioritise that
+          # placeholder over the OIDC flow and send it to the registry,
+          # which rejects with `400 Bad Request - OIDC publish authorize:
+          # Invalid token`. Clearing the variable forces npm to fall
+          # back to OIDC. See: github.com/orgs/community/discussions/176761
+          # This is the only reason v0.8.3 / v0.8.4 publish failed —
+          # the JWT itself was always valid (sigstore accepted it for
+          # provenance signing on the same run).
+          NODE_AUTH_TOKEN: ''
         run: |
           set -euo pipefail
           # Trusted Publishing requires npm >= 11.5.1 for the OIDC
