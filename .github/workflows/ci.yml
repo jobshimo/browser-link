@@ -256,10 +256,18 @@ jobs:
           # npm@latest` broke npm mid-upgrade — `Cannot find module
           # 'promise-retry'`).
           #
-          # --package=npm@latest pulls the newest npm into npx's cache
-          # for this single invocation only.
+          # We pin npm@11.5.1 — the version that first worked end-to-end
+          # for this repo's Trusted Publisher (v0.7.5 release). Floating
+          # `npm@latest` broke v0.8.3 publish: between v0.8.2 (which
+          # published OK on ~npm 11.x intermediate) and v0.8.3 (which got
+          # npm@latest = 11.14.1), npm regressed how it sends the OIDC
+          # token to the registry — the JWT is identical and sigstore
+          # accepts it for provenance, but the registry returns
+          # `400 Bad Request - OIDC publish authorize: Invalid token`.
+          # Pinning to 11.5.1 neutralises the regression and removes
+          # `npm@latest` as a hidden moving dependency of every release.
           # No NPM_TOKEN — Trusted Publisher exchanges the GitHub OIDC
           # token (granted via permissions.id-token: write above) for a
           # short-lived npm credential at publish time.
-          npx --yes --package=npm@latest -- npm publish --provenance --access public
+          npx --yes --package=npm@11.5.1 -- npm publish --provenance --access public
           echo "  → published @jobshimo/browser-link@$VERSION"
