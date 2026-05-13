@@ -180,6 +180,20 @@ tab_id per Chrome tab in `chrome.storage.session` and asks the new
 primary to keep the same id on reconnect. The primary honours it when
 free, otherwise emits the `tab-renamed` event.
 
+### Claim registry — cooperative tab ownership
+
+When more than one MCP client shares the same bridge, two agents
+operating on the same tab can step on each other. The claim registry
+gives each tab a soft owner: an agent calls `browser.claim_tab` to mark
+it as theirs, gets exclusive access for an inactivity-based TTL, and
+`browser.release_tab` to hand it back. The primary sweeps stale claims
+in the background so a crashed agent never holds a tab forever, and
+emits `tab-claimed` / `tab-released` / `tab-claim-rejected` entries in
+the same event log `browser.events` returns. `browser.my_tabs` lists
+the tabs the calling agent currently owns. Claims are advisory — they
+inform; they do not block — so a single-client workflow never needs to
+think about them.
+
 ## How it works
 
 ```
@@ -326,6 +340,10 @@ The MCP server registers two families of tools.
 | `browser.console`      | Rolling buffer of recent console messages (last 200)             |
 | `browser.network`      | Rolling buffer of recent network requests (last 200)             |
 | `browser.network_body` | Fetch the response body of a specific request                    |
+| `browser.claim_tab`    | Claim a tab for the current agent (cooperative ownership)        |
+| `browser.release_tab`  | Release a tab the current agent holds                            |
+| `browser.my_tabs`      | List tabs currently claimed by the current agent                 |
+| `browser.events`       | Read the primary's bridge-event ring buffer (recovery + audit)   |
 
 **Persistent UI map** — local-only memory across sessions:
 

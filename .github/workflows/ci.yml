@@ -58,6 +58,10 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Coverage (Ubuntu only — informational)
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm --filter @jobshimo/browser-link run test:coverage
+
       - name: Build
         run: pnpm run build
 
