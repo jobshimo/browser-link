@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VERSION } from '../version.js';
 import { BEGIN_PREFIX, END_MARKER, beginMarker } from './content.js';
-import { CorruptBlockError, SymlinkRefusedError } from './errors.js';
+import { CorruptBlockError, OutsideHomeError, SymlinkRefusedError } from './errors.js';
 import { detectAt, installAt, uninstallAt } from './file-ops.js';
 
 let dir: string;
@@ -22,6 +22,11 @@ let file: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'browser-link-instr-'));
   file = join(dir, 'AGENTS.md');
+  // Anchor $HOME inside `dir` so the outside-$HOME guard treats the test
+  // file as inside the user home. The guard reads homedir() on every call,
+  // which reads HOME (POSIX) / USERPROFILE (Windows) live.
+  if (process.platform === 'win32') process.env.USERPROFILE = dir;
+  else process.env.HOME = dir;
 });
 
 afterEach(() => {
@@ -276,5 +281,52 @@ describe('EOL preservation', () => {
     installAt(file, 'Test Client');
     const text = readFileSync(file, 'utf8');
     expect(text).not.toMatch(/\r/);
+  });
+});
+
+describe('outside-$HOME guard', () => {
+  // The top-level beforeEach anchors $HOME at `dir`. Re-point it to a
+  // sibling temp dir for these tests so the target file (still under `dir`)
+  // is no longer under home.
+  let otherHome: string;
+
+  beforeEach(() => {
+    otherHome = mkdtempSync(join(tmpdir(), 'browser-link-other-home-'));
+    if (process.platform === 'win32') process.env.USERPROFILE = otherHome;
+    else process.env.HOME = otherHome;
+  });
+
+  afterEach(() => {
+    rmSync(otherHome, { recursive: true, force: true });
+  });
+
+  test('installAt throws OutsideHomeError when the target sits outside $HOME', () => {
+    expect(() => installAt(file, 'Test Client')).toThrow(OutsideHomeError);
+  });
+
+  test('uninstallAt throws OutsideHomeError when the target sits outside $HOME', () => {
+    // Pre-create the file so uninstallAt reaches the guard before the
+    // existsSync short-circuit could ever fire.
+    writeFileSync(file, 'something\n', 'utf8');
+    expect(() => uninstallAt(file, 'Test Client')).toThrow(OutsideHomeError);
+  });
+
+  test('allowOutsideHome:true bypasses the guard (env-var override case)', () => {
+    expect(() => installAt(file, 'Test Client', { allowOutsideHome: true })).not.toThrow();
+    expect(existsSync(file)).toBe(true);
+  });
+
+  test('error message names the resolved home so the user can diagnose it', () => {
+    let caught: unknown;
+    try {
+      installAt(file, 'Test Client');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OutsideHomeError);
+    if (caught instanceof OutsideHomeError) {
+      expect(caught.message).toContain('COPILOT_HOME');
+      expect(caught.filePath).toBe(file);
+    }
   });
 });

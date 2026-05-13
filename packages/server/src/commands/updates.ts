@@ -1,3 +1,4 @@
+import { compareSemver } from '../utils/semver.js';
 import { PACKAGE_NAME, VERSION } from '../version.js';
 import type { Language } from './welcome.js';
 
@@ -90,17 +91,11 @@ export async function checkUpdates(timeoutMs = 4000): Promise<UpdateInfo> {
   }
 }
 
+/** Wrap `compareSemver` so the registry-comparison call site keeps its
+ * boolean shape. Plain semver triplets (no pre-release suffix) only —
+ * non-numeric segments fall back to `0`, matching the shared util. */
 function isNewer(latest: string, current: string): boolean {
-  const a = latest.split('.').map((s) => parseInt(s, 10) || 0);
-  const b = current.split('.').map((s) => parseInt(s, 10) || 0);
-  const n = Math.max(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
-    if (ai > bi) return true;
-    if (ai < bi) return false;
-  }
-  return false;
+  return compareSemver(latest, current) > 0;
 }
 
 interface UpdatesCliI18n {

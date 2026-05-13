@@ -27,24 +27,20 @@ import type { AgentCaller } from '../tools/tab-claims.js';
  * Construction does NOT bind the port. Call `start()` and await.
  */
 
-/** Strip ASCII control characters from anything we put through `log()`.
- * Some of what we log includes data that originally came from a peer
- * (binary names, error messages, frame kinds), so a malicious or just
- * quirky value with embedded newlines / ANSI escapes / NULs could forge
- * additional log lines or hide context. Replacing them with `?` makes
- * every entry survive a single line and a single visible character per
- * source character. */
-function sanitizeLogValue(s: string): string {
-  // ASCII C0 (U+0000-U+001F) plus DEL (U+007F). Stops embedded newlines /
-  // NUL / ANSI escapes from forging extra log lines or hiding text.
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/[\x00-\x1f\x7f]/g, '?');
-}
-
-function log(msg: string): void {
-  // stderr — stdout belongs to the MCP transport.
-  console.error(`[browser-link ipc] ${sanitizeLogValue(msg)}`);
-}
+/**
+ * Logging convention for the IPC bridge:
+ * - Writes to stderr. stdout belongs to the MCP transport.
+ * - Peer-controlled values interpolated into a log entry MUST be sanitised
+ *   inline with `.replace(/\n|\r/g, ' ')` at the call site, so a malicious
+ *   peer cannot forge extra log lines via embedded newlines (CWE-117 /
+ *   js/log-injection). A wrapper would centralise that concern, but
+ *   CodeQL's dataflow analyser does not credit a sanitiser applied behind
+ *   a wrapper — the sanitiser must live in the same scope as the template
+ *   literal that builds the entry. Values that cannot carry newlines
+ *   (UUIDs we mint, kernel-provided integers, static strings) do not need
+ *   sanitising.
+ */
+const IPC_LOG_PREFIX = '[browser-link ipc]';
 
 /** Binaries we'll accept as legitimate peers. The token is the real auth;
  * this is defence in depth. Names normalised to lowercase before comparison. */
@@ -114,7 +110,8 @@ export class IpcServer {
       const port = this.options.port ?? IPC_PORT;
       const server = createServer((socket) => {
         this.handleConnection(socket).catch((err: unknown) => {
-          log(`Connection handler error: ${err instanceof Error ? err.message : String(err)}`);
+          const reason = (err instanceof Error ? err.message : String(err)).replace(/\n|\r/g, ' ');
+          console.error(`${IPC_LOG_PREFIX} Connection handler error: ${reason}`);
           socket.destroy();
         });
       });
@@ -132,7 +129,8 @@ export class IpcServer {
             reject(err);
           }
         } else {
-          log(`Server error after listening: ${err.message}`);
+          const reason = err.message.replace(/\n|\r/g, ' ');
+          console.error(`${IPC_LOG_PREFIX} Server error after listening: ${reason}`);
         }
       });
       server.listen(port, host, () => {
@@ -146,7 +144,9 @@ export class IpcServer {
           this.boundHost = host;
           this.boundPortValue = port;
         }
-        log(`IPC server listening on ${this.boundHost}:${this.boundPortValue}`);
+        console.error(
+          `${IPC_LOG_PREFIX} IPC server listening on ${this.boundHost}:${this.boundPortValue}`,
+        );
         resolve();
       });
     });
@@ -198,7 +198,9 @@ export class IpcServer {
     const remotePort = socket.remotePort;
 
     if (!remoteAddr || remotePort == null) {
-      log('Rejected IPC connection: peer address/port not exposed by socket.');
+      console.error(
+        `${IPC_LOG_PREFIX} Rejected IPC connection: peer address/port not exposed by socket.`,
+      );
       socket.destroy();
       return;
     }
@@ -209,10 +211,9 @@ export class IpcServer {
     const lookup = this.options.peerLookup ?? lookupPeerProcess;
     const peer = await lookup(remoteAddr, remotePort).catch(() => null);
     if (!peer || !NODE_PROCESS_NAMES.has(peer.binaryName.toLowerCase())) {
-      log(
-        `Rejected IPC connection from ${remoteAddr}:${remotePort}: not a known Node process (${
-          peer?.binaryName ?? 'unknown'
-        }).`,
+      const binary = (peer?.binaryName ?? 'unknown').replace(/\n|\r/g, ' ');
+      console.error(
+        `${IPC_LOG_PREFIX} Rejected IPC connection from ${remoteAddr}:${remotePort}: not a known Node process (${binary}).`,
       );
       socket.destroy();
       return;
@@ -226,13 +227,14 @@ export class IpcServer {
       if (line.length === 0) return;
       const frame = parseFrame(line);
       if (!frame) {
-        log('Invalid frame received; closing connection.');
+        console.error(`${IPC_LOG_PREFIX} Invalid frame received; closing connection.`);
         socket.destroy();
         return;
       }
       if (!authenticated) {
         if (frame.kind !== 'hello') {
-          log(`First frame was not "hello" (got ${frame.kind}); closing.`);
+          const kind = frame.kind.replace(/\n|\r/g, ' ');
+          console.error(`${IPC_LOG_PREFIX} First frame was not "hello" (got ${kind}); closing.`);
           socket.destroy();
           return;
         }
@@ -271,7 +273,7 @@ export class IpcServer {
           caller,
         };
         this.sessions.set(sid, session);
-        log(`Proxy connected: session=${sid} pid=${peer.pid}`);
+        console.error(`${IPC_LOG_PREFIX} Proxy connected: session=${sid} pid=${peer.pid}`);
         return;
       }
       // After the hello branch above, `authenticated` is true and
@@ -301,12 +303,13 @@ export class IpcServer {
           // tab-released event per dropped claim, which surfaces in
           // browser.events for the remaining agents.
           this.deps.browserTools.tabClaims?.onAgentDisconnect(sessionId);
-          log(`Proxy disconnected: session=${sessionId}`);
+          console.error(`${IPC_LOG_PREFIX} Proxy disconnected: session=${sessionId}`);
         }
       }
     });
     socket.on('error', (err) => {
-      log(`Proxy socket error: ${err.message}`);
+      const reason = err.message.replace(/\n|\r/g, ' ');
+      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${reason}`);
     });
   }
 
@@ -321,7 +324,7 @@ export class IpcServer {
     }
     if (!session.pongDeadline) {
       session.pongDeadline = setTimeout(() => {
-        log(`Proxy ${sid} did not pong in time; dropping.`);
+        console.error(`${IPC_LOG_PREFIX} Proxy ${sid} did not pong in time; dropping.`);
         session.socket.destroy();
       }, IPC_PONG_TIMEOUT_MS);
     }

@@ -12,11 +12,20 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { VERSION } from '../version.js';
+import { compareSemver } from '../utils/semver.js';
 import { block, countBeginMarkers, detectEol, findBlockSpan } from './content.js';
-import { CorruptBlockError, SymlinkRefusedError } from './errors.js';
+import { CorruptBlockError, OutsideHomeError, SymlinkRefusedError } from './errors.js';
 import type { InstructionsDetect } from './types.js';
+
+/** Options for the write-side helpers. `allowOutsideHome` opts out of the
+ * outside-`$HOME` guard for clients that honour an explicit user-controlled
+ * override (e.g. Copilot CLI's `COPILOT_HOME`). */
+export interface FileOpOptions {
+  allowOutsideHome?: boolean;
+}
 
 /**
  * Shared file-level operations for the three agent-instructions installers.
@@ -57,19 +66,18 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
-/** Compare two semver triplets numerically. `null` represents the legacy
- * unversioned marker — the block existed before we added versioning, so
- * it is older than any real VERSION. Returns negative when `a < b`. */
-function compareSemver(a: string | null, b: string): number {
-  if (a === null) return -1;
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
-    if (da !== db) return da - db;
-  }
-  return 0;
+/** Refuse to touch paths that land outside the user's home directory. The
+ * block we manage is meant for the user's own dotfiles; writing into
+ * `/etc`, `C:\Windows`, or anywhere unrelated is almost always a bug or a
+ * tampered config. `allowOutsideHome: true` skips the check — used when
+ * the user opted in through a client-specific env var (e.g. `COPILOT_HOME`).
+ * The home directory itself counts as "under" home (the equality branch). */
+function assertUnderHome(filePath: string): void {
+  const home = resolve(homedir());
+  const resolved = resolve(filePath);
+  if (resolved === home) return;
+  if (resolved.startsWith(home + sep)) return;
+  throw new OutsideHomeError(filePath, home);
 }
 
 /** Throw SymlinkRefusedError if `filePath` is a symlink. existsSync follows
@@ -122,7 +130,12 @@ export function detectAt(filePath: string): InstructionsDetect {
  * Insert or refresh the block in `filePath`. Returns a one-line description
  * of what changed, suitable for surfacing to the user.
  */
-export function installAt(filePath: string, displayName: string): string {
+export function installAt(
+  filePath: string,
+  displayName: string,
+  options: FileOpOptions = {},
+): string {
+  if (!options.allowOutsideHome) assertUnderHome(filePath);
   guardSymlink(filePath);
   if (!existsSync(filePath)) {
     mkdirSync(dirname(filePath), { recursive: true });
@@ -155,7 +168,12 @@ export function installAt(filePath: string, displayName: string): string {
   return `Refreshed the browser-link instructions block in ${filePath} (${displayName}, was v${prev}).`;
 }
 
-export function uninstallAt(filePath: string, displayName: string): string {
+export function uninstallAt(
+  filePath: string,
+  displayName: string,
+  options: FileOpOptions = {},
+): string {
+  if (!options.allowOutsideHome) assertUnderHome(filePath);
   if (!existsSync(filePath)) {
     return `No ${displayName} instructions file at ${filePath}; nothing to remove.`;
   }

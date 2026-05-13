@@ -9,6 +9,7 @@ import {
 } from '../../agent-instructions/index.js';
 import {
   describeState,
+  displayNameColumnWidth,
   installInstructionsFor,
   statusAll,
   uninstallInstructionsFor,
@@ -124,6 +125,12 @@ export function AgentInstructionsView({ language, onBack }: AgentInstructionsVie
   }, [lastAction]);
 
   const items = useMemo(() => INSTRUCTIONS_INSTALLERS, []);
+  // Column width is driven by the longest displayName so adding a fourth
+  // client never requires hand-tuning a magic padEnd value in two places.
+  const nameColumnWidth = useMemo(
+    () => displayNameColumnWidth(items.map((i) => i.displayName)),
+    [items],
+  );
 
   const runAction = (client: ClientId, action: 'install' | 'uninstall'): void => {
     const report =
@@ -157,7 +164,7 @@ export function AgentInstructionsView({ language, onBack }: AgentInstructionsVie
               <Box>
                 <Text color={isCursor ? 'cyan' : 'gray'}>{isCursor ? '❯ ' : '  '}</Text>
                 <Text color={isCursor ? 'white' : 'gray'} bold={isCursor}>
-                  {inst.displayName.padEnd(22)}
+                  {inst.displayName.padEnd(nameColumnWidth)}
                 </Text>
                 <Text color={badge.color}>{badge.label}</Text>
               </Box>

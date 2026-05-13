@@ -39,3 +39,25 @@ export class CorruptBlockError extends Error {
     this.name = 'CorruptBlockError';
   }
 }
+
+/** Thrown when a write would land outside the resolved `$HOME` directory
+ * and the caller did not opt into the override. The block is meant for
+ * the user's own dotfile area; refusing to touch anything outside that
+ * tree is the safer failure mode (a tampered `HOME` or a typo'd config
+ * path should not let the installer scribble in `/etc` or `C:\Windows`).
+ * Clients with an explicit env-var override (e.g. Copilot's `COPILOT_HOME`)
+ * pass `{ allowOutsideHome: true }` through `installAt` / `uninstallAt`
+ * — that is the user opting in. */
+export class OutsideHomeError extends Error {
+  constructor(
+    public readonly filePath: string,
+    public readonly home: string,
+  ) {
+    super(
+      `Refusing to write ${filePath}: target is outside the user home directory ` +
+        `(${home}). Set the client-specific override env var (e.g. COPILOT_HOME) ` +
+        `if this path is intentional.`,
+    );
+    this.name = 'OutsideHomeError';
+  }
+}

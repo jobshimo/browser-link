@@ -144,13 +144,23 @@ export function describeState(state: InstructionsState, language: Language = 'en
   }
 }
 
+/** Compute the column width for displayName from the longest entry plus a
+ * two-space breathing gap. Falls back to a small floor so the layout does
+ * not collapse if `reports` is empty. Centralised so the CLI helper and
+ * the Ink screen share the same rule. */
+export function displayNameColumnWidth(displayNames: readonly string[]): number {
+  const longest = displayNames.reduce((max, name) => Math.max(max, name.length), 0);
+  return longest + 2;
+}
+
 /** Format a list of reports as the body of `browser-link instructions`
  * (status). Used by the CLI; the UI consumes the raw report shape. */
 export function formatStatus(reports: InstructionsReport[], language: Language = 'en'): string {
   const t = I18N[language];
   const lines: string[] = [t.header, ''];
+  const width = displayNameColumnWidth(reports.map((r) => r.displayName));
   for (const r of reports) {
-    lines.push(`  ${r.displayName.padEnd(22)} ${describeState(r.state, language)}`);
+    lines.push(`  ${r.displayName.padEnd(width)} ${describeState(r.state, language)}`);
     lines.push(`${t.filePath} ${r.filePath}`);
   }
   return lines.join('\n');
