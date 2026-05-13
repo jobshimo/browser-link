@@ -1,6 +1,22 @@
-/** Usage protocol pushed to the MCP client on `initialize`. Plain string,
- * intentionally kept short. Edit here when the protocol changes. */
-export const SERVER_INSTRUCTIONS = `browser-link bridges Claude Code to the Chrome tabs the user has
+/**
+ * Build the MCP `initialize.instructions` payload from the structured `doc`
+ * blocks each tool definition carries. Keeping the per-tool copy beside the
+ * tool definition (in `browser-definitions.ts` and `map/tools.ts`) prevents
+ * drift between the schema and the human-facing documentation.
+ *
+ * `SERVER_INSTRUCTIONS` is computed once at module load and exported as a
+ * plain string so the existing consumers (`server.ts`, `bridge/server.ts`)
+ * keep working without changes.
+ */
+
+import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
+import { MAP_TOOL_DEFINITIONS } from '../map/tools.js';
+import type { ToolDefinition } from './types.js';
+
+/** Stable preamble — explains what the bridge is, where state lives, and
+ * what the agent must NOT do. Lives here (not in a tool doc) because it is
+ * cross-cutting context, not tied to any one tool. */
+const PREAMBLE = `browser-link bridges Claude Code to the Chrome tabs the user has
 explicitly connected through the companion extension, and ships a
 persistent UI map backed by a local SQLite DB. The data dir resolves
 per-OS via env-paths ($XDG_DATA_HOME/browser-link on Linux,
@@ -8,78 +24,84 @@ per-OS via env-paths ($XDG_DATA_HOME/browser-link on Linux,
 on Windows). Override with $BROWSER_LINK_DATA_DIR. The map is private
 and per-machine; never persisted in any repo.
 
-## When operating on a tab
+## Reflex protocol (ALWAYS ACTIVE)
 
-1. Before doing anything on a tab whose URL you don't already know,
-   call \`browser.map.recall\` with { origin } (and optionally url) to load
-   selectors, flows and gotchas previously learned for that app.
-2. If recall returns entries with \`failed_at\` more recent than
-   \`verified_at\`, treat them as suspect: re-verify (snapshot / evaluate)
-   before reusing, or replace them.
-3. After every interaction that used a map entry, call
-   \`browser.map.record_use\` with { entry_id, ok }. ok=true updates
-   verified_at; ok=false updates failed_at. Keep the map honest.
-4. After a non-trivial flow that worked end-to-end, persist it with
-   \`browser.map.save\`. Three \`kind\` values:
-   - selector: { selector, evidence? } — a CSS selector tied to a purpose.
-   - flow: { steps: [...] } — an ordered list of actions to reach an outcome.
-   - gotcha: { body } — free-form note about something non-obvious.
-   Use \`url_pattern\` = pathname (exact). Promote to glob only if you have
-   evidence of a parametric route. Provide \`purpose\` as a stable, reusable
-   label ("open task detail dialog", not "open IB0311 detail").
-5. Never save selectors or flows you have not just successfully executed.
-6. Never store domain data (IDs, user names, dates, etc.). The map captures
-   UI structure only.
+Tools you have here see only Chrome tabs the user explicitly connected
+through the companion extension. Never reason about state you cannot
+see — call \`browser.list_tabs\` BEFORE answering when the user mentions
+a UI element, a web app, a URL, a broken layout, "the page", or asks
+"does X work". Take a \`browser.snapshot\` before suggesting any UI code
+change. If a call returns "Tab not connected", call \`browser.events\`
+to find the new tab_id before retrying. After a non-trivial flow worked
+end-to-end, persist UI structure (NEVER domain data) with
+\`browser.map.save\`.
+
+## Sharing tabs with other agents (multi-agent mode)
+
+Several MCP clients may share one bridge. To stop two agents fighting
+over the same Chrome tab, a cooperative claim layer is in place:
+
+- Action tools (\`browser.click\`, \`browser.type\`, \`browser.navigate\`,
+  \`browser.evaluate\`) auto-claim a free tab on first use. If another
+  agent holds the tab, they return an error naming the owner — do NOT
+  retry blindly; ask the user whose tab it should be, or use a
+  different tab.
+- Read tools (\`browser.snapshot\`, \`browser.console\`, \`browser.network\`,
+  \`browser.network_body\`, \`browser.events\`, \`browser.ping\`) ignore
+  claims.
+- Use \`browser.claim_tab\` with a stable \`label\` ("claude-code",
+  "opencode") to reserve a tab before a multi-step flow; release with
+  \`browser.release_tab\` (or let the inactivity TTL handle it).
+
+The label is display only — security relies on the IPC session id
+(kernel-vetted), not on what an agent calls itself. When you get a
+claim-conflict error: do NOT spin-retry. Either work on a different tab
+from \`list_tabs\`, or surface the conflict to the user.
 
 ## Identifying the app
 
 - \`origin\` = scheme://host:port of the tab.
-- \`app_key\` distinguishes apps that share an origin over time. On first
-  save you may omit it; it will be derived from the page title (slugified).
-  Use \`browser.map.rename_app\` if that initial guess is poor.
+- \`app_key\` distinguishes apps that share an origin over time. On
+  first save you may omit it; it will be derived from the page title
+  (slugified). Use \`browser.map.rename_app\` if that initial guess is
+  poor.
 
-## Sharing tabs with other agents
+The live snapshot is always the source of truth. The persistent map is
+a cache of navigation, not a substitute.`;
 
-This primary may be serving several MCP clients at once (multi-agent mode).
-To stop two agents fighting over the same Chrome tab there is a cooperative
-claim layer:
+/** Render a single tool's documentation as a markdown section. Skips
+ * tools without a `doc` block (the structured shape is opt-in for now
+ * so future contributors can stage the migration tool-by-tool). */
+function renderTool(def: ToolDefinition): string | null {
+  if (!def.doc) return null;
+  const { purpose, when_to_use, gotchas, example } = def.doc;
+  const lines: string[] = [`### ${def.name}`, '', purpose, '', '**When to use:**'];
+  for (const w of when_to_use) lines.push(`- ${w}`);
+  if (gotchas && gotchas.length > 0) {
+    lines.push('', '**Gotchas:**');
+    for (const g of gotchas) lines.push(`- ${g}`);
+  }
+  if (example !== undefined && example !== '') {
+    lines.push('', '**Example:**', '```', example, '```');
+  }
+  return lines.join('\n');
+}
 
-- \`browser.list_tabs\` includes \`claimed_by\` (null if free, otherwise the
-  agent that holds the claim) and \`claimed_by_me\` (boolean). Use it before
-  starting work on a tab whose state you don't already own.
-- \`browser.my_tabs\` returns YOUR active claims with timestamps. If the
-  user asks which tab you are using, this is the answer.
-- Action tools (\`browser.click\`, \`browser.type\`, \`browser.navigate\`,
-  \`browser.evaluate\`) auto-claim a free tab on first use and refresh
-  activity on subsequent calls. If another agent holds the tab, they
-  return an error naming the owner — do NOT retry blindly; ask the user
-  whose tab it should be, or use a different tab.
-- Read tools (\`browser.snapshot\`, \`browser.console\`, \`browser.network\`,
-  \`browser.network_body\`, \`browser.events\`, \`browser.ping\`) ignore claims.
-- \`browser.claim_tab({ tab_id, ttl_minutes?, label? })\` reserves a tab
-  explicitly. Provide a stable \`label\` (eg "claude-code", "opencode") so
-  other agents and the user see WHO holds the tab. The label is display
-  only — security relies on the IPC session id (kernel-vetted), not on
-  what an agent calls itself.
-- \`browser.release_tab({ tab_id })\` hands a tab back. Claims also auto-
-  release when an agent disconnects or after the inactivity TTL elapses
-  (default 10 minutes), so explicit release is only needed for early
-  hand-off.
+/** Generate the SERVER_INSTRUCTIONS string from the tool definitions.
+ * Exported for tests and for any future caller that needs to re-render
+ * the string after a hot-reload or runtime tool registration. */
+export function buildServerInstructions(): string {
+  const all: ToolDefinition[] = [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS];
+  const sections: string[] = [PREAMBLE, '', '## Tools'];
+  for (const def of all) {
+    const rendered = renderTool(def);
+    if (rendered) {
+      sections.push('', rendered);
+    }
+  }
+  return sections.join('\n');
+}
 
-When you get a claim-conflict error: do NOT spin-retry. Either work on a
-different tab from \`list_tabs\`, or surface the conflict to the user and
-let them decide.
-
-## When something is wrong
-
-- A selector from recall fails → record_use({ok:false}), learn the new
-  one, save it (upsert on purpose).
-- A whole app got refactored → \`browser.map.forget\` the app_id and let
-  the map repopulate as you learn the new structure.
-- A tool call fails with "Tab not connected: tab_X" → call
-  \`browser.events\` to see whether the bridge changed primary (the
-  Chrome tab probably got a new tab_id after a reconnect). Look for a
-  \`tab-renamed\` event with previous=tab_X and resume on the current id.
-
-The map is a cache of navigation, not a substitute for \`browser.snapshot\`.
-The live snapshot is always the source of truth.`;
+/** Usage protocol pushed to the MCP client on `initialize`. Plain string,
+ * generated from the per-tool `doc` blocks at module load. */
+export const SERVER_INSTRUCTIONS = buildServerInstructions();

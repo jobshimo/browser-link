@@ -19,6 +19,7 @@ import {
 import type { Language } from '../commands/welcome.js';
 import { saveConfig } from '../config.js';
 import { installFor, type InstallReport } from '../commands/install.js';
+import { statusAll } from '../commands/instructions.js';
 import { openUrl } from '../utils/open-url.js';
 import type { ClientId } from '../installers/index.js';
 
@@ -37,7 +38,7 @@ type Screen =
   | { kind: 'free-port' }
   | { kind: 'language' }
   | { kind: 'about' }
-  | { kind: 'agent-instructions' };
+  | { kind: 'agent-instructions'; initialCursorClient?: ClientId };
 
 interface AppProps {
   initialLanguage: Language;
@@ -88,8 +89,17 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
           language={language}
           onSelect={(action: MenuAction) => {
             if (action === 'register') setScreen({ kind: 'pick-client' });
-            else if (action === 'instructions') setScreen({ kind: 'agent-instructions' });
-            else if (action === 'permissions') setScreen({ kind: 'permissions' });
+            else if (action === 'instructions') {
+              // If at least one client is outdated, auto-focus the first one
+              // so the next Enter refreshes it. The lookup is cheap (three
+              // file stats); doing it here keeps the navigation contract
+              // out of the menu screen and away from the installer module.
+              const firstOutdated = statusAll().find((r) => r.state.kind === 'installed-outdated');
+              setScreen({
+                kind: 'agent-instructions',
+                initialCursorClient: firstOutdated?.client,
+              });
+            } else if (action === 'permissions') setScreen({ kind: 'permissions' });
             else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
             else if (action === 'extension') setScreen({ kind: 'extension' });
             else if (action === 'doctor') setScreen({ kind: 'doctor' });
@@ -155,6 +165,12 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
       return <AboutView language={language} onBack={backToMenu} />;
 
     case 'agent-instructions':
-      return <AgentInstructionsView language={language} onBack={backToMenu} />;
+      return (
+        <AgentInstructionsView
+          language={language}
+          onBack={backToMenu}
+          initialCursorClient={screen.initialCursorClient}
+        />
+      );
   }
 }

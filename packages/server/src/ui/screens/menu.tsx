@@ -1,7 +1,9 @@
 import { Box, Text, useInput } from 'ink';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Frame, Menu, type MenuItem } from '../components.js';
 import type { Language } from '../../commands/welcome.js';
+import { statusAll } from '../../commands/instructions.js';
+import { useBackgroundUpdateCheck, type UpdateCheckState } from '../hooks/use-update-check.js';
 import type { CommonProps } from './types.js';
 
 export type MenuAction =
@@ -24,13 +26,23 @@ interface MenuI18n {
   prompt: string;
   options: Record<MenuAction, string>;
   footer: string;
+  /** Banner shown when at least one agent client has an outdated block.
+   * `{clients}` is replaced with a comma-separated list of display names. */
+  outdatedBanner: (clients: string) => string;
+  /** Passive banner shown when a newer browser-link is on the registry.
+   * `{latest}` is the available version. */
+  updateBanner: (latest: string) => string;
 }
 
 const MENU_I18N: Record<Language, MenuI18n> = {
   en: {
     title: 'browser-link — setup',
     prompt: 'Pick an action',
-    footer: '↑↓ navigate · ↵ select · l language · q quit',
+    footer: '↑↓ navigate · ↵ select · i instructions · l language · q quit',
+    outdatedBanner: (clients) =>
+      `⚠ Outdated browser-link block in ${clients}. Press \`i\` to refresh in place.`,
+    updateBanner: (latest) =>
+      `⬆ v${latest} available — run \`npm install -g @jobshimo/browser-link@latest\``,
     options: {
       register: 'Register browser-link with an MCP client',
       instructions:
@@ -51,7 +63,11 @@ const MENU_I18N: Record<Language, MenuI18n> = {
   es: {
     title: 'browser-link — configuración',
     prompt: 'Elegí una acción',
-    footer: '↑↓ moverse · ↵ elegir · l idioma · q salir',
+    footer: '↑↓ moverse · ↵ elegir · i instrucciones · l idioma · q salir',
+    outdatedBanner: (clients) =>
+      `⚠ Bloque de browser-link desactualizado en ${clients}. Apretá \`i\` para refrescar.`,
+    updateBanner: (latest) =>
+      `⬆ v${latest} disponible — corré \`npm install -g @jobshimo/browser-link@latest\``,
     options: {
       register: 'Registrar browser-link en un cliente MCP',
       instructions:
@@ -75,10 +91,40 @@ interface MainMenuProps extends CommonProps {
   onSelect: (action: MenuAction) => void;
   onSwapLang: () => void;
   onQuit: () => void;
+  /** Override the outdated-clients lookup. Tests inject a stub so we can
+   * assert banner behaviour without depending on the real filesystem. The
+   * runtime default uses `statusAll()` from commands/instructions. */
+  outdatedClientNames?: () => string[];
+  /** Override the background update-check hook result. Tests pass a fixed
+   * value to assert the update banner renders only when isNewer is true.
+   * In production this is undefined and the menu calls the real hook. */
+  updateState?: UpdateCheckState;
 }
 
-export function MainMenu({ language, onSelect, onSwapLang, onQuit }: MainMenuProps) {
+/** Default implementation — read live status from the installer registry
+ * and project the outdated ones to their display names. Pulled out so the
+ * test seam (`outdatedClientNames` prop) has a clean default. */
+function defaultOutdatedClientNames(): string[] {
+  return statusAll()
+    .filter((r) => r.state.kind === 'installed-outdated')
+    .map((r) => r.displayName);
+}
+
+export function MainMenu({
+  language,
+  onSelect,
+  onSwapLang,
+  onQuit,
+  outdatedClientNames = defaultOutdatedClientNames,
+  updateState,
+}: MainMenuProps) {
   const t = MENU_I18N[language];
+  // The real hook drives a 6-hourly background check; tests inject a fixed
+  // `updateState` instead. We call the hook unconditionally so the React
+  // rules-of-hooks are satisfied (no conditional invocation), then ignore
+  // its result when the prop override is present.
+  const hookState = useBackgroundUpdateCheck();
+  const effectiveUpdate = updateState ?? hookState;
   const items: MenuItem<MenuAction>[] = (
     [
       'register',
@@ -98,6 +144,17 @@ export function MainMenu({ language, onSelect, onSwapLang, onQuit }: MainMenuPro
   ).map((a) => ({ value: a, label: t.options[a] }));
 
   const [idx, setIdx] = useState(0);
+  // Banner state is computed on mount. The screen unmounts when the user
+  // navigates away (AgentInstructionsView is a different screen), so the
+  // next mount re-runs the lookup — after a successful refresh the banner
+  // disappears automatically without any explicit invalidation.
+  const [outdated, setOutdated] = useState<string[]>(() => outdatedClientNames());
+
+  // Refresh the banner if the prop function changes between renders (the
+  // App may re-create it across language switches or theme changes).
+  useEffect(() => {
+    setOutdated(outdatedClientNames());
+  }, [outdatedClientNames]);
 
   useInput((input, key) => {
     if (key.upArrow) setIdx((i) => (i - 1 + items.length) % items.length);
@@ -108,10 +165,21 @@ export function MainMenu({ language, onSelect, onSwapLang, onQuit }: MainMenuPro
       else onSelect(v);
     } else if (input === 'q' || key.escape) onQuit();
     else if (input === 'l') onSwapLang();
+    else if (input === 'i' || input === 'I') onSelect('instructions');
   });
 
   return (
     <Frame title={t.title} footer={t.footer}>
+      {outdated.length > 0 && (
+        <Box marginBottom={1}>
+          <Text color="yellow">{t.outdatedBanner(outdated.join(', '))}</Text>
+        </Box>
+      )}
+      {effectiveUpdate.isNewer && effectiveUpdate.latest !== null && (
+        <Box marginBottom={1}>
+          <Text color="cyan">{t.updateBanner(effectiveUpdate.latest)}</Text>
+        </Box>
+      )}
       <Text color="white" bold>
         {t.prompt}
       </Text>

@@ -164,8 +164,13 @@ export function installAt(
   const before = text.slice(0, span.startIndex);
   const after = text.slice(span.endIndex);
   atomicWrite(filePath, before + fresh + after);
-  const prev = span.installedVersion ?? 'unversioned';
-  return `Refreshed the browser-link instructions block in ${filePath} (${displayName}, was v${prev}).`;
+  // The previous version is rendered as `v{prev}` when the marker carried
+  // a semver, and as `legacy` when the file pre-dates the version stamp
+  // (older browser-link releases shipped a marker with no version). The
+  // user-facing copy emphasises that the new triggers are immediately in
+  // effect — the next MCP-client restart is the only step left.
+  const prev = span.installedVersion === null ? 'legacy' : `v${span.installedVersion}`;
+  return `Replaced the ${prev} block with the v${VERSION} reflex protocol. New triggers active immediately — restart your MCP client.`;
 }
 
 export function uninstallAt(

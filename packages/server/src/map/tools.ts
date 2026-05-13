@@ -7,12 +7,7 @@ import {
   saveEntry,
   type EntryKind,
 } from './queries.js';
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
+import type { ToolDefinition } from '../tools/types.js';
 
 export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
@@ -35,6 +30,19 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       required: ['origin'],
       additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Reload selectors, flows and gotchas you previously learned about an app, so you do not rediscover them every session.',
+      when_to_use: [
+        'On any non-trivial debugging session on a web app the user mentioned — call this with the tab origin BEFORE speculating.',
+        'When you arrive at a tab and need to know "what do I already know about this app".',
+      ],
+      gotchas: [
+        'If recall returns entries with failed_at more recent than verified_at, treat them as suspect — re-verify with snapshot before reusing.',
+        'After every interaction that used a map entry, call browser.map.record_use with { entry_id, ok } so the map stays honest.',
+      ],
+      example: 'browser.map.recall({ origin: "https://app.example.com" })',
     },
   },
   {
@@ -74,6 +82,19 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['origin', 'url_pattern', 'kind', 'purpose', 'payload'],
       additionalProperties: false,
     },
+    doc: {
+      purpose:
+        'Persist UI structure you just discovered — a selector, a multi-step flow, or a gotcha — keyed by app and url pattern.',
+      when_to_use: [
+        'After a non-trivial flow worked end-to-end (opened a dialog, completed a form, found a setting).',
+      ],
+      gotchas: [
+        'NEVER save selectors or flows you have not just successfully executed.',
+        'NEVER store domain data (IDs, user names, dates, etc.). The map captures UI structure only.',
+        'Use url_pattern = exact pathname by default; only promote to a glob if you have evidence of a parametric route.',
+        'Give `purpose` a stable, reusable label ("open task detail dialog", not "open IB0311 detail").',
+      ],
+    },
   },
   {
     name: 'browser.map.record_use',
@@ -89,6 +110,14 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['entry_id', 'ok'],
       additionalProperties: false,
     },
+    doc: {
+      purpose:
+        'Update verified_at / failed_at on a map entry after you reused it, so the next agent knows whether it still works.',
+      when_to_use: ['Right after using any selector or flow you got from browser.map.recall.'],
+      gotchas: [
+        'ok:true updates verified_at and clears failed_at. ok:false updates failed_at — keep the map honest about what works today.',
+      ],
+    },
   },
   {
     name: 'browser.map.forget',
@@ -102,6 +131,10 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         reason: { type: 'string' },
       },
       additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Delete a stale map entry, or wipe a whole app, after a refactor invalidated it.',
+      when_to_use: ['A whole app got refactored and the saved knowledge is now actively wrong.'],
     },
   },
   {
@@ -117,12 +150,22 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['app_id', 'new_app_key'],
       additionalProperties: false,
     },
+    doc: {
+      purpose: 'Rename the app_key for an app row when the title-derived slug is wrong.',
+      when_to_use: [
+        'The initial slug derived from document.title is misleading (typo, generic name).',
+      ],
+    },
   },
   {
     name: 'browser.map.apps',
     description:
       'List apps currently tracked in the map, most recently used first. Use to discover known origins and their app_keys.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    doc: {
+      purpose: 'List every app currently tracked in the map, most recently used first.',
+      when_to_use: ['To discover which origins/app_keys the map already knows about.'],
+    },
   },
 ];
 

@@ -86,6 +86,11 @@ const I18N: Record<Language, AgentInstructionsI18n> = {
 
 interface AgentInstructionsViewProps extends CommonProps {
   onBack: () => void;
+  /** Optional initial cursor target. When the user lands on this screen via
+   * the `i` hotkey from the main menu, the cursor is auto-positioned on
+   * the first outdated client so the next Enter refreshes it. Falls back
+   * to row 0 when omitted or when the requested client is not present. */
+  initialCursorClient?: ClientId;
 }
 
 function statusBadge(
@@ -114,17 +119,29 @@ function statusBadge(
 
 type LastAction = { kind: 'install' | 'uninstall'; report: InstructionsReport } | null;
 
-export function AgentInstructionsView({ language, onBack }: AgentInstructionsViewProps) {
+export function AgentInstructionsView({
+  language,
+  onBack,
+  initialCursorClient,
+}: AgentInstructionsViewProps) {
   const t = I18N[language];
   const [reports, setReports] = useState<InstructionsReport[]>(() => statusAll());
-  const [cursor, setCursor] = useState(0);
+  const items = useMemo(() => INSTRUCTIONS_INSTALLERS, []);
+  // If the caller asked us to focus a specific client, place the cursor on
+  // it; otherwise default to the first row. The lookup is done once on
+  // mount because the prop is the user's deliberate landing instruction —
+  // we should not pull the cursor away from where they navigated to next.
+  const initialIndex = useMemo(() => {
+    if (!initialCursorClient) return 0;
+    const i = items.findIndex((it) => it.id === initialCursorClient);
+    return i >= 0 ? i : 0;
+  }, [initialCursorClient, items]);
+  const [cursor, setCursor] = useState(initialIndex);
   const [lastAction, setLastAction] = useState<LastAction>(null);
   // Refresh status when we come back from an install/uninstall round-trip.
   useEffect(() => {
     if (lastAction) setReports(statusAll());
   }, [lastAction]);
-
-  const items = useMemo(() => INSTRUCTIONS_INSTALLERS, []);
   // Column width is driven by the longest displayName so adding a fourth
   // client never requires hand-tuning a magic padEnd value in two places.
   const nameColumnWidth = useMemo(

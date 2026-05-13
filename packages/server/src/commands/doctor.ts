@@ -102,6 +102,22 @@ function symbol(ok: boolean): string {
   return ok ? '✓' : '✗';
 }
 
+/** Wrap `text` in the ANSI red SGR sequence so terminals (and Ink, which
+ * passes ANSI codes through) render it red. We intentionally avoid pulling
+ * a colour library into the doctor formatter — one escape pair is cheaper
+ * than a dependency. The reset ([39m) only restores the default
+ * foreground colour so the rest of the line keeps its surrounding style.
+ *
+ * Escalating outdated agent-instructions blocks to red was the v0.8.3 ask:
+ * yellow was being ignored. Red + a follow-up subline makes the state
+ * impossible to miss. */
+const RED = '[31m';
+const RED_RESET = '[39m';
+
+function red(text: string): string {
+  return `${RED}${text}${RED_RESET}`;
+}
+
 interface DoctorI18n {
   title: string;
   wsBridge: string;
@@ -114,6 +130,11 @@ interface DoctorI18n {
   clientInstructions: string;
   instructionsInstalled: (version: string | null) => string;
   instructionsOutdated: (version: string | null) => string;
+  /** Subline shown directly below an outdated client — names the
+   * installed version (or "legacy" for the unversioned case) and tells
+   * the user a refresh is recommended. Surfaced in red along with the
+   * status label so the outdated state is impossible to miss. */
+  instructionsOutdatedSubline: (version: string | null) => string;
   instructionsNotInstalled: string;
   instructionsNoFile: string;
   instructionsCorrupt: string;
@@ -151,6 +172,10 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientInstructions: 'instructions:',
     instructionsInstalled: (v) => (v === null ? `✓ installed (legacy)` : `✓ installed (v${v})`),
     instructionsOutdated: (v) => (v === null ? `⚠ outdated (legacy)` : `⚠ outdated (v${v})`),
+    instructionsOutdatedSubline: (v) =>
+      v === null
+        ? 'outdated since legacy — refresh recommended.'
+        : `outdated since v${v} — refresh recommended.`,
     instructionsNotInstalled: '· not installed',
     instructionsNoFile: '· file not present',
     instructionsCorrupt: '⚠ multiple blocks — resolve manually',
@@ -187,6 +212,10 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     instructionsInstalled: (v) => (v === null ? `✓ instaladas (legacy)` : `✓ instaladas (v${v})`),
     instructionsOutdated: (v) =>
       v === null ? `⚠ desactualizadas (legacy)` : `⚠ desactualizadas (v${v})`,
+    instructionsOutdatedSubline: (v) =>
+      v === null
+        ? 'desactualizadas desde legacy — se recomienda refrescar.'
+        : `desactualizadas desde v${v} — se recomienda refrescar.`,
     instructionsNotInstalled: '· no instaladas',
     instructionsNoFile: '· sin archivo',
     instructionsCorrupt: '⚠ múltiples bloques — resolvé a mano',
@@ -232,12 +261,17 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
     lines.push(`  ${' '.repeat(20)} ${t.clientConfig} ${c.configPath}`);
     const instr = c.instructions.state;
     let instrLabel: string;
+    let outdatedSubline: string | null = null;
     switch (instr.kind) {
       case 'installed':
         instrLabel = t.instructionsInstalled(instr.version);
         break;
       case 'installed-outdated':
-        instrLabel = t.instructionsOutdated(instr.version);
+        // v0.8.3: escalate outdated from yellow to red, and add an
+        // explanatory subline. Yellow blended in with the "not registered"
+        // warning and users were ignoring it.
+        instrLabel = red(t.instructionsOutdated(instr.version));
+        outdatedSubline = red(t.instructionsOutdatedSubline(instr.version));
         break;
       case 'not-installed':
         instrLabel = t.instructionsNotInstalled;
@@ -252,6 +286,12 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
     lines.push(
       `  ${' '.repeat(20)} ${t.clientInstructions} ${instrLabel} (${c.instructions.filePath})`,
     );
+    if (outdatedSubline !== null) {
+      // Indent so the subline aligns under the instructions: label.
+      lines.push(
+        `  ${' '.repeat(20)} ${' '.repeat(t.clientInstructions.length)} ${outdatedSubline}`,
+      );
+    }
   }
   lines.push('');
   lines.push(t.extensionHeader);

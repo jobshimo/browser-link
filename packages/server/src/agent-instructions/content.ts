@@ -28,40 +28,55 @@ export const BEGIN_RE =
   /<!--\s*browser-link:instructions:begin(?:\s+v(?<version>\d+\.\d+\.\d+))?\s*-->/;
 export const END_RE = /<!--\s*browser-link:instructions:end\s*-->/;
 
-/** Block body. Plain English by design — every LLM understands it, and a
- * mixed-language user is still served. Triggers-first; no marketing copy. */
+/** Block body. Engram-style reflex protocol — imperative TRIGGER LIST that
+ * the agent treats as ALWAYS ACTIVE, not descriptive prose. Plain English
+ * by design (LLMs reason in English); the bilingual phrases inside the
+ * trigger list are DATA — what the user actually types — not instructions
+ * to the agent. */
 function body(): string {
   return [
-    '## browser-link — when to reach for it',
+    '## browser-link — reflex protocol (ALWAYS ACTIVE)',
     '',
-    'When you have access to `browser.*` MCP tools (the bridge exposed by',
-    '@jobshimo/browser-link), reach for them BEFORE speculating about UI',
-    'behavior. Tabs the user has not explicitly connected through the',
-    'Chrome extension are invisible to you; never reason about state you',
-    'cannot see.',
+    'You have `browser.*` MCP tools (the bridge exposed by `@jobshimo/browser-link`).',
+    'These tools see only Chrome tabs the user explicitly connected via the',
+    'companion extension. Never reason about state you cannot see.',
     '',
-    '### Triggers — call these reflexively',
+    '### TRIGGER LIST — call before responding when ANY apply',
     '',
-    '- **User reports a UI bug, broken layout, "the button does not fire",',
-    '  or asks "does X work" in a web app**: call `browser.list_tabs` first.',
-    '  If one tab is connected, snapshot it. If several, ask which.',
-    '- **Before suggesting a code change to a UI component**: verify the',
-    '  current page state with `browser.snapshot`. Do not guess.',
-    '- **Any non-trivial debugging session on a web app the user mentioned**:',
-    '  call `browser.map.recall` with the tab origin first. Past selectors,',
-    '  flows and gotchas come back; you save tokens and avoid re-deriving.',
-    '- **Tool call fails with "Tab not connected"**: call `browser.events`',
-    '  and look for `tab-renamed` entries before retrying.',
-    '- **After any non-trivial flow you discovered end-to-end** (opened a',
-    '  dialog, completed a form, found a setting): persist it with',
-    '  `browser.map.save`. UI structure only — never save domain data',
-    '  (IDs, names, dates).',
+    'User mentions any of these (English or Spanish):',
+    '- "the button doesn\'t work" / "no anda el botón" / "no funciona X"',
+    '- "broken layout" / "está roto" / "se ve mal" / "looks wrong"',
+    '- "check if X works" / "fíjate si anda X" / "¿anda X?" / "does X work?"',
+    '- "the page" / "la página" / "la web" / "the site"',
+    '- "open this in the browser" / "abrí esto en el navegador" / "navegá a"',
+    '- a UI element, web app name, URL, browser tab, layout, dialog, form',
+    '→ call `browser.list_tabs` FIRST, then `browser.map.recall` with the tab origin.',
     '',
-    '### Multi-agent cooperation',
+    'About to suggest a code change to UI / React / DOM:',
+    '→ `browser.snapshot` first, verify current state. Do not speculate.',
     '',
-    'When several MCP clients share one bridge (multi-agent mode), call',
-    '`browser.claim_tab` before operating on a tab so other agents see it',
-    'is in use. Release with `browser.release_tab` when done.',
+    'Tool call returned "Tab not connected":',
+    '→ `browser.events` to see tab-renamed entries before retrying.',
+    '',
+    'After a non-trivial flow worked end-to-end (opened dialog, filled form,',
+    'found a setting):',
+    '→ `browser.map.save` (UI structure only — never IDs, names, dates).',
+    '',
+    'Several MCP clients sharing one bridge (multi-agent mode):',
+    '→ `browser.claim_tab` before operating on a tab so other agents see it',
+    'in use. `browser.release_tab` when done.',
+    '',
+    '### SELF-CHECK after each user message',
+    '',
+    '"Is the user talking about a web page, UI, or anything visible in a browser?',
+    'If yes → did I run `browser.list_tabs` yet? If no → STOP and run it now."',
+    '',
+    '### NEVER',
+    '',
+    '- Speculate about DOM state without a snapshot.',
+    '- Suggest "try clicking X" without verifying X exists in the current page.',
+    '- Save selectors you have not just successfully executed.',
+    '- Store domain data (IDs, user names, dates, etc.) in the persistent map.',
   ].join('\n');
 }
 
