@@ -2,6 +2,7 @@ import { useApp, useInput } from 'ink';
 import { useState } from 'react';
 import {
   AboutView,
+  AgentInstructionsView,
   ClientPicker,
   DoctorView,
   ExtensionView,
@@ -35,7 +36,8 @@ type Screen =
   | { kind: 'updates' }
   | { kind: 'free-port' }
   | { kind: 'language' }
-  | { kind: 'about' };
+  | { kind: 'about' }
+  | { kind: 'agent-instructions' };
 
 interface AppProps {
   initialLanguage: Language;
@@ -86,6 +88,7 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
           language={language}
           onSelect={(action: MenuAction) => {
             if (action === 'register') setScreen({ kind: 'pick-client' });
+            else if (action === 'instructions') setScreen({ kind: 'agent-instructions' });
             else if (action === 'permissions') setScreen({ kind: 'permissions' });
             else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
             else if (action === 'extension') setScreen({ kind: 'extension' });
@@ -150,5 +153,8 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
 
     case 'about':
       return <AboutView language={language} onBack={backToMenu} />;
+
+    case 'agent-instructions':
+      return <AgentInstructionsView language={language} onBack={backToMenu} />;
   }
 }

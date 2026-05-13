@@ -8,6 +8,16 @@ import { checkUpdates, formatUpdate } from './commands/updates.js';
 import { runToolsCommand } from './commands/tools.js';
 import { runMultiAgentCommand } from './commands/multi-agent.js';
 import { runFreePort } from './commands/free-port.js';
+import {
+  formatStatus as formatInstructionsStatus,
+  installInstructionsAll,
+  installInstructionsFor,
+  statusAll as instructionsStatusAll,
+  statusFor as instructionsStatusFor,
+  uninstallInstructionsAll,
+  uninstallInstructionsFor,
+  type InstructionsReport,
+} from './commands/instructions.js';
 import { loadConfig } from './config.js';
 import { VERSION } from './version.js';
 import type { ClientId } from './installers/index.js';
@@ -20,6 +30,9 @@ interface CliI18n {
   toolsRestart: string;
   unknownCommand: (cmd: string) => string;
   unknownClient: (val: string) => string;
+  unknownInstructionsAction: (val: string) => string;
+  instructionsInstallNext: string;
+  instructionsUninstallDone: string;
 }
 
 function buildHelp(language: Language): string {
@@ -50,6 +63,15 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link instructions     Muestra si el bloque de instrucciones de browser-link
+                                está presente en el .md global de cada cliente
+                                (Claude, OpenCode, Copilot CLI).
+  browser-link instructions install
+  browser-link instructions install --client <claude|opencode|copilot>
+                                Inserta o refresca el bloque en el .md global.
+  browser-link instructions uninstall
+  browser-link instructions uninstall --client <id>
+                                Quita el bloque, deja el resto del archivo intacto.
   browser-link stop             Mata el proceso browser-link que esté ocupando el
                                 puerto 17529 (útil si un cliente MCP quedó zombie).
   browser-link about            Muestra la explicación completa.
@@ -88,6 +110,16 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link instructions     Show whether the browser-link instructions block
+                                is present in each client's global .md file
+                                (Claude, OpenCode, Copilot CLI).
+  browser-link instructions install
+  browser-link instructions install --client <claude|opencode|copilot>
+                                Insert or refresh the block in the global .md file.
+  browser-link instructions uninstall
+  browser-link instructions uninstall --client <id>
+                                Remove the block, leaving the rest of the file
+                                intact.
   browser-link stop             Kill the browser-link process holding port 17529
                                 (useful when an MCP client left a zombie behind).
   browser-link about            Show the full explanation of what this is and how it works.
@@ -110,6 +142,11 @@ const CLI_I18N: Record<Language, CliI18n> = {
     toolsRestart: 'Restart your MCP client so it picks up the change.',
     unknownCommand: (cmd) => `Unknown command: ${cmd}`,
     unknownClient: (val) => `Unknown --client value: ${val}. Use claude, opencode or copilot.`,
+    unknownInstructionsAction: (val) =>
+      `Unknown instructions action: ${val}. Use install, uninstall or no arg for status.`,
+    instructionsInstallNext:
+      'Restart your MCP client so it picks up the new instructions on its next session.',
+    instructionsUninstallDone: 'Block removed. The rest of each file was left untouched.',
   },
   es: {
     help: '',
@@ -119,8 +156,21 @@ const CLI_I18N: Record<Language, CliI18n> = {
     unknownCommand: (cmd) => `Comando desconocido: ${cmd}`,
     unknownClient: (val) =>
       `Valor de --client desconocido: ${val}. Usá claude, opencode o copilot.`,
+    unknownInstructionsAction: (val) =>
+      `Acción de instructions desconocida: ${val}. Usá install, uninstall, o ningún argumento para status.`,
+    instructionsInstallNext:
+      'Reiniciá tu cliente MCP para que tome las nuevas instrucciones en la próxima sesión.',
+    instructionsUninstallDone: 'Bloque eliminado. El resto del archivo quedó intacto.',
   },
 };
+
+function printInstructionsReports(reports: InstructionsReport[]): void {
+  for (const r of reports) {
+    const prefix = r.message ? '·' : ' ';
+    const msg = r.message ?? r.filePath;
+    console.log(`${prefix} ${r.displayName}: ${msg}`);
+  }
+}
 
 function parseClient(argv: string[], language: Language): ClientId | null {
   const idx = argv.findIndex((a) => a === '--client');
@@ -201,6 +251,36 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'multi-agent': {
       console.log(runMultiAgentCommand(rest, language));
+      return;
+    }
+    case 'instructions': {
+      // `rest.at(0)` correctly types the missing-arg case as `undefined`
+      // (vs. `rest[0]: string` under the project's loose index access).
+      const action = rest.at(0);
+      if (action === undefined || action === 'status') {
+        const client = parseClient(rest, language);
+        const reports = client ? [instructionsStatusFor(client)] : instructionsStatusAll();
+        console.log(formatInstructionsStatus(reports, language));
+        return;
+      }
+      if (action === 'install') {
+        const client = parseClient(rest, language);
+        const reports = client ? [installInstructionsFor(client)] : installInstructionsAll();
+        printInstructionsReports(reports);
+        console.log('');
+        console.log(t.instructionsInstallNext);
+        return;
+      }
+      if (action === 'uninstall') {
+        const client = parseClient(rest, language);
+        const reports = client ? [uninstallInstructionsFor(client)] : uninstallInstructionsAll();
+        printInstructionsReports(reports);
+        console.log('');
+        console.log(t.instructionsUninstallDone);
+        return;
+      }
+      console.error(t.unknownInstructionsAction(action));
+      process.exit(2);
       return;
     }
     case 'stop': {

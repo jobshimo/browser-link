@@ -103,6 +103,9 @@ browser-link install --client claude       # register only in Claude Code
 browser-link install --client opencode     # register only in OpenCode
 browser-link install --client copilot      # register only in GitHub Copilot CLI
 browser-link uninstall --client opencode   # remove from one client
+browser-link instructions                  # status: is the trigger block in each agent's global .md?
+browser-link instructions install          # insert/refresh the block in every detected client
+browser-link instructions uninstall --client claude
 browser-link extension                     # show extension assets path + steps
 browser-link doctor                        # diagnose current setup
 browser-link tools                         # show which MCP tools are enabled
@@ -112,6 +115,50 @@ browser-link updates                       # check the npm registry for a newer 
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
 ```
+
+## Agent instructions — make the agent use browser-link reflexively
+
+Having the MCP tools registered is necessary but not sufficient. Agents
+(Claude Code, OpenCode, Copilot CLI, …) reach for what their
+instructions point at — and out of the box they have no reason to call
+`browser.snapshot` when you say "the button is broken". They will read
+the code and guess instead.
+
+`browser-link instructions install` drops a fenced trigger block into
+the agent's **global** instructions markdown:
+
+| Client             | File                                                 |
+| ------------------ | ---------------------------------------------------- |
+| Claude Code        | `~/.claude/CLAUDE.md`                                |
+| OpenCode           | `~/.config/opencode/AGENTS.md`                       |
+| GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
+
+The block is fenced by HTML-comment markers so:
+
+- it is idempotent — reinstall overwrites in place, leaving everything
+  else in the file untouched;
+- `browser-link instructions uninstall` removes exactly the span we
+  manage and nothing else;
+- the version stamp in the begin marker lets future releases detect
+  outdated blocks (the doctor shows `⚠ outdated` until you re-run install).
+
+The content is a short list of triggers — when to call `browser.list_tabs`,
+when `browser.snapshot`, when `browser.map.recall`, what to do after a
+"Tab not connected" error — written in English so every LLM understands
+it regardless of the user's interactive language.
+
+Manage it from the setup menu (`Agent instructions` entry) or from the
+shell:
+
+```bash
+browser-link instructions                          # status per client
+browser-link instructions install                  # all detected
+browser-link instructions install --client claude  # specific
+browser-link instructions uninstall --client copilot
+```
+
+`browser-link doctor` also reports per-client status alongside the MCP
+registration line.
 
 ## Per-tool permissions
 

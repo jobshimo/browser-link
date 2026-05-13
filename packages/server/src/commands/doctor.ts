@@ -8,6 +8,7 @@ import { resolveExtensionPath } from './extension.js';
 import type { Language } from './welcome.js';
 import { loadConfig } from '../config.js';
 import { IPC_HOST, IPC_PORT } from '../bridge/protocol.js';
+import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
 
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 17529;
@@ -50,6 +51,7 @@ export interface DoctorReport {
     installed: boolean;
     registered: boolean;
     configPath: string;
+    instructions: { state: InstructionsState; filePath: string };
   }[];
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
@@ -62,7 +64,13 @@ export async function runDoctor(): Promise<DoctorReport> {
 
   const clients = INSTALLERS.map((i) => {
     const d = i.detect();
-    return { id: i.id, displayName: i.displayName, ...d };
+    const instructions = getInstructionsInstaller(i.id).detect();
+    return {
+      id: i.id,
+      displayName: i.displayName,
+      ...d,
+      instructions: { state: instructions.state, filePath: instructions.filePath },
+    };
   });
 
   const extPath = resolveExtensionPath();
@@ -103,6 +111,11 @@ interface DoctorI18n {
   clientRegistered: string;
   clientNotRegistered: string;
   clientConfig: string;
+  clientInstructions: string;
+  instructionsInstalled: (version: string) => string;
+  instructionsOutdated: (version: string) => string;
+  instructionsNotInstalled: string;
+  instructionsNoFile: string;
   extensionHeader: string;
   extensionNotFound: string;
   mapHeader: string;
@@ -134,6 +147,11 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientRegistered: '✓ registered',
     clientNotRegistered: '⚠ installed but not registered',
     clientConfig: 'config:',
+    clientInstructions: 'instructions:',
+    instructionsInstalled: (v) => `✓ installed (v${v})`,
+    instructionsOutdated: (v) => `⚠ outdated (v${v})`,
+    instructionsNotInstalled: '· not installed',
+    instructionsNoFile: '· file not present',
     extensionHeader: 'Chrome extension assets:',
     extensionNotFound: 'not found (run `browser-link extension` for guidance)',
     mapHeader: 'Map DB:',
@@ -163,6 +181,11 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientRegistered: '✓ registrado',
     clientNotRegistered: '⚠ instalado pero no registrado',
     clientConfig: 'config:',
+    clientInstructions: 'instrucciones:',
+    instructionsInstalled: (v) => `✓ instaladas (v${v})`,
+    instructionsOutdated: (v) => `⚠ desactualizadas (v${v})`,
+    instructionsNotInstalled: '· no instaladas',
+    instructionsNoFile: '· sin archivo',
     extensionHeader: 'Assets de la extensión de Chrome:',
     extensionNotFound: 'no encontrada (corré `browser-link extension` para la guía)',
     mapHeader: 'Base de datos del mapa:',
@@ -203,6 +226,25 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
         : t.clientNotRegistered;
     lines.push(`  ${c.displayName.padEnd(20)} ${status}`);
     lines.push(`  ${' '.repeat(20)} ${t.clientConfig} ${c.configPath}`);
+    const instr = c.instructions.state;
+    let instrLabel: string;
+    switch (instr.kind) {
+      case 'installed':
+        instrLabel = t.instructionsInstalled(instr.version);
+        break;
+      case 'installed-outdated':
+        instrLabel = t.instructionsOutdated(instr.version);
+        break;
+      case 'not-installed':
+        instrLabel = t.instructionsNotInstalled;
+        break;
+      case 'no-file':
+        instrLabel = t.instructionsNoFile;
+        break;
+    }
+    lines.push(
+      `  ${' '.repeat(20)} ${t.clientInstructions} ${instrLabel} (${c.instructions.filePath})`,
+    );
   }
   lines.push('');
   lines.push(t.extensionHeader);

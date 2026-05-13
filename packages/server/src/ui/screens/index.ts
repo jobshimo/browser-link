@@ -10,3 +10,4 @@ export { UpdatesView } from './updates.js';
 export { LanguageView } from './language.js';
 export { MultiAgentView } from './multi-agent.js';
 export { FreePortView } from './free-port.js';
+export { AgentInstructionsView } from './agent-instructions.js';

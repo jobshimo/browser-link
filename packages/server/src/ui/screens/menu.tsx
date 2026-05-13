@@ -6,6 +6,7 @@ import type { CommonProps } from './types.js';
 
 export type MenuAction =
   | 'register'
+  | 'instructions'
   | 'permissions'
   | 'multiAgent'
   | 'extension'
@@ -32,6 +33,8 @@ const MENU_I18N: Record<Language, MenuI18n> = {
     footer: '↑↓ navigate · ↵ select · l language · q quit',
     options: {
       register: 'Register browser-link with an MCP client',
+      instructions:
+        'Agent instructions — drop a trigger block into Claude/OpenCode/Copilot global .md',
       permissions: 'Permissions — pick which MCP tools to expose',
       multiAgent: 'Multi-agent — let multiple MCP clients share one bridge',
       extension: 'Show Chrome extension install steps',
@@ -51,6 +54,8 @@ const MENU_I18N: Record<Language, MenuI18n> = {
     footer: '↑↓ moverse · ↵ elegir · l idioma · q salir',
     options: {
       register: 'Registrar browser-link en un cliente MCP',
+      instructions:
+        'Instrucciones del agente — meter un bloque de triggers en el .md global de Claude/OpenCode/Copilot',
       permissions: 'Permisos — elegí qué tools del MCP se exponen',
       multiAgent: 'Multi-agente — varios clientes MCP comparten el mismo puente',
       extension: 'Ver pasos para instalar la extensión de Chrome',
@@ -77,6 +82,7 @@ export function MainMenu({ language, onSelect, onSwapLang, onQuit }: MainMenuPro
   const items: MenuItem<MenuAction>[] = (
     [
       'register',
+      'instructions',
       'permissions',
       'multiAgent',
       'extension',
