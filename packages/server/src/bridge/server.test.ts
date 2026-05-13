@@ -27,7 +27,7 @@ const STUB_DEPS: DispatchDeps = {
     listTabs: () => [],
     callBrowserTool: () => Promise.reject(new Error('not used in this test')),
   },
-  disabledTools: [],
+  disabledTools: () => [],
 };
 
 let dataDir: string;
@@ -193,7 +193,7 @@ describe('IpcServer.stop', () => {
 
 describe('IpcServer MCP dispatch', () => {
   test('routes tools/list through the shared dispatcher', async () => {
-    server = await startEphemeral({ ...STUB_DEPS, disabledTools: ['browser.evaluate'] });
+    server = await startEphemeral({ ...STUB_DEPS, disabledTools: () => ['browser.evaluate'] });
     const token = server.currentToken();
 
     const s = await dial(server.boundAddress());

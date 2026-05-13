@@ -21,7 +21,11 @@ import type { AgentCaller } from '../tools/tab-claims.js';
 
 export interface DispatchDeps {
   browserTools: BrowserToolDeps;
-  disabledTools: readonly string[];
+  /** Live deny-list reader. Invoked on every tools/list and tools/call so the
+   * dispatcher always reflects the current `config.json` state — changes
+   * made via the CLI/UI take effect on the next call without restarting the
+   * MCP client. Test fixtures pass a constant function: `() => []`. */
+  disabledTools: () => readonly string[];
 }
 
 export type { AgentCaller };
@@ -37,9 +41,10 @@ export interface ToolsListResult {
 }
 
 export function handleToolsList(deps: DispatchDeps): ToolsListResult {
+  const disabled = deps.disabledTools();
   return {
     tools: [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS].filter((t) =>
-      isToolEnabled(t.name, deps.disabledTools),
+      isToolEnabled(t.name, disabled),
     ),
   };
 }
@@ -55,7 +60,7 @@ export interface ToolCallRequest {
 
 export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
   const { name, arguments: args, caller } = req;
-  if (!isToolEnabled(name, deps.disabledTools)) {
+  if (!isToolEnabled(name, deps.disabledTools())) {
     // Defence in depth: a client that cached the previous tools/list could
     // still try to call a now-disabled tool. Refuse with a clear reason.
     return toolError(

@@ -184,16 +184,22 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     label: 'primary',
   };
 
-  // Snapshot the user's deny-list at boot. Changes made via the standalone
-  // CLI/UI while the MCP server is already running do NOT take effect until
-  // the MCP client restarts — the welcome and permissions screens both warn
-  // the user about that.
-  const disabledTools = cfg.disabledTools ?? [];
-  if (disabledTools.length > 0) {
-    log(`Tool filter active — ${disabledTools.length} disabled: ${disabledTools.join(', ')}`);
+  // Live deny-list lookup: re-reads config.json on every tools/list and
+  // tools/call so changes from the CLI/UI take effect immediately, without
+  // restarting the MCP client. The file is small and the read is bounded
+  // (one JSON.parse per call); this matches the human-scale frequency of
+  // MCP tool invocations.
+  const initialDisabled = cfg.disabledTools ?? [];
+  if (initialDisabled.length > 0) {
+    log(
+      `Tool filter active at boot — ${initialDisabled.length} disabled: ${initialDisabled.join(', ')} (live; reflects config.json on every call).`,
+    );
   }
 
-  const dispatchDeps: DispatchDeps = { browserTools: deps, disabledTools };
+  const dispatchDeps: DispatchDeps = {
+    browserTools: deps,
+    disabledTools: () => loadConfig().disabledTools ?? [],
+  };
 
   // We use `McpServer` (the non-deprecated high-level class) but reach
   // through `.server` for `setRequestHandler` — the SDK docs explicitly

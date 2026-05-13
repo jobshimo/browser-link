@@ -27,7 +27,7 @@ const STUB_DEPS: DispatchDeps = {
     listTabs: () => [{ tab_id: 'tab_1', url: 'https://example.com', title: 'Example' }],
     callBrowserTool: () => Promise.reject(new Error('not used in this test')),
   },
-  disabledTools: [],
+  disabledTools: () => [],
 };
 
 let dataDir: string;

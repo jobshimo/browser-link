@@ -15,7 +15,7 @@ vi.mock('../tools/browser-dispatch.js', async (importOriginal) => {
 
 import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.js';
 import { handleMapTool } from '../map/tools.js';
-import { handleBrowserTool } from '../tools/browser-dispatch.js';
+import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 
 const TEST_CALLER: AgentCaller = {
@@ -24,14 +24,22 @@ const TEST_CALLER: AgentCaller = {
   binary: 'vitest',
 };
 
-function makeDeps(overrides: Partial<DispatchDeps> = {}): DispatchDeps {
+interface MakeDepsOverrides {
+  browserTools?: BrowserToolDeps;
+  /** Ergonomic shape for tests — passed through to the live-lookup function
+   * that the production code expects. */
+  disabledTools?: readonly string[];
+}
+
+function makeDeps(overrides: MakeDepsOverrides = {}): DispatchDeps {
   return {
-    browserTools: {
-      listTabs: vi.fn(() => []),
-      callBrowserTool: vi.fn(async () => undefined),
-    },
-    disabledTools: [],
-    ...overrides,
+    browserTools:
+      overrides.browserTools ??
+      ({
+        listTabs: vi.fn(() => []),
+        callBrowserTool: vi.fn(async () => undefined),
+      } as BrowserToolDeps),
+    disabledTools: () => overrides.disabledTools ?? [],
   };
 }
 

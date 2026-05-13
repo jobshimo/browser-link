@@ -37,7 +37,7 @@ const PERM_I18N: Record<
     applyPrefix: 'Apply: ',
     unsaved: '* Unsaved changes — press s to save',
     saved: '✓ Saved.',
-    restart: 'Changes take effect the next time your MCP client starts the server.',
+    restart: 'Changes take effect on the next tool call — no MCP client restart needed.',
     footer: '↑↓ navigate · Space toggle · ↵ apply preset · s save · Esc back',
   },
   es: {
@@ -49,7 +49,8 @@ const PERM_I18N: Record<
     applyPrefix: 'Aplicar: ',
     unsaved: '* Cambios sin guardar — apretá s para guardar',
     saved: '✓ Guardado.',
-    restart: 'Los cambios tienen efecto la próxima vez que el cliente MCP arranque el servidor.',
+    restart:
+      'Los cambios tienen efecto en la próxima llamada — no hace falta reiniciar el cliente MCP.',
     footer: '↑↓ moverse · Espacio cambiar · ↵ aplicar preset · s guardar · Esc volver',
   },
 };
