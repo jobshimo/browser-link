@@ -112,10 +112,11 @@ interface DoctorI18n {
   clientNotRegistered: string;
   clientConfig: string;
   clientInstructions: string;
-  instructionsInstalled: (version: string) => string;
-  instructionsOutdated: (version: string) => string;
+  instructionsInstalled: (version: string | null) => string;
+  instructionsOutdated: (version: string | null) => string;
   instructionsNotInstalled: string;
   instructionsNoFile: string;
+  instructionsCorrupt: string;
   extensionHeader: string;
   extensionNotFound: string;
   mapHeader: string;
@@ -148,10 +149,11 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientNotRegistered: '⚠ installed but not registered',
     clientConfig: 'config:',
     clientInstructions: 'instructions:',
-    instructionsInstalled: (v) => `✓ installed (v${v})`,
-    instructionsOutdated: (v) => `⚠ outdated (v${v})`,
+    instructionsInstalled: (v) => (v === null ? `✓ installed (legacy)` : `✓ installed (v${v})`),
+    instructionsOutdated: (v) => (v === null ? `⚠ outdated (legacy)` : `⚠ outdated (v${v})`),
     instructionsNotInstalled: '· not installed',
     instructionsNoFile: '· file not present',
+    instructionsCorrupt: '⚠ multiple blocks — resolve manually',
     extensionHeader: 'Chrome extension assets:',
     extensionNotFound: 'not found (run `browser-link extension` for guidance)',
     mapHeader: 'Map DB:',
@@ -182,10 +184,12 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientNotRegistered: '⚠ instalado pero no registrado',
     clientConfig: 'config:',
     clientInstructions: 'instrucciones:',
-    instructionsInstalled: (v) => `✓ instaladas (v${v})`,
-    instructionsOutdated: (v) => `⚠ desactualizadas (v${v})`,
+    instructionsInstalled: (v) => (v === null ? `✓ instaladas (legacy)` : `✓ instaladas (v${v})`),
+    instructionsOutdated: (v) =>
+      v === null ? `⚠ desactualizadas (legacy)` : `⚠ desactualizadas (v${v})`,
     instructionsNotInstalled: '· no instaladas',
     instructionsNoFile: '· sin archivo',
+    instructionsCorrupt: '⚠ múltiples bloques — resolvé a mano',
     extensionHeader: 'Assets de la extensión de Chrome:',
     extensionNotFound: 'no encontrada (corré `browser-link extension` para la guía)',
     mapHeader: 'Base de datos del mapa:',
@@ -240,6 +244,9 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
         break;
       case 'no-file':
         instrLabel = t.instructionsNoFile;
+        break;
+      case 'corrupt':
+        instrLabel = t.instructionsCorrupt;
         break;
     }
     lines.push(

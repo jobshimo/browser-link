@@ -67,9 +67,14 @@ function body(): string {
 
 /** Full fenced block to write into the file, including a trailing newline.
  * The line between markers carries the managed-by stamp so a user reading
- * the file knows it is auto-generated and how to refresh it. */
-export function block(version = VERSION): string {
-  return [
+ * the file knows it is auto-generated and how to refresh it.
+ *
+ * `eol` controls the line separator. Default is LF; pass CRLF to match a
+ * Windows-edited file's dominant line ending. The body() helper composes
+ * its own lines with `\n`; we replace them when joining so the produced
+ * block is uniformly LF or CRLF — never mixed. */
+export function block(version = VERSION, eol: '\n' | '\r\n' = '\n'): string {
+  const parts = [
     beginMarker(version),
     `<!-- managed-by: browser-link v${version}; do not edit between markers; run \`browser-link instructions install\` to refresh. -->`,
     '',
@@ -77,7 +82,28 @@ export function block(version = VERSION): string {
     '',
     END_MARKER,
     '',
-  ].join('\n');
+  ];
+  if (eol === '\n') return parts.join('\n');
+  // body() returned a multi-line string joined with \n; flip each \n to \r\n.
+  return parts.map((p) => p.replace(/\n/g, '\r\n')).join('\r\n');
+}
+
+/** Count occurrences of the BEGIN marker in `text`. The base BEGIN_RE has
+ * no `g` flag (it's used for single-span detection); this helper compiles
+ * the same pattern with `g` so duplicates can be diagnosed. */
+export function countBeginMarkers(text: string): number {
+  return (text.match(/<!--\s*browser-link:instructions:begin(?:\s+v\d+\.\d+\.\d+)?\s*-->/g) ?? [])
+    .length;
+}
+
+/** Pick the dominant line ending of `text`. CRLF wins only when it is the
+ * majority of newline sequences; otherwise LF. Used by installAt to keep
+ * Windows-edited files from acquiring a mixed-EOL block. */
+export function detectEol(text: string): '\n' | '\r\n' {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lfTotal = (text.match(/\n/g) ?? []).length;
+  const loneLf = lfTotal - crlf;
+  return crlf > loneLf && crlf > 0 ? '\r\n' : '\n';
 }
 
 /** Locate the block boundaries in the given file text. Returns null when

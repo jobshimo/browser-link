@@ -15,11 +15,15 @@ import { PermissionsView } from './permissions.js';
 import { MultiAgentView } from './multi-agent.js';
 
 /*
- * Smoke tests for every Ink screen component. Goal: catch render-time crashes
- * (broken imports, missing props, bad JSX) and lift the coverage of src/ui/**
- * off zero. These tests do NOT exercise user interaction — interaction belongs
- * in per-screen test files when behavior is non-trivial; here we only assert
- * that the first frame renders with the screen's title.
+ * Render-time crash guard for every Ink screen component. This file ONLY
+ * asserts that each screen renders its first frame without throwing — it
+ * catches broken imports, missing props, bad JSX, and similar regressions.
+ *
+ * For real keyboard interaction tests (cursor movement, callbacks fired on
+ * key press, state transitions), see the per-screen interaction files:
+ *   - agent-instructions.interaction.test.tsx
+ *   - menu.interaction.test.tsx
+ *   - permissions.interaction.test.tsx
  */
 
 let fakeHome: string;
@@ -29,7 +33,7 @@ let originalBrowserLinkDataDir: string | undefined;
 let originalCopilotHome: string | undefined;
 
 beforeEach(() => {
-  fakeHome = mkdtempSync(join(tmpdir(), 'browser-link-smoke-'));
+  fakeHome = mkdtempSync(join(tmpdir(), 'browser-link-render-'));
   originalEnvHome = process.env.HOME;
   originalUserprofile = process.env.USERPROFILE;
   originalBrowserLinkDataDir = process.env.BROWSER_LINK_DATA_DIR;
@@ -56,7 +60,7 @@ afterEach(() => {
 
 const noop = (): void => undefined;
 
-describe('WelcomeScreen smoke', () => {
+describe('WelcomeScreen render', () => {
   test('renders the EN title', () => {
     const { lastFrame } = render(
       <WelcomeScreen
@@ -86,7 +90,7 @@ describe('WelcomeScreen smoke', () => {
   });
 });
 
-describe('MainMenu smoke', () => {
+describe('MainMenu render', () => {
   test('renders every menu entry in EN', () => {
     const { lastFrame } = render(
       <MainMenu language="en" onSelect={noop} onSwapLang={noop} onQuit={noop} />,
@@ -100,7 +104,7 @@ describe('MainMenu smoke', () => {
   });
 });
 
-describe('ClientPicker smoke', () => {
+describe('ClientPicker render', () => {
   test('renders the picker title with the available clients', () => {
     const { lastFrame } = render(<ClientPicker language="en" onPick={noop} onBack={noop} />);
     const frame = lastFrame() ?? '';
@@ -110,7 +114,7 @@ describe('ClientPicker smoke', () => {
   });
 });
 
-describe('InstallResultView smoke', () => {
+describe('InstallResultView render', () => {
   test('renders the success branch', () => {
     const { lastFrame } = render(
       <InstallResultView
@@ -146,14 +150,14 @@ describe('InstallResultView smoke', () => {
   });
 });
 
-describe('ExtensionView smoke', () => {
+describe('ExtensionView render', () => {
   test('renders without crashing', () => {
     const { lastFrame } = render(<ExtensionView language="en" onBack={noop} />);
     expect(lastFrame() ?? '').toMatch(/Chrome extension/i);
   });
 });
 
-describe('AboutView smoke', () => {
+describe('AboutView render', () => {
   test('renders the About page with the new Author section', () => {
     const { lastFrame } = render(<AboutView language="en" onBack={noop} />);
     const frame = lastFrame() ?? '';
@@ -162,7 +166,7 @@ describe('AboutView smoke', () => {
   });
 });
 
-describe('LanguageView smoke', () => {
+describe('LanguageView render', () => {
   test('renders both language choices', () => {
     const { lastFrame } = render(<LanguageView language="en" onPick={noop} onBack={noop} />);
     const frame = lastFrame() ?? '';
@@ -171,7 +175,7 @@ describe('LanguageView smoke', () => {
   });
 });
 
-describe('AgentInstructionsView smoke', () => {
+describe('AgentInstructionsView render', () => {
   test('renders every supported client with a status badge', () => {
     const { lastFrame } = render(<AgentInstructionsView language="en" onBack={noop} />);
     const frame = lastFrame() ?? '';
@@ -182,7 +186,7 @@ describe('AgentInstructionsView smoke', () => {
   });
 });
 
-describe('PermissionsView smoke', () => {
+describe('PermissionsView render', () => {
   test('renders the catalogue + presets', () => {
     const { lastFrame } = render(<PermissionsView language="en" onBack={noop} />);
     const frame = lastFrame() ?? '';
@@ -192,7 +196,7 @@ describe('PermissionsView smoke', () => {
   });
 });
 
-describe('MultiAgentView smoke', () => {
+describe('MultiAgentView render', () => {
   test('renders the multi-agent toggles', () => {
     const { lastFrame } = render(<MultiAgentView language="en" onBack={noop} />);
     const frame = lastFrame() ?? '';

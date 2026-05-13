@@ -17,7 +17,8 @@ export interface InstructionsReport {
   displayName: string;
   filePath: string;
   state: InstructionsState;
-  /** Set after install/uninstall — the one-line description of what changed. */
+  /** Set after install/uninstall — the one-line description of what changed,
+   * or the error message when `ok === false`. */
   message?: string;
   ok: boolean;
 }
@@ -42,18 +43,39 @@ export function statusAll(): InstructionsReport[] {
   return INSTRUCTIONS_INSTALLERS.map((i) => stateOnly(i.id));
 }
 
-export function installInstructionsFor(client: ClientId): InstructionsReport {
+function runAction(
+  client: ClientId,
+  action: (i: ReturnType<typeof getInstructionsInstaller>) => string,
+): InstructionsReport {
   const inst = getInstructionsInstaller(client);
-  const message = inst.install();
-  const d = inst.detect();
-  return {
-    client,
-    displayName: inst.displayName,
-    filePath: d.filePath,
-    state: d.state,
-    message,
-    ok: true,
-  };
+  // Capture the pre-call state so a thrown error before/instead of detect()
+  // does not leave the UI with a stale or undefined state field.
+  const initial = inst.detect();
+  try {
+    const message = action(inst);
+    const after = inst.detect();
+    return {
+      client,
+      displayName: inst.displayName,
+      filePath: after.filePath,
+      state: after.state,
+      message,
+      ok: true,
+    };
+  } catch (err) {
+    return {
+      client,
+      displayName: inst.displayName,
+      filePath: initial.filePath,
+      state: initial.state,
+      message: err instanceof Error ? err.message : String(err),
+      ok: false,
+    };
+  }
+}
+
+export function installInstructionsFor(client: ClientId): InstructionsReport {
+  return runAction(client, (i) => i.install());
 }
 
 export function installInstructionsAll(): InstructionsReport[] {
@@ -61,17 +83,7 @@ export function installInstructionsAll(): InstructionsReport[] {
 }
 
 export function uninstallInstructionsFor(client: ClientId): InstructionsReport {
-  const inst = getInstructionsInstaller(client);
-  const message = inst.uninstall();
-  const d = inst.detect();
-  return {
-    client,
-    displayName: inst.displayName,
-    filePath: d.filePath,
-    state: d.state,
-    message,
-    ok: true,
-  };
+  return runAction(client, (i) => i.uninstall());
 }
 
 export function uninstallInstructionsAll(): InstructionsReport[] {
@@ -80,30 +92,37 @@ export function uninstallInstructionsAll(): InstructionsReport[] {
 
 interface I18n {
   header: string;
-  installed: (version: string) => string;
-  installedOutdated: (version: string) => string;
+  installed: (version: string | null) => string;
+  installedOutdated: (version: string | null) => string;
   notInstalled: string;
   noFile: string;
+  corrupt: string;
   filePath: string;
 }
 
 const I18N: Record<Language, I18n> = {
   en: {
     header: 'Agent instructions — browser-link awareness in global agent .md files',
-    installed: (v) => `✓ installed (v${v})`,
+    installed: (v) => (v === null ? `✓ installed (legacy)` : `✓ installed (v${v})`),
     installedOutdated: (v) =>
-      `⚠ installed but outdated (v${v}) — run \`browser-link instructions install\` to refresh.`,
+      v === null
+        ? `⚠ installed but outdated (legacy) — run \`browser-link instructions install\` to refresh.`
+        : `⚠ installed but outdated (v${v}) — run \`browser-link instructions install\` to refresh.`,
     notInstalled: '· not installed (file exists, no browser-link block)',
     noFile: '· file does not exist yet (will be created on install)',
+    corrupt: '⚠ multiple browser-link blocks present — please resolve manually',
     filePath: '  file:',
   },
   es: {
     header: 'Instrucciones del agente — browser-link en los .md globales de cada cliente',
-    installed: (v) => `✓ instalado (v${v})`,
+    installed: (v) => (v === null ? `✓ instalado (legacy)` : `✓ instalado (v${v})`),
     installedOutdated: (v) =>
-      `⚠ instalado pero desactualizado (v${v}) — corré \`browser-link instructions install\` para refrescar.`,
+      v === null
+        ? `⚠ instalado pero desactualizado (legacy) — corré \`browser-link instructions install\` para refrescar.`
+        : `⚠ instalado pero desactualizado (v${v}) — corré \`browser-link instructions install\` para refrescar.`,
     notInstalled: '· no instalado (el archivo existe, sin bloque de browser-link)',
     noFile: '· el archivo aún no existe (se va a crear al instalar)',
+    corrupt: '⚠ múltiples bloques browser-link en el archivo — resolvé a mano',
     filePath: '  archivo:',
   },
 };
@@ -120,6 +139,8 @@ export function describeState(state: InstructionsState, language: Language = 'en
       return t.notInstalled;
     case 'no-file':
       return t.noFile;
+    case 'corrupt':
+      return t.corrupt;
   }
 }
 

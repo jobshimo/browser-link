@@ -25,3 +25,5 @@ export type {
   InstructionsInstaller,
   InstructionsState,
 } from './types.js';
+
+export { CorruptBlockError, SymlinkRefusedError } from './errors.js';

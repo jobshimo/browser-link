@@ -7,8 +7,9 @@ export type { ClientId };
 export type InstructionsState =
   | { kind: 'no-file' } // the client's instructions file does not exist
   | { kind: 'not-installed' } // file exists, no browser-link block
-  | { kind: 'installed'; version: string } // file exists, block present
-  | { kind: 'installed-outdated'; version: string }; // block present, version older than current
+  | { kind: 'installed'; version: string | null } // file exists, block present; null = legacy unversioned
+  | { kind: 'installed-outdated'; version: string | null } // block present, older than current; null = legacy unversioned
+  | { kind: 'corrupt'; reason: 'multiple-begin-markers' }; // file has more than one BEGIN marker — refuse to touch it
 
 export interface InstructionsDetect {
   /** Absolute path to the markdown file we manage. Returned even when it does not exist. */

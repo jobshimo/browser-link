@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VERSION } from '../version.js';
 import { BEGIN_PREFIX, END_MARKER, beginMarker } from './content.js';
+import { CorruptBlockError, SymlinkRefusedError } from './errors.js';
 import { detectAt, installAt, uninstallAt } from './file-ops.js';
 
 let dir: string;
@@ -45,11 +55,23 @@ describe('detectAt', () => {
     if (d.state.kind === 'installed-outdated') expect(d.state.version).toBe('0.0.1');
   });
 
-  test('installed-outdated when the block has no version (treated as 0.0.0)', () => {
+  test('installed-outdated when the block has no version (legacy)', () => {
     // Legacy markers without a version still match the begin regex.
     writeFileSync(file, `${BEGIN_PREFIX} -->\nbody\n${END_MARKER}\n`, 'utf8');
     const d = detectAt(file);
     expect(d.state.kind).toBe('installed-outdated');
+    if (d.state.kind === 'installed-outdated') expect(d.state.version).toBeNull();
+  });
+
+  test('corrupt when the file contains two BEGIN markers', () => {
+    const text = [
+      `${beginMarker('0.0.1')}\nbody1\n${END_MARKER}`,
+      `${beginMarker()}\nbody2\n${END_MARKER}`,
+    ].join('\n\n');
+    writeFileSync(file, text, 'utf8');
+    const d = detectAt(file);
+    expect(d.state.kind).toBe('corrupt');
+    if (d.state.kind === 'corrupt') expect(d.state.reason).toBe('multiple-begin-markers');
   });
 });
 
@@ -143,5 +165,116 @@ describe('uninstallAt', () => {
     uninstallAt(file, 'Test Client');
     const text = readFileSync(file, 'utf8');
     expect(text).not.toMatch(/\n\n\n/);
+  });
+});
+
+describe('atomic write', () => {
+  test('cleans up the temp file when the rename step fails', () => {
+    // Force rename to fail naturally: create a directory where the file
+    // should land. renameSync(file, dir) throws EISDIR / EPERM and the
+    // helper must clean up the .tmp it had already written.
+    const target = join(dir, 'AGENTS.md');
+    mkdirSync(target);
+    // Drop a stale child so the directory cannot be replaced atomically
+    // even on platforms where Node would otherwise allow it.
+    writeFileSync(join(target, 'inside.txt'), 'placeholder', 'utf8');
+    expect(() => installAt(target, 'Test Client')).toThrow();
+    const entries = readdirSync(dir).filter((e) => e.endsWith('.tmp'));
+    expect(entries).toEqual([]);
+  });
+});
+
+describe('symlink handling', () => {
+  // Creating a symlink on Windows requires elevation or developer mode; the
+  // try/catch around symlinkSync lets us skip cleanly when that fails.
+  const target = (): string => join(dir, 'real-target.md');
+  const link = (): string => join(dir, 'link.md');
+
+  function trySymlink(): boolean {
+    try {
+      writeFileSync(target(), '# real target\n', 'utf8');
+      symlinkSync(target(), link());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test('installAt throws SymlinkRefusedError with target + paste-ready block', () => {
+    if (!trySymlink()) {
+      console.warn('skipping: symlink creation unavailable on this platform');
+      return;
+    }
+    let caught: unknown;
+    try {
+      installAt(link(), 'Test Client');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SymlinkRefusedError);
+    if (caught instanceof SymlinkRefusedError) {
+      // realpathSync may normalize path casing/separators; only assert the
+      // basename to keep the test portable.
+      expect(caught.target).toContain('real-target.md');
+      expect(caught.blockContent).toContain(BEGIN_PREFIX);
+      expect(caught.blockContent).toContain(END_MARKER);
+    }
+    // The real target was not overwritten.
+    expect(readFileSync(target(), 'utf8')).toBe('# real target\n');
+  });
+
+  test('uninstallAt throws SymlinkRefusedError too', () => {
+    if (!trySymlink()) {
+      console.warn('skipping: symlink creation unavailable on this platform');
+      return;
+    }
+    expect(() => uninstallAt(link(), 'Test Client')).toThrow(SymlinkRefusedError);
+  });
+});
+
+describe('corrupt state', () => {
+  test('installAt throws CorruptBlockError when two BEGIN markers exist', () => {
+    const text = [
+      `${beginMarker('0.0.1')}\nbody1\n${END_MARKER}`,
+      `${beginMarker()}\nbody2\n${END_MARKER}`,
+    ].join('\n\n');
+    writeFileSync(file, text, 'utf8');
+    expect(() => installAt(file, 'Test Client')).toThrow(CorruptBlockError);
+  });
+
+  test('uninstallAt throws CorruptBlockError when two BEGIN markers exist', () => {
+    const text = [
+      `${beginMarker('0.0.1')}\nbody1\n${END_MARKER}`,
+      `${beginMarker()}\nbody2\n${END_MARKER}`,
+    ].join('\n\n');
+    writeFileSync(file, text, 'utf8');
+    expect(() => uninstallAt(file, 'Test Client')).toThrow(CorruptBlockError);
+  });
+});
+
+describe('EOL preservation', () => {
+  test('CRLF file gets a CRLF block', () => {
+    writeFileSync(file, '# Existing\r\n\r\nUser content.\r\n', 'utf8');
+    installAt(file, 'Test Client');
+    const text = readFileSync(file, 'utf8');
+    // Locate the block and assert it contains CRLF and no lone LF inside.
+    const begin = text.indexOf(BEGIN_PREFIX);
+    const end = text.indexOf(END_MARKER, begin) + END_MARKER.length;
+    expect(begin).toBeGreaterThanOrEqual(0);
+    const blockText = text.slice(begin, end);
+    expect(blockText).toContain('\r\n');
+    // No lone LF inside the block region (every \n is preceded by \r).
+    for (let i = 0; i < blockText.length; i++) {
+      if (blockText.charCodeAt(i) === 0x0a) {
+        expect(blockText.charCodeAt(i - 1)).toBe(0x0d);
+      }
+    }
+  });
+
+  test('LF file stays LF', () => {
+    writeFileSync(file, '# Existing\n\nUser content.\n', 'utf8');
+    installAt(file, 'Test Client');
+    const text = readFileSync(file, 'utf8');
+    expect(text).not.toMatch(/\r/);
   });
 });

@@ -24,9 +24,13 @@ interface AgentInstructionsI18n {
   outdated: string;
   notInstalled: string;
   noFile: string;
+  corrupt: string;
+  legacySuffix: string;
   footer: string;
   doneInstall: string;
   doneUninstall: string;
+  failInstall: string;
+  failUninstall: string;
   refreshHint: string;
 }
 
@@ -44,9 +48,13 @@ const I18N: Record<Language, AgentInstructionsI18n> = {
     outdated: '⚠ outdated',
     notInstalled: '· not installed',
     noFile: '· no file yet',
+    corrupt: '⚠ corrupt (multiple blocks)',
+    legacySuffix: 'legacy',
     footer: '↑↓ navigate · ↵ install/refresh · u uninstall · Esc back',
     doneInstall: '✓ Done. Restart your MCP client to pick up the new instructions.',
     doneUninstall: '✓ Removed. The rest of the file was left untouched.',
+    failInstall: '✗ Install failed.',
+    failUninstall: '✗ Uninstall failed.',
     refreshHint: 'On install: the block is refreshed in place if it already exists.',
   },
   es: {
@@ -64,9 +72,13 @@ const I18N: Record<Language, AgentInstructionsI18n> = {
     outdated: '⚠ desactualizado',
     notInstalled: '· no instalado',
     noFile: '· sin archivo todavía',
+    corrupt: '⚠ corrupto (múltiples bloques)',
+    legacySuffix: 'legacy',
     footer: '↑↓ moverse · ↵ instalar/refrescar · u desinstalar · Esc volver',
     doneInstall: '✓ Listo. Reiniciá tu cliente MCP para tomar las nuevas instrucciones.',
     doneUninstall: '✓ Quitado. El resto del archivo quedó intacto.',
+    failInstall: '✗ Falló la instalación.',
+    failUninstall: '✗ Falló la desinstalación.',
     refreshHint: 'En instalar: si el bloque ya existe, se reescribe en su lugar.',
   },
 };
@@ -81,13 +93,21 @@ function statusBadge(
 ): { label: string; color: string } {
   switch (state.kind) {
     case 'installed':
-      return { label: `${t.installed} (v${state.version})`, color: 'green' };
+      return {
+        label: `${t.installed} (${state.version === null ? t.legacySuffix : `v${state.version}`})`,
+        color: 'green',
+      };
     case 'installed-outdated':
-      return { label: `${t.outdated} (v${state.version})`, color: 'yellow' };
+      return {
+        label: `${t.outdated} (${state.version === null ? t.legacySuffix : `v${state.version}`})`,
+        color: 'yellow',
+      };
     case 'not-installed':
       return { label: t.notInstalled, color: 'gray' };
     case 'no-file':
       return { label: t.noFile, color: 'gray' };
+    case 'corrupt':
+      return { label: t.corrupt, color: 'yellow' };
   }
 }
 
@@ -152,13 +172,30 @@ export function AgentInstructionsView({ language, onBack }: AgentInstructionsVie
       </Box>
       {lastAction && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color="green">
-            {lastAction.kind === 'install' ? t.doneInstall : t.doneUninstall}
-          </Text>
-          {lastAction.report.message && (
-            <Text color="gray" dimColor>
-              {lastAction.report.message}
-            </Text>
+          {lastAction.report.ok ? (
+            <>
+              <Text color="green">
+                {lastAction.kind === 'install' ? t.doneInstall : t.doneUninstall}
+              </Text>
+              {lastAction.report.message !== undefined && lastAction.report.message !== '' && (
+                <Text color="gray" dimColor>
+                  {lastAction.report.message}
+                </Text>
+              )}
+            </>
+          ) : (
+            <Box flexDirection="column">
+              <Text color="red">
+                {lastAction.kind === 'install' ? t.failInstall : t.failUninstall}
+              </Text>
+              {lastAction.report.message !== undefined && lastAction.report.message !== '' && (
+                <Box>
+                  <Text color="red" wrap="wrap">
+                    {lastAction.report.message}
+                  </Text>
+                </Box>
+              )}
+            </Box>
           )}
         </Box>
       )}
