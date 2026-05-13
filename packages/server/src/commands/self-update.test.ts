@@ -33,6 +33,9 @@ describe('runSelfUpdate', () => {
 
     const result = await runSelfUpdate('0.5.3', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      // Pin the binary so the assertion below doesn't depend on the runner OS
+      // (production resolves to 'npm.cmd' on Windows, 'npm' elsewhere).
+      npmBin: 'npm',
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -44,6 +47,42 @@ describe('runSelfUpdate', () => {
     expect(spawnImpl).toHaveBeenCalledWith('npm', ['install', '-g', '@example/pkg@0.5.3'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+  });
+
+  test('on Windows the default npm binary is npm.cmd', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
+
+    await runSelfUpdate('0.5.3', 'en', undefined, {
+      packageName: '@example/pkg',
+      skipFreePort: true,
+      spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
+    });
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      'npm.cmd',
+      ['install', '-g', '@example/pkg@0.5.3'],
+      expect.any(Object),
+    );
+    platformSpy.mockRestore();
+  });
+
+  test('on non-Windows the default npm binary is npm', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
+
+    await runSelfUpdate('0.5.3', 'en', undefined, {
+      packageName: '@example/pkg',
+      skipFreePort: true,
+      spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
+    });
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      'npm',
+      ['install', '-g', '@example/pkg@0.5.3'],
+      expect.any(Object),
+    );
+    platformSpy.mockRestore();
   });
 
   test('emits a stopping-primary event before the install when port-freeing is on', async () => {

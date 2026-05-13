@@ -112,7 +112,13 @@ export async function runSelfUpdate(
 ): Promise<SelfUpdateResult> {
   const t = I18N[language];
   const pkgName = opts.packageName ?? PACKAGE_NAME;
-  const npmBin = opts.npmBin ?? 'npm';
+  // Node's `spawn` does not resolve `.cmd` / `.bat` shims on Windows unless
+  // it goes through cmd.exe (shell: true) or you pass the explicit filename.
+  // `npm` on Windows is `npm.cmd`, so a bare `spawn('npm', …)` throws
+  // ENOENT — the exact error the in-app updater was reporting before this
+  // fix. We pick the right name per platform instead of opting into
+  // shell:true, which adds an argument-quoting surface we don't need.
+  const npmBin = opts.npmBin ?? (process.platform === 'win32' ? 'npm.cmd' : 'npm');
   const doSpawn = opts.spawnImpl ?? spawn;
 
   const emit = (stage: SelfUpdateProgress['stage'], message: string): void => {
