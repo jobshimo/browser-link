@@ -317,6 +317,114 @@
         text-transform: uppercase;
         font-weight: 500;
       }
+
+      .dialog-box {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--error-fg);
+        background: var(--error-soft);
+        border-radius: 10px;
+        box-shadow: 0 4px 10px rgba(239, 68, 68, 0.18);
+      }
+
+      .dialog-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .dialog-type {
+        background: var(--error-fg);
+        color: #ffffff;
+        font-size: 10.5px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 4px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .dialog-label {
+        font-size: 11px;
+        color: var(--error-fg);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .dialog-message {
+        font-size: 13px;
+        color: var(--text);
+        line-height: 1.4;
+        margin-bottom: 10px;
+        word-break: break-word;
+        max-height: 120px;
+        overflow-y: auto;
+      }
+
+      .dialog-prompt {
+        width: 100%;
+        padding: 8px 10px;
+        margin-bottom: 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 12.5px;
+        font-family: inherit;
+      }
+
+      .dialog-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .dialog-actions button {
+        margin-top: 0;
+      }
+
+      .version-banner {
+        margin-bottom: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--error-fg);
+        background: var(--error-soft);
+        border-radius: 10px;
+        box-shadow: 0 4px 10px rgba(239, 68, 68, 0.18);
+      }
+
+      .version-banner-title {
+        font-size: 12.5px;
+        font-weight: 700;
+        color: var(--error-fg);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+
+      .version-banner-rows {
+        font-size: 12px;
+        color: var(--text);
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+
+      .version-banner-rows code {
+        background: rgba(15, 23, 42, 0.06);
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+      }
+
+      .version-banner-hint {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 10px;
+        line-height: 1.4;
+      }
+
+      .version-banner button {
+        margin-top: 0;
+      }
     </style>
   </head>
   <body>
@@ -341,6 +449,30 @@
         </div>
       </header>
 
+      <!-- Version mismatch banner.
+           Surfaced when the connected tab reports a `serverVersion` (sent
+           by the MCP server in the `tab.registered` payload) that differs
+           from the extension's own `chrome.runtime.getManifest().version`.
+           Typical case: user ran `npm install -g @jobshimo/browser-link`
+           but did not reload the unpacked extension yet. -->
+      <div id="version-banner" class="version-banner" hidden>
+        <div class="version-banner-title">⚠ Version mismatch</div>
+        <div class="version-banner-rows">
+          <div>
+            Extension: <code id="version-extension">—</code>
+          </div>
+          <div>
+            Server: <code id="version-server">—</code>
+          </div>
+        </div>
+        <div class="version-banner-hint">
+          Reload the extension so both halves run the same code.
+        </div>
+        <button id="version-open-extensions" class="primary">
+          Open chrome://extensions
+        </button>
+      </div>
+
       <div id="card" class="card" data-state="idle">
         <div class="status-row">
           <span class="dot" aria-hidden="true"></span>
@@ -352,6 +484,29 @@
       </div>
 
       <button id="action" class="primary" disabled>…</button>
+
+      <!-- Pending dialog escape hatch.
+           Surfaces a native alert/confirm/prompt blocking the connected
+           tab so the user can answer it manually when no agent has the
+           browser.dialog_respond tool enabled in its preset. -->
+      <div id="dialog-box" class="dialog-box" hidden>
+        <div class="dialog-title">
+          <span id="dialog-type" class="dialog-type">alert</span>
+          <span class="dialog-label">native dialog pending</span>
+        </div>
+        <div id="dialog-message" class="dialog-message"></div>
+        <input
+          id="dialog-prompt-input"
+          class="dialog-prompt"
+          type="text"
+          placeholder="Response (only used for prompt)"
+          hidden
+        />
+        <div class="dialog-actions">
+          <button id="dialog-accept" class="primary">OK / Accept</button>
+          <button id="dialog-dismiss" class="danger">Cancel</button>
+        </div>
+      </div>
 
       <div class="footer">manual · per-tab · loopback only</div>
     </div>

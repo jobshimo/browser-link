@@ -144,6 +144,7 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
     recentEvents: (opts) => events.recent(opts),
+    subscribeEvents: (fn, options) => events.subscribe(fn, options),
     tabClaims,
     resetBridge: () => {
       // Close every WS to the extension first so the client side flips to

@@ -13,6 +13,23 @@ interface StatusResult {
   serverTabId?: string;
 }
 
+interface PendingDialogInfo {
+  type: string;
+  message: string;
+  default_prompt?: string;
+  url?: string;
+}
+
+interface PendingDialogResult {
+  pending: PendingDialogInfo | null;
+}
+
+interface VersionCheckResult {
+  extension: string;
+  server: string | null;
+  aligned: boolean | null;
+}
+
 // 'connecting' is a transient client-side state while a connect/disconnect
 // round-trip is in flight; 'portCollision' is reserved for a future
 // background message that distinguishes "server unreachable, just retry"
@@ -80,7 +97,53 @@ function setAction(label: string, variant: 'primary' | 'danger', disabled = fals
   btn.disabled = disabled;
 }
 
+function renderVersionBanner(check: VersionCheckResult): void {
+  const banner = $('version-banner') as HTMLDivElement;
+  // Hide while we have no server version yet (no tab has registered) or
+  // when both halves are aligned. The banner is purely informational —
+  // the agent flow keeps working either way, this is just a heads-up.
+  if (check.server === null || check.aligned !== false) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  $('version-extension').textContent = check.extension;
+  $('version-server').textContent = check.server;
+}
+
+async function refreshVersionBanner(): Promise<void> {
+  const check = await send<VersionCheckResult>({ action: 'versionCheck' });
+  renderVersionBanner(check);
+}
+
+function renderPendingDialog(pending: PendingDialogInfo | null): void {
+  const box = $('dialog-box') as HTMLDivElement;
+  if (pending === null) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  $('dialog-type').textContent = pending.type;
+  $('dialog-message').textContent = pending.message || '(empty)';
+  const promptInput = $('dialog-prompt-input') as HTMLInputElement;
+  if (pending.type === 'prompt') {
+    promptInput.hidden = false;
+    promptInput.value = pending.default_prompt ?? '';
+  } else {
+    promptInput.hidden = true;
+    promptInput.value = '';
+  }
+}
+
+async function refreshPendingDialog(tabId: number): Promise<void> {
+  const result = await send<PendingDialogResult>({ action: 'pendingDialog', tabId });
+  renderPendingDialog(result.pending);
+}
+
 async function refresh(): Promise<void> {
+  // Always refresh the version banner — it has no dependency on the active
+  // tab, only on whether ANY tab has registered with the server.
+  await refreshVersionBanner();
   const tab = await getCurrentTab();
   const urlEl = $('url');
 
@@ -89,6 +152,7 @@ async function refresh(): Promise<void> {
     setAction('Open a tab first', 'primary', true);
     urlEl.textContent = '';
     setExplanation(null);
+    renderPendingDialog(null);
     return;
   }
 
@@ -103,10 +167,27 @@ async function refresh(): Promise<void> {
   if (status.connected) {
     setStatus('connected', 'Connected', status.serverTabId);
     setAction('Disconnect this tab', 'danger');
+    await refreshPendingDialog(tab.id);
   } else {
     setStatus('idle', 'Not connected');
     setAction('Connect this tab', 'primary');
+    renderPendingDialog(null);
   }
+}
+
+async function respondToDialog(accept: boolean): Promise<void> {
+  const tab = await getCurrentTab();
+  if (!tab?.id) return;
+  const promptInput = $('dialog-prompt-input') as HTMLInputElement;
+  const payload: { action: 'respondDialog'; tabId: number; accept: boolean; promptText?: string } =
+    {
+      action: 'respondDialog',
+      tabId: tab.id,
+      accept,
+    };
+  if (!promptInput.hidden) payload.promptText = promptInput.value;
+  await send<{ ok: boolean; error?: string }>(payload);
+  await refreshPendingDialog(tab.id);
 }
 
 async function onAction(): Promise<void> {
@@ -148,6 +229,41 @@ $('action').addEventListener('click', () => {
     setAction('Retry', 'primary');
   });
 });
+
+$('dialog-accept').addEventListener('click', () => {
+  respondToDialog(true).catch(() => {
+    // Best effort — the dialog handler shape includes ok/error so the
+    // refresh will re-render either way.
+  });
+});
+
+$('dialog-dismiss').addEventListener('click', () => {
+  respondToDialog(false).catch(() => {
+    // Best effort.
+  });
+});
+
+$('version-open-extensions').addEventListener('click', () => {
+  // Open the extension's own card in chrome://extensions. From there
+  // the user clicks the circular refresh icon and Chrome re-reads the
+  // unpacked dist/. Two clicks total, no programmatic alternative for
+  // unpacked extensions (chrome.runtime.reload() only restarts the SW,
+  // it does NOT re-read the filesystem).
+  void chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+});
+
+// Poll for pending dialogs AND version drift while the popup is open.
+// Cheap (one round trip per concern, fast paths return null/aligned) and
+// only runs while the popup window is visible — Chrome unloads the popup
+// on close.
+setInterval(() => {
+  void (async () => {
+    await refreshVersionBanner();
+    const tab = await getCurrentTab();
+    if (!tab?.id) return;
+    await refreshPendingDialog(tab.id);
+  })();
+}, 800);
 
 refresh().catch((err: unknown) => {
   setStatus('error', err instanceof Error ? err.message : String(err));

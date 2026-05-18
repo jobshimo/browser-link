@@ -22,6 +22,15 @@ export interface TabRegisterPayload {
 
 export interface TabRegisteredPayload {
   tabId: TabId;
+  /**
+   * Version of the MCP server that just handed out this tabId. The extension
+   * stores it on its `TabState` so the popup can compare it against
+   * `chrome.runtime.getManifest().version` and warn the user when the two
+   * sides have drifted — typically after `npm install -g @jobshimo/browser-link`
+   * but before re-loading the Chrome extension. Optional only so older
+   * extensions that don't know about the field can still parse the message.
+   */
+  serverVersion?: string;
 }
 
 export interface TabRegisterMessage {
@@ -45,5 +54,21 @@ export type ToolResponseMessage =
   | { kind: 'tool.response'; id: string; ok: true; result: unknown }
   | { kind: 'tool.response'; id: string; ok: false; error: string };
 
-export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage;
+/**
+ * Out-of-band notification from the extension to the server's BridgeEventLog.
+ * Used for things the agent needs to learn about but that aren't tool responses:
+ * native dialogs opening/closing, new tabs spawned by a connected tab, etc.
+ *
+ * `tabId` (when present) is the server-assigned browser-link id, NOT the
+ * Chrome tab id. The extension reads it from its own TabState (set after
+ * `tab.register` -> `tab.registered`).
+ */
+export interface BridgeEventMessage {
+  kind: 'bridge.event';
+  eventKind: string;
+  tabId?: TabId;
+  data: Record<string, unknown>;
+}
+
+export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage | BridgeEventMessage;
 export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage;

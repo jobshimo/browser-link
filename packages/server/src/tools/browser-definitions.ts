@@ -290,6 +290,143 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.wait_for_tab',
+    description:
+      'Wait for a new tab opened by a previous action on a connected tab. The extension auto-emits `tab-created` events to the bridge stream whenever a tab connected to browser-link spawns a new one (via window.open, target=_blank, etc.). This tool polls that stream until it sees a matching `tab-created` event whose `opened_from` equals the `opened_from` you passed (the tab_id of the action originator). On match, browser-link automatically claims the new tab under YOUR agent_id — the waiting call IS the explicit intent — and returns its tab_id ready to use. Optional `url_substring` narrows the match (case-insensitive). Returns `{ matched, tab_id?, url?, elapsed_ms, checks, claimed?, claim_conflict?, reason? }`. `matched: false` is NOT an error — the action may have failed to open a tab, or the tab opened too slowly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        opened_from: {
+          type: 'string',
+          description:
+            'The browser-link tab_id whose action is expected to spawn the new tab. Get this from your current tab before clicking the link / button that triggers the new tab.',
+        },
+        url_substring: {
+          type: 'string',
+          description:
+            'Optional case-insensitive substring the new tab URL must contain. Useful when several tabs could spawn and you want a specific one.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: 'Max wait in ms. Default 10000, capped at 60000.',
+        },
+      },
+      required: ['opened_from'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Block until a new tab spawned by an action on a connected tab appears in the bridge, then auto-claim it under the calling agent.',
+      when_to_use: [
+        'Right after clicking a link with target="_blank" or a button known to call window.open.',
+        'Before reading the content of a popup-style auth tab you triggered.',
+      ],
+      gotchas: [
+        'Only matches tabs whose opener is a tab already connected to browser-link. A bare window.open without an opener relation will not match.',
+        'Auto-claim is part of the contract — if another agent races and claims first, you get matched:true with claimed:false and a claim_conflict description. Decide if you want to retry or surface to the user.',
+        'matched:false often means the underlying action did not open a tab. Inspect browser.events for diagnostic context.',
+        'If the action you are waiting for is a click on a button whose onClick calls window.open(), do NOT use browser.click — Chrome treats CDP `Input.dispatchMouseEvent` as a non-user-gesture for popups and the window silently never opens. Use browser.evaluate({ expression: "document.querySelector(\'<selector>\').click()" }) instead; that path goes through Runtime.evaluate with userGesture:true and Chrome accepts it.',
+      ],
+      example:
+        'browser.wait_for_tab({ opened_from: "tab_1", url_substring: "/oauth/", timeout_ms: 8000 })',
+    },
+  },
+  {
+    name: 'browser.dialog_respond',
+    description:
+      'Respond to a pending native JavaScript dialog (alert / confirm / prompt / beforeunload) on a connected tab. browser-link does NOT auto-dismiss dialogs — when a dialog opens, the page JS thread freezes and the bridge emits a `dialog-opening` event in browser.events with `{ tab_id, type, message, default_prompt }`. The agent reads that, decides what to answer based on the page flow, and calls this tool. `accept:true` is the "OK" path (submit for prompt, continue for beforeunload); `accept:false` is "Cancel". `prompt_text` is only used for `prompt` type — ignored otherwise. After the response, the page JS thread resumes and a `dialog-closed` event lands on the stream.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        accept: {
+          type: 'boolean',
+          description:
+            'true = OK / continue (in prompt: submit prompt_text). false = Cancel / dismiss.',
+        },
+        prompt_text: {
+          type: 'string',
+          description:
+            'Text to submit when the dialog is a prompt and accept=true. Ignored for alert/confirm/beforeunload.',
+        },
+      },
+      required: ['tab_id', 'accept'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Answer a native alert/confirm/prompt that is currently blocking a connected tab. Reads from the dialog-opening event in browser.events for context.',
+      when_to_use: [
+        'After browser.events reports a dialog-opening entry and the tab JS is paused waiting for an answer.',
+        'When a click you just dispatched is expected to surface a confirm() (delete confirmation, payment confirm).',
+      ],
+      gotchas: [
+        'Native dialogs are NOT in the DOM — you cannot dismiss them with browser.click. This is the only way to answer them.',
+        'While a dialog is open, browser.evaluate / browser.snapshot / browser.wait_for (expression mode) hang on the tab. Respond first, then resume.',
+        'For beforeunload, accept:true allows navigation, accept:false stays on the page.',
+      ],
+      example: 'browser.dialog_respond({ tab_id: "tab_1", accept: true, prompt_text: "Hello" })',
+    },
+  },
+  {
+    name: 'browser.set_permission',
+    description:
+      'Grant or deny a browser permission for a given origin BEFORE the page asks for it. Backed by `chrome.contentSettings` (the surface exposed to MV3 extensions — `Browser.setPermission` would need a browser-level CDP target that `chrome.debugger` does not give us). Subsequent page calls to navigator.geolocation / Notification.requestPermission / navigator.mediaDevices.getUserMedia / etc. then return the chosen state without surfacing a native prompt. Scope is per-ORIGIN (URL pattern `<origin>/*`), persistent until you call again or the user clears settings.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: {
+          type: 'string',
+          description:
+            'A connected tab — used to route the call through its debugger session. The permission itself is applied per ORIGIN, not per tab.',
+        },
+        origin: {
+          type: 'string',
+          description:
+            'Full origin (eg https://example.com or http://127.0.0.1:7373) the permission applies to. Must match exactly what the page reports as its origin.',
+        },
+        name: {
+          type: 'string',
+          enum: [
+            'geolocation',
+            'notifications',
+            'camera',
+            'microphone',
+            'clipboardReadWrite',
+            'clipboardSanitizedWrite',
+            'sensors',
+          ],
+          description:
+            'Permission name. These are the names `chrome.contentSettings` exposes in MV3. Other CDP permission names (midi, paymentHandler, windowManagement, etc.) are NOT supported by this surface — calling with one of those returns ok:false with a descriptive error.',
+        },
+        state: {
+          type: 'string',
+          enum: ['granted', 'denied', 'prompt'],
+          description:
+            'granted (chrome.contentSettings allow) = page gets the resource silently. denied (block) = page receives a denial silently. prompt (ask) = restore default Chrome behaviour, the page will see the native prompt.',
+        },
+      },
+      required: ['tab_id', 'origin', 'name', 'state'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Pre-set a browser permission for an origin so the page API responds silently — no native prompt surfaces.',
+      when_to_use: [
+        'Before clicking a button known to request geolocation / notifications / camera / etc. — pre-grant or pre-deny so the flow does not stall on a prompt the agent cannot click.',
+        'When you intentionally want a page to think permission was denied (eg. testing the no-permission code path).',
+      ],
+      gotchas: [
+        'Permissions are per-ORIGIN, NOT per-tab. Setting `granted` for https://x.com affects every tab the user opens on that origin until you reset (state: "prompt").',
+        'MV3 limitation: only the names in the enum are supported. Anything else (midi, paymentHandler, windowManagement, etc.) returns ok:false because chrome.contentSettings does not expose them.',
+        'Both `clipboardReadWrite` and `clipboardSanitizedWrite` map to the single `clipboard` content setting — there is no finer-grained read-vs-write distinction in this surface.',
+        'Reset to default with state:"prompt" when you are done if the user expects Chrome to ask again next time.',
+      ],
+      example:
+        'browser.set_permission({ tab_id: "tab_1", origin: "https://maps.example.com", name: "geolocation", state: "granted" })',
+    },
+  },
+  {
     name: 'browser.click',
     description:
       'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot.',

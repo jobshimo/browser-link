@@ -2,7 +2,9 @@
 
 # 🔗 browser-link
 
-**Bridge your MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …) to the Chrome tabs you explicitly enable.**
+**Developer-focused bridge between your MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …) and the Chrome tabs you explicitly enable.**
+
+> Built for developers debugging real UIs from the agent's seat — reproducing bugs, validating fixes, teaching the agent how an app actually behaves. Not a consumer browser-automation product.
 
 [![npm version](https://img.shields.io/npm/v/@jobshimo/browser-link.svg?v=1)](https://www.npmjs.com/package/@jobshimo/browser-link)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg?v=1)](./LICENSE)
@@ -18,14 +20,19 @@
 > `browser-link` opens a bridge between your MCP client and the Chrome tabs
 > you explicitly enable through a companion extension. On every tab where you
 > press **"Conectar"** in the extension popup, the agent can read its DOM,
-> click, type, run arbitrary JavaScript, and follow links — **including any
-> logged-in session, saved card, wallet, banking page or admin panel that
-> tab is currently showing**.
+> click, type, drag, run arbitrary JavaScript, navigate, answer native
+> dialogs (`alert` / `confirm` / `prompt`), follow popups opened by the
+> page (`window.open` / `target=_blank`), and pre-grant or pre-deny browser
+> permissions (geolocation, notifications, camera, microphone, clipboard,
+> sensors) for the tab's origin — **including any logged-in session, saved
+> card, wallet, banking page or admin panel that tab is currently
+> showing**.
 >
-> Treat the agent like a junior dev with remote control of those tabs.
-> Only enable tabs where you would let an automated process act on your
-> behalf, and disconnect them when you are done. **You are responsible for
-> every action the agent performs on the tabs you explicitly enable.**
+> This is a **developer tool**, not a consumer-grade browser-automation
+> product. Treat the agent like a junior dev with remote control of those
+> tabs. Only enable tabs where you would let an automated process act on
+> your behalf, and disconnect them when you are done. **You are responsible
+> for every action the agent performs on the tabs you explicitly enable.**
 
 ---
 
@@ -48,11 +55,16 @@
 
 ## What it is
 
-An MCP server that lets your editor's agent see and act on a Chrome tab you
-explicitly enable — without giving it your whole browser.
+A **development-oriented** MCP server that lets your editor's agent see
+and act on a Chrome tab you explicitly enable — without giving it your
+whole browser. Designed for the loop "user reports bug → agent reproduces
+it in the real UI → agent fixes the code → agent re-verifies in the same
+tab", not for unattended consumer automation.
 
-- ✅ **What it does** — exposes `browser.*` MCP tools (snapshot, click,
-  evaluate, navigate…) and a persistent UI map so the agent learns your
+- ✅ **What it does** — exposes 26 `browser.*` MCP tools (snapshot, click,
+  type, drag, navigate, evaluate, wait_for, wait_for_tab, dialog_respond,
+  set_permission, console, network, network_body, claim/release/my_tabs,
+  events, reset, plus 6 persistent-map tools) so the agent learns your
   apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.13 and Chrome / Chromium / Edge / Brave
   / Vivaldi. No accounts, no telemetry, no outbound calls except `npm`
@@ -182,25 +194,35 @@ browser-link help                          # list every subcommand
 
 The MCP server registers two families of tools.
 
-**Browser bridge** — operate on a connected tab:
+**Browser bridge — read-only** (no claim required, observation only):
 
-| Tool                   | Purpose                                                            |
-| ---------------------- | ------------------------------------------------------------------ |
-| `browser.list_tabs`    | List tabs currently connected through the extension                |
-| `browser.ping`         | Verify the bridge to a tab; returns its title and URL              |
-| `browser.snapshot`     | Title, URL, visible text and interactive elements with selectors   |
-| `browser.navigate`     | Send a tab to a different URL                                      |
-| `browser.click`        | Click an element by CSS selector                                   |
-| `browser.type`         | Focus an input and type text                                       |
-| `browser.evaluate`     | Run an arbitrary JavaScript expression in the page                 |
-| `browser.console`      | Rolling buffer of recent console messages (last 200)               |
-| `browser.network`      | Rolling buffer of recent network requests (last 200)               |
-| `browser.network_body` | Fetch the response body of a specific request                      |
-| `browser.claim_tab`    | Claim a tab for the current agent (cooperative ownership)          |
-| `browser.release_tab`  | Release a tab the current agent holds                              |
-| `browser.my_tabs`      | List tabs currently claimed by the current agent                   |
-| `browser.events`       | Read the primary's bridge-event ring buffer (recovery + audit)     |
-| `browser.reset`        | Soft-reset bridge state (drop tabs + claims + events; keep server) |
+| Tool                   | Purpose                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| `browser.list_tabs`    | List tabs currently connected through the extension              |
+| `browser.my_tabs`      | List tabs currently claimed by the calling agent                 |
+| `browser.ping`         | Verify the bridge to a tab; returns its title and URL            |
+| `browser.snapshot`     | Title, URL, visible text and interactive elements with selectors |
+| `browser.console`      | Rolling buffer of recent console messages (last 200)             |
+| `browser.network`      | Rolling buffer of recent network requests (last 200)             |
+| `browser.network_body` | Fetch the response body of a specific request                    |
+| `browser.events`       | Read the bridge-event ring buffer (recovery + audit)             |
+| `browser.wait_for`     | Wait for a selector / JS expression / network request            |
+| `browser.wait_for_tab` | Wait for a new tab opened by an action on a connected tab        |
+
+**Browser bridge — actions** (auto-claim the tab on first use):
+
+| Tool                     | Purpose                                                                  |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `browser.navigate`       | Send a tab to a different URL                                            |
+| `browser.click`          | Click an element by CSS selector                                         |
+| `browser.type`           | Focus an input and type text                                             |
+| `browser.drag`           | Drag an element to another element or coordinate (HTML5 + pointer-based) |
+| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page                       |
+| `browser.dialog_respond` | Answer a pending native dialog (`alert` / `confirm` / `prompt`)          |
+| `browser.set_permission` | Grant / deny a browser permission for an origin (geo, notifs, …)         |
+| `browser.claim_tab`      | Claim a tab for the calling agent (cooperative ownership)                |
+| `browser.release_tab`    | Release a tab the calling agent holds                                    |
+| `browser.reset`          | Soft-reset bridge state (drop tabs + claims + events; keep server)       |
 
 **Persistent UI map** — local-only memory across sessions:
 
@@ -302,9 +324,9 @@ in the begin marker lets future releases detect outdated blocks
 
 ### Per-tool permissions
 
-By default `browser-link` exposes 16 MCP tools — 10 to drive the
-connected Chrome tab and 6 to read/write the persistent UI map. You can
-narrow that down per machine:
+`browser-link` exposes **26 MCP tools** — 20 to drive the connected Chrome
+tab and 6 to read/write the persistent UI map. **All 26 are individually
+toggle-able**, so you can narrow the surface per machine:
 
 - **In the menu** → `Permissions`. Toggle individual tools with **Space**
   or apply a preset with **Enter** (`all` / `readonly` / `no-eval` /
@@ -312,11 +334,22 @@ narrow that down per machine:
 - **From the shell**:
 
 ```bash
-browser-link tools                              # current state
+browser-link tools                              # current state of all 26 tools
 browser-link tools disable browser.evaluate     # block JS execution
+browser-link tools disable browser.reset        # block destructive soft-reset
+browser-link tools disable browser.set_permission   # block permission grants
 browser-link tools preset readonly              # observation-only profile
 browser-link tools enable browser.click         # turn one back on
 ```
+
+Presets, in plain English:
+
+| Preset     | What it disables                                                                                                                                                                                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `all`      | Nothing — every tool enabled (default).                                                                                                                                                                                                          |
+| `readonly` | All actions (navigate / click / type / drag / dialog_respond / set_permission / claim_tab / release_tab / reset), `evaluate`, and every map write. Leaves snapshots, console, network, events, wait_for, wait_for_tab, list_tabs, my_tabs, ping. |
+| `no-eval`  | Just `browser.evaluate`. Everything else stays on — useful for "agent can drive but cannot run arbitrary JS".                                                                                                                                    |
+| `no-map`   | All 6 persistent-map tools. Bridge tools stay on.                                                                                                                                                                                                |
 
 The deny list lives in `config.json` next to the map DB. Changes are
 **live**: the server re-reads the file on every `tools/list` and

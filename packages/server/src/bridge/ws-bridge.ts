@@ -2,7 +2,8 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { ExtensionToServer, ServerToExtension } from '../messages.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcess } from '../auth/process-identity.js';
-import type { BridgeEventLog } from './events.js';
+import { VERSION } from '../version.js';
+import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -175,7 +176,10 @@ export function startWsBridge(
             title: msg.payload.title,
             ws,
           });
-          send(ws, { kind: 'tab.registered', payload: { tabId: assignedTabId } });
+          send(ws, {
+            kind: 'tab.registered',
+            payload: { tabId: assignedTabId, serverVersion: VERSION },
+          });
           log(`Tab registered: ${assignedTabId} -> ${msg.payload.url}`);
           if (previousTabId && previousTabId !== assignedTabId) {
             events.add('tab-renamed', {
@@ -202,6 +206,22 @@ export function startWsBridge(
           pendingRequests.delete(msg.id);
           if (msg.ok) pending.resolve(msg.result);
           else pending.reject(new Error(msg.error));
+          return;
+        }
+
+        if (msg.kind === 'bridge.event') {
+          // Closed allowlist — the extension can only push the kinds tied to
+          // popup awareness (dialogs / new tabs). Lifecycle kinds (primary-elected,
+          // tab-registered, etc.) stay server-owned so they can't be spoofed
+          // from the renderer side.
+          if (!isExtensionEventKind(msg.eventKind)) {
+            log(`Ignoring bridge.event with unknown/forbidden kind: ${msg.eventKind}`);
+            return;
+          }
+          const data: Record<string, unknown> = { ...msg.data };
+          if (msg.tabId) data.tab_id = msg.tabId;
+          events.add(msg.eventKind, data);
+          return;
         }
       });
 

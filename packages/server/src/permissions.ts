@@ -26,6 +26,18 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
   // Browser bridge — read-only
   { name: 'browser.list_tabs', family: 'bridge', category: 'read', summary: 'List connected tabs' },
   {
+    name: 'browser.my_tabs',
+    family: 'bridge',
+    category: 'read',
+    summary: 'List tabs currently claimed by the calling agent',
+  },
+  {
+    name: 'browser.events',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Read the bridge lifecycle event log (recovery + audit)',
+  },
+  {
     name: 'browser.ping',
     family: 'bridge',
     category: 'read',
@@ -61,6 +73,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     category: 'read',
     summary: 'Wait for a selector, JS expression, or network request',
   },
+  {
+    name: 'browser.wait_for_tab',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Wait for a new tab opened by an action of the agent',
+  },
 
   // Browser bridge — actions
   {
@@ -86,6 +104,36 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     family: 'bridge',
     category: 'action',
     summary: 'Drag an element to another element or coordinate',
+  },
+  {
+    name: 'browser.dialog_respond',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Respond to a pending native dialog (alert/confirm/prompt)',
+  },
+  {
+    name: 'browser.set_permission',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Grant or deny a browser permission for an origin (geo, notifs, etc.)',
+  },
+  {
+    name: 'browser.claim_tab',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Reserve a tab cooperatively under the calling agent',
+  },
+  {
+    name: 'browser.release_tab',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Release a tab claim',
+  },
+  {
+    name: 'browser.reset',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Soft-reset the bridge state (drops all tabs / claims / events)',
   },
 
   // Browser bridge — arbitrary code

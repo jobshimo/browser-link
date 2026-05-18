@@ -52,12 +52,21 @@ interface NetworkEntry {
 interface TabState {
   tabId: number;
   serverTabId?: string;
+  /** Version of the MCP server that registered this tab — set from the
+   * `tab.registered` payload. Compared against the extension's own
+   * `chrome.runtime.getManifest().version` so the popup can warn the user
+   * when one half was upgraded and the other wasn't. */
+  serverVersion?: string;
   ws?: WebSocket;
   debuggerAttached: boolean;
   consoleBuffer: ConsoleEntry[];
   networkBuffer: Map<string, NetworkEntry>;
   networkOrder: string[];
   debuggerListener?: (method: string, params: unknown) => void;
+  /** Pending native dialog on this tab — set when CDP emits
+   * Page.javascriptDialogOpening, cleared on Page.javascriptDialogClosed.
+   * Surfaced to the popup via the `pendingDialogs` runtime message. */
+  pendingDialog?: PendingDialogInfo;
   /** Last time the server talked to this tab (a tool.request landed).
    * Used by the WS-idle sweeper to disconnect tabs that have been
    * silent for `WS_IDLE_TTL_MS`. Touched on every tool.request received
@@ -146,17 +155,48 @@ interface CdpInputDragIntercepted {
   data: unknown;
 }
 
+interface CdpPageJavascriptDialogOpening {
+  type?: string;
+  message?: string;
+  defaultPrompt?: string;
+  url?: string;
+}
+
+interface CdpPageJavascriptDialogClosed {
+  result?: boolean;
+  userInput?: string;
+}
+
+/** Information we surface in the popup about a native dialog currently
+ * blocking a tab. Cleared on dialog-closed. */
+interface PendingDialogInfo {
+  type: string;
+  message: string;
+  default_prompt?: string;
+  url?: string;
+}
+
 // Runtime messages between popup.ts and this script.
 type RuntimeMessage =
   | { action: 'connect'; tabId: number }
   | { action: 'disconnect'; tabId: number }
-  | { action: 'status'; tabId: number };
+  | { action: 'status'; tabId: number }
+  | { action: 'pendingDialog'; tabId: number }
+  | { action: 'respondDialog'; tabId: number; accept: boolean; promptText?: string }
+  | { action: 'versionCheck' };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
   const m = msg as Record<string, unknown>;
+  if (m.action === 'versionCheck') return true;
   if (typeof m.tabId !== 'number') return false;
-  return m.action === 'connect' || m.action === 'disconnect' || m.action === 'status';
+  return (
+    m.action === 'connect' ||
+    m.action === 'disconnect' ||
+    m.action === 'status' ||
+    m.action === 'pendingDialog' ||
+    m.action === 'respondDialog'
+  );
 }
 
 const tabStates = new Map<number, TabState>();
@@ -179,6 +219,55 @@ function cdp<T = unknown>(
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return chrome.debugger.sendCommand({ tabId }, method, params) as unknown as Promise<T>;
+}
+
+/**
+ * Mapping from the CDP permission name (the contract `browser.set_permission`
+ * accepts on the wire) to the `chrome.contentSettings` setting key. Only the
+ * names that actually have a contentSettings surface in MV3 are listed —
+ * `Browser.setPermission` covers more, but that domain is not reachable from
+ * `chrome.debugger` attached to a tab.
+ */
+const CONTENT_SETTING_BY_PERMISSION: Record<string, string | undefined> = {
+  geolocation: 'location',
+  notifications: 'notifications',
+  camera: 'camera',
+  microphone: 'microphone',
+  clipboardReadWrite: 'clipboard',
+  clipboardSanitizedWrite: 'clipboard',
+  sensors: 'sensors',
+};
+
+const STATE_TO_CONTENT_SETTING: Record<string, string | undefined> = {
+  granted: 'allow',
+  denied: 'block',
+  prompt: 'ask',
+};
+
+/**
+ * Apply a `chrome.contentSettings.<setting>.set({ primaryPattern, setting })`
+ * call without statically referencing each key — the `contentSettings`
+ * surface is dynamic at the API level. We narrow `unknown` carefully so the
+ * cast is the smallest possible.
+ */
+async function applyContentSetting(
+  settingKey: string,
+  primaryPattern: string,
+  setting: string,
+): Promise<void> {
+  const root = (
+    chrome as unknown as {
+      contentSettings?: Record<string, unknown>;
+    }
+  ).contentSettings;
+  if (!root) throw new Error('chrome.contentSettings not available in this build');
+  const setter = root[settingKey] as
+    | { set(details: { primaryPattern: string; setting: string }): Promise<void> }
+    | undefined;
+  if (!setter || typeof setter.set !== 'function') {
+    throw new Error(`chrome.contentSettings.${settingKey} is not exposed in this Chrome build`);
+  }
+  await setter.set({ primaryPattern, setting });
 }
 
 /**
@@ -433,6 +522,51 @@ function attachDebuggerListener(state: TabState): void {
       const entry = ensureNetworkEntry(state, p.requestId);
       entry.finished_at = Date.now();
       entry.failed = p.errorText ?? 'failed';
+      return;
+    }
+    if (method === 'Page.javascriptDialogOpening') {
+      // The page JS thread is now frozen until something calls
+      // Page.handleJavaScriptDialog. We do NOT respond automatically —
+      // the agent reads dialog-opening from browser.events and decides
+      // via browser.dialog_respond. The popup also exposes accept/dismiss
+      // buttons as a manual escape hatch.
+      const p = params as CdpPageJavascriptDialogOpening;
+      const info: PendingDialogInfo = {
+        type: p.type ?? 'alert',
+        message: p.message ?? '',
+      };
+      if (typeof p.defaultPrompt === 'string') info.default_prompt = p.defaultPrompt;
+      if (typeof p.url === 'string') info.url = p.url;
+      state.pendingDialog = info;
+      if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
+        const data: Record<string, unknown> = {
+          type: info.type,
+          message: info.message,
+        };
+        if (info.default_prompt !== undefined) data.default_prompt = info.default_prompt;
+        if (info.url !== undefined) data.url = info.url;
+        send(state.ws, {
+          kind: 'bridge.event',
+          eventKind: 'dialog-opening',
+          tabId: state.serverTabId,
+          data,
+        });
+      }
+      return;
+    }
+    if (method === 'Page.javascriptDialogClosed') {
+      const p = params as CdpPageJavascriptDialogClosed;
+      state.pendingDialog = undefined;
+      if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
+        const data: Record<string, unknown> = { accept: p.result === true };
+        if (typeof p.userInput === 'string') data.user_input = p.userInput;
+        send(state.ws, {
+          kind: 'bridge.event',
+          eventKind: 'dialog-closed',
+          tabId: state.serverTabId,
+          data,
+        });
+      }
       return;
     }
   };
@@ -1075,6 +1209,73 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         };
       }
 
+      case 'dialog_respond': {
+        const accept = p.accept === true;
+        const promptText = optStr('prompt_text');
+        // No probing — if there is no dialog open, CDP returns an error.
+        // We propagate it; the caller decides if "no dialog to respond to"
+        // is a problem or a race they can ignore.
+        const params: Record<string, unknown> = { accept };
+        if (promptText !== undefined) params.promptText = promptText;
+        await cdp(tabId, 'Page.handleJavaScriptDialog', params);
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { accepted: accept },
+        };
+      }
+
+      case 'set_permission': {
+        const origin = str('origin');
+        const name = str('name');
+        const state_ = str('state');
+        // CDP `Browser.setPermission` requires a browser-level target,
+        // which `chrome.debugger.attach({ tabId })` does NOT give us in
+        // MV3. We use `chrome.contentSettings` instead — that surface IS
+        // available to extensions and covers the realistic permissions
+        // an agent needs to pre-set (geolocation, notifications, camera,
+        // microphone, clipboard, sensors).
+        const settingKey = CONTENT_SETTING_BY_PERMISSION[name];
+        if (!settingKey) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `set_permission: '${name}' is not supported by chrome.contentSettings in MV3. Supported names: ${Object.keys(CONTENT_SETTING_BY_PERMISSION).join(', ')}.`,
+          };
+        }
+        const setting = STATE_TO_CONTENT_SETTING[state_];
+        if (!setting) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `set_permission: unknown state '${state_}' (expected granted | denied | prompt).`,
+          };
+        }
+        // `chrome.contentSettings.<name>.set({ primaryPattern, setting })`
+        // requires a URL pattern, not a bare origin. Append `/*` so the
+        // pattern covers every path on the origin.
+        const primaryPattern = origin.endsWith('/*') ? origin : `${origin}/*`;
+        try {
+          await applyContentSetting(settingKey, primaryPattern, setting);
+        } catch (err) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `set_permission: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: { origin, name, state: state_, applied_as: settingKey },
+        };
+      }
+
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };
     }
@@ -1227,6 +1428,11 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
         if (!msg) return;
         if (msg.kind === 'tab.registered') {
           state.serverTabId = msg.payload.tabId;
+          // serverVersion is optional on the wire so older servers that
+          // predate the field still parse — narrow on `typeof string`.
+          if (typeof msg.payload.serverVersion === 'string') {
+            state.serverVersion = msg.payload.serverVersion;
+          }
           // Remember this id so the next reconnect (after a primary swap)
           // asks the new primary to honour it. The primary emits
           // `tab-renamed` in the bridge event log if it can't.
@@ -1274,6 +1480,48 @@ function getTabStatus(tabId: number): StatusResult {
   return { connected: true, serverTabId: state.serverTabId };
 }
 
+/**
+ * Compute the version-mismatch summary for the popup. Picks the
+ * `serverVersion` reported by ANY currently-connected tab — they all come
+ * from the same primary, so the first one is enough. When no tab has
+ * registered yet (e.g. user just installed and hasn't pressed Connect),
+ * `server` stays null and the popup hides the banner.
+ */
+function getVersionCheck(): {
+  extension: string;
+  server: string | null;
+  aligned: boolean | null;
+} {
+  const extension = chrome.runtime.getManifest().version;
+  let server: string | null = null;
+  for (const s of tabStates.values()) {
+    if (typeof s.serverVersion === 'string' && s.serverVersion.length > 0) {
+      server = s.serverVersion;
+      break;
+    }
+  }
+  return {
+    extension,
+    server,
+    aligned: server === null ? null : server === extension,
+  };
+}
+
+async function respondToDialogFromPopup(
+  tabId: number,
+  accept: boolean,
+  promptText: string | undefined,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const params: Record<string, unknown> = { accept };
+    if (promptText !== undefined) params.promptText = promptText;
+    await cdp(tabId, 'Page.handleJavaScriptDialog', params);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (!isRuntimeMessage(msg)) return false;
   if (msg.action === 'connect') {
@@ -1283,6 +1531,19 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (msg.action === 'disconnect') {
     void disconnectTab(msg.tabId).then(sendResponse);
     return true;
+  }
+  if (msg.action === 'pendingDialog') {
+    const state = tabStates.get(msg.tabId);
+    sendResponse({ pending: state?.pendingDialog ?? null });
+    return false;
+  }
+  if (msg.action === 'respondDialog') {
+    void respondToDialogFromPopup(msg.tabId, msg.accept, msg.promptText).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'versionCheck') {
+    sendResponse(getVersionCheck());
+    return false;
   }
   // 'status'
   sendResponse(getTabStatus(msg.tabId));
@@ -1295,6 +1556,80 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
   // The Chrome tab is gone — drop any cached browser-link id for it.
   void forgetTabId(tabId);
+});
+
+/* Auto-connect tabs spawned by a connected tab.
+ *
+ * When a tab the user has connected via the popup opens a new tab
+ * (window.open, target="_blank", a click handler doing window.open, etc.),
+ * Chrome reports it via tabs.onCreated with `openerTabId` pointing at the
+ * source. We use that link to:
+ *   1. Wait for the new tab to settle on a real URL (the first onCreated
+ *      callback often reports `about:blank` even when a destination is set).
+ *   2. Auto-connect the new tab through the same flow as the popup
+ *      "Connect" button — attach debugger, register with the server.
+ *   3. Emit a `tab-created` bridge.event tagged with `opened_from = the
+ *      opener's server tab id`. The MCP `browser.wait_for_tab` tool reads
+ *      that event and auto-claims the new tab for the waiting agent.
+ *
+ * If the opener is not connected (regular browsing), we do nothing —
+ * background tabs the user opens for themselves stay out of the bridge.
+ */
+chrome.tabs.onCreated.addListener((tab) => {
+  const newTabId = tab.id;
+  const openerTabId = tab.openerTabId;
+  if (typeof newTabId !== 'number') return;
+  if (typeof openerTabId !== 'number') return;
+  const openerState = tabStates.get(openerTabId);
+  if (!openerState) return;
+  const openedFrom = openerState.serverTabId;
+  if (!openedFrom) return;
+
+  void (async () => {
+    // Wait until chrome.tabs.get returns a real `url`. `pendingUrl` alone
+    // is NOT enough — connectTab's guard short-circuits on `!tab.url`.
+    // Bound at 5 s so a never-navigating tab doesn't park us forever.
+    const deadline = Date.now() + 5_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try {
+        const t = await chrome.tabs.get(newTabId);
+        if (t.url && t.url.length > 0) {
+          ready = true;
+          break;
+        }
+      } catch {
+        return;
+      }
+      await sleep(50);
+    }
+    if (!ready) return;
+
+    try {
+      const result = await connectTab(newTabId);
+      if (!result.ok || !result.serverTabId) return;
+      const newState = tabStates.get(newTabId);
+      if (!newState?.ws || newState.ws.readyState !== WebSocket.OPEN) return;
+      let resolvedUrl = '';
+      try {
+        const settled = await chrome.tabs.get(newTabId);
+        resolvedUrl = settled.url ?? settled.pendingUrl ?? '';
+      } catch {
+        // Tab vanished between attach and read.
+      }
+      send(newState.ws, {
+        kind: 'bridge.event',
+        eventKind: 'tab-created',
+        tabId: newState.serverTabId,
+        data: {
+          opened_from: openedFrom,
+          url: resolvedUrl,
+        },
+      });
+    } catch {
+      // Auto-connect is best-effort.
+    }
+  })();
 });
 
 chrome.debugger.onDetach.addListener((source) => {

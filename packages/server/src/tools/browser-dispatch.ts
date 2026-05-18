@@ -26,7 +26,7 @@ function handleReset(
  */
 
 import { requireTabId } from './responses.js';
-import type { BridgeEvent } from '../bridge/events.js';
+import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
 import {
   formatClaimConflict,
   type AgentCaller,
@@ -69,6 +69,14 @@ export interface BrowserToolDeps {
   /** Optional event-log accessor — when present, `browser.events` returns
    * its slice. When absent (e.g. in unit tests), the tool returns []. */
   recentEvents?(opts: { sinceId?: number; limit?: number }): BridgeEvent[];
+  /** Optional push-based event subscription. When present, `wait_for_tab`
+   * registers a listener via this hook instead of polling `recentEvents`.
+   * `replayWithinMs` in the options lets the listener also receive the
+   * last N ms of recent events, which solves the agent-races-its-own-action
+   * case (the action fires the `tab-created` event before wait_for_tab
+   * finishes registering). The returned function MUST be called to
+   * unsubscribe — on match, on timeout, on error. */
+  subscribeEvents?: (fn: BridgeEventListener, options?: SubscribeOptions) => () => void;
   /** Claim registry. Optional so existing test fixtures keep compiling — when
    * absent the dispatcher behaves as before (no enforcement, list_tabs
    * returns claimed_by:null for every tab). */
@@ -101,6 +109,9 @@ const BROWSER_TOOL_NAMES = [
   'browser.events',
   'browser.reset',
   'browser.wait_for',
+  'browser.wait_for_tab',
+  'browser.dialog_respond',
+  'browser.set_permission',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -339,6 +350,125 @@ export async function handleBrowserTool(
       return handleEvents(args, deps);
     case 'browser.reset':
       return handleReset(deps);
+    case 'browser.wait_for_tab': {
+      const { opened_from, url_substring, timeout_ms } = (args ?? {}) as {
+        opened_from?: string;
+        url_substring?: string;
+        timeout_ms?: number;
+      };
+      if (typeof opened_from !== 'string' || opened_from.length === 0) {
+        throw new Error('browser.wait_for_tab: opened_from required');
+      }
+      if (!deps.subscribeEvents) {
+        return {
+          matched: false,
+          elapsed_ms: 0,
+          reason: 'events-unavailable',
+        };
+      }
+      const MAX_TIMEOUT_MS = 60_000;
+      const requestedTimeout =
+        typeof timeout_ms === 'number' && timeout_ms > 0 ? timeout_ms : 10_000;
+      const timeoutMs = requestedTimeout < MAX_TIMEOUT_MS ? requestedTimeout : MAX_TIMEOUT_MS;
+      const needle = typeof url_substring === 'string' ? url_substring.toLowerCase() : null;
+      const startedAt = Date.now();
+      // Push-based wait. The listener is registered FIRST (synchronously);
+      // a `replayWithinMs` of 1500 covers the parallel-dispatch race where
+      // the source event landed in the buffer milliseconds before this
+      // handler was reached. Older events are not replayed — they belong
+      // to a previous flow.
+      const REPLAY_WITHIN_MS = 1500;
+      const subscribe = deps.subscribeEvents;
+      const tabClaims = deps.tabClaims;
+      return new Promise<unknown>((resolve) => {
+        let settled = false;
+        let unsubscribe: () => void = () => {
+          /* placeholder */
+        };
+        const settleWith = (payload: unknown): void => {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          clearTimeout(timer);
+          resolve(payload);
+        };
+        const listener: BridgeEventListener = (e) => {
+          if (settled) return;
+          if (e.kind !== 'tab-created') return;
+          if (e.data.opened_from !== opened_from) return;
+          const eUrl = typeof e.data.url === 'string' ? e.data.url : '';
+          if (needle !== null && !eUrl.toLowerCase().includes(needle)) return;
+          const eTabId = typeof e.data.tab_id === 'string' ? e.data.tab_id : null;
+          if (eTabId === null) return;
+          // Match — auto-claim. The wait IS the explicit intent. If a race
+          // lost us the claim, the caller still gets matched:true with a
+          // conflict description so it can decide whether to retry or surface.
+          let claimed = false;
+          let claim_conflict: string | undefined;
+          if (tabClaims) {
+            const outcome = tabClaims.claim(eTabId, caller);
+            if (outcome.ok) {
+              claimed = true;
+            } else {
+              claim_conflict = `existing claim by ${outcome.existing.agent_id} (${outcome.existing.label ?? outcome.existing.binary})`;
+            }
+          } else {
+            claimed = true;
+          }
+          settleWith({
+            matched: true,
+            tab_id: eTabId,
+            url: eUrl,
+            elapsed_ms: Date.now() - startedAt,
+            claimed,
+            ...(claim_conflict !== undefined ? { claim_conflict } : {}),
+          });
+        };
+        const timer = setTimeout(() => {
+          settleWith({
+            matched: false,
+            elapsed_ms: Date.now() - startedAt,
+            reason: 'timeout',
+          });
+        }, timeoutMs);
+        unsubscribe = subscribe(listener, { replayWithinMs: REPLAY_WITHIN_MS });
+      });
+    }
+    case 'browser.dialog_respond': {
+      const { accept, prompt_text } = (args ?? {}) as {
+        accept?: boolean;
+        prompt_text?: string;
+      };
+      if (typeof accept !== 'boolean') {
+        throw new Error('browser.dialog_respond: accept must be a boolean');
+      }
+      // dialog_respond is an action because it changes page state, but it
+      // does NOT need the claim guard: the agent only knows there is a
+      // dialog because it read browser.events, and unblocking a frozen
+      // tab should not require holding the claim. Other agents may also
+      // be observing — first responder wins.
+      return deps.callBrowserTool(requireTabId(args), 'dialog_respond', {
+        accept,
+        prompt_text,
+      });
+    }
+    case 'browser.set_permission': {
+      const { origin, name, state } = (args ?? {}) as {
+        origin?: string;
+        name?: string;
+        state?: string;
+      };
+      if (typeof origin !== 'string' || origin.length === 0) {
+        throw new Error('browser.set_permission: origin required');
+      }
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error('browser.set_permission: name required');
+      }
+      if (state !== 'granted' && state !== 'denied' && state !== 'prompt') {
+        throw new Error('browser.set_permission: state must be one of granted | denied | prompt');
+      }
+      return runAction('set_permission', requireTabId(args), { origin, name, state }, deps, caller);
+    }
     case 'browser.wait_for': {
       const { selector, expression, network_url, condition, timeout_ms, poll_interval_ms } =
         (args ?? {}) as {

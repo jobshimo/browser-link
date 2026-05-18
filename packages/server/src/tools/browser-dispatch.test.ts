@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
+import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
@@ -31,6 +32,9 @@ describe('isBrowserTool', () => {
       'browser.network',
       'browser.network_body',
       'browser.wait_for',
+      'browser.wait_for_tab',
+      'browser.dialog_respond',
+      'browser.set_permission',
     ]) {
       expect(isBrowserTool(name)).toBe(true);
     }
@@ -247,6 +251,203 @@ describe('handleBrowserTool', () => {
       expect.objectContaining({ selector: '#x' }),
       expect.any(Number),
     );
+  });
+
+  test('wait_for_tab rejects when opened_from is missing', async () => {
+    const deps = makeDeps();
+    await expect(handleBrowserTool('browser.wait_for_tab', {}, deps, TEST_CALLER)).rejects.toThrow(
+      /opened_from required/,
+    );
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('wait_for_tab returns events-unavailable when no subscribe hook is wired', async () => {
+    const deps = makeDeps();
+    const out = await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(out).toEqual({
+      matched: false,
+      elapsed_ms: 0,
+      reason: 'events-unavailable',
+    });
+  });
+
+  test('wait_for_tab resolves when a matching tab-created event arrives and auto-claims it', async () => {
+    const log = new BridgeEventLog();
+    const claims = new TabClaimRegistry({ nowMs: () => 2_000_000 });
+    const deps: BrowserToolDeps = {
+      listTabs: vi.fn(() => []),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      subscribeEvents: (fn, options) => log.subscribe(fn, options),
+      tabClaims: claims,
+    };
+    // Fire the tab-created event after the listener is registered.
+    setTimeout(() => {
+      log.add('tab-created', {
+        tab_id: 'tab_99',
+        opened_from: 'tab_1',
+        url: 'https://example.com/x',
+      });
+    }, 50);
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1', timeout_ms: 2000 },
+      deps,
+      A,
+    )) as { matched: boolean; tab_id?: string; claimed?: boolean };
+    expect(out.matched).toBe(true);
+    expect(out.tab_id).toBe('tab_99');
+    expect(out.claimed).toBe(true);
+    expect(claims.getClaim('tab_99')?.agent_id).toBe(A.agent_id);
+  });
+
+  test('wait_for_tab replays a tab-created event that landed milliseconds before the call', async () => {
+    const log = new BridgeEventLog();
+    // Event lands BEFORE wait_for_tab subscribes — the race that look-back / replay solves.
+    log.add('tab-created', {
+      tab_id: 'tab_99',
+      opened_from: 'tab_1',
+      url: 'https://example.com/x',
+    });
+    const claims = new TabClaimRegistry({ nowMs: () => 2_000_000 });
+    const deps: BrowserToolDeps = {
+      listTabs: vi.fn(() => []),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      subscribeEvents: (fn, options) => log.subscribe(fn, options),
+      tabClaims: claims,
+    };
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1', timeout_ms: 2000 },
+      deps,
+      A,
+    )) as { matched: boolean; tab_id?: string };
+    expect(out.matched).toBe(true);
+    expect(out.tab_id).toBe('tab_99');
+  });
+
+  test('wait_for_tab times out when no matching event arrives', async () => {
+    const log = new BridgeEventLog();
+    // Pre-existing unrelated event — should NOT cause a false match.
+    log.add('tab-created', {
+      tab_id: 'tab_other',
+      opened_from: 'tab_OTHER',
+      url: 'https://x.com',
+    });
+    const deps: BrowserToolDeps = {
+      listTabs: vi.fn(() => []),
+      callBrowserTool: vi.fn(async () => undefined),
+      subscribeEvents: (fn, options) => log.subscribe(fn, options),
+      tabClaims: new TabClaimRegistry({ nowMs: () => 1_000_000 }),
+    };
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1', timeout_ms: 200 },
+      deps,
+      TEST_CALLER,
+    )) as { matched: boolean; reason?: string };
+    expect(out.matched).toBe(false);
+    expect(out.reason).toBe('timeout');
+  });
+
+  test('dialog_respond forwards accept/prompt_text to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.dialog_respond',
+      { tab_id: 'tab_1', accept: true, prompt_text: 'hello' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'dialog_respond', {
+      accept: true,
+      prompt_text: 'hello',
+    });
+  });
+
+  test('dialog_respond rejects when accept is not a boolean', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.dialog_respond',
+        { tab_id: 'tab_1', accept: 'yes' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/accept must be a boolean/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('dialog_respond bypasses claim enforcement (frozen tab unblocking)', async () => {
+    const deps = makeDepsWithClaims();
+    // A holds the claim
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    // B can still respond to a dialog so the tab unfreezes
+    await handleBrowserTool('browser.dialog_respond', { tab_id: 'tab_1', accept: false }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'dialog_respond', {
+      accept: false,
+      prompt_text: undefined,
+    });
+  });
+
+  test('set_permission forwards origin/name/state to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.set_permission',
+      {
+        tab_id: 'tab_1',
+        origin: 'https://example.com',
+        name: 'geolocation',
+        state: 'granted',
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'set_permission', {
+      origin: 'https://example.com',
+      name: 'geolocation',
+      state: 'granted',
+    });
+  });
+
+  test('set_permission rejects unknown state', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.set_permission',
+        {
+          tab_id: 'tab_1',
+          origin: 'https://x.com',
+          name: 'geolocation',
+          state: 'maybe',
+        },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/state must be one of granted \| denied \| prompt/);
+  });
+
+  test('set_permission rejects when origin or name is missing', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.set_permission',
+        { tab_id: 'tab_1', name: 'geolocation', state: 'granted' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/origin required/);
+    await expect(
+      handleBrowserTool(
+        'browser.set_permission',
+        { tab_id: 'tab_1', origin: 'https://x.com', state: 'granted' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/name required/);
   });
 
   test('drag rejects when neither selector nor coords are provided for an endpoint', async () => {
