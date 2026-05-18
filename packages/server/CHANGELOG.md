@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/jobshimo/browser-link/compare/v0.10.0...v0.11.0) (2026-05-18)
+
+
+### Features
+
+* **bridge:** add `browser.wait_for` MCP tool. Blocks until a condition becomes true on the page before continuing the agent flow. Three mutually-exclusive target modes:
+  * `selector` + `condition` (`visible` | `hidden` | `attached` | `detached`, default `visible`) — `visible` means the element exists in the DOM, has a non-zero bounding rect, opacity > 0, and `display !== 'none' / visibility !== 'hidden'`.
+  * `expression` — any JS string evaluated each poll; `wait_for` stops as soon as `Boolean(expression)` is truthy. Runs through `Runtime.evaluate` so it is subject to the same disabled-list as `browser.evaluate`.
+  * `network_url` — case-insensitive substring matched against the URL of completed network requests in the rolling buffer (last 200). Stops when at least one matching request has finished.
+  Returns `{ matched, elapsed_ms, checks, reason? }`. **`matched: false` is NOT an error** — the caller decides whether to proceed or take a plan-B path. Polls every `poll_interval_ms` (default 100, clamped to `[50, 1000]`) until `timeout_ms` (default 5000, capped at 30000 — the bridge does not park requests longer than that). Like the other read tools (`browser.snapshot`, `browser.console`, `browser.network`), `wait_for` does NOT require a tab claim — multiple agents can wait on the same tab in parallel.
+
+### Validation
+
+End-to-end validated on the `browser-link-playground` (`/wait-for` route) with all three modes. Page-observed flip-time correlates with `wait_for`'s reported `elapsed_ms` minus the bridge dispatch latency (the parallel-call delay between `click` and `wait_for` arriving at the extension). `checks` always reflects real polling iterations, never a short-circuit.
+
 ## [0.7.8](https://github.com/jobshimo/browser-link/compare/v0.7.7...v0.7.8) (2026-05-13)
 
 

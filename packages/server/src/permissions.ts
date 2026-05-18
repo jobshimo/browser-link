@@ -55,6 +55,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     category: 'read',
     summary: 'Fetch the body of a specific request',
   },
+  {
+    name: 'browser.wait_for',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Wait for a selector, JS expression, or network request',
+  },
 
   // Browser bridge — actions
   {

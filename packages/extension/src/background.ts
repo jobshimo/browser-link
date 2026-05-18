@@ -241,6 +241,35 @@ function waitForCdpEvent<T = unknown>(
 }
 
 /**
+ * Build the JS expression that checks a single wait_for condition for a
+ * selector. Returns a boolean. Used by `case 'wait_for'` in handleTool.
+ *
+ *  - visible:  element exists AND non-zero box AND opacity > 0
+ *  - hidden:   element doesn't exist OR zero box OR opacity 0 OR display:none
+ *  - attached: element exists in DOM (any state)
+ *  - detached: element does NOT exist in DOM
+ */
+function buildWaitSelectorExpr(selector: string, condition: string): string {
+  const sel = JSON.stringify(selector);
+  if (condition === 'attached') {
+    return `Boolean(document.querySelector(${sel}))`;
+  }
+  if (condition === 'detached') {
+    return `!document.querySelector(${sel})`;
+  }
+  // visible / hidden share the same probe — only the truthiness flips.
+  const want = condition === 'hidden' ? '!' : '';
+  return `(() => {
+    const el = document.querySelector(${sel});
+    if (!el) return ${condition === 'hidden' ? 'true' : 'false'};
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return ${condition === 'hidden' ? 'true' : 'false'};
+    const r = el.getBoundingClientRect();
+    return ${want}(r.width > 0 && r.height > 0);
+  })()`;
+}
+
+/**
  * Build the JS expression that:
  *  1. scrollIntoView(center) for any selector-based endpoint (so both are
  *     visible at the same time if possible),
@@ -955,6 +984,95 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         const expression = str('expression');
         const value = await evaluateInTab(tabId, expression);
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+      }
+
+      case 'wait_for': {
+        const optNum = (key: string): number | undefined => {
+          const v = p[key];
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+        };
+        const waitSelector = optStr('selector');
+        const waitExpression = optStr('expression');
+        const waitNetworkUrl = optStr('network_url');
+        const waitCondition = optStr('condition') ?? 'visible';
+        // Defensive caps mirror the dispatcher's contract and keep CodeQL
+        // happy about setTimeout durations driven by request params.
+        const MAX_WAIT_TIMEOUT_MS = 30_000;
+        const MIN_POLL_MS = 50;
+        const MAX_POLL_MS = 1_000;
+        const requestedTimeout = optNum('timeout_ms') ?? 5_000;
+        const timeoutMs =
+          requestedTimeout < MAX_WAIT_TIMEOUT_MS ? requestedTimeout : MAX_WAIT_TIMEOUT_MS;
+        const requestedPoll = optNum('poll_interval_ms') ?? 100;
+        const pollIntervalMs =
+          requestedPoll < MIN_POLL_MS
+            ? MIN_POLL_MS
+            : requestedPoll > MAX_POLL_MS
+              ? MAX_POLL_MS
+              : requestedPoll;
+
+        // Build the check function based on which mode the caller picked.
+        // The dispatcher already enforced "exactly one of selector / expression
+        // / network_url" so we just pick the first defined one. If none are
+        // defined (shouldn't happen from a well-formed call), the check stays
+        // null and we return matched=false immediately.
+        let check: (() => Promise<boolean>) | null = null;
+        if (waitSelector !== undefined) {
+          const expr = buildWaitSelectorExpr(waitSelector, waitCondition);
+          check = async (): Promise<boolean> => {
+            try {
+              const result = await evaluateInTab(tabId, expr);
+              return Boolean(result);
+            } catch {
+              // If the page is unreachable mid-poll, count as "not yet matched".
+              return false;
+            }
+          };
+        } else if (waitExpression !== undefined) {
+          const wrapped = `Boolean(${waitExpression})`;
+          check = async (): Promise<boolean> => {
+            try {
+              const result = await evaluateInTab(tabId, wrapped);
+              return Boolean(result);
+            } catch {
+              return false;
+            }
+          };
+        } else if (waitNetworkUrl !== undefined) {
+          const needle = waitNetworkUrl.toLowerCase();
+          check = (): Promise<boolean> => {
+            for (const id of state.networkOrder) {
+              const r = state.networkBuffer.get(id);
+              if (!r) continue;
+              if (r.finished_at === undefined) continue;
+              if (r.url.toLowerCase().includes(needle)) return Promise.resolve(true);
+            }
+            return Promise.resolve(false);
+          };
+        }
+
+        const startedAt = Date.now();
+        let checks = 0;
+        let matched = false;
+        while (check) {
+          checks++;
+          if (await check()) {
+            matched = true;
+            break;
+          }
+          if (Date.now() - startedAt >= timeoutMs) break;
+          await sleep(pollIntervalMs);
+        }
+        const elapsedMs = Date.now() - startedAt;
+
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: matched
+            ? { matched: true, elapsed_ms: elapsedMs, checks }
+            : { matched: false, elapsed_ms: elapsedMs, checks, reason: 'timeout' },
+        };
       }
 
       default:

@@ -30,6 +30,7 @@ describe('isBrowserTool', () => {
       'browser.console',
       'browser.network',
       'browser.network_body',
+      'browser.wait_for',
     ]) {
       expect(isBrowserTool(name)).toBe(true);
     }
@@ -141,6 +142,109 @@ describe('handleBrowserTool', () => {
       'tab_1',
       'drag',
       expect.objectContaining({ from_x: 10, from_y: 20, to_x: 100, to_y: 200 }),
+      expect.any(Number),
+    );
+  });
+
+  test('wait_for forwards selector mode parameters to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.wait_for',
+      {
+        tab_id: 'tab_1',
+        selector: '[data-testid=ready]',
+        condition: 'visible',
+        timeout_ms: 3000,
+        poll_interval_ms: 200,
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'wait_for',
+      expect.objectContaining({
+        selector: '[data-testid=ready]',
+        condition: 'visible',
+        timeout_ms: 3000,
+        poll_interval_ms: 200,
+      }),
+      // Floor 15s OR timeout + 5s, whichever is greater.
+      Math.max(15_000, 3000 + 5_000),
+    );
+  });
+
+  test('wait_for accepts expression mode', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.wait_for',
+      { tab_id: 'tab_1', expression: 'window.__ready === true' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'wait_for',
+      expect.objectContaining({ expression: 'window.__ready === true' }),
+      expect.any(Number),
+    );
+  });
+
+  test('wait_for accepts network_url mode', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.wait_for',
+      { tab_id: 'tab_1', network_url: '/api/items' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'wait_for',
+      expect.objectContaining({ network_url: '/api/items' }),
+      expect.any(Number),
+    );
+  });
+
+  test('wait_for rejects when zero or multiple target modes are provided', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.wait_for', { tab_id: 'tab_1' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/exactly one of selector, expression, network_url/);
+    await expect(
+      handleBrowserTool(
+        'browser.wait_for',
+        { tab_id: 'tab_1', selector: '#x', expression: 'y' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/exactly one of/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('wait_for rejects an unknown condition value', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.wait_for',
+        { tab_id: 'tab_1', selector: '#x', condition: 'bogus' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/condition must be one of visible \| hidden \| attached \| detached/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('wait_for bypasses claim enforcement (read tool)', async () => {
+    const deps = makeDepsWithClaims();
+    // Another agent claims tab_1
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    // B can still wait_for on it because reads bypass claims
+    await handleBrowserTool('browser.wait_for', { tab_id: 'tab_1', selector: '#x' }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'wait_for',
+      expect.objectContaining({ selector: '#x' }),
       expect.any(Number),
     );
   });

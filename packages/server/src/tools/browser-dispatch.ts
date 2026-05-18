@@ -100,6 +100,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.evaluate',
   'browser.events',
   'browser.reset',
+  'browser.wait_for',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -338,6 +339,48 @@ export async function handleBrowserTool(
       return handleEvents(args, deps);
     case 'browser.reset':
       return handleReset(deps);
+    case 'browser.wait_for': {
+      const { selector, expression, network_url, condition, timeout_ms, poll_interval_ms } =
+        (args ?? {}) as {
+          selector?: string;
+          expression?: string;
+          network_url?: string;
+          condition?: string;
+          timeout_ms?: number;
+          poll_interval_ms?: number;
+        };
+      const modes = [selector, expression, network_url].filter((v) => v !== undefined);
+      if (modes.length !== 1) {
+        throw new Error(
+          'browser.wait_for: provide exactly one of selector, expression, network_url',
+        );
+      }
+      if (selector !== undefined && condition !== undefined) {
+        const ok = ['visible', 'hidden', 'attached', 'detached'].includes(condition);
+        if (!ok) {
+          throw new Error(
+            'browser.wait_for: condition must be one of visible | hidden | attached | detached',
+          );
+        }
+      }
+      // wait_for is a read tool: no claim enforcement. Per-request timeout
+      // has to cover the worst case the caller asked for, plus a small
+      // overhead for the final round-trip when the condition fires.
+      const requestTimeoutMs = Math.max(15_000, (timeout_ms ?? 5000) + 5_000);
+      return deps.callBrowserTool(
+        requireTabId(args),
+        'wait_for',
+        {
+          selector,
+          expression,
+          network_url,
+          condition,
+          timeout_ms,
+          poll_interval_ms,
+        },
+        requestTimeoutMs,
+      );
+    }
     default: {
       // The earlier `isBrowserTool(name)` check makes this branch unreachable
       // for any value within `BrowserToolName`. The exhaustive cast surfaces a

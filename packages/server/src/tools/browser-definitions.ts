@@ -231,6 +231,65 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.wait_for',
+    description:
+      'Wait for a condition to become true on the page before continuing. Pick exactly ONE target: (a) `selector` plus an optional `condition` of visible|hidden|attached|detached (default visible), (b) `expression` — any JS that should become truthy, or (c) `network_url` — a substring that a completed network request URL must contain. Returns { matched, elapsed_ms, checks, reason? }. `matched: false` is NOT an error — the caller decides whether to proceed or branch. Polls every `poll_interval_ms` (default 100, range 50–1000) until `timeout_ms` (default 5000, capped at 30000). This is a read tool and does not require a claim — multiple agents can wait on the same tab in parallel.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: {
+          type: 'string',
+          description:
+            'CSS selector. Use with condition. Mutually exclusive with expression and network_url.',
+        },
+        condition: {
+          type: 'string',
+          enum: ['visible', 'hidden', 'attached', 'detached'],
+          description:
+            'For selector mode. visible = exists + non-zero box + opacity > 0; hidden = inverse; attached = exists in DOM; detached = does not exist. Default visible.',
+        },
+        expression: {
+          type: 'string',
+          description:
+            'JavaScript expression evaluated each poll. wait_for stops as soon as Boolean(expression) is true. Mutually exclusive with selector and network_url.',
+        },
+        network_url: {
+          type: 'string',
+          description:
+            'Case-insensitive substring matched against the URL of completed network requests in the rolling buffer. wait_for stops when at least one matching request has finished. Mutually exclusive with selector and expression.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description:
+            'Max time to wait in ms. Default 5000, capped at 30000. Past the cap, split the flow — the bridge does not park requests longer than that.',
+        },
+        poll_interval_ms: {
+          type: 'number',
+          description: 'Time between checks in ms. Default 100, clamped to [50, 1000].',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Block until a selector matches a condition, a JS expression is truthy, or a network request URL completes.',
+      when_to_use: [
+        'After clicking a button that triggers an async load — wait for the spinner to disappear or the result element to appear.',
+        'Before snapshot/click on a SPA route that mounts content after navigation.',
+        'When you depend on a backend response — wait for the network request URL to land before reading the DOM.',
+      ],
+      gotchas: [
+        'matched: false is not an error. Read it and decide — many flows have a plan B when the condition does not happen.',
+        'expression mode runs arbitrary JS via Runtime.evaluate. Subject to the same disabled-list as browser.evaluate would be if you want to gate it.',
+        'network_url matches against the rolling buffer of recent requests (last 200). If the request happened before wait_for started, it still counts as matched — wait_for has no concept of "fresh" requests.',
+      ],
+      example:
+        'browser.wait_for({ tab_id: "tab_1", selector: "[data-testid=loaded]", condition: "visible", timeout_ms: 3000 })',
+    },
+  },
+  {
     name: 'browser.click',
     description:
       'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot.',
