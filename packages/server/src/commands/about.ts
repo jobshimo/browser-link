@@ -61,7 +61,8 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     bridgeTools: [
       '  browser.list_tabs        list connected tabs',
       '  browser.ping             check the bridge to a tab',
-      '  browser.snapshot         dump title, url, text and interactive elements',
+      '  browser.snapshot         dump title, url, text and interactive elements (filterable)',
+      '  browser.find             locate an element by visible text — selector + coords',
       '  browser.navigate         change the tab URL',
       '  browser.click            click an element by CSS selector',
       '  browser.type             type into an input',
@@ -155,7 +156,8 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     bridgeTools: [
       '  browser.list_tabs        listar pestañas conectadas',
       '  browser.ping             comprobar el puente a una pestaña',
-      '  browser.snapshot         volcar título, url, texto y elementos interactivos',
+      '  browser.snapshot         volcar título, url, texto y elementos interactivos (filtrable)',
+      '  browser.find             localizar un elemento por texto visible — selector + coords',
       '  browser.navigate         cambiar la URL de la pestaña',
       '  browser.click            hacer click en un elemento por CSS selector',
       '  browser.type             escribir en un input',

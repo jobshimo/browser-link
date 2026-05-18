@@ -573,8 +573,14 @@ function attachDebuggerListener(state: TabState): void {
   state.debuggerListener = listener;
 }
 
-const SNAPSHOT_JS = `
-(() => {
+/**
+ * Shared in-page DOM helpers, injected verbatim into any JS template that
+ * needs them (`buildSnapshotJs`, `buildFindJs`). Defining them once here
+ * keeps the heuristics (visibility, selector generation, accessible text)
+ * identical across tools so a selector returned by `snapshot` and a selector
+ * returned by `find` follow the same rules.
+ */
+const DOM_HELPERS_JS = `
   function isVisible(el) {
     if (!(el instanceof HTMLElement)) return true;
     const style = getComputedStyle(el);
@@ -617,39 +623,200 @@ const SNAPSHOT_JS = `
     }
     return parts.join(' > ');
   }
+  function accessibleText(el) {
+    const aria = el.getAttribute && el.getAttribute('aria-label');
+    if (aria) return aria;
+    const txt = (el.innerText || el.textContent || '').trim();
+    if (txt) return txt;
+    if ('value' in el && el.value) return String(el.value);
+    const ph = el.getAttribute && el.getAttribute('placeholder');
+    if (ph) return ph;
+    const title = el.getAttribute && el.getAttribute('title');
+    if (title) return title;
+    return '';
+  }
+`;
+
+/**
+ * Build the snapshot expression. Filters are applied INSIDE the page so the
+ * server never receives the dropped material at all — that's where the token
+ * win for `within_selector` / `only_interactive` / `exclude` actually lives.
+ * The serializer omits empty-string fields per entry (token win that applies
+ * unconditionally on every snapshot).
+ */
+interface SnapshotOpts {
+  within_selector?: string;
+  only_interactive?: boolean;
+  exclude?: string[];
+  max_interactive?: number;
+}
+
+function buildSnapshotJs(opts: SnapshotOpts = {}): string {
+  const optsJson = JSON.stringify({
+    withinSelector: typeof opts.within_selector === 'string' ? opts.within_selector : null,
+    onlyInteractive: opts.only_interactive === true,
+    exclude: Array.isArray(opts.exclude) ? opts.exclude : [],
+    maxInteractive:
+      typeof opts.max_interactive === 'number' && opts.max_interactive > 0
+        ? Math.min(opts.max_interactive, 500)
+        : 120,
+  });
+  return `
+(() => {
+  ${DOM_HELPERS_JS}
+  const opts = ${optsJson};
+  let root = document;
+  let notice = '';
+  if (opts.withinSelector) {
+    const sub = document.querySelector(opts.withinSelector);
+    if (!sub) {
+      return {
+        title: document.title,
+        url: location.href,
+        interactive: [],
+        notice: 'within_selector did not match any element',
+      };
+    }
+    root = sub;
+  }
+  const excludeSet = new Set((opts.exclude || []).map(s => String(s).toLowerCase()));
+  function inExcludedLandmark(el) {
+    if (excludeSet.size === 0) return false;
+    let cur = el.parentElement;
+    while (cur && cur !== document.body) {
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+      if (excludeSet.has(tag)) return true;
+      if (cur === root) return false;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
   const sel = 'a[href], button, input, select, textarea, [role=button], [role=link], [role=checkbox], [role=tab], [role=menuitem], [contenteditable=true]';
   const interactive = [];
-  document.querySelectorAll(sel).forEach((el) => {
+  const scope = (root.querySelectorAll ? root : document);
+  scope.querySelectorAll(sel).forEach((el) => {
     if (!isVisible(el)) return;
-    interactive.push({
-      tag: el.tagName.toLowerCase(),
-      role: el.getAttribute('role') || el.tagName.toLowerCase(),
-      text: shortText(el),
-      value: 'value' in el ? (el.value || '') : '',
-      placeholder: el.getAttribute('placeholder') || '',
-      aria_label: el.getAttribute('aria-label') || '',
-      name: el.getAttribute('name') || '',
-      type: el.getAttribute('type') || '',
-      href: el.getAttribute('href') || '',
-      disabled: 'disabled' in el ? !!el.disabled : false,
-      selector: genSelector(el),
-    });
+    if (inExcludedLandmark(el)) return;
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute('role') || tag;
+    const entry = { tag, role, selector: genSelector(el) };
+    const txt = shortText(el);
+    if (txt) entry.text = txt;
+    if ('value' in el && el.value) entry.value = String(el.value);
+    const placeholder = el.getAttribute('placeholder');
+    if (placeholder) entry.placeholder = placeholder;
+    const aria_label = el.getAttribute('aria-label');
+    if (aria_label) entry.aria_label = aria_label;
+    const name = el.getAttribute('name');
+    if (name) entry.name = name;
+    const type = el.getAttribute('type');
+    if (type) entry.type = type;
+    const href = el.getAttribute('href');
+    if (href) entry.href = href;
+    if ('disabled' in el && el.disabled) entry.disabled = true;
+    interactive.push(entry);
   });
-  const headings = [];
-  document.querySelectorAll('h1, h2, h3').forEach((h) => {
-    if (!isVisible(h)) return;
-    headings.push({ level: h.tagName, text: shortText(h) });
-  });
-  const visibleText = (document.body && document.body.innerText) ? document.body.innerText.slice(0, 4000) : '';
-  return {
+  const result = {
     title: document.title,
     url: location.href,
-    headings: headings.slice(0, 30),
-    text: visibleText,
-    interactive: interactive.slice(0, 120),
+    interactive: interactive.slice(0, opts.maxInteractive),
+  };
+  if (!opts.onlyInteractive) {
+    const headings = [];
+    scope.querySelectorAll('h1, h2, h3').forEach((h) => {
+      if (!isVisible(h)) return;
+      if (inExcludedLandmark(h)) return;
+      const t = shortText(h);
+      if (t) headings.push({ level: h.tagName, text: t });
+    });
+    result.headings = headings.slice(0, 30);
+    const textRoot = (root === document) ? (document.body || document) : root;
+    const visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
+    if (visibleText) result.text = visibleText;
+  }
+  if (notice) result.notice = notice;
+  return result;
+})()
+`;
+}
+
+/** Build the find-by-text expression. Returns one of:
+ *   { matched: true, selector, coords:{x,y}, tag, text }
+ *   { matched: false, reason: 'not-found' }
+ *   { matched: false, reason: 'multiple-matches', candidates: [{selector,text,tag}] }
+ *
+ * Role-aware: when `role` is provided, only elements whose explicit ARIA
+ * role or implicit role match are considered. When omitted, the search
+ * scans a broad set of interactive + clickable elements.
+ */
+interface FindOpts {
+  text: string;
+  role?: string;
+  exact?: boolean;
+}
+
+function buildFindJs(opts: FindOpts): string {
+  const optsJson = JSON.stringify({
+    text: opts.text,
+    role: typeof opts.role === 'string' && opts.role.length > 0 ? opts.role : null,
+    exact: opts.exact === true,
+    candidateLimit: 5,
+  });
+  return `
+(() => {
+  ${DOM_HELPERS_JS}
+  const opts = ${optsJson};
+  const needle = opts.text.toLowerCase();
+  const ROLE_SELECTORS = {
+    button: 'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"]',
+    link: 'a[href], [role="link"]',
+    textbox: 'input[type="text"], input[type="email"], input[type="password"], input[type="search"], input[type="url"], input[type="tel"], input:not([type]), textarea, [role="textbox"], [contenteditable="true"]',
+    checkbox: 'input[type="checkbox"], [role="checkbox"]',
+    tab: '[role="tab"]',
+    menuitem: '[role="menuitem"]',
+  };
+  const selectorSet = opts.role && ROLE_SELECTORS[opts.role]
+    ? ROLE_SELECTORS[opts.role]
+    : 'button, a, input, textarea, select, [role], [onclick], [contenteditable="true"], [tabindex]';
+  const all = Array.from(document.querySelectorAll(selectorSet));
+  const matches = [];
+  for (const el of all) {
+    if (!isVisible(el)) continue;
+    const text = accessibleText(el).trim();
+    if (text.length === 0) continue;
+    const lower = text.toLowerCase();
+    const ok = opts.exact ? lower === needle : lower.includes(needle);
+    if (ok) matches.push(el);
+  }
+  if (matches.length === 0) {
+    return { matched: false, reason: 'not-found' };
+  }
+  if (matches.length > 1) {
+    return {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: matches.slice(0, opts.candidateLimit).map((el) => ({
+        selector: genSelector(el),
+        text: shortText(el),
+        tag: el.tagName.toLowerCase(),
+      })),
+    };
+  }
+  const el = matches[0];
+  const rect = el.getBoundingClientRect();
+  return {
+    matched: true,
+    selector: genSelector(el),
+    coords: {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    },
+    tag: el.tagName.toLowerCase(),
+    text: shortText(el),
   };
 })()
 `;
+}
 
 async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
   const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
@@ -718,7 +885,38 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'snapshot': {
-        const value = await evaluateInTab(tabId, SNAPSHOT_JS);
+        const value = await evaluateInTab(
+          tabId,
+          buildSnapshotJs({
+            within_selector: optStr('within_selector'),
+            only_interactive: p.only_interactive === true,
+            exclude: Array.isArray(p.exclude)
+              ? p.exclude.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
+          }),
+        );
+        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+      }
+
+      case 'find': {
+        const text = str('text');
+        if (!text) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'find: text required',
+          };
+        }
+        const value = await evaluateInTab(
+          tabId,
+          buildFindJs({
+            text,
+            role: optStr('role'),
+            exact: p.exact === true,
+          }),
+        );
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
 

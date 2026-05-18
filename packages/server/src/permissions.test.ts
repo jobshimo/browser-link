@@ -22,10 +22,17 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 26 tools currently exposed', () => {
+  test('covers exactly the 27 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(26);
+    expect(TOOL_CATALOGUE.length).toBe(27);
+  });
+
+  test('includes browser.find as a read tool', () => {
+    const find = TOOL_CATALOGUE.find((t) => t.name === 'browser.find');
+    expect(find).toBeDefined();
+    expect(find?.family).toBe('bridge');
+    expect(find?.category).toBe('read');
   });
 });
 

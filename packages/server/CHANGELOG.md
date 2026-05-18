@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.13.0](https://github.com/jobshimo/browser-link/compare/v0.12.0...v0.13.0) (2026-05-18)
+
+
+### Features
+
+* **bridge:** `browser.find({ tab_id, text, role?, exact? })` — locate one interactive element by visible text and return a stable selector + viewport coordinates. Encapsulates the visibility / ARIA / multi-match patterns that agents otherwise hand-roll inside `browser.evaluate`, and crucially covers the "peruvian markup" case where the clickable thing is a `<div onclick>` instead of a `<button>` (the naive `querySelectorAll('button').find(b => b.textContent.includes(...))` MISSES it silently — no error, no match, a `?.click()` that does nothing). Returns `{ matched: true, selector, coords, tag, text }` on a unique hit, `{ matched: false, reason: 'not-found' }` when nothing matches, or `{ matched: false, reason: 'multiple-matches', candidates: [...] }` with up to 5 candidates (selector + snippet) for disambiguation. Selector heuristic is the SAME one `browser.snapshot` uses (extracted into a shared `DOM_HELPERS_JS` so both tools stay consistent).
+
+* **bridge:** `browser.snapshot` accepts optional filters — `within_selector` restricts the scan to a subtree, `only_interactive` skips headings + the visible-text dump, `exclude: ['nav', 'footer', 'header', 'aside']` drops repeated landmarks, `max_interactive` overrides the cap of 120 (hard ceiling 500). Filters are applied IN-page inside the snapshot JS so the dropped material never traverses CDP → bridge → MCP at all. Additive, no breaking change for calls that omit them.
+
+* **bridge:** snapshot serializer omits empty-string fields per entry — `placeholder`, `aria_label`, `name`, `type`, `href`, `value`, `text`, plus `disabled: false`. Roughly 30–40% smaller payloads on every snapshot, even without filter args. Read by key with optional-chaining; consumers depending on `entry.placeholder === ''` need to fall back to `?? ''`.
+
+* **server boot:** logs a one-line warning when any agent-instructions block on disk is older than the running server's VERSION. The mechanism was already there for the CLI / UI surfaces — boot-time log makes it surface without the user having to remember to run `browser-link instructions`. Format: `Agent instructions OUTDATED for N client(s) — <names>. Run \`browser-link instructions install\` to refresh the global .md blocks.` Best-effort: a per-installer filesystem failure is logged and skipped, never aborts server start.
+
+* **agent-instructions:** new `TOKEN-EFFICIENT PATTERNS` section in the CLAUDE.md / AGENTS.md block. Names the two new dedicated tools (`browser.find`, `browser.snapshot` with filters) and writes down the evaluate-recipe patterns that stayed as recipes — batched DOM reads, scrolling, special keys, events cursor. The reason these did NOT become tools is now in writing: every one of them is a single-line `browser.evaluate` away, plus `browser.type` already covers typing through the native setter. Version stamp bumps to v0.13.0; older installs will show `installed-outdated` on the next `browser-link instructions` / startup check.
+
+* **server-instructions:** same `Token-efficient patterns` block added to the MCP `initialize.instructions` PREAMBLE so agents see the patterns at every session start, not only after `browser-link instructions install` ran. Calls out `browser.evaluate` as the escape hatch and pushes agents toward the dedicated tool for each pattern.
+
+### Internal
+
+* `SNAPSHOT_JS` was replaced by `buildSnapshotJs(opts)`. Shared DOM helpers (`isVisible`, `shortText`, `safeCss`, `genSelector`, `accessibleText`) are now in a single `DOM_HELPERS_JS` template injected into both `buildSnapshotJs` and the new `buildFindJs`. Removes the long-standing risk of `snapshot`'s selector heuristic and a hand-rolled `find` heuristic drifting apart.
+* `accessibleText(el)` helper added: prefers `aria-label`, falls back to `innerText`/`textContent`, then `value`, then `placeholder`, then `title`. Same precedence used by ARIA accessible-name calculation, simplified for our use case. Both `find` and (future) selector heuristics share it.
+* `BROWSER_TOOL_NAMES` closed union grew from 20 to 21 entries (`browser.find`). The exhaustive switch in `handleBrowserTool` adds a new arm; `default:` stays as the `never`-cast compile-time guard.
+* `TOOL_CATALOGUE` grew to 27 entries. `browser.find` is `family: 'bridge'`, `category: 'read'` — does not require a tab claim and survives the `readonly` preset. The hardcoded count assertion in `permissions.test.ts` was bumped 26 → 27 (kept as a tripwire — if a future tool gets added without registering in the catalogue, this test fails BEFORE the UI / CLI silently miss it).
+* `commands/about.ts` quick-reference list (EN + ES) gets a `browser.find` line so `browser-link about` doesn't undersell the new tool.
+
+### Rationale
+
+Five items in `ROADMAP.md` got re-evaluated against the live playground before any code was written. Two shipped as tools (`browser.find`, snapshot filters), three were resolved as protocol updates instead (`read_dom`, `press_key`/`scroll`, per-agent `events` cursor) because they were single-line `browser.evaluate` patterns the agent didn't know — not actual surface gaps in the bridge. Better to teach the existing primitive than grow the API for ignorance.
+
 ## [0.12.0](https://github.com/jobshimo/browser-link/compare/v0.11.0...v0.12.0) (2026-05-18)
 
 

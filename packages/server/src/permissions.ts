@@ -47,7 +47,13 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     name: 'browser.snapshot',
     family: 'bridge',
     category: 'read',
-    summary: 'Dump DOM, text and interactive elements',
+    summary: 'Dump DOM, text and interactive elements (supports within_selector / exclude filters)',
+  },
+  {
+    name: 'browser.find',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Find one element by visible text and return a stable selector + coords',
   },
   {
     name: 'browser.console',

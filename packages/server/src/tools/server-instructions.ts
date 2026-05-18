@@ -67,7 +67,43 @@ from \`list_tabs\`, or surface the conflict to the user.
   poor.
 
 The live snapshot is always the source of truth. The persistent map is
-a cache of navigation, not a substitute.`;
+a cache of navigation, not a substitute.
+
+## Token-efficient patterns (READ THIS BEFORE REACHING FOR EVALUATE)
+
+\`browser.evaluate\` is the all-purpose escape hatch. Reach for it only
+when no dedicated tool fits — every dedicated tool below is cheaper in
+tokens AND more reliable than a hand-rolled expression.
+
+- **Finding an element by visible text** → call \`browser.find\` (not
+  \`browser.evaluate\` with a textContent grep). \`find\` covers
+  \`<div onclick>\` and other "no testid" markup that a naive
+  \`querySelectorAll('button')\` MISSES SILENTLY, applies visibility +
+  ARIA checks consistently, returns a stable selector + coords, and on
+  multi-match returns up to 5 candidates with snippets for
+  disambiguation. The hand-rolled version forgets at least one of
+  these every time.
+- **Trimming snapshot size** → pass filters to \`browser.snapshot\`:
+  \`within_selector\` restricts the scan to a subtree, \`only_interactive\`
+  skips headings + visible text, \`exclude:["nav","footer"]\` drops
+  repeated landmarks, \`max_interactive\` overrides the cap of 120.
+  Cuts token cost on the most-called tool; not hackeable from the
+  client side (the filtering happens in-page).
+- **Reading N values** → ONE \`browser.evaluate\` that returns an
+  object: \`(() => ({ a: document.querySelector('#a').value, b: ... }))()\`.
+  Never call \`browser.evaluate\` N times in a row to read N values.
+- **Scrolling** → \`browser.evaluate\` with \`pane.scrollTop = N\` or
+  \`el.scrollIntoView({block:'center'})\`. No dedicated tool needed.
+- **Special keys (Enter / Tab / Escape / arrow keys)** →
+  \`browser.evaluate\` with
+  \`el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))\`.
+  Vanilla handlers AND React's delegated root handlers (React 17+)
+  pick up bubbled dispatched events. For TYPING text into an input,
+  use \`browser.type\` — it goes through the native setter so controlled
+  components update their state. \`dispatchEvent\` on \`value\` does NOT.
+- **Paging through \`browser.events\`** → keep \`lastId = result.latest_id\`
+  in your working notes and pass it as \`since_id\` on the next call.
+  That is one variable. The server does not maintain per-agent cursors.`;
 
 /** Render a single tool's documentation as a markdown section. Skips
  * tools without a `doc` block (the structured shape is opt-in for now

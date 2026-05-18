@@ -141,24 +141,96 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.snapshot',
     description:
-      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing.',
+      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. Optional filters keep the response small: `within_selector` restricts the scan to a subtree; `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key.',
     inputSchema: {
       type: 'object',
-      properties: { tab_id: { type: 'string' } },
+      properties: {
+        tab_id: { type: 'string' },
+        within_selector: {
+          type: 'string',
+          description:
+            'Restrict the scan to elements within the subtree of this CSS selector. When the selector does not match, the response carries an empty interactive list and `notice` explains why.',
+        },
+        only_interactive: {
+          type: 'boolean',
+          description:
+            'When true, skip the headings list and the visible-text dump. Use when you only need the interactive elements and selectors. Default false.',
+        },
+        exclude: {
+          type: 'array',
+          items: { type: 'string', enum: ['nav', 'footer', 'header', 'aside'] },
+          description:
+            'Drop interactive elements and headings that live inside any of these landmark tags. Common case: pass `["nav"]` to skip site-wide navigation that repeats on every page.',
+        },
+        max_interactive: {
+          type: 'number',
+          description:
+            'Cap on the number of interactive entries returned. Default 120, hard ceiling 500.',
+        },
+      },
       required: ['tab_id'],
       additionalProperties: false,
     },
     doc: {
       purpose:
-        'Inspect what is currently on the tab — title, URL, visible text, interactive elements with selectors.',
+        'Inspect what is currently on the tab — title, URL, visible text, interactive elements with selectors. Supports optional filters to trim the response.',
       when_to_use: [
         'Before suggesting any code change to a UI component — verify the current state, do NOT speculate.',
         'Before clicking or typing, to find a stable selector for the target element.',
         'When the user reports a layout or visual issue and you need to ground your reasoning in what is actually rendered.',
+        'When you only care about a region of the page, pass `within_selector` so the response stays small.',
       ],
       gotchas: [
         'The snapshot is the source of truth; the persistent map is a cache, not a substitute.',
+        'Filters are applied in-page, so the dropped material never travels back — they are a token win, not a post-filter.',
+        'Empty-string fields (`placeholder`, `aria_label`, etc.) are omitted from each entry. Read by key with optional-chaining or fall back to "".',
       ],
+      example:
+        'browser.snapshot({ tab_id: "tab_1", within_selector: "main", exclude: ["nav", "footer"] })',
+    },
+  },
+  {
+    name: 'browser.find',
+    description:
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Returns `{ matched: true, selector, coords:{x,y}, tag, text }` on a unique hit, `{ matched: false, reason: "not-found" }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback), so a subsequent `browser.click` / `browser.type` works without re-querying.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        text: {
+          type: 'string',
+          description:
+            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default.',
+        },
+        role: {
+          type: 'string',
+          enum: ['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem'],
+          description:
+            'Optional ARIA role to narrow the scan. Without role the scan covers all common interactive elements including [onclick] divs.',
+        },
+        exact: {
+          type: 'boolean',
+          description:
+            'When true, the visible text must equal the needle (case-insensitive). Default false (substring).',
+        },
+      },
+      required: ['tab_id', 'text'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Find one interactive element by its visible text and return a stable selector plus viewport coordinates.',
+      when_to_use: [
+        'When `browser.snapshot` returned no `data-testid` and the agent only knows the user-facing label of the element it wants to act on.',
+        'Before `browser.click` / `browser.type` on a page whose markup lacks stable selectors — `find` does the visibility + ARIA + role-aware lookup once and returns a selector reusable by the action tool.',
+        'When the agent would otherwise write a hand-rolled `browser.evaluate` to grep textContent — `find` encapsulates the silently-failing patterns (missing visibility checks, `<div onclick>` not matching `button`, multi-match ambiguity).',
+      ],
+      gotchas: [
+        'A `<div onclick>` IS considered clickable here — the broad selector set (`[onclick]`, `[role]`, `[tabindex]`, `[contenteditable]`) is the whole point. A naive `querySelectorAll("button")` misses these silently.',
+        'On `multiple-matches`, the response includes up to 5 candidates with their selectors and snippets so the agent can disambiguate without another round-trip. Retry with `exact:true` or a longer/unique substring.',
+        '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
+      ],
+      example: 'browser.find({ tab_id: "tab_1", text: "Save changes", role: "button" })',
     },
   },
   {

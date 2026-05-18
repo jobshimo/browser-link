@@ -47,6 +47,22 @@ describe('buildServerInstructions', () => {
     expect(out).toContain('IPC session id');
   });
 
+  test('preamble teaches the token-efficient patterns introduced in v0.13.0', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('Token-efficient patterns');
+    expect(out).toContain('browser.find');
+    expect(out).toContain('within_selector');
+    expect(out).toContain('only_interactive');
+    expect(out).toContain('pane.scrollTop');
+    expect(out).toContain('KeyboardEvent');
+    expect(out).toContain('latest_id');
+  });
+
+  test('browser.find appears as a documented tool section in the rendered instructions', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('### browser.find');
+  });
+
   test('every tool with a doc block surfaces its name as a section header', () => {
     const out = buildServerInstructions();
     for (const def of ALL_TOOLS) {

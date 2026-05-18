@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
+import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
 import { loadConfig } from './config.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dispatch.js';
 import { IpcServer } from './bridge/server.js';
@@ -203,6 +204,33 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   if (initialDisabled.length > 0) {
     log(
       `Tool filter active at boot — ${initialDisabled.length} disabled: ${initialDisabled.join(', ')} (live; reflects config.json on every call).`,
+    );
+  }
+
+  // Surface outdated agent-instructions blocks on boot so the user sees the
+  // cartel without having to remember to run `browser-link instructions`. We
+  // only inspect — never write — so existing installs are not mutated. Best
+  // effort: a per-installer failure (filesystem permissions, EBADF) is logged
+  // and skipped, never aborts the server start.
+  try {
+    const outdated = INSTRUCTIONS_INSTALLERS.map((i) => {
+      try {
+        return { installer: i, detect: i.detect() };
+      } catch {
+        return null;
+      }
+    })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .filter((x) => x.detect.state.kind === 'installed-outdated');
+    if (outdated.length > 0) {
+      const names = outdated.map((x) => x.installer.displayName).join(', ');
+      log(
+        `Agent instructions OUTDATED for ${outdated.length} client(s) — ${names}. Run \`browser-link instructions install\` to refresh the global .md blocks.`,
+      );
+    }
+  } catch (err) {
+    log(
+      `Skipping agent-instructions freshness check: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

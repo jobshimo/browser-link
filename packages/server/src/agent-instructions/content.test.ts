@@ -59,6 +59,21 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('browser.release_tab');
   });
 
+  test('TOKEN-EFFICIENT PATTERNS section names the new dedicated tools and the evaluate fallbacks', () => {
+    const out = block();
+    expect(out).toContain('### TOKEN-EFFICIENT PATTERNS');
+    // New tools introduced in v0.13.0 — agent must reach for these before
+    // hand-rolling the equivalent evaluate expression.
+    expect(out).toContain('browser.find');
+    expect(out).toContain('within_selector');
+    expect(out).toContain('only_interactive');
+    // Patterns staying as evaluate-recipes (no tool added) — must still be taught.
+    expect(out).toContain('pane.scrollTop');
+    expect(out).toContain('scrollIntoView');
+    expect(out).toContain('KeyboardEvent');
+    expect(out).toContain('latest_id');
+  });
+
   test('block is fenced with versioned BEGIN + END markers', () => {
     const out = block();
     expect(out).toContain(beginMarker());

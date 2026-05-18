@@ -24,6 +24,7 @@ describe('isBrowserTool', () => {
       'browser.ping',
       'browser.navigate',
       'browser.snapshot',
+      'browser.find',
       'browser.click',
       'browser.type',
       'browser.drag',
@@ -673,5 +674,114 @@ describe('action-tool claim enforcement', () => {
       ),
     ).rejects.toThrow(/in use by another agent/);
     expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('snapshot forwards filter args verbatim to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.snapshot',
+      {
+        tab_id: 'tab_1',
+        within_selector: 'main',
+        only_interactive: true,
+        exclude: ['nav', 'footer'],
+        max_interactive: 50,
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'snapshot', {
+      within_selector: 'main',
+      only_interactive: true,
+      exclude: ['nav', 'footer'],
+      max_interactive: 50,
+    });
+  });
+
+  test('snapshot drops non-string entries from exclude defensively', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.snapshot',
+      { tab_id: 'tab_1', exclude: ['nav', 42, null, 'footer'] },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'snapshot',
+      expect.objectContaining({ exclude: ['nav', 'footer'] }),
+    );
+  });
+
+  test('snapshot with no args forwards undefined filters (legacy call site)', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'snapshot', {
+      within_selector: undefined,
+      only_interactive: undefined,
+      exclude: undefined,
+      max_interactive: undefined,
+    });
+  });
+
+  test('find forwards text + role + exact to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.find',
+      { tab_id: 'tab_1', text: 'Save changes', role: 'button', exact: true },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'find', {
+      text: 'Save changes',
+      role: 'button',
+      exact: true,
+    });
+  });
+
+  test('find defaults exact to false and omits role when absent', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.find', { tab_id: 'tab_1', text: 'Cancel' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'find', {
+      text: 'Cancel',
+      role: undefined,
+      exact: false,
+    });
+  });
+
+  test('find rejects empty or missing text without hitting the bridge', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.find', { tab_id: 'tab_1' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/text required/);
+    await expect(
+      handleBrowserTool('browser.find', { tab_id: 'tab_1', text: '' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/text required/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('find rejects an unknown role value', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.find',
+        { tab_id: 'tab_1', text: 'Save', role: 'banana' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/role must be one of/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('find bypasses claim enforcement (read tool — multiple agents can search the same tab)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    // B can still call find on the tab A holds.
+    await handleBrowserTool('browser.find', { tab_id: 'tab_1', text: 'Save' }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'find',
+      expect.objectContaining({ text: 'Save' }),
+    );
   });
 });

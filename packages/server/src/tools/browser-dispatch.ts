@@ -99,6 +99,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.ping',
   'browser.navigate',
   'browser.snapshot',
+  'browser.find',
   'browser.console',
   'browser.network',
   'browser.network_body',
@@ -264,8 +265,45 @@ export async function handleBrowserTool(
         NAVIGATE_TIMEOUT_MS,
       );
     }
-    case 'browser.snapshot':
-      return deps.callBrowserTool(requireTabId(args), 'snapshot', {});
+    case 'browser.snapshot': {
+      const { within_selector, only_interactive, exclude, max_interactive } = (args ?? {}) as {
+        within_selector?: string;
+        only_interactive?: boolean;
+        exclude?: unknown;
+        max_interactive?: number;
+      };
+      const filterExclude = Array.isArray(exclude)
+        ? exclude.filter((v): v is string => typeof v === 'string')
+        : undefined;
+      return deps.callBrowserTool(requireTabId(args), 'snapshot', {
+        within_selector,
+        only_interactive,
+        exclude: filterExclude,
+        max_interactive,
+      });
+    }
+    case 'browser.find': {
+      const { text, role, exact } = (args ?? {}) as {
+        text?: unknown;
+        role?: unknown;
+        exact?: unknown;
+      };
+      if (typeof text !== 'string' || text.length === 0) {
+        throw new Error('browser.find: text required');
+      }
+      const ALLOWED_ROLES = new Set(['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem']);
+      if (role !== undefined && (typeof role !== 'string' || !ALLOWED_ROLES.has(role))) {
+        throw new Error(
+          'browser.find: role must be one of button | link | textbox | checkbox | tab | menuitem',
+        );
+      }
+      // find is a read tool: no claim enforcement, no userGesture concerns.
+      return deps.callBrowserTool(requireTabId(args), 'find', {
+        text,
+        role,
+        exact: exact === true,
+      });
+    }
     case 'browser.console': {
       const { level } = (args ?? {}) as { level?: string };
       return deps.callBrowserTool(requireTabId(args), 'console', { level });
