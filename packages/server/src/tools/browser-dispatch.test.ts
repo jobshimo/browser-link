@@ -25,6 +25,7 @@ describe('isBrowserTool', () => {
       'browser.snapshot',
       'browser.click',
       'browser.type',
+      'browser.drag',
       'browser.evaluate',
       'browser.console',
       'browser.network',
@@ -94,6 +95,70 @@ describe('handleBrowserTool', () => {
       text: 'hi',
       clear: false,
     });
+  });
+
+  test('drag forwards selector endpoints and tunables to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.drag',
+      {
+        tab_id: 'tab_1',
+        from_selector: '#a',
+        to_selector: '#b',
+        duration_ms: 2000,
+        hold_before_release_ms: 50,
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'drag',
+      {
+        from_selector: '#a',
+        from_x: undefined,
+        from_y: undefined,
+        to_selector: '#b',
+        to_x: undefined,
+        to_y: undefined,
+        duration_ms: 2000,
+        hold_before_move_ms: undefined,
+        hold_before_release_ms: 50,
+      },
+      Math.max(15_000, 2000 + 50 + 10_000),
+    );
+  });
+
+  test('drag accepts coordinate endpoints when no selector is available', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.drag',
+      { tab_id: 'tab_1', from_x: 10, from_y: 20, to_x: 100, to_y: 200 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'drag',
+      expect.objectContaining({ from_x: 10, from_y: 20, to_x: 100, to_y: 200 }),
+      expect.any(Number),
+    );
+  });
+
+  test('drag rejects when neither selector nor coords are provided for an endpoint', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.drag', { tab_id: 'tab_1', to_selector: '#b' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/from_selector or both from_x and from_y/);
+    await expect(
+      handleBrowserTool(
+        'browser.drag',
+        { tab_id: 'tab_1', from_selector: '#a' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/to_selector or both to_x and to_y/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
   });
 
   test('rejects when tab_id is missing on a tool that requires it', async () => {
@@ -281,5 +346,27 @@ describe('action-tool claim enforcement', () => {
     await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
     await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, B);
     expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'snapshot', {});
+  });
+
+  test('drag auto-claims a free tab and is rejected when another agent owns it', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool(
+      'browser.drag',
+      { tab_id: 'tab_1', from_selector: '#a', to_selector: '#b' },
+      deps,
+      A,
+    );
+    expect(deps.tabClaims!.getClaim('tab_1')?.agent_id).toBe('sess-A');
+
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mockClear();
+    await expect(
+      handleBrowserTool(
+        'browser.drag',
+        { tab_id: 'tab_1', from_selector: '#a', to_selector: '#b' },
+        deps,
+        B,
+      ),
+    ).rejects.toThrow(/in use by another agent/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
   });
 });

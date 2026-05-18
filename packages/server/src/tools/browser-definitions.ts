@@ -280,6 +280,67 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.drag',
+    description:
+      'Drag an element from a source to a destination. Provide each end as either a CSS selector OR a viewport coordinate pair (x,y). The drag is interpolated over duration_ms (default 1500) so you can watch the cursor traverse the path — this also helps activation-by-distance constraints in pointer-based libraries. Auto-detects HTML5 native drag (element.draggable, <img>, <a href>) vs pointer-based drag (dnd-kit and similar). For HTML5 it uses Input.setInterceptDrags + Input.dragIntercepted + Input.dispatchDragEvent. For pointer-based it interpolates Input.dispatchMouseEvent only. setInterceptDrags is always cleared in finally. Both source and destination must be visible in the viewport simultaneously — drag does NOT scroll between them. Returns { from, to, duration_ms_actual, drag_mode: "html5"|"pointer", events_fired }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        from_selector: {
+          type: 'string',
+          description: 'CSS selector of the source element. Mutually exclusive with from_x/from_y.',
+        },
+        from_x: {
+          type: 'number',
+          description:
+            'Viewport x of the source point. Use with from_y when there is no stable selector (canvas, map, etc).',
+        },
+        from_y: { type: 'number', description: 'Viewport y of the source point.' },
+        to_selector: {
+          type: 'string',
+          description:
+            'CSS selector of the destination element. Mutually exclusive with to_x/to_y.',
+        },
+        to_x: { type: 'number', description: 'Viewport x of the destination point.' },
+        to_y: { type: 'number', description: 'Viewport y of the destination point.' },
+        duration_ms: {
+          type: 'number',
+          description:
+            'Total movement duration in ms. Default 1500. Lower values reduce visual feedback and may miss activation thresholds in some pointer libs.',
+        },
+        hold_before_move_ms: {
+          type: 'number',
+          description:
+            'Time to stay pressed at the source before starting the move. Default 0. Useful for handlers that require a press-and-hold gesture.',
+        },
+        hold_before_release_ms: {
+          type: 'number',
+          description:
+            'Time to stay at the destination before releasing. Default 0. Useful when the drop target validates asynchronously.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Drag an element to another element or to a coordinate, with a visible interpolated path.',
+      when_to_use: [
+        'Reordering a sortable list, moving cards between columns, dropping items onto targets.',
+        'Painting on a canvas by dragging a swatch, or any other coordinate-based drop.',
+        'When click+type cannot express the interaction — drag is its own gesture.',
+      ],
+      gotchas: [
+        'Both endpoints must be visible in the viewport at the same time — the tool does not scroll between them. If one is offscreen, scroll first (via evaluate) or pass viewport coords.',
+        'Default duration is 1500ms so a human watching can follow the cursor. Drop it lower only when you are sure no library has a movement-based activation constraint.',
+        'drag_mode in the response tells you whether HTML5 native drag (dragstart/drop) or pointer-only events fired — use it to diagnose silently-failing drops.',
+      ],
+      example:
+        'browser.drag({ tab_id: "tab_1", from_selector: "[data-testid=card-1]", to_selector: "[data-testid=column-done]" })',
+    },
+  },
+  {
     name: 'browser.evaluate',
     description:
       'Run a JavaScript expression in the page context and return its result. Use an IIFE with return if you need multi-step logic.',

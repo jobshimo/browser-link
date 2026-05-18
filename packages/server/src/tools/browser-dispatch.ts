@@ -96,6 +96,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.network_body',
   'browser.click',
   'browser.type',
+  'browser.drag',
   'browser.evaluate',
   'browser.events',
   'browser.reset',
@@ -276,6 +277,58 @@ export async function handleBrowserTool(
         clear = false,
       } = args as { selector: string; text: string; clear?: boolean };
       return runAction('type', requireTabId(args), { selector, text, clear }, deps, caller);
+    }
+    case 'browser.drag': {
+      const {
+        from_selector,
+        from_x,
+        from_y,
+        to_selector,
+        to_x,
+        to_y,
+        duration_ms,
+        hold_before_move_ms,
+        hold_before_release_ms,
+      } = (args ?? {}) as {
+        from_selector?: string;
+        from_x?: number;
+        from_y?: number;
+        to_selector?: string;
+        to_x?: number;
+        to_y?: number;
+        duration_ms?: number;
+        hold_before_move_ms?: number;
+        hold_before_release_ms?: number;
+      };
+      const fromOk = from_selector || (typeof from_x === 'number' && typeof from_y === 'number');
+      const toOk = to_selector || (typeof to_x === 'number' && typeof to_y === 'number');
+      if (!fromOk) throw new Error('browser.drag: provide from_selector or both from_x and from_y');
+      if (!toOk) throw new Error('browser.drag: provide to_selector or both to_x and to_y');
+      // Drag can run for `duration_ms` + holds. Give the bridge enough
+      // headroom over the configured movement before timing out — but
+      // never less than 15s so trivial drags use the same floor as click/type.
+      const timeoutMs = Math.max(
+        15_000,
+        (duration_ms ?? 1500) + (hold_before_move_ms ?? 0) + (hold_before_release_ms ?? 0) + 10_000,
+      );
+      return runAction(
+        'drag',
+        requireTabId(args),
+        {
+          from_selector,
+          from_x,
+          from_y,
+          to_selector,
+          to_x,
+          to_y,
+          duration_ms,
+          hold_before_move_ms,
+          hold_before_release_ms,
+        },
+        deps,
+        caller,
+        timeoutMs,
+      );
     }
     case 'browser.evaluate': {
       const { expression } = args as { expression: string };

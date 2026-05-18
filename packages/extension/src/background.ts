@@ -142,6 +142,10 @@ interface CdpNetworkGetResponseBody {
   base64Encoded: boolean;
 }
 
+interface CdpInputDragIntercepted {
+  data: unknown;
+}
+
 // Runtime messages between popup.ts and this script.
 type RuntimeMessage =
   | { action: 'connect'; tabId: number }
@@ -175,6 +179,134 @@ function cdp<T = unknown>(
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return chrome.debugger.sendCommand({ tabId }, method, params) as unknown as Promise<T>;
+}
+
+/**
+ * Defensive caps applied to every duration that ends up in a setTimeout
+ * driven by tool params. The MCP request payload is technically untrusted
+ * input, so CodeQL flags unbounded user-controlled timer durations as a
+ * resource-exhaustion risk. We clamp at the boundary (drag handler) AND
+ * inside `sleep` so the property is enforced even if a future call site
+ * forgets to validate.
+ */
+const MAX_DRAG_DURATION_MS = 60_000;
+const MAX_DRAG_HOLD_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  // Range-branch sanitizer for CodeQL's js/resource-exhaustion: the
+  // setTimeout call is INSIDE a literal-bounded range check. Caller-side
+  // clamping in the drag handler is the first line of defence; this is
+  // the second.
+  return new Promise((resolve) => {
+    if (typeof ms === 'number' && ms > 0 && ms < 60_000) {
+      setTimeout(resolve, ms);
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+/**
+ * Wait for ONE CDP event of a given method on a given tab. Adds a temporary
+ * chrome.debugger.onEvent listener for the duration of the wait. Resolves
+ * with the event params, or null on timeout. Always cleans up its listener.
+ *
+ * Used by the drag tool to capture Input.dragIntercepted while
+ * Input.setInterceptDrags is enabled.
+ */
+function waitForCdpEvent<T = unknown>(
+  tabId: number,
+  method: string,
+  timeoutMs: number,
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const handler = (source: chrome.debugger.Debuggee, m: string, params?: object): void => {
+      if (settled) return;
+      if (source.tabId !== tabId) return;
+      if (m !== method) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.debugger.onEvent.removeListener(handler);
+      resolve((params ?? null) as T | null);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chrome.debugger.onEvent.removeListener(handler);
+      resolve(null);
+    }, timeoutMs);
+    chrome.debugger.onEvent.addListener(handler);
+  });
+}
+
+/**
+ * Build the JS expression that:
+ *  1. scrollIntoView(center) for any selector-based endpoint (so both are
+ *     visible at the same time if possible),
+ *  2. detects HTML5 native drag eligibility on the source (`element.draggable`
+ *     true, or implicit via <img> / <a href>),
+ *  3. reads the final centre coords AFTER both scrolls have happened,
+ *  4. flags in_viewport so the caller can refuse offscreen drags instead of
+ *     dispatching cursor events into nowhere.
+ *
+ * Returns one of:
+ *  - `{ err: string }`           — selector miss or stale element
+ *  - `{ from, to, draggable }`   — ready to drag
+ */
+function buildDragProbeExpr(params: {
+  from_selector?: string;
+  to_selector?: string;
+  from_x?: number;
+  from_y?: number;
+  to_x?: number;
+  to_y?: number;
+}): string {
+  return `
+    (() => {
+      const P = ${JSON.stringify(params)};
+      function scrollAndProbe(sel) {
+        const el = document.querySelector(sel);
+        if (!el) return { err: 'not_found' };
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        return {
+          draggable:
+            el.draggable === true ||
+            el instanceof HTMLImageElement ||
+            (el instanceof HTMLAnchorElement && !!el.href),
+        };
+      }
+      function readCenter(sel) {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          x: r.left + r.width / 2,
+          y: r.top + r.height / 2,
+          in_viewport:
+            r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth,
+        };
+      }
+      let fromHint = null;
+      if (P.from_selector) {
+        fromHint = scrollAndProbe(P.from_selector);
+        if (fromHint.err) return { err: 'from_selector not found: ' + P.from_selector };
+      }
+      if (P.to_selector) {
+        const t = scrollAndProbe(P.to_selector);
+        if (t.err) return { err: 'to_selector not found: ' + P.to_selector };
+      }
+      const from = P.from_selector
+        ? readCenter(P.from_selector)
+        : { x: P.from_x, y: P.from_y, in_viewport: true };
+      const to = P.to_selector
+        ? readCenter(P.to_selector)
+        : { x: P.to_x, y: P.to_y, in_viewport: true };
+      if (!from) return { err: 'from element disappeared between probes' };
+      if (!to) return { err: 'to element disappeared between probes' };
+      return { from, to, draggable: fromHint ? fromHint.draggable : false };
+    })()
+  `;
 }
 
 // Convert an arbitrary console arg (`unknown`) into something printable
@@ -528,6 +660,267 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           id: msg.id,
           ok: true,
           result: { typed: text.length, selector },
+        };
+      }
+
+      case 'drag': {
+        const optNum = (key: string): number | undefined => {
+          const v = p[key];
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+        };
+        const clamp = (v: number, max: number): number => Math.min(v, max);
+        const fromSelector = optStr('from_selector');
+        const toSelector = optStr('to_selector');
+        const fromXRaw = optNum('from_x');
+        const fromYRaw = optNum('from_y');
+        const toXRaw = optNum('to_x');
+        const toYRaw = optNum('to_y');
+        // Cap every duration that ends up in a setTimeout to keep CodeQL's
+        // "user-controlled timer duration" check happy and to prevent a
+        // misbehaving agent from parking the bridge for hours on a typo.
+        const durationMs = clamp(optNum('duration_ms') ?? 1500, MAX_DRAG_DURATION_MS);
+        const holdBeforeMoveMs = clamp(optNum('hold_before_move_ms') ?? 0, MAX_DRAG_HOLD_MS);
+        const holdBeforeReleaseMs = clamp(optNum('hold_before_release_ms') ?? 0, MAX_DRAG_HOLD_MS);
+
+        const hasFromCoords = fromXRaw !== undefined && fromYRaw !== undefined;
+        const hasToCoords = toXRaw !== undefined && toYRaw !== undefined;
+        if (!fromSelector && !hasFromCoords) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'drag: provide from_selector or both from_x and from_y',
+          };
+        }
+        if (!toSelector && !hasToCoords) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'drag: provide to_selector or both to_x and to_y',
+          };
+        }
+
+        const probeExpr = buildDragProbeExpr({
+          from_selector: fromSelector,
+          to_selector: toSelector,
+          from_x: fromXRaw,
+          from_y: fromYRaw,
+          to_x: toXRaw,
+          to_y: toYRaw,
+        });
+        const probe = await evaluateInTab<{
+          err?: string;
+          from?: { x: number; y: number; in_viewport: boolean };
+          to?: { x: number; y: number; in_viewport: boolean };
+          draggable?: boolean;
+        }>(tabId, probeExpr);
+        if (probe.err) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: `drag: ${probe.err}` };
+        }
+        if (!probe.from || !probe.to) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'drag: could not resolve coordinates',
+          };
+        }
+        if (!probe.from.in_viewport) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'drag: source point is offscreen — scroll first or pass viewport coords',
+          };
+        }
+        if (!probe.to.in_viewport) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: 'drag: destination point is offscreen — scroll first or pass viewport coords',
+          };
+        }
+
+        const fromX = probe.from.x;
+        const fromY = probe.from.y;
+        const toX = probe.to.x;
+        const toY = probe.to.y;
+        const isDraggable = !!probe.draggable;
+
+        // ~30fps interpolation; minimum 2 steps so the path actually has a midpoint.
+        const steps = durationMs > 0 ? Math.max(2, Math.round(durationMs / 33)) : 1;
+        const stepDelayMs = steps > 0 ? durationMs / steps : 0;
+        const eventsFired: string[] = [];
+        let dragMode: 'html5' | 'pointer' = 'pointer';
+        const dragStart = Date.now();
+        let interceptionEnabled = false;
+
+        const interpolate = (t: number): { x: number; y: number } => ({
+          x: fromX + (toX - fromX) * t,
+          y: fromY + (toY - fromY) * t,
+        });
+
+        try {
+          if (isDraggable) {
+            try {
+              await cdp(tabId, 'Input.setInterceptDrags', { enabled: true });
+              interceptionEnabled = true;
+            } catch {
+              // setInterceptDrags is experimental — fall back to pointer mode silently.
+            }
+          }
+
+          if (interceptionEnabled) {
+            // Arm the listener BEFORE the press+wiggle that may trigger it.
+            const interceptPromise = waitForCdpEvent<CdpInputDragIntercepted>(
+              tabId,
+              'Input.dragIntercepted',
+              120,
+            );
+            await cdp(tabId, 'Input.dispatchMouseEvent', {
+              type: 'mouseMoved',
+              x: fromX,
+              y: fromY,
+            });
+            await cdp(tabId, 'Input.dispatchMouseEvent', {
+              type: 'mousePressed',
+              x: fromX,
+              y: fromY,
+              button: 'left',
+              clickCount: 1,
+            });
+            if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
+            // Small wiggle toward the destination so Chrome's native drag system
+            // crosses its activation threshold. Direction matters for some libs.
+            const dx = toX - fromX;
+            const dy = toY - fromY;
+            const len = Math.hypot(dx, dy) || 1;
+            const wx = fromX + (dx / len) * 5;
+            const wy = fromY + (dy / len) * 5;
+            await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: wx, y: wy });
+
+            const intercepted = await interceptPromise;
+            if (intercepted) {
+              dragMode = 'html5';
+              eventsFired.push('Input.dragIntercepted');
+              const dragData = intercepted.data as Record<string, unknown>;
+              for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                const { x, y } = interpolate(t);
+                await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+                await cdp(tabId, 'Input.dispatchDragEvent', {
+                  type: 'dragOver',
+                  x,
+                  y,
+                  data: dragData,
+                });
+                if (i === 1) eventsFired.push('dragOver');
+                if (stepDelayMs > 0) await sleep(stepDelayMs);
+              }
+              await cdp(tabId, 'Input.dispatchDragEvent', {
+                type: 'dragEnter',
+                x: toX,
+                y: toY,
+                data: dragData,
+              });
+              eventsFired.push('dragEnter');
+              await cdp(tabId, 'Input.dispatchDragEvent', {
+                type: 'dragOver',
+                x: toX,
+                y: toY,
+                data: dragData,
+              });
+              if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+              await cdp(tabId, 'Input.dispatchDragEvent', {
+                type: 'drop',
+                x: toX,
+                y: toY,
+                data: dragData,
+              });
+              eventsFired.push('drop');
+              await cdp(tabId, 'Input.dispatchMouseEvent', {
+                type: 'mouseReleased',
+                x: toX,
+                y: toY,
+                button: 'left',
+                clickCount: 1,
+              });
+            } else {
+              // Element was tagged draggable but no native drag fired — the page
+              // either preventDefault'd dragstart or wires its own pointer logic.
+              // Continue with pointer-only events from where we already pressed.
+              dragMode = 'pointer';
+              for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                const { x, y } = interpolate(t);
+                await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+                if (stepDelayMs > 0) await sleep(stepDelayMs);
+              }
+              if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+              await cdp(tabId, 'Input.dispatchMouseEvent', {
+                type: 'mouseReleased',
+                x: toX,
+                y: toY,
+                button: 'left',
+                clickCount: 1,
+              });
+            }
+          } else {
+            // Pointer-only branch: no native drag involvement at all.
+            dragMode = 'pointer';
+            await cdp(tabId, 'Input.dispatchMouseEvent', {
+              type: 'mouseMoved',
+              x: fromX,
+              y: fromY,
+            });
+            await cdp(tabId, 'Input.dispatchMouseEvent', {
+              type: 'mousePressed',
+              x: fromX,
+              y: fromY,
+              button: 'left',
+              clickCount: 1,
+            });
+            if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
+            for (let i = 1; i <= steps; i++) {
+              const t = i / steps;
+              const { x, y } = interpolate(t);
+              await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+              if (stepDelayMs > 0) await sleep(stepDelayMs);
+            }
+            if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+            await cdp(tabId, 'Input.dispatchMouseEvent', {
+              type: 'mouseReleased',
+              x: toX,
+              y: toY,
+              button: 'left',
+              clickCount: 1,
+            });
+          }
+        } finally {
+          // Critical: leaving interception on would block the human user from
+          // dragging anything in this tab. Best-effort cleanup, swallow errors.
+          if (interceptionEnabled) {
+            try {
+              await cdp(tabId, 'Input.setInterceptDrags', { enabled: false });
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        return {
+          kind: 'tool.response',
+          id: msg.id,
+          ok: true,
+          result: {
+            from: { x: fromX, y: fromY, selector: fromSelector ?? null },
+            to: { x: toX, y: toY, selector: toSelector ?? null },
+            duration_ms_actual: Date.now() - dragStart,
+            drag_mode: dragMode,
+            events_fired: eventsFired,
+          },
         };
       }
 

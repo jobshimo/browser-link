@@ -22,10 +22,10 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 16 tools currently exposed', () => {
+  test('covers exactly the 17 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(16);
+    expect(TOOL_CATALOGUE.length).toBe(17);
   });
 });
 

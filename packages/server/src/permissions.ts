@@ -75,6 +75,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     category: 'action',
     summary: 'Type text into an input',
   },
+  {
+    name: 'browser.drag',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Drag an element to another element or coordinate',
+  },
 
   // Browser bridge — arbitrary code
   {
