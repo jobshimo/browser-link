@@ -754,6 +754,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         const stepDelayMs = steps > 0 ? durationMs / steps : 0;
         const eventsFired: string[] = [];
         let dragMode: 'html5' | 'pointer' = 'pointer';
+        let interceptReceived = false;
         const dragStart = Date.now();
         let interceptionEnabled = false;
 
@@ -761,6 +762,28 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           x: fromX + (toX - fromX) * t,
           y: fromY + (toY - fromY) * t,
         });
+
+        // Mouse move WITH the left button held down. Chrome's HTML5 drag
+        // system only treats movement as a drag when the button state is
+        // signalled on every move after mousePressed; omitting it makes
+        // Blink ignore the move for drag-detection purposes.
+        const moveHeld = (x: number, y: number): Promise<unknown> =>
+          cdp(tabId, 'Input.dispatchMouseEvent', {
+            type: 'mouseMoved',
+            x,
+            y,
+            button: 'left',
+            buttons: 1,
+          });
+
+        // Wiggle distance has to comfortably clear `kDragThreshold` (~5px on
+        // Mac, 4px on Linux/Windows). 5px landed *right* at the boundary and
+        // Chrome did not start the drag — 20px crosses it on every platform.
+        const WIGGLE_PX = 20;
+        // Time to wait for Input.dragIntercepted after the wiggle. 120ms was
+        // enough on local-only synthetic tests but flaky in real Chrome —
+        // 250ms is comfortable without dragging out the overall latency.
+        const INTERCEPT_TIMEOUT_MS = 250;
 
         try {
           if (isDraggable) {
@@ -777,7 +800,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             const interceptPromise = waitForCdpEvent<CdpInputDragIntercepted>(
               tabId,
               'Input.dragIntercepted',
-              120,
+              INTERCEPT_TIMEOUT_MS,
             );
             await cdp(tabId, 'Input.dispatchMouseEvent', {
               type: 'mouseMoved',
@@ -792,24 +815,26 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
               clickCount: 1,
             });
             if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
-            // Small wiggle toward the destination so Chrome's native drag system
-            // crosses its activation threshold. Direction matters for some libs.
+            // Wiggle toward the destination so Chrome's native drag system
+            // crosses its activation threshold. Direction matters for libs
+            // that have direction-sensitive activation constraints.
             const dx = toX - fromX;
             const dy = toY - fromY;
             const len = Math.hypot(dx, dy) || 1;
-            const wx = fromX + (dx / len) * 5;
-            const wy = fromY + (dy / len) * 5;
-            await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: wx, y: wy });
+            const wx = fromX + (dx / len) * WIGGLE_PX;
+            const wy = fromY + (dy / len) * WIGGLE_PX;
+            await moveHeld(wx, wy);
 
             const intercepted = await interceptPromise;
             if (intercepted) {
               dragMode = 'html5';
+              interceptReceived = true;
               eventsFired.push('Input.dragIntercepted');
               const dragData = intercepted.data as Record<string, unknown>;
               for (let i = 1; i <= steps; i++) {
                 const t = i / steps;
                 const { x, y } = interpolate(t);
-                await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+                await moveHeld(x, y);
                 await cdp(tabId, 'Input.dispatchDragEvent', {
                   type: 'dragOver',
                   x,
@@ -855,7 +880,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
               for (let i = 1; i <= steps; i++) {
                 const t = i / steps;
                 const { x, y } = interpolate(t);
-                await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+                await moveHeld(x, y);
                 if (stepDelayMs > 0) await sleep(stepDelayMs);
               }
               if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
@@ -886,7 +911,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             for (let i = 1; i <= steps; i++) {
               const t = i / steps;
               const { x, y } = interpolate(t);
-              await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+              await moveHeld(x, y);
               if (stepDelayMs > 0) await sleep(stepDelayMs);
             }
             if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
@@ -919,6 +944,8 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             to: { x: toX, y: toY, selector: toSelector ?? null },
             duration_ms_actual: Date.now() - dragStart,
             drag_mode: dragMode,
+            interception_attempted: interceptionEnabled,
+            intercept_received: interceptReceived,
             events_fired: eventsFired,
           },
         };
