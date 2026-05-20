@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.1](https://github.com/jobshimo/browser-link/compare/v0.13.0...v0.13.1) (2026-05-20)
+
+
+### Internal
+
+* **deps:** bump `env-paths` from 3.0.0 to 4.0.0. Major bump, only breaking change is the new Node.js >=20 floor — already required by the repo's `engines.node >=22.13`, so transparent for us.
+* **deps:** bump `ink` from 7.0.2 to 7.0.3. Fixes stale `<Static>` output on identity change and a `<Static>` remount drop bug. No API surface change.
+* **deps:** bump `better-sqlite3` from 12.9.0 to 12.10.0. SQLite engine bumped to 3.53.1 and percentile aggregate functions enabled. No call-site change.
+* **deps-dev:** bump `eslint` from 10.3.0 to 10.4.0 and `tsx` from 4.21.0 to 4.22.1.
+
+Bundled into a single PR so the lockstep Version Gate only fires once. Replaces Dependabot PRs #63, #65, #66, #67.
+
 ## [0.13.0](https://github.com/jobshimo/browser-link/compare/v0.12.0...v0.13.0) (2026-05-18)
 
 
