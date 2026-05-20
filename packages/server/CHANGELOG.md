@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/jobshimo/browser-link/compare/v0.13.1...v0.13.2) (2026-05-20)
+
+
+### Internal
+
+* **deps:** Dependabot PRs now self-heal against the lockstep Version Gate. New `.github/workflows/dependabot-version-bump.yml` runs only when the PR actor is `dependabot[bot]` and pushes a single commit to the bot's branch bumping the 5 lockstep-versioned files to `origin/main + 1 patch`. Backed by `scripts/dependabot-bump-version.mjs`, which reuses `scripts/lib/versions.mjs` so `release.mjs`, `version-gate.mjs` and this bumper all agree on what "aligned" means. Idempotent — re-runs after a Dependabot rebase exit 0 without spurious commits. Requires a fine-grained PAT scoped to this repo (Contents: read+write) stored under the **Dependabot** secrets scope as `DEPENDABOT_BUMP_PAT`.
+* **deps:** `.github/dependabot.yml` — production deps minor+patch now grouped (matching how dev + `@types/*` already were), so the typical week becomes 1–3 grouped PRs instead of one per dep. Major bumps drop out of every group so they always arrive solo for review. Block `@types/node` major bumps (must match the Node 22 runtime in CI). github-actions PRs also grouped. Closes #64.
+
 ## [0.13.1](https://github.com/jobshimo/browser-link/compare/v0.13.0...v0.13.1) (2026-05-20)
 
 
