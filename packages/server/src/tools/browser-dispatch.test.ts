@@ -25,6 +25,7 @@ describe('isBrowserTool', () => {
       'browser.navigate',
       'browser.snapshot',
       'browser.find',
+      'browser.canvas_screenshot',
       'browser.click',
       'browser.type',
       'browser.drag',
@@ -771,6 +772,100 @@ describe('action-tool claim enforcement', () => {
       ),
     ).rejects.toThrow(/role must be one of/);
     expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('canvas_screenshot forwards selector + region + format when provided', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.canvas_screenshot',
+      {
+        tab_id: 'tab_1',
+        selector: '#qtcanvas',
+        region: { x: 0, y: 0, w: 320, h: 240 },
+        format: 'jpeg',
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'canvas_screenshot', {
+      selector: '#qtcanvas',
+      region: { x: 0, y: 0, w: 320, h: 240 },
+      format: 'jpeg',
+    });
+  });
+
+  test('canvas_screenshot omits optional fields when absent', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.canvas_screenshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'canvas_screenshot', {
+      selector: undefined,
+      region: undefined,
+      format: undefined,
+    });
+  });
+
+  test('canvas_screenshot rejects non-string selector', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.canvas_screenshot',
+        { tab_id: 'tab_1', selector: 42 },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/selector must be a string/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('canvas_screenshot rejects an unknown format value', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.canvas_screenshot',
+        { tab_id: 'tab_1', format: 'webp' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/format must be "png" or "jpeg"/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('canvas_screenshot rejects region with missing fields', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.canvas_screenshot',
+        { tab_id: 'tab_1', region: { x: 0, y: 0, w: 10 } },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/region\.h must be a finite number/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('canvas_screenshot rejects region with non-positive width or height', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.canvas_screenshot',
+        { tab_id: 'tab_1', region: { x: 0, y: 0, w: 0, h: 100 } },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/region\.w and region\.h must be > 0/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('canvas_screenshot bypasses claim enforcement (read tool — multiple agents can capture the same tab)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    // B can still capture even though A holds the claim.
+    await handleBrowserTool('browser.canvas_screenshot', { tab_id: 'tab_1' }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'canvas_screenshot',
+      expect.any(Object),
+    );
   });
 
   test('find bypasses claim enforcement (read tool — multiple agents can search the same tab)', async () => {

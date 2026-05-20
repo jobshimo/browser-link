@@ -234,6 +234,60 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.canvas_screenshot',
+    description:
+      'Capture a `<canvas>` element from the connected tab as a PNG/JPEG and return it base64-encoded. Designed for pages whose visible UI is rendered to a canvas — Qt for WebAssembly (Venus OS, Felgo apps), WebGL games, custom rendering, etc. — where `browser.snapshot` and `browser.find` return nothing useful because there is no DOM inside the canvas to inspect. The finder traverses nested Shadow DOM roots, so a canvas hidden behind one or more `attachShadow` boundaries (very common in Qt-WASM apps) is still reachable without passing an explicit selector. Pass `selector` only when several canvases exist and you want a specific one; otherwise the first visible canvas wins. `region` crops to a sub-rect in canvas pixels — useful when you want to focus the LLM on one area and save tokens. Returns `{ ok: true, canvas_size, canvas_pixels, region, format, image_b64, taken_at_ms }` on success; `{ ok: false, reason: "no-canvas" }` when no canvas is found.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: {
+          type: 'string',
+          description:
+            'Optional CSS selector. When omitted, the finder picks the first visible canvas in the document, descending into Shadow DOM roots. Pass it only when several canvases coexist and you want to disambiguate. The selector is matched in the LIGHT DOM first; if it does not resolve to a canvas there, the finder still falls back to the visible-canvas heuristic.',
+        },
+        region: {
+          type: 'object',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            w: { type: 'number' },
+            h: { type: 'number' },
+          },
+          required: ['x', 'y', 'w', 'h'],
+          additionalProperties: false,
+          description:
+            'Optional crop rectangle in canvas pixels (NOT CSS pixels — canvas pixels are `canvas.width` x `canvas.height`, which may differ from the rendered CSS size on HiDPI). Coordinates outside the canvas are clamped. Default: the full canvas.',
+        },
+        format: {
+          type: 'string',
+          enum: ['png', 'jpeg'],
+          description:
+            'Output format. PNG (default) is lossless and larger; JPEG is smaller but lossy and drops the alpha channel. Pick PNG for fidelity, JPEG when you need to ship many screenshots cheaply.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Capture a canvas element as PNG/JPEG so the agent can SEE pages where the visible UI is rendered to a canvas (Qt-WASM, WebGL, custom rendering) and no DOM exists inside.',
+      when_to_use: [
+        'When `browser.snapshot` returns an empty `interactive` list and the page clearly has a UI on screen — that mismatch almost always means the UI is rendered into a `<canvas>`.',
+        'When the user mentions Victron VRM Remote Console, Venus OS, Felgo apps, WebGL games, or any "the UI is one big rectangle" page.',
+        'Before deciding whether the agent can act on a canvas page. Reading is free with this tool; clicking on a canvas needs CDP-level input dispatch and is not yet exposed.',
+      ],
+      gotchas: [
+        'Qt-WASM and similar runtimes consume only "real" browser input (events with `isTrusted: true`). `browser.click` / `browser.type` / synthetic `dispatchEvent` from `browser.evaluate` will not interact with the canvas content. This tool is READ-ONLY by design.',
+        'For pure WebGL canvases compiled without `preserveDrawingBuffer: true`, `toDataURL` may return a blank image — the framebuffer is cleared between frames. Qt-WASM enables preservation, so VRM Remote Console / Venus OS work. If you get a blank capture on a known-rendered canvas, that is the cause.',
+        'Coordinates in `region` are in CANVAS pixels, not CSS pixels. On HiDPI displays these differ — `canvas_size` returns CSS dimensions, `canvas_pixels` returns the backing store size, divide accordingly.',
+        'The canvas content can mutate between calls without any DOM signal (Qt repaints, animation frames, internal scrolling). Take a fresh screenshot before each decision; do not reuse a screenshot across many turns.',
+      ],
+      example:
+        'browser.canvas_screenshot({ tab_id: "tab_1" })  // first visible canvas, full size, PNG',
+    },
+  },
+  {
     name: 'browser.console',
     description:
       'Return recent console messages (log, info, warn, error) from the connected tab since it was attached. Rolling buffer (last 200).',

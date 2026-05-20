@@ -103,7 +103,28 @@ tokens AND more reliable than a hand-rolled expression.
   components update their state. \`dispatchEvent\` on \`value\` does NOT.
 - **Paging through \`browser.events\`** → keep \`lastId = result.latest_id\`
   in your working notes and pass it as \`since_id\` on the next call.
-  That is one variable. The server does not maintain per-agent cursors.`;
+  That is one variable. The server does not maintain per-agent cursors.
+
+## Pages rendered to a canvas (Qt-WASM, WebGL, DOMless UIs)
+
+Some pages render their entire UI to a single \`<canvas>\` element — Victron
+VRM Remote Console, Venus OS, Felgo apps, WebGL games, custom rendering
+engines. On those pages \`browser.snapshot\` returns an empty
+\`interactive\` list and \`browser.find\` finds nothing, because the visible
+UI lives inside the canvas's pixel buffer, not in the DOM.
+
+When you see that mismatch (clear UI on screen, nothing in snapshot),
+reach for \`browser.canvas_screenshot\`. It returns the canvas as PNG/JPEG
+base64 so you can SEE the page as a vision input. The finder walks
+nested Shadow DOM roots automatically — Qt-WASM hides its canvas behind
+two layers of \`attachShadow\` and a no-selector call still finds it.
+
+Acting on a canvas page is NOT yet possible from this server.
+Qt-WASM and similar runtimes only accept \`isTrusted: true\` input from
+the browser kernel; \`browser.click\` / \`browser.type\` / synthetic
+\`dispatchEvent\` go straight through without effect. Take screenshots,
+reason about what is on screen, ask the user to act when interaction
+is needed.`;
 
 /** Render a single tool's documentation as a markdown section. Skips
  * tools without a `doc` block (the structured shape is opt-in for now

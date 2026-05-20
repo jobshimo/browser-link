@@ -56,6 +56,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Find one element by visible text and return a stable selector + coords',
   },
   {
+    name: 'browser.canvas_screenshot',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Screenshot a <canvas> as PNG/JPEG — for Qt-WASM, WebGL and other DOMless surfaces',
+  },
+  {
     name: 'browser.console',
     family: 'bridge',
     category: 'read',

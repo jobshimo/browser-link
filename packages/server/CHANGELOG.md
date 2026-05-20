@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.14.0](https://github.com/jobshimo/browser-link/compare/v0.13.4...v0.14.0) (2026-05-20)
+
+
+### Features
+
+* **bridge:** new `browser.canvas_screenshot` tool. Captures a `<canvas>` element from the connected tab as PNG/JPEG and returns it base64-encoded. Designed for pages whose visible UI is rendered to a canvas — Qt for WebAssembly (Victron VRM Remote Console, Venus OS, Felgo apps), WebGL games, custom rendering engines — where `browser.snapshot` and `browser.find` return nothing useful because there is no DOM inside the canvas to inspect. The finder traverses nested Shadow DOM roots, so a canvas hidden behind one or more `attachShadow` boundaries (very common in Qt-WASM apps) is reachable without passing an explicit selector. Accepts an optional `selector` to disambiguate when several canvases coexist, an optional `region: {x,y,w,h}` (in canvas pixels) to crop and save tokens, and an optional `format: "png"|"jpeg"`. Returns `{ ok: true, canvas_size, canvas_pixels, region, format, image_b64, taken_at_ms }` on success or `{ ok: false, reason: "no-canvas"|"tainted"|"crop-failed", message }` on failure. Read-only tool: multiple agents can capture the same tab in parallel; no claim required.
+
+### Rationale
+
+Acting on a canvas page is intentionally NOT exposed yet. Qt-WASM (and other Emscripten-based runtimes) checks `event.isTrusted` and discards synthetic input — verified empirically against the Victron VRM Remote Console: synthetic `MouseEvent` / `PointerEvent` / `TouchEvent` dispatch propagates to the canvas listener but Qt's `QWasmEventDispatcher` bails before any action runs. The only path to real input is `chrome.debugger.sendCommand('Input.dispatchMouseEvent', ...)`, which generates events with `isTrusted: true` from Chromium's input pipeline. Implementing that needs careful design around per-tool permissions and the existing claim layer; it will land in a future release. The screenshot tool delivers the immediate value (the LLM can SEE the page) without dragging the security review of the input path along with it.
+
+### Internal
+
+* `BROWSER_TOOL_NAMES` closed union grew from 20 to 21 entries (`browser.canvas_screenshot`).
+* `TOOL_CATALOGUE` grew from 27 to 28 entries (read tool; survives the `readonly` preset). The hardcoded count assertion in `permissions.test.ts` was bumped 27 → 28 as the canary.
+* `commands/about.ts` quick-reference list (EN + ES) gets a `browser.canvas_screenshot` line so `browser-link about` does not undersell the new tool.
+* `server-instructions.ts` PREAMBLE adds a "Pages rendered to a canvas" section so the MCP client receives the canvas-page playbook on `initialize` — including the limitation that interaction on those pages is not exposed.
+* Extension `background.ts` adds `buildCanvasScreenshotJs` (alongside the existing `buildSnapshotJs` / `buildFindJs`) and a `canvas_screenshot` case in `handleTool`. The expression walks nested Shadow DOM roots, optionally crops via a temp 2D canvas, and emits base64 with the comma-prefix stripped so callers receive a plain body.
+
 ## [0.13.2](https://github.com/jobshimo/browser-link/compare/v0.13.1...v0.13.2) (2026-05-20)
 
 

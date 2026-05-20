@@ -100,6 +100,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.navigate',
   'browser.snapshot',
   'browser.find',
+  'browser.canvas_screenshot',
   'browser.console',
   'browser.network',
   'browser.network_body',
@@ -302,6 +303,47 @@ export async function handleBrowserTool(
         text,
         role,
         exact: exact === true,
+      });
+    }
+    case 'browser.canvas_screenshot': {
+      const { selector, region, format } = (args ?? {}) as {
+        selector?: unknown;
+        region?: unknown;
+        format?: unknown;
+      };
+      if (selector !== undefined && typeof selector !== 'string') {
+        throw new Error('browser.canvas_screenshot: selector must be a string when provided');
+      }
+      let normalizedRegion: { x: number; y: number; w: number; h: number } | undefined;
+      if (region !== undefined) {
+        if (typeof region !== 'object' || region === null) {
+          throw new Error('browser.canvas_screenshot: region must be an object {x,y,w,h}');
+        }
+        const r = region as Record<string, unknown>;
+        for (const key of ['x', 'y', 'w', 'h']) {
+          if (typeof r[key] !== 'number' || !Number.isFinite(r[key])) {
+            throw new Error(`browser.canvas_screenshot: region.${key} must be a finite number`);
+          }
+        }
+        if ((r.w as number) <= 0 || (r.h as number) <= 0) {
+          throw new Error('browser.canvas_screenshot: region.w and region.h must be > 0');
+        }
+        normalizedRegion = {
+          x: r.x as number,
+          y: r.y as number,
+          w: r.w as number,
+          h: r.h as number,
+        };
+      }
+      if (format !== undefined && format !== 'png' && format !== 'jpeg') {
+        throw new Error('browser.canvas_screenshot: format must be "png" or "jpeg"');
+      }
+      // canvas_screenshot is a read tool — multiple agents can inspect the
+      // same canvas in parallel. No claim enforcement.
+      return deps.callBrowserTool(requireTabId(args), 'canvas_screenshot', {
+        selector,
+        region: normalizedRegion,
+        format,
       });
     }
     case 'browser.console': {
