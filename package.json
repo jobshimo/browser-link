@@ -1,6 +1,6 @@
 {
   "name": "browser-link-monorepo",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "private": true,
   "description": "Monorepo workspace root for browser-link. The published npm package is @jobshimo/browser-link in packages/server.",
   "packageManager": "pnpm@11.1.1",

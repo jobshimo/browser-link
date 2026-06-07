@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   decodeLsofString,
+  parseGetProcessName,
   parseLsofOutput,
   parseNetstatForLocal,
   parseTasklistImage,
@@ -139,5 +140,27 @@ describe('parseTasklistImage', () => {
 
   test('returns null when output is empty', () => {
     expect(parseTasklistImage('')).toBeNull();
+  });
+});
+
+describe('parseGetProcessName', () => {
+  test('appends .exe to the bare ProcessName Get-Process reports', () => {
+    expect(parseGetProcessName('chrome\r\n')).toBe('chrome.exe');
+  });
+
+  test('does not double-suffix a name that already ends in .exe', () => {
+    expect(parseGetProcessName('msedge.exe\n')).toBe('msedge.exe');
+  });
+
+  test('treats the suffix case-insensitively', () => {
+    expect(parseGetProcessName('Brave.EXE')).toBe('Brave.EXE');
+  });
+
+  test('skips leading blank lines and returns the first real value', () => {
+    expect(parseGetProcessName('\n\n  vivaldi  \n')).toBe('vivaldi.exe');
+  });
+
+  test('returns null when the process was not found (empty output)', () => {
+    expect(parseGetProcessName('')).toBeNull();
   });
 });

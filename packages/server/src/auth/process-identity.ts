@@ -3,7 +3,10 @@ import { platform } from 'node:os';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
-const LOOKUP_TIMEOUT_MS = 1500;
+// Generous enough to cover a slow `tasklist` fallback on loaded Windows
+// machines (observed at ~3s), while still bounding a hung lookup. The fast
+// primitives (PowerShell Get-Process, lsof, netstat) return well under this.
+const LOOKUP_TIMEOUT_MS = 5000;
 
 export interface PeerProcess {
   pid: number;
@@ -123,8 +126,8 @@ export function decodeLsofString(s: string): string {
 
 /**
  * Windows path: `netstat -ano` lists every TCP connection with its owning
- * PID. We then ask `tasklist` for the image name of that PID. Both ship by
- * default with Windows; no extra tooling needed.
+ * PID, then we resolve that PID to an image name. Both primitives ship with
+ * Windows; no extra tooling needed.
  *
  * Like the UNIX path, this filters by LOCAL endpoint match — see
  * `parseNetstatForLocal`. Keep the two branches in sync.
@@ -136,11 +139,44 @@ async function lookupWindows(host: string, port: number): Promise<PeerProcess | 
   const pid = parseNetstatForLocal(netstatOut, host, port);
   if (pid === null) return null;
 
-  const { stdout: tasklistOut } = await execAsync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
-    timeout: LOOKUP_TIMEOUT_MS,
-  });
-  const binaryName = parseTasklistImage(tasklistOut);
+  const binaryName = await imageNameForPid(pid);
   return binaryName ? { pid, binaryName } : null;
+}
+
+/**
+ * Resolve a Windows PID to its image name.
+ *
+ * Prefers PowerShell `Get-Process`, which returns in well under a second on
+ * normal machines. `tasklist` is kept as a fallback because, while it is the
+ * more universally-present tool, it can be pathologically slow (several
+ * seconds) on some installs — slow enough to blow `LOOKUP_TIMEOUT_MS` and make
+ * the WS peer check fail closed for EVERY browser, not just attackers. Trying
+ * them in order means a missing or locked-down PowerShell degrades to the
+ * original behaviour rather than failing outright.
+ *
+ * `Get-Process` reports `ProcessName` without the `.exe` suffix, so
+ * `parseGetProcessName` re-adds it to match the win32 allowlist.
+ */
+async function imageNameForPid(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync(
+      `powershell -NoProfile -NonInteractive -Command "(Get-Process -Id ${pid}).ProcessName"`,
+      { timeout: LOOKUP_TIMEOUT_MS },
+    );
+    const name = parseGetProcessName(stdout);
+    if (name) return name;
+  } catch {
+    // PowerShell missing, disabled by policy, or timed out — fall back.
+  }
+
+  try {
+    const { stdout } = await execAsync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+      timeout: LOOKUP_TIMEOUT_MS,
+    });
+    return parseTasklistImage(stdout);
+  } catch {
+    return null;
+  }
 }
 
 export function parseNetstatForLocal(out: string, host: string, port: number): number | null {
@@ -164,6 +200,21 @@ export function parseTasklistImage(out: string): string | null {
     if (!trimmed) continue;
     const match = trimmed.match(/^"([^"]+)"/);
     if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Parse `(Get-Process -Id <pid>).ProcessName` output: a single line carrying
+ * the image name minus its extension. We re-add `.exe` so the result matches
+ * the win32 allowlist (`chrome.exe`, ...). Returns the first non-empty line,
+ * or null when the process could not be found (empty output).
+ */
+export function parseGetProcessName(out: string): string | null {
+  for (const line of out.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    return trimmed.toLowerCase().endsWith('.exe') ? trimmed : `${trimmed}.exe`;
   }
   return null;
 }
