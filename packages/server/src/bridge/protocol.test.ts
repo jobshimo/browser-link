@@ -25,6 +25,9 @@ describe('encodeFrame', () => {
       { kind: 'pong' },
       { kind: 'primary-closing', reason: 'shutdown' },
       { kind: 'primary-closing' },
+      { kind: 'settings.push', settings: { idleTtlMinutes: 15, updatedAt: 1_700_000_000_000 } },
+      { kind: 'settings.push', settings: { idleTtlMinutes: 0, updatedAt: 1_700_000_000_000 } },
+      { kind: 'settings.push-ack', notified: 3 },
     ];
     for (const f of frames) {
       const wire = encodeFrame(f).trimEnd();
@@ -77,6 +80,46 @@ describe('parseFrame', () => {
     expect(parseFrame('{"kind":"primary-closing","reason":"x"}')).toEqual({
       kind: 'primary-closing',
       reason: 'x',
+    });
+  });
+
+  test('rejects settings.push without a numeric settings.idleTtlMinutes / updatedAt', () => {
+    expect(parseFrame('{"kind":"settings.push"}')).toBeNull();
+    expect(parseFrame('{"kind":"settings.push","settings":{}}')).toBeNull();
+    expect(
+      parseFrame('{"kind":"settings.push","settings":{"idleTtlMinutes":"30","updatedAt":1}}'),
+    ).toBeNull();
+    expect(parseFrame('{"kind":"settings.push","settings":{"idleTtlMinutes":30}}')).toBeNull();
+  });
+
+  test('accepts a well-formed settings.push, including the 0 ("never") value', () => {
+    expect(
+      parseFrame(
+        '{"kind":"settings.push","settings":{"idleTtlMinutes":15,"updatedAt":1700000000000}}',
+      ),
+    ).toEqual({
+      kind: 'settings.push',
+      settings: { idleTtlMinutes: 15, updatedAt: 1_700_000_000_000 },
+    });
+    expect(
+      parseFrame(
+        '{"kind":"settings.push","settings":{"idleTtlMinutes":0,"updatedAt":1700000000000}}',
+      ),
+    ).toEqual({
+      kind: 'settings.push',
+      settings: { idleTtlMinutes: 0, updatedAt: 1_700_000_000_000 },
+    });
+  });
+
+  test('rejects settings.push-ack without a numeric notified', () => {
+    expect(parseFrame('{"kind":"settings.push-ack"}')).toBeNull();
+    expect(parseFrame('{"kind":"settings.push-ack","notified":"3"}')).toBeNull();
+  });
+
+  test('accepts a well-formed settings.push-ack', () => {
+    expect(parseFrame('{"kind":"settings.push-ack","notified":2}')).toEqual({
+      kind: 'settings.push-ack',
+      notified: 2,
     });
   });
 });

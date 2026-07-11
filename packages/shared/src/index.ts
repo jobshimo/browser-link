@@ -47,6 +47,31 @@ export type ToolResponseMessage =
   | { kind: 'tool.response'; id: string; ok: false; error: string };
 
 /**
+ * Server-pushed settings, currently just the idle-disconnect TTL. The same
+ * logical setting is also editable from the extension's own popup, so both
+ * sides need a precedence rule for "who wins" when they disagree:
+ *
+ * `updatedAt` is the epoch-ms timestamp of when THIS value was written on
+ * the server side (via `browser-link config set idle-ttl`). The extension
+ * compares it against the `updatedAt` it stamped on its own last LOCAL
+ * write (from the popup) and only applies the incoming value when it is
+ * newer — see `idle-policy.ts`'s `shouldAcceptIncomingSettings`. Comparing
+ * raw wall-clock timestamps across processes is safe here specifically
+ * because the server and the browser always run on the same machine
+ * (loopback-only bridge) and therefore share one clock — this would NOT
+ * be a safe pattern for a distributed, multi-host system.
+ */
+export interface SettingsUpdatePayload {
+  idleTtlMinutes: number;
+  updatedAt: number;
+}
+
+export interface SettingsUpdateMessage {
+  kind: 'settings.update';
+  settings: SettingsUpdatePayload;
+}
+
+/**
  * Out-of-band notification from the extension to the server's BridgeEventLog.
  * Used for native dialog open/close, tab-created by window.open, etc.
  * `tabId` is the server-assigned browser-link id (set after tab.registered).
@@ -59,7 +84,7 @@ export interface BridgeEventMessage {
 }
 
 export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage | BridgeEventMessage;
-export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage;
+export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage;
 
 export interface PingResult {
   title: string;

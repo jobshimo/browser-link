@@ -35,6 +35,51 @@ export interface BrowserLinkConfig {
    * the primary does). Has no effect when multiAgent is false.
    */
   autoReelect?: boolean;
+  /**
+   * CLI-side mirror of the extension's idle-disconnect TTL (see
+   * `packages/extension/src/idle-policy.ts`), in minutes. `0` means
+   * "never". Set via `browser-link config set idle-ttl <minutes|never>`.
+   *
+   * Deliberately left `undefined` — NOT defaulted to 30 here — when the
+   * CLI has never touched it: the WS bridge only pushes a `settings.update`
+   * to the extension when this field is explicitly set, so a popup-only
+   * user (who never ran the CLI command) never sees a spurious overwrite
+   * of their own choice with a server-side "default". See `idleTtlUpdatedAt`
+   * for the precedence rule when both sides have set a value.
+   */
+  idleTtlMinutes?: number;
+  /**
+   * Epoch-ms timestamp of the last `idleTtlMinutes` write from the CLI.
+   * Sent alongside `idleTtlMinutes` in every `settings.update` push so the
+   * extension can apply a last-write-wins precedence rule against its own
+   * locally-stored timestamp (popup edits stamp their own `Date.now()`).
+   * Always set together with `idleTtlMinutes` — never one without the other.
+   */
+  idleTtlUpdatedAt?: number;
+}
+
+/** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
+ * as an independent copy (not a shared import) for the same reason
+ * `messages.ts` duplicates the wire types instead of depending on
+ * `@browser-link/shared`: the server publishes to npm standalone and must
+ * not carry an unresolvable workspace dependency. */
+export const MIN_IDLE_TTL_MINUTES = 1;
+export const MAX_IDLE_TTL_MINUTES = 1440;
+export const DEFAULT_IDLE_TTL_MINUTES = 30;
+
+/**
+ * Clamp a CLI-provided idle-TTL value the same way the extension clamps a
+ * stored one: `0` ("never") passes through untouched; a non-integer, an
+ * out-of-range value, or anything malformed falls back to
+ * `DEFAULT_IDLE_TTL_MINUTES` rather than being snapped to the nearest
+ * boundary. Exported so `commands/config.ts` and its tests share one
+ * implementation instead of re-deriving the bounds.
+ */
+export function clampIdleTtlMinutes(value: number): number {
+  if (value === 0) return 0;
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return DEFAULT_IDLE_TTL_MINUTES;
+  if (value < MIN_IDLE_TTL_MINUTES || value > MAX_IDLE_TTL_MINUTES) return DEFAULT_IDLE_TTL_MINUTES;
+  return value;
 }
 
 /** Defaults applied at load time so consumers can read `cfg.multiAgent`

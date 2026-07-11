@@ -143,6 +143,58 @@ describe('IpcClient.sendMcpRequest', () => {
   });
 });
 
+describe('IpcClient.sendSettingsPush', () => {
+  test('round-trips a settings.push through the IPC bridge and returns the notified count', async () => {
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: () => 4,
+    });
+    await server.start();
+    const token = server.currentToken();
+    const client = new IpcClient();
+    clients.push(client);
+    await client.connect(token, server.boundAddress());
+
+    const ack = await client.sendSettingsPush({ idleTtlMinutes: 15, updatedAt: 12345 });
+    expect(ack).toEqual({ notified: 4 });
+  });
+
+  test('rejects when the socket closes while the push is in flight', async () => {
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: () => 0,
+    });
+    await server.start();
+    const token = server.currentToken();
+    const client = new IpcClient();
+    clients.push(client);
+    await client.connect(token, server.boundAddress());
+
+    // Attach the rejection handler SYNCHRONOUSLY (before the awaited
+    // server.stop() below) so Node never sees an interim tick with no
+    // handler attached — otherwise it flags a transient
+    // "unhandled rejection" even though the test does handle it.
+    const pending = client
+      .sendSettingsPush({ idleTtlMinutes: 15, updatedAt: 1 })
+      .catch((err: unknown) => err);
+    await server.stop();
+    server = null;
+    const result = await pending;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toMatch(/closed while the settings push was in flight/);
+  });
+
+  test('rejects immediately when not connected', async () => {
+    const client = new IpcClient();
+    clients.push(client);
+    await expect(client.sendSettingsPush({ idleTtlMinutes: 5, updatedAt: 1 })).rejects.toThrow(
+      /Not connected/,
+    );
+  });
+});
+
 describe('IpcClient.onClose', () => {
   test('fires "primary-closing" when the primary broadcasts shutdown', async () => {
     server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });

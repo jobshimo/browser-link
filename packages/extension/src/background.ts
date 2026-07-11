@@ -29,6 +29,17 @@ import {
   type TypeStepResult,
   type WaitForStepResult,
 } from './flow.js';
+import {
+  DEFAULT_IDLE_TTL_MINUTES,
+  IDLE_TTL_STORAGE_KEY,
+  IDLE_TTL_UPDATED_AT_STORAGE_KEY,
+  clampIdleTtlMinutes,
+  parseIncomingSettings,
+  shouldAcceptIncomingSettings,
+  shouldDisconnectForIdle,
+  shouldScheduleIdleSweep,
+  type IncomingIdleSettings,
+} from './idle-policy.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -37,17 +48,73 @@ const NETWORK_BUFFER_MAX = 200;
 
 /* Idle TTL for a tab's WebSocket bridge.
  *
- * After this many milliseconds without a tool.request from the server,
- * the extension closes its side of the WS and detaches the debugger.
- * The popup then shows "Not connected" again and the user explicitly
- * re-presses Connect when they want to reactivate.
+ * After this many minutes without a tool.request from the server, the
+ * extension closes its side of the WS and detaches the debugger. The
+ * popup then shows "Not connected" again and the user explicitly
+ * re-presses Connect when they want to reactivate — unless the user
+ * configured "Never" in the popup, in which case the sweep never fires.
  *
  * This replaces the previous behaviour where the bridge implicitly
  * died together with the MCP server subprocess (parent_death_guard,
  * removed in v0.9.0). Lifecycle is now client-side: agent activity
- * keeps the tab warm, silence eventually parks it. */
-const WS_IDLE_TTL_MS = 30 * 60 * 1000;
+ * keeps the tab warm, silence eventually parks it (or never does, if
+ * the user opted out).
+ *
+ * The TTL itself is user-configurable (`idleTtlMinutes` in
+ * `chrome.storage.local`, edited from the popup — see idle-policy.ts for
+ * the decision logic and popup.ts for the control). `idleTtlMinutesCache`
+ * is the in-memory mirror the sweep reads on every tick: chrome.storage is
+ * async, the sweep loop below is not, so the value is loaded once at
+ * startup and kept current via `chrome.storage.onChanged` instead of being
+ * awaited inside the interval callback. */
 const WS_IDLE_SWEEP_MS = 60 * 1000;
+let idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
+
+async function loadIdleTtlMinutes(): Promise<void> {
+  try {
+    const data = await chrome.storage.local.get(IDLE_TTL_STORAGE_KEY);
+    idleTtlMinutesCache = clampIdleTtlMinutes(data[IDLE_TTL_STORAGE_KEY]);
+  } catch {
+    idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
+  }
+}
+
+void loadIdleTtlMinutes();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (!(IDLE_TTL_STORAGE_KEY in changes)) return;
+  idleTtlMinutesCache = clampIdleTtlMinutes(changes[IDLE_TTL_STORAGE_KEY].newValue);
+});
+
+/**
+ * Apply an incoming `settings.update` push from the server (see
+ * `handleTool`'s caller — the WS message listener in `connectTab` below).
+ * The server sends this both right after `tab.registered` (when
+ * `browser-link config set idle-ttl` was run at least once) AND on demand
+ * when the CLI pushes a change to an already-connected tab.
+ *
+ * Applies `shouldAcceptIncomingSettings` (idle-policy.ts) — newest
+ * `updatedAt` wins against whatever was last written locally (typically by
+ * the popup). Writing through `chrome.storage.local.set` here is enough to
+ * take effect: the `onChanged` listener above keeps `idleTtlMinutesCache`
+ * current, and the popup re-reads storage on its own refresh interval.
+ */
+async function applyIncomingSettings(settings: IncomingIdleSettings): Promise<void> {
+  try {
+    const data = await chrome.storage.local.get(IDLE_TTL_UPDATED_AT_STORAGE_KEY);
+    const rawLocalUpdatedAt = data[IDLE_TTL_UPDATED_AT_STORAGE_KEY];
+    const localUpdatedAt = typeof rawLocalUpdatedAt === 'number' ? rawLocalUpdatedAt : undefined;
+    if (!shouldAcceptIncomingSettings(localUpdatedAt, settings.updatedAt)) return;
+    await chrome.storage.local.set({
+      [IDLE_TTL_STORAGE_KEY]: clampIdleTtlMinutes(settings.idleTtlMinutes),
+      [IDLE_TTL_UPDATED_AT_STORAGE_KEY]: settings.updatedAt,
+    });
+  } catch {
+    // Best effort — a failed sync just leaves the local value as-is; the
+    // next settings.update (or a popup edit) can still apply it.
+  }
+}
 
 interface ConsoleEntry {
   timestamp: number;
@@ -94,9 +161,10 @@ interface TabState {
    * Surfaced to the popup via the `pendingDialogs` runtime message. */
   pendingDialog?: PendingDialogInfo;
   /** Last time the server talked to this tab (a tool.request landed).
-   * Used by the WS-idle sweeper to disconnect tabs that have been
-   * silent for `WS_IDLE_TTL_MS`. Touched on every tool.request received
-   * AND once at connect time. */
+   * Used by the WS-idle sweeper to disconnect tabs that have been silent
+   * for longer than the user's configured `idleTtlMinutes` (see
+   * idle-policy.ts). Touched on every tool.request received AND once at
+   * connect time. */
   lastActivityAt: number;
 }
 
@@ -1771,26 +1839,54 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
       void (async () => {
         const msg = safeParse(typeof ev.data === 'string' ? ev.data : '');
         if (!msg) return;
-        if (msg.kind === 'tab.registered') {
-          state.serverTabId = msg.payload.tabId;
-          // serverVersion is optional on the wire so older servers that
-          // predate the field still parse — narrow on `typeof string`.
-          if (typeof msg.payload.serverVersion === 'string') {
-            state.serverVersion = msg.payload.serverVersion;
+        // Exhaustive routing over ServerToExtension. The `default` branch
+        // pins `msg` to `never`, so adding a fourth message kind to the
+        // union fails to COMPILE here instead of silently misrouting the
+        // new kind into the tool.request handler.
+        switch (msg.kind) {
+          case 'tab.registered': {
+            state.serverTabId = msg.payload.tabId;
+            // serverVersion is optional on the wire so older servers that
+            // predate the field still parse — narrow on `typeof string`.
+            if (typeof msg.payload.serverVersion === 'string') {
+              state.serverVersion = msg.payload.serverVersion;
+            }
+            // Remember this id so the next reconnect (after a primary swap)
+            // asks the new primary to honour it. The primary emits
+            // `tab-renamed` in the bridge event log if it can't.
+            void storeTabId(tabId, msg.payload.tabId);
+            settle({ ok: true, serverTabId: msg.payload.tabId });
+            return;
           }
-          // Remember this id so the next reconnect (after a primary swap)
-          // asks the new primary to honour it. The primary emits
-          // `tab-renamed` in the bridge event log if it can't.
-          void storeTabId(tabId, msg.payload.tabId);
-          settle({ ok: true, serverTabId: msg.payload.tabId });
-          return;
+          case 'settings.update': {
+            // Housekeeping, not agent activity — deliberately does NOT touch
+            // state.lastActivityAt. Counting a server-pushed settings sync as
+            // "activity" would let it silently keep an otherwise-idle tab
+            // connected forever, defeating the idle TTL it is updating.
+            //
+            // `safeParse` is only a cast — validate the payload shape at the
+            // wire boundary (same rigor the IPC settings.push frame gets in
+            // the server's protocol.ts) so a malformed push is dropped here
+            // instead of throwing inside the apply path.
+            const settings = parseIncomingSettings(msg.settings);
+            if (settings) void applyIncomingSettings(settings);
+            return;
+          }
+          case 'tool.request': {
+            // Touch the activity timestamp so the WS-idle sweeper keeps
+            // this tab warm.
+            state.lastActivityAt = Date.now();
+            const response = await handleTool(state, msg);
+            if (ws.readyState === WebSocket.OPEN) send(ws, response);
+            return;
+          }
+          default: {
+            // Compile-time exhaustiveness check; at runtime an unknown kind
+            // (newer server, older extension) is ignored defensively.
+            const _exhaustive: never = msg;
+            return;
+          }
         }
-        // ServerToExtension is the union { tab.registered | tool.request },
-        // so by elimination this branch handles the tool.request case. Touch
-        // the activity timestamp so the WS-idle sweeper keeps this tab warm.
-        state.lastActivityAt = Date.now();
-        const response = await handleTool(state, msg);
-        if (ws.readyState === WebSocket.OPEN) send(ws, response);
       })();
     });
 
@@ -1990,17 +2086,26 @@ chrome.debugger.onDetach.addListener((source) => {
 /* WS-idle sweeper.
  *
  * Every WS_IDLE_SWEEP_MS, walk every connected tab. Any tab whose last
- * tool.request landed more than WS_IDLE_TTL_MS ago gets disconnected:
- * the WS closes, the debugger detaches, the popup goes back to "Not
- * connected". The user explicitly re-presses Connect to bring it back.
+ * tool.request landed more than the user's configured `idleTtlMinutes`
+ * ago gets disconnected: the WS closes, the debugger detaches, the popup
+ * goes back to "Not connected". The user explicitly re-presses Connect to
+ * bring it back.
+ *
+ * When the user picked "Never" (idleTtlMinutesCache === 0),
+ * `shouldScheduleIdleSweep` short-circuits the tick before it walks
+ * `tabStates` — the interval itself keeps ticking (cancelling/rearming a
+ * service-worker timer from a storage listener is more moving parts than
+ * it is worth for a once-a-minute no-op), but each tick does zero work
+ * beyond that one check.
  *
  * This is the replacement for the parent_death_guard that used to kill
  * the entire MCP server on stdio close — now the server stays alive and
  * the bridge is parked tab-by-tab from the client side. */
 setInterval(() => {
+  if (!shouldScheduleIdleSweep(idleTtlMinutesCache)) return;
   const now = Date.now();
   for (const [tabId, state] of tabStates) {
-    if (now - state.lastActivityAt < WS_IDLE_TTL_MS) continue;
+    if (!shouldDisconnectForIdle(state.lastActivityAt, now, idleTtlMinutesCache)) continue;
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

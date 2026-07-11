@@ -16,6 +16,7 @@ import {
   WS_HOST,
   WS_PORT,
   isAddrInUse,
+  pushSettingsToAllTabs,
   sendToolRequest,
   startWsBridge,
   type PendingRequest,
@@ -269,7 +270,12 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // behaviour identical for users who never enable the feature.
   let ipcServer: IpcServer | null = null;
   if (cfg.multiAgent === true) {
-    ipcServer = new IpcServer(dispatchDeps);
+    ipcServer = new IpcServer(dispatchDeps, {
+      // Lets `browser-link config set idle-ttl` reach already-connected
+      // tabs immediately instead of waiting for their next reconnect — see
+      // ws-bridge.ts's pushSettingsToAllTabs and cli.ts's config command.
+      pushSettings: (settings) => pushSettingsToAllTabs(tabs, settings),
+    });
     try {
       await ipcServer.start();
     } catch (err) {

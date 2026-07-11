@@ -425,6 +425,34 @@
       .version-banner button {
         margin-top: 0;
       }
+
+      /* Idle-disconnect TTL setting — a small, always-visible control
+       * (not tied to card state) that lets the user override the fixed
+       * 30-minute auto-disconnect. Sits below the primary action, in its
+       * own thin row echoing .explanation's divider treatment. */
+      .settings-row {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      .settings-row select {
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 500;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -506,6 +534,23 @@
           <button id="dialog-accept" class="primary">OK / Accept</button>
           <button id="dialog-dismiss" class="danger">Cancel</button>
         </div>
+      </div>
+
+      <!-- Idle-disconnect TTL. Not tied to card/connection state — visible
+           and editable whether or not a tab is currently connected.
+           Changes apply immediately, no extension reload needed (popup.ts
+           writes straight to chrome.storage.local; background.ts's sweep
+           reads the live value via chrome.storage.onChanged). -->
+      <div class="settings-row">
+        <label for="idle-ttl-select">Auto-disconnect idle tabs</label>
+        <select id="idle-ttl-select">
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">60 min</option>
+          <option value="120">120 min</option>
+          <option value="0">Never</option>
+        </select>
       </div>
 
       <div class="footer">manual · per-tab · loopback only</div>

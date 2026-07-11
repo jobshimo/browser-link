@@ -178,8 +178,10 @@ browser-link help                          # list every subcommand
   them one by one, by hand.
 - Disconnecting a tab from the extension popup immediately revokes the
   bridge for that tab. The bridge itself survives MCP client restarts —
-  if no tool call lands for 30 minutes, the extension parks the tab on
-  its own and you re-press Connect when you want it back.
+  if no tool call lands for the configured idle TTL (30 minutes by
+  default, user-configurable, see [Idle-disconnect TTL](#idle-disconnect-ttl)),
+  the extension parks the tab on its own and you re-press Connect when
+  you want it back.
 
 ## Use cases
 
@@ -301,7 +303,7 @@ CREATE TABLE entries (
 
 ## Customising
 
-Three knobs, all opt-in, all reversible.
+Four knobs, all opt-in, all reversible.
 
 ### Agent instructions
 
@@ -401,6 +403,49 @@ agent never holds a tab forever. `browser.my_tabs` lists the tabs the
 calling agent currently owns. Claims are advisory — they inform, they
 do not block — so a single-client workflow never has to think about
 them.
+
+### Idle-disconnect TTL
+
+By default, a connected tab whose bridge sees no `tool.request` for 30
+minutes gets automatically parked (WS closed, debugger detached — the
+popup goes back to "Not connected"). This is configurable two ways,
+and both edit the **same** logical setting:
+
+**From the extension popup** — a small control below the Connect
+button: `Auto-disconnect idle tabs: [30 min ▾]`, with presets from 5
+minutes up to 2 hours plus `Never` (disables auto-disconnect entirely).
+Applies immediately — no extension reload needed.
+
+**From the shell:**
+
+```bash
+browser-link config get idle-ttl              # show the current CLI-side value
+browser-link config set idle-ttl 15           # 15 minutes
+browser-link config set idle-ttl never        # disable auto-disconnect
+```
+
+(Values outside 1-1440 minutes are clamped to the nearest bound; a
+non-numeric value is rejected with an error instead of being applied.)
+
+Lowering the TTL applies against each tab's **absolute** last-activity
+time, not the moment you changed the setting — a tab that has already
+been idle longer than the new TTL disconnects on the next sweep (within
+about a minute).
+
+**Precedence — last write wins.** The popup and the CLI both stamp an
+`updatedAt` timestamp on every change. When a tab (re)connects, the
+server sends its last CLI-set value (if any) to the extension; the
+extension only applies it when it is **newer** than whatever was last
+set locally (typically from the popup). If the CLI has never touched
+the setting, the server never pushes anything, so a popup-only user is
+never bothered. `config set idle-ttl` also tries to push the new value
+to **already-connected** tabs immediately, over the multi-agent IPC
+bridge (see below) — this requires a `browser-link` primary to be
+running with multi-agent mode on (the default); otherwise the value is
+saved and applies the next time a tab connects. Comparing raw
+timestamps between the CLI (Node) and the extension (Chrome) is safe
+here specifically because both always run on the same machine — this
+is a loopback-only bridge, not a distributed system.
 
 ## Security model
 

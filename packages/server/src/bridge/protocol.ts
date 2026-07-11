@@ -81,6 +81,32 @@ export interface PrimaryClosingFrame {
   reason?: string;
 }
 
+/**
+ * One-shot push from a `browser-link config set idle-ttl` CLI invocation to
+ * the running primary — proxy → primary despite the "settings" name, same
+ * direction as `mcp.request`. The CLI process is short-lived: it connects,
+ * sends exactly one of these, waits for the ack, and disconnects. Reuses
+ * the IPC bridge instead of a bespoke side channel because it is already
+ * the primary's one existing local control plane (token-authenticated,
+ * loopback-only, same trust boundary as the multi-agent proxy protocol).
+ */
+export interface SettingsPushFrame {
+  kind: 'settings.push';
+  /** `updatedAt` is stamped ONCE by the CLI (the same value it just wrote
+   * to config.json) and carried through unchanged rather than re-stamped
+   * server-side — so the value pushed to already-connected tabs right now
+   * and the value a NEW tab reads from config.json a moment later always
+   * agree, instead of racing two `Date.now()` calls a few ms apart. */
+  settings: { idleTtlMinutes: number; updatedAt: number };
+}
+
+/** Primary's reply to `settings.push` — how many currently-connected
+ * extension tabs were sent a `settings.update` as a result. */
+export interface SettingsPushAckFrame {
+  kind: 'settings.push-ack';
+  notified: number;
+}
+
 export type Frame =
   | HelloFrame
   | HelloAckFrame
@@ -90,7 +116,9 @@ export type Frame =
   | McpNotificationFrame
   | PingFrame
   | PongFrame
-  | PrimaryClosingFrame;
+  | PrimaryClosingFrame
+  | SettingsPushFrame
+  | SettingsPushAckFrame;
 
 /** Serialise one frame to its on-the-wire representation (a single NDJSON line). */
 export function encodeFrame(frame: Frame): string {
@@ -140,6 +168,20 @@ export function parseFrame(line: string): Frame | null {
         kind: 'primary-closing',
         reason: typeof o.reason === 'string' ? o.reason : undefined,
       };
+    case 'settings.push': {
+      if (!o.settings || typeof o.settings !== 'object') return null;
+      const s = o.settings as Record<string, unknown>;
+      if (typeof s.idleTtlMinutes !== 'number' || !Number.isFinite(s.idleTtlMinutes)) return null;
+      if (typeof s.updatedAt !== 'number' || !Number.isFinite(s.updatedAt)) return null;
+      return {
+        kind: 'settings.push',
+        settings: { idleTtlMinutes: s.idleTtlMinutes, updatedAt: s.updatedAt },
+      };
+    }
+    case 'settings.push-ack':
+      if (typeof o.notified === 'number' && Number.isFinite(o.notified))
+        return { kind: 'settings.push-ack', notified: o.notified };
+      return null;
     default:
       return null;
   }

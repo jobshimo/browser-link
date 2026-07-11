@@ -269,3 +269,53 @@ describe('IpcServer MCP dispatch', () => {
     expect(response!.payload.error?.message).toMatch(/Method not found/);
   });
 });
+
+describe('IpcServer settings.push', () => {
+  test('forwards to the injected pushSettings callback and acks with its return value', async () => {
+    const received: Array<{ idleTtlMinutes: number; updatedAt: number }> = [];
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: (settings) => {
+        received.push(settings);
+        return 3;
+      },
+    });
+    await server.start();
+    const token = server.currentToken();
+
+    const s = await dial(server.boundAddress());
+    s.write(encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token }));
+    await readNFrames(s, 1); // ack
+
+    s.write(
+      encodeFrame({
+        kind: 'settings.push',
+        settings: { idleTtlMinutes: 45, updatedAt: 1_700_000_000_000 },
+      }),
+    );
+    const frames = await readNFrames(s, 1, 1500);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toEqual({ kind: 'settings.push-ack', notified: 3 });
+    expect(received).toEqual([{ idleTtlMinutes: 45, updatedAt: 1_700_000_000_000 }]);
+  });
+
+  test('acks with 0 when no pushSettings callback was configured', async () => {
+    server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: TEST_PEER_LOOKUP });
+    await server.start();
+    const token = server.currentToken();
+
+    const s = await dial(server.boundAddress());
+    s.write(encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token }));
+    await readNFrames(s, 1);
+
+    s.write(
+      encodeFrame({
+        kind: 'settings.push',
+        settings: { idleTtlMinutes: 10, updatedAt: 1 },
+      }),
+    );
+    const frames = await readNFrames(s, 1, 1500);
+    expect(frames[0]).toEqual({ kind: 'settings.push-ack', notified: 0 });
+  });
+});

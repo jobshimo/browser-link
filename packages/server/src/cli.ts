@@ -8,6 +8,7 @@ import { checkUpdates, formatUpdate } from './commands/updates.js';
 import { runToolsCommand } from './commands/tools.js';
 import { runMultiAgentCommand } from './commands/multi-agent.js';
 import { runFreePort } from './commands/free-port.js';
+import { runConfigCommand } from './commands/config.js';
 import {
   formatStatus as formatInstructionsStatus,
   installInstructionsAll,
@@ -63,6 +64,15 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link config get       Muestra todas las configuraciones conocidas (por ahora, idle-ttl).
+  browser-link config get idle-ttl
+                                Muestra el TTL de auto-desconexión por inactividad configurado.
+  browser-link config set idle-ttl <minutos|never>
+                                Configura el TTL de auto-desconexión (1-1440 min, o "never" para
+                                desactivarlo). El mismo valor es editable desde el popup de la
+                                extensión — gana la última escritura (ver README). Bajar el TTL
+                                cuenta desde la última actividad de cada pestaña: una pestaña ya
+                                inactiva puede desconectarse en el próximo barrido.
   browser-link instructions     Muestra si el bloque de instrucciones de browser-link
                                 está presente en el .md global de cada cliente
                                 (Claude, OpenCode, Copilot CLI).
@@ -110,6 +120,15 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
+  browser-link config get       Show every known config setting (currently just idle-ttl).
+  browser-link config get idle-ttl
+                                Show the configured idle-disconnect TTL.
+  browser-link config set idle-ttl <minutes|never>
+                                Set the idle-disconnect TTL (1-1440 min, or "never" to disable
+                                it). The same setting is editable from the extension's popup —
+                                last write wins (see README). Lowering the TTL counts from each
+                                tab's last activity: an already-idle tab may disconnect on the
+                                next sweep.
   browser-link instructions     Show whether the browser-link instructions block
                                 is present in each client's global .md file
                                 (Claude, OpenCode, Copilot CLI).
@@ -251,6 +270,10 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'multi-agent': {
       console.log(runMultiAgentCommand(rest, language));
+      return;
+    }
+    case 'config': {
+      console.log(await runConfigCommand(rest, language));
       return;
     }
     case 'instructions': {

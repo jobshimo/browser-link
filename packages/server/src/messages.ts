@@ -70,5 +70,32 @@ export interface BridgeEventMessage {
   data: Record<string, unknown>;
 }
 
+/**
+ * Server-pushed settings, currently just the idle-disconnect TTL
+ * (`browser-link config get/set idle-ttl`). The same logical setting is
+ * also editable from the extension's own popup, so both sides need a
+ * precedence rule for "who wins" when they disagree:
+ *
+ * `updatedAt` is the epoch-ms timestamp of when THIS value was written on
+ * the server side. The extension compares it against the `updatedAt` it
+ * stamped on its own last LOCAL write (from the popup) and only applies
+ * the incoming value when it is newer — see the extension's
+ * `idle-policy.ts` (`shouldAcceptIncomingSettings`) and the README's
+ * "Idle disconnect" section for the full precedence writeup. Comparing raw
+ * wall-clock timestamps across processes is safe here specifically because
+ * the server and the browser always run on the same machine (loopback-only
+ * bridge) and therefore share one clock — this would NOT be a safe pattern
+ * for a distributed, multi-host system.
+ */
+export interface SettingsUpdatePayload {
+  idleTtlMinutes: number;
+  updatedAt: number;
+}
+
+export interface SettingsUpdateMessage {
+  kind: 'settings.update';
+  settings: SettingsUpdatePayload;
+}
+
 export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage | BridgeEventMessage;
-export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage;
+export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage;

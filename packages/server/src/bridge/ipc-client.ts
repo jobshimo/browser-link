@@ -50,6 +50,11 @@ export class IpcClient {
   private closeListeners: Array<(reason: 'remote' | 'local' | 'primary-closing') => void> = [];
   private notificationListeners: Array<(payload: unknown) => void> = [];
   private closed = false;
+  /** At most one `settings.push` is ever in flight per client — the CLI's
+   * one-shot `config set idle-ttl` invocation sends exactly one and then
+   * disconnects, so a single slot (vs. a Map keyed by request id, like
+   * `pendingRequests`) is all this needs. */
+  private pendingSettingsPush: ((ack: { notified: number }) => void) | null = null;
 
   /** Open the TCP connection, perform the handshake, and resolve with the
    * session info from the primary's hello-ack. On any handshake failure,
@@ -138,6 +143,38 @@ export class IpcClient {
         socket.write(encodeFrame({ kind: 'mcp.request', requestId, payload: jsonRpcPayload }));
       } catch (err) {
         this.pendingRequests.delete(requestId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  /**
+   * Push a settings update to the primary (used by `browser-link config set
+   * idle-ttl` — see `commands/config.ts`). Resolves with how many currently
+   * connected extension tabs the primary forwarded a `settings.update` to.
+   * Rejects if the socket closes before the ack arrives.
+   */
+  sendSettingsPush(settings: {
+    idleTtlMinutes: number;
+    updatedAt: number;
+  }): Promise<{ notified: number }> {
+    const socket = this.socket;
+    if (!socket || this.closed) {
+      return Promise.reject(new Error('Not connected to a browser-link primary.'));
+    }
+    return new Promise<{ notified: number }>((resolve, reject) => {
+      this.pendingSettingsPush = resolve;
+      const onCloseHandler = (): void => {
+        if (this.pendingSettingsPush) {
+          this.pendingSettingsPush = null;
+          reject(new Error('Primary connection closed while the settings push was in flight.'));
+        }
+      };
+      this.onClose(onCloseHandler);
+      try {
+        socket.write(encodeFrame({ kind: 'settings.push', settings }));
+      } catch (err) {
+        this.pendingSettingsPush = null;
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -236,6 +273,14 @@ export class IpcClient {
       case 'primary-closing': {
         log(`Primary signalled close (${frame.reason ?? 'no reason'}).`);
         this.notifyClose('primary-closing');
+        return;
+      }
+      case 'settings.push-ack': {
+        const resolve = this.pendingSettingsPush;
+        if (resolve) {
+          this.pendingSettingsPush = null;
+          resolve({ notified: frame.notified });
+        }
         return;
       }
       default:

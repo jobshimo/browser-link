@@ -84,6 +84,16 @@ export interface IpcServerOptions {
    * a deterministic stub so they don't depend on those tools being available
    * or fast enough on CI runners. */
   peerLookup?: (host: string, port: number) => Promise<PeerProcess | null>;
+  /**
+   * Called when a `settings.push` frame arrives (from `browser-link config
+   * set idle-ttl`'s one-shot IPC client). Should forward the settings to
+   * every currently-connected extension tab (see `ws-bridge.ts`'s
+   * `pushSettingsToAllTabs`) and return how many tabs were notified — that
+   * count is echoed back in the `settings.push-ack` reply. Left undefined
+   * in tests that don't exercise this path; production wiring is in
+   * `server.ts`'s `runPrimary`.
+   */
+  pushSettings?: (settings: { idleTtlMinutes: number; updatedAt: number }) => number;
 }
 
 export class IpcServer {
@@ -360,6 +370,15 @@ export class IpcServer {
       case 'ping': {
         try {
           socket.write(encodeFrame({ kind: 'pong' }));
+        } catch {
+          /* socket gone */
+        }
+        return;
+      }
+      case 'settings.push': {
+        const notified = this.options.pushSettings?.(frame.settings) ?? 0;
+        try {
+          socket.write(encodeFrame({ kind: 'settings.push-ack', notified }));
         } catch {
           /* socket gone */
         }

@@ -1,9 +1,10 @@
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ExtensionToServer, ServerToExtension } from '../messages.js';
+import type { ExtensionToServer, ServerToExtension, SettingsUpdateMessage } from '../messages.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcess } from '../auth/process-identity.js';
 import { VERSION } from '../version.js';
 import { isExtensionEventKind, type BridgeEventLog } from './events.js';
+import { loadConfig } from '../config.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -181,6 +182,11 @@ export function startWsBridge(
             payload: { tabId: assignedTabId, serverVersion: VERSION },
           });
           log(`Tab registered: ${assignedTabId} -> ${msg.payload.url}`);
+          // Hand the freshly-connected tab the CLI's idle-TTL choice, if it
+          // ever made one — see buildRegisterSettingsUpdate below for the
+          // exact rules (undefined → no push at all).
+          const settingsUpdate = buildRegisterSettingsUpdate(loadConfig());
+          if (settingsUpdate) send(ws, settingsUpdate);
           if (previousTabId && previousTabId !== assignedTabId) {
             events.add('tab-renamed', {
               previous: previousTabId,
@@ -238,6 +244,56 @@ export function startWsBridge(
       });
     });
   });
+}
+
+/**
+ * Build the `settings.update` a freshly-registered tab should receive, or
+ * `null` when nothing should be sent. `idleTtlMinutes` stays undefined in
+ * config.json until `browser-link config set idle-ttl` runs at least once —
+ * a popup-only user (who never touched the CLI) never gets an unsolicited
+ * settings.update overwriting their own popup choice. Note `0` ("never")
+ * IS a real value and MUST push — only `undefined` suppresses the message.
+ * See messages.ts's SettingsUpdatePayload doc for the newest-wins
+ * precedence rule the extension applies on receipt. Exported so the
+ * register-path push is unit-testable without binding the fixed WS port.
+ */
+export function buildRegisterSettingsUpdate(cfg: {
+  idleTtlMinutes?: number;
+  idleTtlUpdatedAt?: number;
+}): SettingsUpdateMessage | null {
+  if (cfg.idleTtlMinutes === undefined) return null;
+  return {
+    kind: 'settings.update',
+    settings: {
+      idleTtlMinutes: cfg.idleTtlMinutes,
+      updatedAt: cfg.idleTtlUpdatedAt ?? 0,
+    },
+  };
+}
+
+/**
+ * Push a `settings.update` to every currently-connected extension tab.
+ * Called from the IPC bridge's `settings.push` handler (see
+ * `bridge/server.ts`'s `pushSettings` option) when `browser-link config set
+ * idle-ttl` runs while a primary is already up — the "on demand, while
+ * connected" half of the precedence contract; the "on (re)connect" half
+ * lives inline in `startWsBridge`'s `tab.register` handler above (via
+ * `buildRegisterSettingsUpdate`), since a tab that connects AFTER this push
+ * already gets the fresh value from config.json directly. Returns how many
+ * tabs were sent the update, so the CLI can report something more useful
+ * than "done" (e.g. "0 tabs connected — applies next time one connects").
+ */
+export function pushSettingsToAllTabs(
+  tabs: Map<string, TabSession>,
+  settings: { idleTtlMinutes: number; updatedAt: number },
+): number {
+  let notified = 0;
+  for (const session of tabs.values()) {
+    if (session.ws.readyState !== WebSocket.OPEN) continue;
+    send(session.ws, { kind: 'settings.update', settings });
+    notified += 1;
+  }
+  return notified;
 }
 
 /** Build the callback that sends a tool.request frame to a specific tab and
