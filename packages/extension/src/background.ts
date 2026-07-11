@@ -10,6 +10,7 @@ import {
   buildTypeResolveJs,
   buildFocusJs,
   buildStateJs,
+  buildDragProbeJs,
 } from './inpage/builders.js';
 import {
   buildKeyEventSequence,
@@ -480,75 +481,6 @@ function buildWaitSelectorExpr(selector: string, condition: string): string {
     const r = el.getBoundingClientRect();
     return ${want}(r.width > 0 && r.height > 0);
   })()`;
-}
-
-/**
- * Build the JS expression that:
- *  1. scrollIntoView(center) for any selector-based endpoint (so both are
- *     visible at the same time if possible),
- *  2. detects HTML5 native drag eligibility on the source (`element.draggable`
- *     true, or implicit via <img> / <a href>),
- *  3. reads the final centre coords AFTER both scrolls have happened,
- *  4. flags in_viewport so the caller can refuse offscreen drags instead of
- *     dispatching cursor events into nowhere.
- *
- * Returns one of:
- *  - `{ err: string }`           — selector miss or stale element
- *  - `{ from, to, draggable }`   — ready to drag
- */
-function buildDragProbeExpr(params: {
-  from_selector?: string;
-  to_selector?: string;
-  from_x?: number;
-  from_y?: number;
-  to_x?: number;
-  to_y?: number;
-}): string {
-  return `
-    (() => {
-      const P = ${JSON.stringify(params)};
-      function scrollAndProbe(sel) {
-        const el = document.querySelector(sel);
-        if (!el) return { err: 'not_found' };
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-        return {
-          draggable:
-            el.draggable === true ||
-            el instanceof HTMLImageElement ||
-            (el instanceof HTMLAnchorElement && !!el.href),
-        };
-      }
-      function readCenter(sel) {
-        const el = document.querySelector(sel);
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return {
-          x: r.left + r.width / 2,
-          y: r.top + r.height / 2,
-          in_viewport:
-            r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth,
-        };
-      }
-      let fromHint = null;
-      if (P.from_selector) {
-        fromHint = scrollAndProbe(P.from_selector);
-        if (fromHint.err) return { err: 'from_selector not found: ' + P.from_selector };
-      }
-      if (P.to_selector) {
-        const t = scrollAndProbe(P.to_selector);
-        if (t.err) return { err: 'to_selector not found: ' + P.to_selector };
-      }
-      const from = P.from_selector
-        ? readCenter(P.from_selector)
-        : { x: P.from_x, y: P.from_y, in_viewport: true };
-      const to = P.to_selector
-        ? readCenter(P.to_selector)
-        : { x: P.to_x, y: P.to_y, in_viewport: true };
-      if (!from) return { err: 'from element disappeared between probes' };
-      if (!to) return { err: 'to element disappeared between probes' };
-      return { from, to, draggable: fromHint ? fromHint.draggable : false };
-    })()
-  `;
 }
 
 // Convert an arbitrary console arg (`unknown`) into something printable
@@ -1351,7 +1283,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           };
         }
 
-        const probeExpr = buildDragProbeExpr({
+        const probeExpr = buildDragProbeJs({
           from_selector: fromSelector,
           to_selector: toSelector,
           from_x: fromXRaw,

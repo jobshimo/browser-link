@@ -34,7 +34,11 @@ a UI element, a web app, a URL, a broken layout, "the page", or asks
 change. If a call returns "Tab not connected", call \`browser.events\`
 to find the new tab_id before retrying. After a non-trivial flow worked
 end-to-end, persist UI structure (NEVER domain data) with
-\`browser.map.save\`.
+\`browser.map.save\`. When \`list_tabs\` shows a \`map\` hint on a tab
+(\`{ app_key, entries, flows }\`), call \`browser.map.recall\` BEFORE
+snapshotting — the map already has selectors, gotchas or flow recipes
+for that origin, so recall first instead of rediscovering them from
+scratch.
 
 ## Sharing tabs with other agents (multi-agent mode)
 

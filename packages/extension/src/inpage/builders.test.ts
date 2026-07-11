@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
   buildClickResolveJs,
+  buildDragProbeJs,
   buildFindJs,
   buildFocusJs,
   buildSettleJs,
@@ -658,5 +659,243 @@ describe('buildStateJs', () => {
 
     const result = evalExpr<StateResult>(buildStateJs());
     expect(result.scroll).toEqual({ x: 120, y: 40 });
+  });
+});
+
+interface DragProbePoint {
+  x: number;
+  y: number;
+  in_viewport: boolean;
+}
+type DragProbeResult =
+  { err: string } | { from: DragProbePoint; to: DragProbePoint; draggable: boolean };
+
+describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => {
+  test('resolves a source selector that lives inside an open shadow root (was a hard not_found before v0.20.0)', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div id="card">Card</div><div id="column">Column</div>';
+    const card = shadow.getElementById('card')!;
+    const column = shadow.getElementById('column')!;
+    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+    column.getBoundingClientRect = () => ({ left: 100, top: 20, width: 30, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from).toEqual({ x: 25, y: 25, in_viewport: true });
+    expect(result.to).toEqual({ x: 115, y: 25, in_viewport: true });
+  });
+
+  test('resolves an endpoint inside a same-origin iframe with the TOP-LEVEL mapped coordinates (not the local iframe-relative ones)', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.getBoundingClientRect = () =>
+      ({ left: 200, top: 300, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<div id="drop-target">Drop here</div>';
+    const target = idoc.getElementById('drop-target')!;
+    target.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_x: 5, from_y: 5, to_selector: '#drop-target' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    // Local center would be (25, 25) inside the iframe's own viewport — the
+    // TOP-LEVEL point must add the iframe's own rect offset on top of that,
+    // exactly like buildClickResolveJs's viewportCenterOf mapping.
+    expect(result.to).toEqual({ x: 200 + 25, y: 300 + 25, in_viewport: true });
+  });
+
+  test('coordinate-based endpoints pass straight through untouched', () => {
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_x: 10, from_y: 20, to_x: 300, to_y: 400 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from).toEqual({ x: 10, y: 20, in_viewport: true });
+    expect(result.to).toEqual({ x: 300, y: 400, in_viewport: true });
+  });
+
+  test('from_selector not found returns a descriptive err, not a thrown exception', () => {
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#does-not-exist', to_x: 1, to_y: 1 }),
+    );
+    expect('err' in result).toBe(true);
+    if (!('err' in result)) return;
+    expect(result.err).toContain('from_selector not found');
+    expect(result.err).toContain('#does-not-exist');
+  });
+
+  test('to_selector not found returns a descriptive err', () => {
+    const src = document.createElement('div');
+    document.body.appendChild(src);
+    src.getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    src.id = 'src';
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#src', to_selector: '#does-not-exist' }),
+    );
+    expect('err' in result).toBe(true);
+    if (!('err' in result)) return;
+    expect(result.err).toContain('to_selector not found');
+  });
+
+  test('draggable:true for a native <img> source resolved from inside a same-origin iframe (cross-realm-safe tag check)', () => {
+    // A cross-realm `instanceof HTMLImageElement` check would silently
+    // report false here: an <img> from an iframe's contentDocument is an
+    // instance of the IFRAME's own HTMLImageElement constructor, not the
+    // top document's. The probe must use a tagName check instead.
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<img id="thumb" src="x.png" />';
+    const img = idoc.getElementById('thumb')!;
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 20 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#thumb', to_x: 100, to_y: 100 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.draggable).toBe(true);
+  });
+
+  test('in_viewport:false when the mapped top-level point falls outside the viewport', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    // Iframe itself sits far outside the 1024x768 default jsdom viewport.
+    iframe.getBoundingClientRect = () =>
+      ({ left: 5000, top: 5000, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<div id="offscreen">Offscreen</div>';
+    const el = idoc.getElementById('offscreen')!;
+    el.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#offscreen', to_x: 1, to_y: 1 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from.in_viewport).toBe(false);
+  });
+
+  test('endpoints in two DIFFERENT realms — from inside an iframe, to in the top document — each mapped independently', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.getBoundingClientRect = () =>
+      ({ left: 200, top: 300, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<div id="card">Card</div>';
+    const card = idoc.getElementById('card')!;
+    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+
+    const column = document.createElement('div');
+    column.id = 'column';
+    document.body.appendChild(column);
+    column.getBoundingClientRect = () => ({ left: 700, top: 50, width: 40, height: 20 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    // from: iframe offset applied. to: top-document element, NO offset —
+    // proving the frame chain is computed per endpoint, not shared.
+    expect(result.from).toEqual({ x: 200 + 25, y: 300 + 25, in_viewport: true });
+    expect(result.to).toEqual({ x: 720, y: 60, in_viewport: true });
+  });
+
+  test('endpoints in two DIFFERENT iframes — each endpoint carries its own frame offset', () => {
+    const frameA = document.createElement('iframe');
+    document.body.appendChild(frameA);
+    frameA.getBoundingClientRect = () =>
+      ({ left: 100, top: 100, width: 300, height: 300 }) as DOMRect;
+    const docA = frameA.contentDocument!;
+    docA.body.innerHTML = '<div id="src">Source</div>';
+    const src = docA.getElementById('src')!;
+    src.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+
+    const frameB = document.createElement('iframe');
+    document.body.appendChild(frameB);
+    frameB.getBoundingClientRect = () =>
+      ({ left: 500, top: 200, width: 300, height: 300 }) as DOMRect;
+    const docB = frameB.contentDocument!;
+    docB.body.innerHTML = '<div id="dst">Destination</div>';
+    const dst = docB.getElementById('dst')!;
+    dst.getBoundingClientRect = () => ({ left: 30, top: 40, width: 20, height: 20 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#src', to_selector: '#dst' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from).toEqual({ x: 100 + 20, y: 100 + 20, in_viewport: true });
+    expect(result.to).toEqual({ x: 500 + 40, y: 200 + 50, in_viewport: true });
+  });
+
+  test('draggable:true for an <a href> source', () => {
+    const link = document.createElement('a');
+    link.id = 'drag-link';
+    link.href = 'https://example.com/page';
+    link.textContent = 'Drag me';
+    document.body.appendChild(link);
+    link.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#drag-link', to_x: 100, to_y: 100 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.draggable).toBe(true);
+  });
+
+  test('draggable:false for an <a> WITHOUT href (not implicitly draggable)', () => {
+    const anchor = document.createElement('a');
+    anchor.id = 'no-href';
+    anchor.textContent = 'Not a link';
+    document.body.appendChild(anchor);
+    anchor.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#no-href', to_x: 100, to_y: 100 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.draggable).toBe(false);
+  });
+
+  test('draggable:true for an element with draggable=true (explicit HTML5 opt-in on a plain div)', () => {
+    const div = document.createElement('div');
+    div.id = 'custom-drag';
+    div.draggable = true;
+    document.body.appendChild(div);
+    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#custom-drag', to_x: 100, to_y: 100 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.draggable).toBe(true);
+  });
+
+  test('draggable:false for a plain non-draggable div', () => {
+    const div = document.createElement('div');
+    div.id = 'plain';
+    document.body.appendChild(div);
+    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#plain', to_x: 100, to_y: 100 }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.draggable).toBe(false);
   });
 });

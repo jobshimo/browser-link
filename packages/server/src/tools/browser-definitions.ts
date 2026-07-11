@@ -38,7 +38,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.list_tabs',
     description:
-      'List Chrome tabs currently connected to browser-link. A tab is connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it) and claimed_by_me (true when YOU hold the claim).',
+      "List Chrome tabs currently connected to browser-link. A tab is connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it), claimed_by_me (true when YOU hold the claim), and an optional map field ({ app_key, entries, flows }) present ONLY when the persistent UI map already has data for that tab's origin — absent entirely when it does not.",
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     doc: {
       purpose:
@@ -50,6 +50,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
       gotchas: [
         'Returns only tabs the user has connected manually. If the list is empty the user has not connected anything yet — ask them to open the extension popup.',
+        'When an entry carries a map field, call browser.map.recall BEFORE snapshotting that tab — the persistent map already has selectors, gotchas, or flow recipes for it, and re-discovering them via a fresh snapshot/find wastes a round trip.',
       ],
     },
   },
@@ -722,7 +723,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.drag',
     description:
-      'Drag an element from a source to a destination. Provide each end as either a CSS selector OR a viewport coordinate pair (x,y). The drag is interpolated over duration_ms (default 1500) so you can watch the cursor traverse the path — this also helps activation-by-distance constraints in pointer-based libraries. Auto-detects HTML5 native drag (element.draggable, <img>, <a href>) vs pointer-based drag (dnd-kit and similar). For HTML5 it uses Input.setInterceptDrags + Input.dragIntercepted + Input.dispatchDragEvent. For pointer-based it interpolates Input.dispatchMouseEvent only. setInterceptDrags is always cleared in finally. Both source and destination must be visible in the viewport simultaneously — drag does NOT scroll between them. Returns { from, to, duration_ms_actual, drag_mode: "html5"|"pointer", events_fired }.',
+      'Drag an element from a source to a destination. Provide each end as either a CSS selector OR a viewport coordinate pair (x,y). A selector endpoint is resolved through the same deep search snapshot/find/click/type use — it reaches into open Shadow DOM roots and same-origin iframes, with coordinates mapped to the top-level viewport. The drag is interpolated over duration_ms (default 1500) so you can watch the cursor traverse the path — this also helps activation-by-distance constraints in pointer-based libraries. Auto-detects HTML5 native drag (element.draggable, <img>, <a href>) vs pointer-based drag (dnd-kit and similar). For HTML5 it uses Input.setInterceptDrags + Input.dragIntercepted + Input.dispatchDragEvent. For pointer-based it interpolates Input.dispatchMouseEvent only. setInterceptDrags is always cleared in finally. Both source and destination must be visible in the viewport simultaneously — drag does NOT scroll between them. Returns { from, to, duration_ms_actual, drag_mode: "html5"|"pointer", events_fired }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -775,6 +776,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Both endpoints must be visible in the viewport at the same time — the tool does not scroll between them. If one is offscreen, scroll first (via evaluate) or pass viewport coords.',
         'Default duration is 1500ms so a human watching can follow the cursor. Drop it lower only when you are sure no library has a movement-based activation constraint.',
         'drag_mode in the response tells you whether HTML5 native drag (dragstart/drop) or pointer-only events fired — use it to diagnose silently-failing drops.',
+        'A selector endpoint reaches into OPEN Shadow DOM roots and same-origin iframes, same limits as snapshot/find/click/type: CLOSED shadow roots and cross-origin iframes stay unreachable.',
       ],
       example:
         'browser.drag({ tab_id: "tab_1", from_selector: "[data-testid=card-1]", to_selector: "[data-testid=column-done]" })',

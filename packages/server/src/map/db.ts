@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getDbPath } from './paths.js';
+import { canonicalOrigin } from './origin.js';
 
 let dbInstance: Database.Database | null = null;
 
@@ -98,6 +99,33 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_flows_app ON flows(app_id);
   `);
+
+  // v0.20.0: normalize apps.origin rows written before the write path
+  // canonicalized origins (see origin.ts). Before this release, save
+  // stored whatever free text the agent passed ("https://x.com/" with a
+  // trailing slash, a full URL with a path), while the list_tabs map-hint
+  // lookup — and now every lookup — matches on the canonical
+  // `new URL(...).origin` form. Legacy rows would never match again
+  // without this pass. Idempotent and cheap (the map holds tens of apps,
+  // not thousands; already-canonical rows are skipped), so it simply runs
+  // on every open alongside the CREATE-IF-NOT-EXISTS migrations above.
+  // A row whose canonical form collides with an existing (origin, app_key)
+  // row is left untouched rather than merged — dropping or merging rows
+  // implicitly is worse than leaving one legacy row unreachable by hint
+  // lookups (recall by explicit app listing still shows it).
+  const legacyRows = db.prepare('SELECT id, origin FROM apps').all() as {
+    id: number;
+    origin: string;
+  }[];
+  for (const row of legacyRows) {
+    const canonical = canonicalOrigin(row.origin);
+    if (canonical === row.origin) continue;
+    try {
+      db.prepare('UPDATE apps SET origin = ? WHERE id = ?').run(canonical, row.id);
+    } catch {
+      // UNIQUE(origin, app_key) collision with an already-canonical row.
+    }
+  }
 }
 
 export function closeDb(): void {

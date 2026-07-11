@@ -59,6 +59,12 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('browser.release_tab');
   });
 
+  test('teaches recall-before-snapshot on a list_tabs map hint (v0.20.0)', () => {
+    const out = block();
+    expect(out).toContain('`map` field');
+    expect(out).toContain('browser.map.recall` BEFORE `browser.snapshot`');
+  });
+
   test('TOKEN-EFFICIENT PATTERNS section names the new dedicated tools and the evaluate fallbacks', () => {
     const out = block();
     expect(out).toContain('### TOKEN-EFFICIENT PATTERNS');

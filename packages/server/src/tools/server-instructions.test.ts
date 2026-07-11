@@ -47,6 +47,12 @@ describe('buildServerInstructions', () => {
     expect(out).toContain('IPC session id');
   });
 
+  test('teaches recall-before-snapshot on a list_tabs map hint (v0.20.0)', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('map` hint');
+    expect(out).toContain('browser.map.recall` BEFORE');
+  });
+
   test('preamble teaches the token-efficient patterns introduced in v0.13.0', () => {
     const out = buildServerInstructions();
     expect(out).toContain('Token-efficient patterns');

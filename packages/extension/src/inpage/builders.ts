@@ -439,6 +439,113 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
 }
 
 /**
+ * Build the drag endpoint-resolution probe for `browser.drag`. Resolves
+ * `from_selector`/`to_selector` across the SAME deep search scope
+ * `snapshot`/`find`/`click`/`type` use (`deepQueryFirst` — open Shadow DOM
+ * roots and same-origin iframes, nested arbitrarily), so an endpoint that
+ * lives inside a web component or an iframe no longer fails with
+ * `not_found` the way a plain `document.querySelector` did before v0.20.0.
+ *
+ * Coordinates for a selector-based endpoint use `viewportCenterOf` — the
+ * exact same first-client-rect + accumulated-iframe-offset mapping
+ * `buildClickResolveJs` uses — so a drag endpoint inside a styled iframe
+ * lands on the correct TOP-LEVEL point CDP `Input.dispatchMouseEvent`
+ * expects, not the endpoint's own local-document coordinates.
+ *
+ * `in_viewport` is derived from the same mapped center point plus the
+ * element's own (unscaled) width/height from `clickRectOf`, reproducing
+ * the pre-v0.20.0 "does any part of the rect intersect the viewport"
+ * check — now evaluated in top-level space so it stays correct for
+ * iframe-hosted endpoints too.
+ *
+ * A coordinate-based endpoint (`from_x`/`from_y` or `to_x`/`to_y`) is
+ * untouched by any of this — those are already top-level viewport
+ * coordinates supplied by the caller, exactly as before.
+ *
+ * Deliberately scoped to ENDPOINT RESOLUTION only. The interpolated drag
+ * gesture itself (wiggle distance, HTML5 intercept handshake, per-step
+ * timing) lives entirely in background.ts, downstream of this probe's
+ * `{ from, to, draggable }` result, and is untouched here.
+ */
+export interface DragProbeOpts {
+  from_selector?: string;
+  to_selector?: string;
+  from_x?: number;
+  from_y?: number;
+  to_x?: number;
+  to_y?: number;
+}
+
+export function buildDragProbeJs(opts: DragProbeOpts): string {
+  const optsJson = JSON.stringify({
+    from_selector: opts.from_selector,
+    to_selector: opts.to_selector,
+    from_x: opts.from_x,
+    from_y: opts.from_y,
+    to_x: opts.to_x,
+    to_y: opts.to_y,
+  });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const P = ${optsJson};
+  function scrollAndProbe(sel) {
+    const el = deepQueryFirst(sel);
+    if (!el) return { err: 'not_found' };
+    const chain = frameElementChain(el);
+    for (let i = 0; i < chain.length; i++) {
+      if (chain[i].scrollIntoView) {
+        chain[i].scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      }
+    }
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    return {
+      draggable:
+        el.tagName === 'IMG' ||
+        (el.tagName === 'A' && !!el.href) ||
+        el.draggable === true,
+    };
+  }
+  function readCenter(sel) {
+    const el = deepQueryFirst(sel);
+    if (!el) return null;
+    const center = viewportCenterOf(el);
+    const rect = clickRectOf(el);
+    const halfW = rect.width / 2;
+    const halfH = rect.height / 2;
+    const top = center.y - halfH;
+    const left = center.x - halfW;
+    const bottom = center.y + halfH;
+    const right = center.x + halfW;
+    return {
+      x: center.x,
+      y: center.y,
+      in_viewport: bottom > 0 && right > 0 && top < innerHeight && left < innerWidth,
+    };
+  }
+  let fromHint = null;
+  if (P.from_selector) {
+    fromHint = scrollAndProbe(P.from_selector);
+    if (fromHint.err) return { err: 'from_selector not found: ' + P.from_selector };
+  }
+  if (P.to_selector) {
+    const t = scrollAndProbe(P.to_selector);
+    if (t.err) return { err: 'to_selector not found: ' + P.to_selector };
+  }
+  const from = P.from_selector
+    ? readCenter(P.from_selector)
+    : { x: P.from_x, y: P.from_y, in_viewport: true };
+  const to = P.to_selector
+    ? readCenter(P.to_selector)
+    : { x: P.to_x, y: P.to_y, in_viewport: true };
+  if (!from) return { err: 'from element disappeared between probes' };
+  if (!to) return { err: 'to element disappeared between probes' };
+  return { from: from, to: to, draggable: fromHint ? fromHint.draggable : false };
+})()
+`;
+}
+
+/**
  * Build the settle-await expression shared by `browser.click`, `.type` and
  * `.press`. Called AFTER the action's CDP input events have been
  * dispatched: installs one `MutationObserver` on `document` (subtree,

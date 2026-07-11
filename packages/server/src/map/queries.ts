@@ -1,4 +1,5 @@
 import { getDb } from './db.js';
+import { canonicalOrigin } from './origin.js';
 
 export type EntryKind = 'selector' | 'flow' | 'gotcha';
 
@@ -78,14 +79,18 @@ export interface UpsertAppInput {
 export function upsertApp(input: UpsertAppInput): AppRow {
   const db = getDb();
   const ts = now();
+  // v0.20.0: canonicalize on EVERY write so the exact-string lookups in
+  // recall/getMapHint (whose key comes from `new URL(tab.url).origin`)
+  // always match what save stored — see origin.ts for the full rationale.
+  const origin = canonicalOrigin(input.origin);
   const app_key =
     input.app_key && input.app_key.trim().length > 0
       ? slugify(input.app_key)
-      : deriveAppKey(input.origin, input.title);
+      : deriveAppKey(origin, input.title);
 
   const existing = db
     .prepare('SELECT * FROM apps WHERE origin = ? AND app_key = ?')
-    .get(input.origin, app_key) as AppRow | undefined;
+    .get(origin, app_key) as AppRow | undefined;
 
   if (existing) {
     db.prepare(
@@ -99,7 +104,7 @@ export function upsertApp(input: UpsertAppInput): AppRow {
       `INSERT INTO apps (origin, app_key, title, notes, created_at, last_seen_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(input.origin, app_key, input.title ?? null, input.notes ?? null, ts, ts);
+    .run(origin, app_key, input.title ?? null, input.notes ?? null, ts, ts);
 
   return db.prepare('SELECT * FROM apps WHERE id = ?').get(info.lastInsertRowid) as AppRow;
 }
@@ -179,17 +184,20 @@ export interface RecallResult {
 
 export function recall(input: RecallInput): RecallResult {
   const db = getDb();
+  // Same canonicalization as upsertApp — a recall with a trailing-slash or
+  // full-URL origin must find what a canonical save stored.
+  const origin = canonicalOrigin(input.origin);
 
   // Resolve app: prefer (origin, app_key) if provided; otherwise pick the most-recent app for this origin.
   let app: AppRow | undefined;
   if (input.app_key && input.app_key.trim().length > 0) {
     app = db
       .prepare('SELECT * FROM apps WHERE origin = ? AND app_key = ?')
-      .get(input.origin, slugify(input.app_key)) as AppRow | undefined;
+      .get(origin, slugify(input.app_key)) as AppRow | undefined;
   } else {
     app = db
       .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC LIMIT 1')
-      .get(input.origin) as AppRow | undefined;
+      .get(origin) as AppRow | undefined;
   }
 
   if (!app) return { app: null, entries: [], flows: [] };
@@ -291,6 +299,49 @@ export function renameApp(app_id: number, new_app_key: string): AppRow | null {
 
 export function listApps(): AppRow[] {
   return getDb().prepare('SELECT * FROM apps ORDER BY last_seen_at DESC').all() as AppRow[];
+}
+
+export interface MapHint {
+  app_key: string;
+  entries: number;
+  flows: number;
+}
+
+/**
+ * Lean existence-and-count lookup for a tab's origin — powers the optional
+ * `map` hint `browser.list_tabs` attaches to each tab (see
+ * tools/browser-dispatch.ts's `handleListTabs`), so an agent can tell
+ * whether the persistent map knows anything about a page WITHOUT first
+ * calling `browser.map.recall` blind. Returns `null` when there is nothing
+ * to report — no app for this origin yet, or an app with zero entries and
+ * zero flows — so the caller can omit the field entirely rather than
+ * shipping a `{ entries: 0, flows: 0 }` no-op over the wire.
+ *
+ * Resolves the app the same way `recall()` does when no `app_key` is
+ * given: the most-recently-seen app for the origin. Deliberately does NOT
+ * touch `last_seen_at` — unlike an explicit `recall`, listing tabs is a
+ * passive read and must not have side effects on map freshness.
+ */
+export function getMapHint(origin: string): MapHint | null {
+  if (!origin) return null;
+  const db = getDb();
+  // The caller (handleListTabs) already passes `new URL(url).origin`, which
+  // IS canonical — canonicalizing again here is defense in depth for any
+  // other future caller handing in free text.
+  const app = db
+    .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC LIMIT 1')
+    .get(canonicalOrigin(origin)) as AppRow | undefined;
+  if (!app) return null;
+
+  const { entries } = db
+    .prepare('SELECT COUNT(*) AS entries FROM entries WHERE app_id = ?')
+    .get(app.id) as { entries: number };
+  const { flows } = db
+    .prepare('SELECT COUNT(*) AS flows FROM flows WHERE app_id = ?')
+    .get(app.id) as { flows: number };
+  if (entries === 0 && flows === 0) return null;
+
+  return { app_key: app.app_key, entries, flows };
 }
 
 // === Flow recipes ==========================================================

@@ -248,6 +248,55 @@ describe('schema migrations', () => {
     ]);
     expect(() => migrated.prepare('SELECT * FROM flows').all()).not.toThrow();
   });
+
+  test('normalizes a pre-v0.20.0 non-canonical apps.origin on open (trailing slash / full URL)', () => {
+    // Before v0.20.0 the save path stored whatever free text the agent
+    // passed. Reopening through getDb() must rewrite those rows to the
+    // canonical URL.origin form so the list_tabs map-hint lookup (which
+    // matches on `new URL(tab.url).origin`) can find them again.
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('https://myapp.example.com/', 'slashed', '2026-01-01', '2026-01-01');
+    insert.run('https://other.example.com/home/dash', 'pathed', '2026-01-01', '2026-01-01');
+    insert.run('http://already-canonical.example.com', 'clean', '2026-01-01', '2026-01-01');
+    closeDb();
+
+    const migrated = getDb();
+    const rows = migrated.prepare('SELECT origin, app_key FROM apps ORDER BY app_key').all() as {
+      origin: string;
+      app_key: string;
+    }[];
+    expect(rows).toEqual([
+      { origin: 'http://already-canonical.example.com', app_key: 'clean' },
+      { origin: 'https://other.example.com', app_key: 'pathed' },
+      { origin: 'https://myapp.example.com', app_key: 'slashed' },
+    ]);
+  });
+
+  test('leaves a legacy row untouched when normalizing would collide with an existing canonical row', () => {
+    const db = getDb();
+    const insert = db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    );
+    // Same app saved twice pre-fix: once canonical, once with a slash.
+    insert.run('https://myapp.example.com', 'app', '2026-01-01', '2026-01-01');
+    insert.run('https://myapp.example.com/', 'app', '2026-01-01', '2026-01-01');
+    closeDb();
+
+    const migrated = getDb();
+    const rows = migrated.prepare('SELECT origin, app_key FROM apps ORDER BY id').all() as {
+      origin: string;
+      app_key: string;
+    }[];
+    // UNIQUE(origin, app_key) blocks the rewrite — the legacy row stays
+    // as-is rather than being merged or dropped implicitly.
+    expect(rows).toEqual([
+      { origin: 'https://myapp.example.com', app_key: 'app' },
+      { origin: 'https://myapp.example.com/', app_key: 'app' },
+    ]);
+  });
 });
 
 describe('legacy DB migration guards', () => {

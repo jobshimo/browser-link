@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
+import { getMapHint } from './map/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
 import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
@@ -148,6 +149,17 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     recentEvents: (opts) => events.recent(opts),
     subscribeEvents: (fn, options) => events.subscribe(fn, options),
     tabClaims,
+    // list_tabs is on the hot path of nearly every agent turn — a map DB
+    // problem (locked file, corrupt schema) must never take tab listing
+    // down with it. Degrade to "no hint" rather than letting the error
+    // propagate.
+    getMapHint: (origin) => {
+      try {
+        return getMapHint(origin);
+      } catch {
+        return null;
+      }
+    },
     resetBridge: () => {
       // Close every WS to the extension first so the client side flips to
       // "Not connected" before we drop the local state. Best-effort: a tab

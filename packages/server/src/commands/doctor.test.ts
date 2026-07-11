@@ -32,6 +32,7 @@ function makeReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
     extension: { path: null },
     map: { dbPath: '/tmp/map.db', exists: false, sizeBytes: 0, apps: 0 },
     security: { allowedBrowsers: [] },
+    silentDebugger: { detected: null },
     ...overrides,
   };
 }
@@ -96,5 +97,27 @@ describe('formatDoctor — outdated agent-instructions block', () => {
   test('ES copy uses Rioplatense subline', () => {
     const out = formatDoctor(makeReport(), 'es');
     expect(out).toContain('desactualizadas desde v0.8.1 — se recomienda refrescar.');
+  });
+});
+
+describe('formatDoctor — Chrome debugger infobar detection', () => {
+  test('detected:true renders the suppressed-infobar confirmation', () => {
+    const out = formatDoctor(makeReport({ silentDebugger: { detected: true } }));
+    expect(out).toContain('--silent-debugger-extension-api detected');
+  });
+
+  test('detected:false renders the "will show" note, not an error', () => {
+    const out = formatDoctor(makeReport({ silentDebugger: { detected: false } }));
+    expect(out).toContain('not detected — Chrome will show');
+  });
+
+  test('detected:null degrades to a neutral informational line, no ✗', () => {
+    const out = formatDoctor(makeReport({ silentDebugger: { detected: null } }));
+    expect(out).toContain('could not determine');
+  });
+
+  test('ES copy renders the neutral Rioplatense line for detected:null', () => {
+    const out = formatDoctor(makeReport({ silentDebugger: { detected: null } }), 'es');
+    expect(out).toContain('no se pudo determinar');
   });
 });

@@ -576,6 +576,62 @@ describe('list_tabs enrichment', () => {
   });
 });
 
+describe('list_tabs — map hint enrichment (v0.20.0)', () => {
+  test('omits the map field entirely when getMapHint is not wired up', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://a', title: 'A' }]),
+    });
+    const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+    expect(tabs[0]).not.toHaveProperty('map');
+  });
+
+  test('omits the map field when getMapHint returns null for the tab origin', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://a', title: 'A' }]),
+      getMapHint: vi.fn(() => null),
+    });
+    const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+    expect(tabs[0]).not.toHaveProperty('map');
+  });
+
+  test('attaches the map field when getMapHint has data for the tab origin', async () => {
+    const getMapHint = vi.fn((origin: string) =>
+      origin === 'http://a' ? { app_key: 'my-app', entries: 3, flows: 1 } : null,
+    );
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [
+        { tab_id: 'tab_1', url: 'http://a/page', title: 'A' },
+        { tab_id: 'tab_2', url: 'http://b/page', title: 'B' },
+      ]),
+      getMapHint,
+    });
+    const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+    expect(tabs.find((t) => t.tab_id === 'tab_1')).toMatchObject({
+      map: { app_key: 'my-app', entries: 3, flows: 1 },
+    });
+    expect(tabs.find((t) => t.tab_id === 'tab_2')).not.toHaveProperty('map');
+    // Called with the ORIGIN (scheme://host:port), not the full URL with path.
+    expect(getMapHint).toHaveBeenCalledWith('http://a');
+  });
+
+  test('never throws and just omits map for a tab whose url does not parse', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: '', title: 'blank' }]),
+      getMapHint: vi.fn(() => ({ app_key: 'x', entries: 1, flows: 0 })),
+    });
+    const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+    expect(tabs[0]).not.toHaveProperty('map');
+  });
+});
+
 describe('claim_tab / release_tab / my_tabs', () => {
   test('claim_tab returns the new claim with created=true', async () => {
     const deps = makeDepsWithClaims();

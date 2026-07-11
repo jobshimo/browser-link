@@ -195,6 +195,48 @@ browser-link help                          # list every subcommand
   the extension parks the tab on its own and you re-press Connect when
   you want it back.
 
+### FAQ: the yellow "started debugging this browser" bar
+
+**What it is.** Driving a tab through `chrome.debugger` (see the diagram
+above) makes Chrome show a yellow infobar on that tab for as long as the
+debugger session is attached. It is Chrome's own UI, not something
+browser-link renders — no extension can hide or dismiss it through its own
+APIs.
+
+**Why it exists.** This is intentional transparency on Chrome's part, and
+we treat it the same way — see the CDP-interaction decision in
+[`DECISIONS.md`](./DECISIONS.md): the bar is the one unmistakable signal
+that a tab is currently intervened, so you always know which tab an agent
+can see and act on. browser-link does not try to work around it.
+
+**Silencing it — an informed opt-out, not a fix.** Chrome supports a launch
+flag, `--silent-debugger-extension-api`, that suppresses the infobar. This
+is a Chrome switch you apply yourself when starting the browser; browser-link
+does not set it for you:
+
+- **Windows** — right-click the shortcut you use to launch Chrome →
+  Properties → append ` --silent-debugger-extension-api` to the end of the
+  **Target** field, after the closing quote of the `.exe` path:
+  ```
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --silent-debugger-extension-api
+  ```
+- **macOS** — launch from a terminal:
+  ```bash
+  open -a "Google Chrome" --args --silent-debugger-extension-api
+  ```
+- **Linux** — launch from a terminal:
+  ```bash
+  google-chrome --silent-debugger-extension-api
+  ```
+
+**The tradeoff.** The flag is global to that Chrome instance: it silences
+the infobar for **every** extension using `chrome.debugger`, not just
+browser-link — including any other debugger-API extension you happen to
+have installed. Only reach for it once you understand and accept that
+tradeoff. `browser-link doctor` reports, best-effort, whether a running
+Chrome/Chromium process was launched with the flag, so you can confirm the
+state of your own setup instead of guessing.
+
 ## Use cases
 
 - Reproduce a reported bug on a tab and verify it exists.
@@ -257,17 +299,18 @@ two exceptions are footnoted):
     drops every tab, claim and event on the bridge at once.
 
 `click` / `type` / `press` share a `settle_ms` option (see below). `find`,
-`click`, `type`, `press` and `snapshot`/`state` all pierce open Shadow DOM
-roots and same-origin iframes, nested arbitrarily.
+`click`, `type`, `press`, `drag` (endpoint resolution only) and
+`snapshot`/`state` all pierce open Shadow DOM roots and same-origin
+iframes, nested arbitrarily.
 
 ### Behavior worth knowing before you rely on it
 
-| Behavior                         | What to know                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shadow DOM / iframe piercing** | `snapshot`, `find`, `state`, `click`, `type` and `press` reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
-| **Occlusion guard**              | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                |
-| **`near_misses`**                | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                  |
-| **`browser.flow` recipes**       | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                  |
+| Behavior                         | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shadow DOM / iframe piercing** | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
+| **Occlusion guard**              | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
+| **`near_misses`**                | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
+| **`browser.flow` recipes**       | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
 
 #### `settle_ms` — settle proves QUIET, not EFFECT
 

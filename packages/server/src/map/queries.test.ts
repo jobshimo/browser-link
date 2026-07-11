@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { closeDb } from './db.js';
 import {
   forget,
+  getMapHint,
   listApps,
   listFlows,
   recall,
@@ -252,5 +253,121 @@ describe('saveFlow, listFlows and recall', () => {
   test('recall on an unknown origin returns flows: []', () => {
     const recalled = recall({ origin: 'http://does-not-exist' });
     expect(recalled).toEqual({ app: null, entries: [], flows: [] });
+  });
+});
+
+describe('getMapHint', () => {
+  const STEPS = [{ find: { text: '<QUERY>', role: 'textbox' } }, { click: {} }];
+
+  test('returns null for an origin with no app', () => {
+    expect(getMapHint('http://does-not-exist')).toBeNull();
+  });
+
+  test('returns null for an origin with an app but zero entries and zero flows', () => {
+    upsertApp({ origin: 'http://x', title: 'My App' });
+    expect(getMapHint('http://x')).toBeNull();
+  });
+
+  test('returns app_key + counts when the app has entries', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 1, flows: 0 });
+  });
+
+  test('returns app_key + counts when the app has flows', () => {
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
+    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 0, flows: 1 });
+  });
+
+  test('counts both entries and flows together', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'logout', steps: STEPS });
+    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 1, flows: 2 });
+  });
+
+  test('does not bump last_seen_at (unlike recall, listing tabs is passive)', () => {
+    const app = upsertApp({ origin: 'http://x', title: 'My App' });
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    const before = listApps().find((a) => a.id === app.id)?.last_seen_at;
+    getMapHint('http://x');
+    const after = listApps().find((a) => a.id === app.id)?.last_seen_at;
+    expect(after).toBe(before);
+  });
+
+  test('finds an app saved with a trailing-slash origin (write-path canonicalization)', () => {
+    saveEntry({
+      origin: 'https://myapp.example.com/',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    // Lookup key is what handleListTabs computes: new URL(tab.url).origin.
+    expect(getMapHint('https://myapp.example.com')).toEqual({
+      app_key: 'my-app',
+      entries: 1,
+      flows: 0,
+    });
+  });
+
+  test('finds a canonical save when the lookup itself carries free text (defense in depth)', () => {
+    saveEntry({
+      origin: 'https://myapp.example.com',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    expect(getMapHint('https://myapp.example.com/some/path')).toEqual({
+      app_key: 'my-app',
+      entries: 1,
+      flows: 0,
+    });
+  });
+});
+
+describe('origin canonicalization across save and recall', () => {
+  test('a recall with a trailing-slash origin finds what a canonical save stored', () => {
+    saveEntry({
+      origin: 'https://myapp.example.com',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    const recalled = recall({ origin: 'https://myapp.example.com/' });
+    expect(recalled.app?.app_key).toBe('my-app');
+    expect(recalled.entries).toHaveLength(1);
+  });
+
+  test('saving the same app with and without a trailing slash upserts ONE app row', () => {
+    upsertApp({ origin: 'https://myapp.example.com/', title: 'My App' });
+    upsertApp({ origin: 'https://myapp.example.com', title: 'My App' });
+    expect(listApps()).toHaveLength(1);
+    expect(listApps()[0]?.origin).toBe('https://myapp.example.com');
   });
 });

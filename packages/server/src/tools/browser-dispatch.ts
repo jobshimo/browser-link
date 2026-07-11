@@ -27,12 +27,19 @@ function handleReset(
 
 import { requireTabId } from './responses.js';
 import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
+import type { MapHint } from '../map/queries.js';
 import {
   formatClaimConflict,
   type AgentCaller,
   type TabClaim,
   type TabClaimRegistry,
 } from './tab-claims.js';
+
+// Re-exported so dispatcher consumers can type the list_tabs result without
+// importing from map/queries.ts themselves. Type-only: no runtime coupling
+// to the map DB module (better-sqlite3 stays out of this file's import
+// graph at runtime).
+export type { MapHint };
 
 export interface TabSnapshot {
   tab_id: string;
@@ -56,6 +63,12 @@ export interface PublicClaim {
 export interface EnrichedTabSnapshot extends TabSnapshot {
   claimed_by: PublicClaim | null;
   claimed_by_me: boolean;
+  /** Compact hint that the persistent map has data for this tab's origin —
+   * `MapHint` is defined in `map/queries.ts` (the source of truth, next to
+   * `getMapHint`) and re-exported above. Omitted entirely (not present as
+   * a key) when the map knows nothing, keeping the common "map is empty"
+   * case exactly as lean as before this field existed. */
+  map?: MapHint;
 }
 
 export interface BrowserToolDeps {
@@ -85,6 +98,12 @@ export interface BrowserToolDeps {
    * session, releases every claim, clears the event log — without killing
    * the MCP server. Optional so unit tests can omit it. */
   resetBridge?(): { dropped_tabs: number; released_claims: number; cleared_events: number };
+  /** Optional persistent-map hint lookup, keyed by tab origin — backs the
+   * `map` field `browser.list_tabs` attaches per tab (see
+   * `map/queries.ts`'s `getMapHint`). Optional so existing test fixtures
+   * keep compiling and so a build without the map DB wired up just omits
+   * the field on every tab, same degrade-gracefully pattern as `tabClaims`. */
+  getMapHint?(origin: string): MapHint | null;
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -440,13 +459,27 @@ async function runAction(
     : deps.callBrowserTool(tabId, tool, params);
 }
 
+/** Best-effort origin extraction for the map-hint lookup. A tab URL that
+ * fails to parse (about:blank, chrome://, a mid-navigation blank string)
+ * just yields no hint — never throws and never blocks list_tabs. */
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 function handleListTabs(deps: BrowserToolDeps, caller: AgentCaller): EnrichedTabSnapshot[] {
   return deps.listTabs().map((t) => {
     const claim = deps.tabClaims?.getClaim(t.tab_id) ?? null;
+    const origin = deps.getMapHint ? originOf(t.url) : null;
+    const hint = origin ? (deps.getMapHint?.(origin) ?? null) : null;
     return {
       ...t,
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
+      ...(hint ? { map: hint } : {}),
     } satisfies EnrichedTabSnapshot;
   });
 }

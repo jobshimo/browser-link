@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { INSTALLERS } from '../installers/index.js';
 import { getAllowedBrowsers } from '../auth/allowlist.js';
+import { detectSilentDebuggerFlag } from '../auth/silent-debugger.js';
 import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
@@ -56,11 +57,24 @@ export interface DoctorReport {
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
   security: { allowedBrowsers: readonly string[] };
+  /** v0.20.0: best-effort, informational-only detection of whether a
+   * running Chrome/Chromium was launched with
+   * `--silent-debugger-extension-api` (see silent-debugger.ts). `detected`
+   * is `null` when the probe cannot tell — no Chrome running, tool
+   * unavailable, timed out — and the formatter degrades to a neutral line
+   * pointing at the README rather than treating that as a failure. */
+  silentDebugger: { detected: boolean | null };
 }
 
 export async function runDoctor(): Promise<DoctorReport> {
-  const ws = await checkPort(WS_HOST, WS_PORT);
-  const ipc = await checkPort(IPC_HOST, IPC_PORT);
+  // Independent probes — run them concurrently rather than serially so a
+  // slow process-listing scan (silentDebugger) does not add its full
+  // latency on top of the port checks.
+  const [ws, ipc, silentDebugger] = await Promise.all([
+    checkPort(WS_HOST, WS_PORT),
+    checkPort(IPC_HOST, IPC_PORT),
+    detectSilentDebuggerFlag(),
+  ]);
 
   const clients = INSTALLERS.map((i) => {
     const d = i.detect();
@@ -95,6 +109,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
     security: { allowedBrowsers: getAllowedBrowsers() },
+    silentDebugger,
   };
 }
 
@@ -140,6 +155,12 @@ interface DoctorI18n {
   instructionsCorrupt: string;
   extensionHeader: string;
   extensionNotFound: string;
+  /** v0.20.0: informational-only check — never a ✓/✗ pass-fail, since
+   * neither state is wrong. See silent-debugger.ts. */
+  silentDebuggerHeader: string;
+  silentDebuggerDetected: string;
+  silentDebuggerNotDetected: string;
+  silentDebuggerUnknown: string;
   mapHeader: string;
   mapPath: string;
   mapNotCreated: string;
@@ -181,6 +202,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     instructionsCorrupt: '⚠ multiple blocks — resolve manually',
     extensionHeader: 'Chrome extension assets:',
     extensionNotFound: 'not found (run `browser-link extension` for guidance)',
+    silentDebuggerHeader: 'Chrome debugger infobar:',
+    silentDebuggerDetected:
+      '  ✓ --silent-debugger-extension-api detected — the infobar is suppressed for ALL debugger-API extensions, not just this one.',
+    silentDebuggerNotDetected:
+      '  · not detected — Chrome will show "started debugging this browser" while a tab is connected. See README > FAQ: silencing the debugger infobar.',
+    silentDebuggerUnknown:
+      '  · could not determine (no Chrome/Chromium process found, or detection unsupported here). See README > FAQ: silencing the debugger infobar.',
     mapHeader: 'Map DB:',
     mapPath: 'path:',
     mapNotCreated: '  (not created yet — will be initialized on first run)',
@@ -221,6 +249,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     instructionsCorrupt: '⚠ múltiples bloques — resolvé a mano',
     extensionHeader: 'Assets de la extensión de Chrome:',
     extensionNotFound: 'no encontrada (corré `browser-link extension` para la guía)',
+    silentDebuggerHeader: 'Barra del depurador de Chrome:',
+    silentDebuggerDetected:
+      '  ✓ se detectó --silent-debugger-extension-api — la barra queda silenciada para TODAS las extensiones que usan la API de depurador, no solo esta.',
+    silentDebuggerNotDetected:
+      '  · no detectada — Chrome va a mostrar "empezó a depurar este navegador" mientras haya una pestaña conectada. Ver README > FAQ: silenciar la barra del depurador.',
+    silentDebuggerUnknown:
+      '  · no se pudo determinar (no se encontró proceso de Chrome/Chromium, o la detección no está disponible acá). Ver README > FAQ: silenciar la barra del depurador.',
     mapHeader: 'Base de datos del mapa:',
     mapPath: 'ruta:',
     mapNotCreated: '  (todavía no se creó — se inicializa en el primer arranque)',
@@ -299,6 +334,15 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
     lines.push(`  ${symbol(true)} ${r.extension.path}`);
   } else {
     lines.push(`  ${symbol(false)} ${t.extensionNotFound}`);
+  }
+  lines.push('');
+  lines.push(t.silentDebuggerHeader);
+  if (r.silentDebugger.detected === true) {
+    lines.push(t.silentDebuggerDetected);
+  } else if (r.silentDebugger.detected === false) {
+    lines.push(t.silentDebuggerNotDetected);
+  } else {
+    lines.push(t.silentDebuggerUnknown);
   }
   lines.push('');
   lines.push(t.mapHeader);
