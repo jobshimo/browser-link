@@ -12,6 +12,28 @@
 
 import type { ToolDefinition } from './types.js';
 
+/**
+ * Shared `settle_ms` / `settle_timeout_ms` schema properties for
+ * click / type / press. Identical wording and semantics across all three —
+ * defined once so the descriptions cannot drift between tools.
+ */
+const SETTLE_SCHEMA_PROPERTIES = {
+  settle_ms: {
+    type: 'number',
+    minimum: 0,
+    maximum: 2000,
+    description:
+      'After dispatching the action, wait until the page goes quiet — no DOM mutations for this many consecutive ms — before returning. Folds the wait_for + snapshot round trip most flows need after an action into the action call itself. Default 150, hard ceiling 2000. Pass 0 to disable and return immediately (pre-v0.16.0 behavior). Blind spot to keep in mind: the observer installs right AFTER the action dispatches, so mutations that complete in that gap are invisible — mutation_count:0 with settled:true does NOT prove the action had no effect — and an async reaction that only starts after the quiet window is likewise missed. For a specific expected condition, browser.wait_for remains the right tool.',
+  },
+  settle_timeout_ms: {
+    type: 'number',
+    minimum: 0,
+    maximum: 10000,
+    description:
+      'Overall cap on the settle wait in ms, in case the page never goes fully quiet (polling animations, live tickers, spinners). Default 2000, hard ceiling 10000. Ignored when settle_ms is 0.',
+  },
+} as const;
+
 export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.list_tabs',
@@ -559,7 +581,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.click',
     description:
-      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard.',
+      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. Optionally waits for the page to settle after the click — see `settle_ms`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -571,6 +593,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'Skip the occlusion guard and dispatch the click even if another element currently covers the click point. Escape hatch for cases where the "covering" element is intentional (e.g. a transparent hit-target layer) or the guard produces a false positive. Default false.',
         },
+        ...SETTLE_SCHEMA_PROPERTIES,
       },
       required: ['tab_id', 'selector'],
       additionalProperties: false,
@@ -585,13 +608,14 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Auto-claims the tab on first use in multi-agent mode.',
         'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
+        'The result carries a compact `settle` object (`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason? }`) unless `settle_ms:0`. `settled:false` means the page never went quiet within `settle_timeout_ms` — not necessarily an error, some pages never stop mutating (tickers, spinners). When the settle wait itself could not run to completion, `settled:false` comes with `reason`: "context-destroyed" (the action navigated the page, destroying the observer\'s execution context — the action still succeeded, and this is itself a strong navigation signal) or "settle-error" (any other settle-side failure). With settle on, a separate browser.wait_for right after a click is usually unnecessary.',
       ],
     },
   },
   {
     name: 'browser.type',
     description:
-      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click.',
+      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click. Optionally waits for the page to settle after typing — see `settle_ms`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -599,6 +623,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         selector: { type: 'string' },
         text: { type: 'string' },
         clear: { type: 'boolean', default: false },
+        ...SETTLE_SCHEMA_PROPERTIES,
       },
       required: ['tab_id', 'selector', 'text'],
       additionalProperties: false,
@@ -611,7 +636,56 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         'Pass clear:true when you need to replace the current value instead of appending to it.',
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
+        'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
+        'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
       ],
+    },
+  },
+  {
+    name: 'browser.press',
+    description:
+      'Press a single key, optionally with modifiers, using a TRUSTED CDP `Input.dispatchKeyEvent` sequence (`isTrusted: true`) — not a synthetic `KeyboardEvent` dispatched via `browser.evaluate`, which many rich text editors, autocompletes, and non-DOM runtimes (Qt-WASM, WebGL — see browser.canvas_screenshot) silently ignore. `key` accepts a human name (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`), case-insensitive, or a single printable character, case-sensitive (`"a"` vs `"A"`, `"@"`). `modifiers` combines with the key for shortcuts (`Ctrl+A` = `{ key: "a", modifiers: ["Control"] }`). Pass `selector` to focus an element first (same deep Shadow DOM / iframe search as click/type/find); omit it to send the key to whatever currently has focus. Optionally waits for the page to settle after the key press — see `settle_ms`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        key: {
+          type: 'string',
+          description:
+            'Human key name ("Enter", "Escape", "Tab", "Backspace", "Delete", "ArrowUp"/"ArrowDown"/"ArrowLeft"/"ArrowRight", "Home", "End", "PageUp", "PageDown", "Space" — case-insensitive) or a single printable character (case-sensitive, e.g. "a", "A", "@").',
+        },
+        modifiers: {
+          type: 'array',
+          items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] },
+          description:
+            'Modifier keys held during the press. Combine for shortcuts, e.g. ["Control"] + key:"a" for Ctrl+A, or ["Meta"] + key:"s" for Cmd+S on macOS.',
+        },
+        selector: {
+          type: 'string',
+          description:
+            'Optional. Focus this element (resolved via the same deep Shadow DOM / iframe search as browser.click) before dispatching the key. Omit to send the key to the currently focused element.',
+        },
+        ...SETTLE_SCHEMA_PROPERTIES,
+      },
+      required: ['tab_id', 'key'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Dispatch one trusted keyboard key press (optionally with modifiers) — Enter/Escape/Tab/arrows/shortcuts/a single character.',
+      when_to_use: [
+        'Submitting a form or confirming an autocomplete suggestion with Enter, dismissing a dialog with Escape, moving focus with Tab, navigating a list/menu with arrow keys.',
+        'A keyboard shortcut the page listens for (Ctrl+A select-all, Cmd+S save, Ctrl+Z undo) — pass modifiers plus the base key.',
+        'A rich text editor, autocomplete widget, or non-DOM runtime (Qt-WASM, WebGL) that discards synthetic input dispatched via browser.evaluate and needs a REAL, isTrusted:true keystroke.',
+      ],
+      gotchas: [
+        'For typing normal text into an input, use browser.type instead — it goes through the native value setter and is far cheaper per character than one browser.press call per keystroke.',
+        'For anything not covered by the named keys or a single character, browser.evaluate is the escape hatch — but note it produces isTrusted:false events, which some pages ignore.',
+        'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable for the optional `selector`, same as browser.click.',
+        'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+      ],
+      example: 'browser.press({ tab_id: "tab_1", key: "Enter" })',
     },
   },
   {

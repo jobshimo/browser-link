@@ -28,6 +28,7 @@ describe('isBrowserTool', () => {
       'browser.canvas_screenshot',
       'browser.click',
       'browser.type',
+      'browser.press',
       'browser.drag',
       'browser.evaluate',
       'browser.console',
@@ -97,11 +98,37 @@ describe('handleBrowserTool', () => {
       deps,
       TEST_CALLER,
     );
-    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'type', {
-      selector: '#x',
-      text: 'hi',
-      clear: false,
-    });
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'type',
+      {
+        selector: '#x',
+        text: 'hi',
+        clear: false,
+        settle_ms: undefined,
+        settle_timeout_ms: undefined,
+      },
+      expect.any(Number),
+    );
+  });
+
+  test('type forwards settle_ms / settle_timeout_ms and computes the bridge timeout from them', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.type',
+      { tab_id: 'tab_1', selector: '#x', text: 'hi', settle_ms: 300, settle_timeout_ms: 4000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'type',
+      expect.objectContaining({ settle_ms: 300, settle_timeout_ms: 4000 }),
+      // With today's constants this equals the 15s floor for every legal
+      // settle_timeout_ms (max 10s + 5s overhead == floor) — the formula is
+      // asserted so the budget stays correct if either constant moves.
+      Math.max(15_000, 4000 + 5_000),
+    );
   });
 
   test('drag forwards selector endpoints and tunables to the bridge', async () => {
@@ -635,10 +662,17 @@ describe('action-tool claim enforcement', () => {
     const deps = makeDepsWithClaims();
     await handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#go' }, deps, A);
     expect(deps.tabClaims!.getClaim('tab_1')?.agent_id).toBe('sess-A');
-    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', {
-      selector: '#go',
-      force: false,
-    });
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'click',
+      {
+        selector: '#go',
+        force: false,
+        settle_ms: undefined,
+        settle_timeout_ms: undefined,
+      },
+      expect.any(Number),
+    );
   });
 
   test('click forwards force:true when the caller opts out of the occlusion guard', async () => {
@@ -649,10 +683,49 @@ describe('action-tool claim enforcement', () => {
       deps,
       A,
     );
-    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', {
-      selector: '#go',
-      force: true,
-    });
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'click',
+      expect.objectContaining({ selector: '#go', force: true }),
+      expect.any(Number),
+    );
+  });
+
+  test('click forwards settle_ms / settle_timeout_ms and computes the bridge timeout from them', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#go', settle_ms: 500, settle_timeout_ms: 8000 },
+      deps,
+      A,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'click',
+      expect.objectContaining({ settle_ms: 500, settle_timeout_ms: 8000 }),
+      // Equals the 15s floor with today's constants — see the invariant
+      // note on actionTimeoutWithSettle.
+      Math.max(15_000, 8000 + 5_000),
+    );
+  });
+
+  test('click timeout floors at 15s even when settle_timeout_ms is small or absent', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#go' }, deps, A);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', expect.any(Object), 15_000);
+  });
+
+  test('click clamps settle_timeout_ms above the 10s ceiling before computing the bridge timeout', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#go', settle_timeout_ms: 999_999 },
+      deps,
+      A,
+    );
+    // Clamped to 10_000 before the +5_000 overhead is added — NOT
+    // Math.max(15_000, 999_999 + 5_000).
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', expect.any(Object), 15_000);
   });
 
   test('click is rejected when another agent already owns the tab, and the bridge is never called', async () => {
@@ -895,5 +968,133 @@ describe('action-tool claim enforcement', () => {
       'find',
       expect.objectContaining({ text: 'Save' }),
     );
+  });
+});
+
+describe('browser.press dispatch', () => {
+  test('forwards key with modifiers defaulting to an empty array', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.press', { tab_id: 'tab_1', key: 'Enter' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'press',
+      {
+        key: 'Enter',
+        modifiers: [],
+        selector: undefined,
+        settle_ms: undefined,
+        settle_timeout_ms: undefined,
+      },
+      expect.any(Number),
+    );
+  });
+
+  test('forwards modifiers and selector when provided', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.press',
+      { tab_id: 'tab_1', key: 'a', modifiers: ['Control'], selector: '#editor' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'press',
+      expect.objectContaining({
+        key: 'a',
+        modifiers: ['Control'],
+        selector: '#editor',
+      }),
+      expect.any(Number),
+    );
+  });
+
+  test('auto-claims a free tab for the caller (action tool)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.press', { tab_id: 'tab_1', key: 'Enter' }, deps, A);
+    expect(deps.tabClaims!.getClaim('tab_1')?.agent_id).toBe('sess-A');
+  });
+
+  test('is rejected when another agent already owns the tab, and the bridge is never called', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mockClear();
+    await expect(
+      handleBrowserTool('browser.press', { tab_id: 'tab_1', key: 'Enter' }, deps, B),
+    ).rejects.toThrow(/in use by another agent/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('rejects a missing or empty key without hitting the bridge', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.press', { tab_id: 'tab_1' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/key required/);
+    await expect(
+      handleBrowserTool('browser.press', { tab_id: 'tab_1', key: '' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/key required/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('rejects an invalid modifiers entry', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.press',
+        { tab_id: 'tab_1', key: 'a', modifiers: ['Banana'] },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/modifiers must be an array of Alt \| Control \| Meta \| Shift/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('rejects modifiers that is not an array', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.press',
+        { tab_id: 'tab_1', key: 'a', modifiers: 'Control' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/modifiers must be an array/);
+  });
+
+  test('rejects a non-string selector', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.press',
+        { tab_id: 'tab_1', key: 'a', selector: 42 },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/selector must be a string/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('forwards settle_ms / settle_timeout_ms and computes the bridge timeout from them', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.press',
+      { tab_id: 'tab_1', key: 'Enter', settle_ms: 200, settle_timeout_ms: 6000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'press',
+      expect.objectContaining({ settle_ms: 200, settle_timeout_ms: 6000 }),
+      // Equals the 15s floor with today's constants — see the invariant
+      // note on actionTimeoutWithSettle.
+      Math.max(15_000, 6000 + 5_000),
+    );
+  });
+
+  test('timeout floors at 15s when settle_timeout_ms is absent', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.press', { tab_id: 'tab_1', key: 'Enter' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'press', expect.any(Object), 15_000);
   });
 });

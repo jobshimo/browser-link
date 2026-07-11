@@ -1,9 +1,10 @@
 /**
  * Builders that assemble the CDP `Runtime.evaluate` expression strings for
- * `snapshot`, `find`, `click` and `type`. Extracted out of background.ts so
- * the produced JS source can be unit-tested by evaluating it directly in a
- * DOM environment (see the `*.test.ts` files next to this module) — the
- * exact same string background.ts sends over CDP.
+ * `snapshot`, `find`, `click`, `type`, `press` and the shared post-action
+ * `settle` wait. Extracted out of background.ts so the produced JS source
+ * can be unit-tested by evaluating it directly in a DOM environment (see
+ * the `*.test.ts` files next to this module) — the exact same string
+ * background.ts sends over CDP.
  */
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';
@@ -293,5 +294,114 @@ export function buildTypeResolveJs(opts: TypeResolveOpts): string {
   el.focus();
   ${opts.clear ? "if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }" : ''}
   return true;
+})()`;
+}
+
+/**
+ * Build the focus-resolution expression for `browser.press`'s optional
+ * `selector`: resolves the selector across the deep search scope and
+ * focuses it, reporting success so background.ts can follow up with the
+ * CDP key event sequence (which — like `Input.insertText` — targets
+ * whatever currently has focus at the browser level). Intentionally
+ * separate from `buildTypeResolveJs`: press never clears a value, and
+ * naming it distinctly keeps the press code path readable on its own.
+ */
+export interface FocusResolveOpts {
+  selector: string;
+}
+
+export function buildFocusJs(opts: FocusResolveOpts): string {
+  const optsJson = JSON.stringify({ selector: opts.selector });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const opts = ${optsJson};
+  const el = deepQueryFirst(opts.selector);
+  if (!el) return false;
+  el.focus();
+  return true;
+})()`;
+}
+
+/**
+ * Build the settle-await expression shared by `browser.click`, `.type` and
+ * `.press`. Called AFTER the action's CDP input events have been
+ * dispatched: installs one `MutationObserver` on `document` (subtree,
+ * childList, attributes, characterData) and resolves once no mutation has
+ * landed for `settle_ms` consecutive milliseconds, or once `settle_timeout_ms`
+ * total has elapsed — whichever comes first. Returned as a Promise so
+ * background.ts's `evaluateInTab` (CDP `Runtime.evaluate` with
+ * `awaitPromise: true`) waits for it naturally.
+ *
+ * Baseline `url`/`activeElement` are captured at the TOP of this
+ * expression — i.e. right after the action's own focus/navigation side
+ * effects have already landed (dispatch already happened by the time this
+ * runs), so `focus_moved`/`url_changed` report drift that happened DURING
+ * the settle window, not the action's own expected effect.
+ *
+ * The result omits `url_changed` / `focus_moved` when they did not change
+ * — token-lean by construction, no post-filtering needed.
+ */
+export interface SettleOpts {
+  /** Quiet-period length in ms. Caller is expected to have already
+   * clamped this to (0, 2000] — 0 means "don't call this builder at all". */
+  settle_ms: number;
+  /** Overall cap in ms. Caller is expected to have already clamped this
+   * to [0, 10000]. */
+  settle_timeout_ms: number;
+}
+
+export function buildSettleJs(opts: SettleOpts): string {
+  const optsJson = JSON.stringify({
+    settleMs: Math.max(0, opts.settle_ms),
+    timeoutMs: Math.max(0, opts.settle_timeout_ms),
+  });
+  return `
+(() => {
+  const opts = ${optsJson};
+  const startUrl = location.href;
+  const startActiveEl = document.activeElement;
+  const state = { mutationCount: 0, lastMutationAt: Date.now() };
+  const observer = new MutationObserver((mutations) => {
+    state.mutationCount += mutations.length;
+    state.lastMutationAt = Date.now();
+  });
+  observer.observe(document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    characterData: true,
+  });
+  const start = Date.now();
+  return new Promise((resolve) => {
+    function finish(settled) {
+      observer.disconnect();
+      const result = {
+        settled: settled,
+        duration_ms: Date.now() - start,
+        mutation_count: state.mutationCount,
+      };
+      if (location.href !== startUrl) result.url_changed = location.href;
+      if (document.activeElement !== startActiveEl) result.focus_moved = true;
+      resolve(result);
+    }
+    if (opts.settleMs <= 0) {
+      finish(true);
+      return;
+    }
+    (function check() {
+      const now = Date.now();
+      const quietFor = now - state.lastMutationAt;
+      if (quietFor >= opts.settleMs) {
+        finish(true);
+        return;
+      }
+      if (now - start >= opts.timeoutMs) {
+        finish(false);
+        return;
+      }
+      setTimeout(check, Math.min(opts.settleMs - quietFor, 50));
+    })();
+  });
 })()`;
 }

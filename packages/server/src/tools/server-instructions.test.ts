@@ -54,8 +54,33 @@ describe('buildServerInstructions', () => {
     expect(out).toContain('within_selector');
     expect(out).toContain('only_interactive');
     expect(out).toContain('pane.scrollTop');
-    expect(out).toContain('KeyboardEvent');
     expect(out).toContain('latest_id');
+  });
+
+  test('preamble points special keys at browser.press instead of synthetic KeyboardEvent (v0.16.0)', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('browser.press');
+    expect(out).toContain('isTrusted:false');
+    expect(out).toContain('isTrusted:true');
+  });
+
+  test('preamble teaches the settle pattern for click/type/press (v0.16.0)', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('settle_ms');
+    expect(out).toContain('mutation_count');
+    expect(out).toContain('wait_for');
+  });
+
+  test('preamble states the settle blind spot honestly — quiet, not effect', () => {
+    // The honesty caveat must not silently disappear from the doc surface
+    // every connecting MCP client receives: settle cannot see mutations
+    // completing before the observer installs, nor async reactions after
+    // the quiet window, so mutation_count:0 must never be sold as proof
+    // the action had no effect.
+    const out = buildServerInstructions();
+    expect(out).toContain('Settle proves QUIET, not EFFECT');
+    // Wrap-independent: the preamble is manually line-wrapped prose.
+    expect(out).toMatch(/does\s+NOT mean the action did nothing/);
   });
 
   test('browser.find appears as a documented tool section in the rendered instructions', () => {

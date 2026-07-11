@@ -8,7 +8,16 @@ import {
   buildFindJs,
   buildClickResolveJs,
   buildTypeResolveJs,
+  buildFocusJs,
 } from './inpage/builders.js';
+import {
+  buildKeyEventSequence,
+  resolveKey,
+  modifiersToBitmask,
+  MODIFIER_BITS,
+  type KeyDefinition,
+} from './keymap.js';
+import { resolveSettleParams, settleSafely } from './settle.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -299,6 +308,37 @@ function sleep(ms: number): Promise<void> {
       setTimeout(resolve, 0);
     }
   });
+}
+
+/** Run the shared post-action settle wait for a tab. Thin closure binder
+ * over `settleSafely` (see settle.ts) — which is guaranteed not to throw,
+ * so an action that navigated the page (destroying the settle expression's
+ * execution context) still returns ok:true with a degraded settle object
+ * instead of flipping the whole response to ok:false. */
+function runSettle(
+  tabId: number,
+  settle: ReturnType<typeof resolveSettleParams>,
+): Promise<Record<string, unknown> | undefined> {
+  return settleSafely((expression) => evaluateInTab(tabId, expression), settle);
+}
+
+/**
+ * Dispatch the CDP `Input.dispatchKeyEvent` sequence for one resolved key.
+ * The event shapes come from `buildKeyEventSequence` (keymap.ts) — pure and
+ * unit-tested there; this wrapper only feeds them to chrome.debugger. This
+ * is the ONLY path in this extension that produces `isTrusted: true`
+ * keyboard events — see browser.press's doc block for why that matters
+ * (Qt-WASM and similar runtimes discard synthetic KeyboardEvents dispatched
+ * via browser.evaluate).
+ */
+async function dispatchKeyEvent(
+  tabId: number,
+  def: KeyDefinition,
+  modifiers: number,
+): Promise<void> {
+  for (const event of buildKeyEventSequence(def, modifiers)) {
+    await cdp(tabId, 'Input.dispatchKeyEvent', event);
+  }
 }
 
 /**
@@ -852,6 +892,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       case 'click': {
         const selector = str('selector');
         const force = p.force === true;
+        const settle = resolveSettleParams(p);
         const resolved = await evaluateInTab<ClickResolveResult>(
           tabId,
           buildClickResolveJs({ selector, force }),
@@ -891,18 +932,17 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           button: 'left',
           clickCount: 1,
         });
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { clicked: selector, tag: resolved.tag },
-        };
+        const settleResult = await runSettle(tabId, settle);
+        const result: Record<string, unknown> = { clicked: selector, tag: resolved.tag };
+        if (settleResult) result.settle = settleResult;
+        return { kind: 'tool.response', id: msg.id, ok: true, result };
       }
 
       case 'type': {
         const selector = str('selector');
         const text = str('text');
         const clear = p.clear === true;
+        const settle = resolveSettleParams(p);
         const focused = await evaluateInTab<boolean>(
           tabId,
           buildTypeResolveJs({ selector, clear }),
@@ -916,12 +956,49 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           };
         }
         await cdp(tabId, 'Input.insertText', { text });
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { typed: text.length, selector },
-        };
+        const settleResult = await runSettle(tabId, settle);
+        const result: Record<string, unknown> = { typed: text.length, selector };
+        if (settleResult) result.settle = settleResult;
+        return { kind: 'tool.response', id: msg.id, ok: true, result };
+      }
+
+      case 'press': {
+        const key = optStr('key');
+        if (!key) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: 'press: key required' };
+        }
+        const def = resolveKey(key);
+        if (!def) {
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: `press: unrecognized key "${key}"`,
+          };
+        }
+        const modifierNames = Array.isArray(p.modifiers)
+          ? p.modifiers.filter((m): m is string => typeof m === 'string')
+          : [];
+        const modifiers =
+          modifiersToBitmask(modifierNames) | (def.needsShift ? MODIFIER_BITS.Shift : 0);
+        const selector = optStr('selector');
+        const settle = resolveSettleParams(p);
+        if (selector) {
+          const focused = await evaluateInTab<boolean>(tabId, buildFocusJs({ selector }));
+          if (!focused) {
+            return {
+              kind: 'tool.response',
+              id: msg.id,
+              ok: false,
+              error: `Element not found: ${selector}`,
+            };
+          }
+        }
+        await dispatchKeyEvent(tabId, def, modifiers);
+        const settleResult = await runSettle(tabId, settle);
+        const result: Record<string, unknown> = { key, modifiers: modifierNames };
+        if (settleResult) result.settle = settleResult;
+        return { kind: 'tool.response', id: msg.id, ok: true, result };
       }
 
       case 'drag': {

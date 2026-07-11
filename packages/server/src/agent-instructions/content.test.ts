@@ -70,8 +70,21 @@ describe('agent-instructions block — reflex protocol shape', () => {
     // Patterns staying as evaluate-recipes (no tool added) — must still be taught.
     expect(out).toContain('pane.scrollTop');
     expect(out).toContain('scrollIntoView');
-    expect(out).toContain('KeyboardEvent');
     expect(out).toContain('latest_id');
+  });
+
+  test('special keys point at browser.press instead of synthetic KeyboardEvent (v0.16.0)', () => {
+    const out = block();
+    expect(out).toContain('browser.press');
+    expect(out).toContain('isTrusted:false');
+    expect(out).toContain('isTrusted:true');
+  });
+
+  test('settle pattern is taught: click/type/press settle_ms usually replaces a follow-up wait_for', () => {
+    const out = block();
+    expect(out).toContain('settle_ms');
+    expect(out).toContain('settle');
+    expect(out).toContain('mutation_count');
   });
 
   test('block is fenced with versioned BEGIN + END markers', () => {

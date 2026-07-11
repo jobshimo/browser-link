@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import {
   buildClickResolveJs,
   buildFindJs,
+  buildFocusJs,
+  buildSettleJs,
   buildSnapshotJs,
   buildTypeResolveJs,
 } from './builders.js';
@@ -330,5 +332,109 @@ describe('buildTypeResolveJs', () => {
       buildTypeResolveJs({ selector: '#does-not-exist', clear: false }),
     );
     expect(focused).toBe(false);
+  });
+});
+
+describe('buildFocusJs', () => {
+  test('focuses an input nested in a shadow root and reports success', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<input id="search" />';
+
+    const focused = evalExpr<boolean>(buildFocusJs({ selector: '#search' }));
+    expect(focused).toBe(true);
+  });
+
+  test('false when the selector matches nothing', () => {
+    const focused = evalExpr<boolean>(buildFocusJs({ selector: '#does-not-exist' }));
+    expect(focused).toBe(false);
+  });
+});
+
+describe('buildSettleJs', () => {
+  interface SettleResult {
+    settled: boolean;
+    duration_ms: number;
+    mutation_count: number;
+    url_changed?: string;
+    focus_moved?: boolean;
+  }
+
+  test('resolves settled:true once mutations stop for the quiet period', async () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+
+    const resultPromise = evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 30, settle_timeout_ms: 500 }),
+    );
+    // One mutation shortly after the observer starts, then silence — the
+    // quiet period should be measured from THIS mutation, not from t=0.
+    setTimeout(() => target.setAttribute('data-x', '1'), 5);
+
+    const result = await resultPromise;
+    expect(result.settled).toBe(true);
+    expect(result.mutation_count).toBeGreaterThanOrEqual(1);
+    expect(result.duration_ms).toBeGreaterThanOrEqual(30);
+  });
+
+  test('resolves settled:false when mutations never stop before the cap', async () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+
+    const resultPromise = evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 40, settle_timeout_ms: 120 }),
+    );
+    // Keep mutating faster than the quiet period so it can never settle —
+    // the overall cap must still win and return settled:false.
+    const interval = setInterval(() => target.setAttribute('data-x', String(Date.now())), 15);
+
+    const result = await resultPromise;
+    clearInterval(interval);
+    expect(result.settled).toBe(false);
+    expect(result.duration_ms).toBeGreaterThanOrEqual(120);
+    expect(result.mutation_count).toBeGreaterThan(0);
+  });
+
+  test('settle_ms <= 0 resolves immediately with settled:true', async () => {
+    const result = await evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 0, settle_timeout_ms: 500 }),
+    );
+    expect(result.settled).toBe(true);
+    expect(result.mutation_count).toBe(0);
+  });
+
+  test('reports url_changed only when the URL actually changed during the wait', async () => {
+    const noChange = await evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 10, settle_timeout_ms: 200 }),
+    );
+    expect(noChange.url_changed).toBeUndefined();
+  });
+
+  test('reports focus_moved only when the active element changed during the wait', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    const other = document.createElement('input');
+    document.body.appendChild(other);
+    input.focus();
+
+    const resultPromise = evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 30, settle_timeout_ms: 300 }),
+    );
+    setTimeout(() => other.focus(), 5);
+
+    const result = await resultPromise;
+    expect(result.focus_moved).toBe(true);
+  });
+
+  test('focus_moved is omitted when the active element never changes', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+
+    const result = await evalExpr<Promise<SettleResult>>(
+      buildSettleJs({ settle_ms: 10, settle_timeout_ms: 200 }),
+    );
+    expect(result.focus_moved).toBeUndefined();
   });
 });

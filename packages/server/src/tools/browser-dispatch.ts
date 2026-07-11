@@ -106,6 +106,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.network_body',
   'browser.click',
   'browser.type',
+  'browser.press',
   'browser.drag',
   'browser.evaluate',
   'browser.events',
@@ -123,6 +124,58 @@ export function isBrowserTool(name: string): boolean {
 }
 
 const NAVIGATE_TIMEOUT_MS = 30_000;
+
+/** Same floor click/type/drag/wait_for already use. Action tools default
+ * here when they have no other reason to run longer. */
+const ACTION_TIMEOUT_FLOOR_MS = 15_000;
+/** Hard ceiling on `settle_timeout_ms` — mirrors MAX_SETTLE_TIMEOUT_MS in
+ * the extension's background.ts; kept in sync manually since the two
+ * packages don't share a module for this one constant. */
+const MAX_SETTLE_TIMEOUT_MS = 10_000;
+/** Matches the extension's DEFAULT_SETTLE_TIMEOUT_MS. */
+const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
+
+const PRESS_MODIFIERS = new Set(['Alt', 'Control', 'Meta', 'Shift']);
+
+/** Type-predicate narrowing for `browser.press`'s `modifiers` param.
+ * `Array.isArray` alone narrows `unknown` to `any[]`, not `unknown[]` —
+ * without a named predicate here, `.every(...)` after it does not narrow
+ * the element type and the eventual assignment to `string[]` trips
+ * `no-unsafe-assignment`. */
+function isModifierArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((m) => typeof m === 'string' && PRESS_MODIFIERS.has(m))
+  );
+}
+
+/**
+ * Timeout budget for click / type / press: the bridge has to wait out the
+ * action itself PLUS however long the optional settle wait can run for.
+ * Mirrors how `browser.drag` computes its budget from `duration_ms` and
+ * `browser.wait_for` computes its budget from `timeout_ms` — same
+ * `Math.max(floor, requested + overhead)` shape, this time keyed off
+ * `settle_timeout_ms`. Unset/invalid input falls back to the default settle
+ * timeout, so the returned value is always >= ACTION_TIMEOUT_FLOOR_MS
+ * regardless of what the caller passed.
+ *
+ * INVARIANT WORTH STATING PLAINLY: with today's constants this function
+ * always returns exactly ACTION_TIMEOUT_FLOOR_MS (15s), because the worst
+ * legal case is MAX_SETTLE_TIMEOUT_MS + 5s overhead = 10s + 5s = the floor.
+ * It does not currently "widen" anything — it EXISTS so the budget stays
+ * correct by construction if either constant moves. If you change
+ * MAX_SETTLE_TIMEOUT_MS or the floor, either keep
+ * `ACTION_TIMEOUT_FLOOR_MS >= MAX_SETTLE_TIMEOUT_MS + 5_000` or accept
+ * that this function starts returning larger budgets — both are fine,
+ * a settle wait silently outliving the bridge timeout is not.
+ */
+function actionTimeoutWithSettle(settleTimeoutMs: unknown): number {
+  const requested =
+    typeof settleTimeoutMs === 'number' && Number.isFinite(settleTimeoutMs) && settleTimeoutMs >= 0
+      ? settleTimeoutMs
+      : DEFAULT_SETTLE_TIMEOUT_MS;
+  const clamped = Math.min(requested, MAX_SETTLE_TIMEOUT_MS);
+  return Math.max(ACTION_TIMEOUT_FLOOR_MS, clamped + 5_000);
+}
 
 /** Convert an internal TabClaim into the wire-safe `PublicClaim`. */
 function toPublicClaim(claim: TabClaim): PublicClaim {
@@ -359,16 +412,80 @@ export async function handleBrowserTool(
       return deps.callBrowserTool(requireTabId(args), 'network_body', { request_id });
     }
     case 'browser.click': {
-      const { selector, force = false } = args as { selector: string; force?: boolean };
-      return runAction('click', requireTabId(args), { selector, force }, deps, caller);
+      const {
+        selector,
+        force = false,
+        settle_ms,
+        settle_timeout_ms,
+      } = args as {
+        selector: string;
+        force?: boolean;
+        settle_ms?: number;
+        settle_timeout_ms?: number;
+      };
+      return runAction(
+        'click',
+        requireTabId(args),
+        { selector, force, settle_ms, settle_timeout_ms },
+        deps,
+        caller,
+        actionTimeoutWithSettle(settle_timeout_ms),
+      );
     }
     case 'browser.type': {
       const {
         selector,
         text,
         clear = false,
-      } = args as { selector: string; text: string; clear?: boolean };
-      return runAction('type', requireTabId(args), { selector, text, clear }, deps, caller);
+        settle_ms,
+        settle_timeout_ms,
+      } = args as {
+        selector: string;
+        text: string;
+        clear?: boolean;
+        settle_ms?: number;
+        settle_timeout_ms?: number;
+      };
+      return runAction(
+        'type',
+        requireTabId(args),
+        { selector, text, clear, settle_ms, settle_timeout_ms },
+        deps,
+        caller,
+        actionTimeoutWithSettle(settle_timeout_ms),
+      );
+    }
+    case 'browser.press': {
+      const { key, modifiers, selector, settle_ms, settle_timeout_ms } = (args ?? {}) as {
+        key?: unknown;
+        modifiers?: unknown;
+        selector?: unknown;
+        settle_ms?: number;
+        settle_timeout_ms?: number;
+      };
+      if (typeof key !== 'string' || key.length === 0) {
+        throw new Error('browser.press: key required');
+      }
+      let normalizedModifiers: string[] = [];
+      if (modifiers !== undefined) {
+        if (!isModifierArray(modifiers)) {
+          throw new Error(
+            'browser.press: modifiers must be an array of Alt | Control | Meta | Shift',
+          );
+        }
+        normalizedModifiers = modifiers;
+      }
+      if (selector !== undefined && typeof selector !== 'string') {
+        throw new Error('browser.press: selector must be a string when provided');
+      }
+      return runAction(
+        'press',
+        requireTabId(args),
+        { key, modifiers: normalizedModifiers, selector, settle_ms, settle_timeout_ms },
+        deps,
+        caller,
+        actionTimeoutWithSettle(settle_timeout_ms),
+      );
     }
     case 'browser.drag': {
       const {

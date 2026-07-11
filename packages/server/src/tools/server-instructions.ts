@@ -94,13 +94,29 @@ tokens AND more reliable than a hand-rolled expression.
   Never call \`browser.evaluate\` N times in a row to read N values.
 - **Scrolling** → \`browser.evaluate\` with \`pane.scrollTop = N\` or
   \`el.scrollIntoView({block:'center'})\`. No dedicated tool needed.
-- **Special keys (Enter / Tab / Escape / arrow keys)** →
-  \`browser.evaluate\` with
-  \`el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))\`.
-  Vanilla handlers AND React's delegated root handlers (React 17+)
-  pick up bubbled dispatched events. For TYPING text into an input,
-  use \`browser.type\` — it goes through the native setter so controlled
-  components update their state. \`dispatchEvent\` on \`value\` does NOT.
+- **Special keys (Enter / Tab / Escape / arrow keys / shortcuts)** →
+  \`browser.press\`, NOT \`browser.evaluate\` with a synthetic
+  \`KeyboardEvent\`. \`el.dispatchEvent(new KeyboardEvent(...))\` produces
+  \`isTrusted:false\` events that rich text editors, autocompletes, and
+  non-DOM runtimes (Qt-WASM, WebGL) silently ignore. \`browser.press\`
+  dispatches a real CDP \`Input.dispatchKeyEvent\` sequence
+  (\`isTrusted:true\`) — pass \`key\` ("Enter", "ArrowUp", a single
+  character, …) and optional \`modifiers\` for shortcuts (Ctrl+A, Cmd+S).
+  For TYPING text into an input, use \`browser.type\` — it goes through
+  the native setter so controlled components update their state.
+  \`dispatchEvent\` on \`value\` does NOT.
+- **Waiting for the result of an action** → pass \`settle_ms\` to
+  \`browser.click\` / \`.type\` / \`.press\` (default 150, max 2000)
+  instead of a follow-up \`browser.wait_for\` + \`browser.snapshot\`. The
+  action waits for the page to go quiet — no DOM mutations for
+  \`settle_ms\` — and returns a \`settle\` object
+  (\`{ settled, duration_ms, mutation_count, url_changed?, focus_moved? }\`).
+  Settle proves QUIET, not EFFECT: mutations completing before the
+  observer installs (right after dispatch) and async reactions starting
+  after the quiet window are both invisible — \`mutation_count: 0\` does
+  NOT mean the action did nothing. Reach for \`wait_for\` when you need a
+  SPECIFIC condition (a particular selector, network request, or
+  expression), not just "did anything change".
 - **Paging through \`browser.events\`** → keep \`lastId = result.latest_id\`
   in your working notes and pass it as \`since_id\` on the next call.
   That is one variable. The server does not maintain per-agent cursors.

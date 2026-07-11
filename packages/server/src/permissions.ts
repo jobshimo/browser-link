@@ -112,6 +112,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Type text into an input',
   },
   {
+    name: 'browser.press',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Press a key (with modifiers) using trusted CDP input',
+  },
+  {
     name: 'browser.drag',
     family: 'bridge',
     category: 'action',
