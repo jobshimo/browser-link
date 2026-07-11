@@ -29,7 +29,7 @@ jobs:
     name: Version Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Check out the PR head exactly (not the synthesised merge commit).

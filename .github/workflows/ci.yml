@@ -26,7 +26,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: [22]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # pnpm must be on PATH before `setup-node`'s `cache: pnpm` runs.
       # The version is resolved from the root `packageManager` field via
@@ -92,7 +92,7 @@ jobs:
       group: release-main
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
