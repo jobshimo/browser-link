@@ -240,8 +240,7 @@ function flowStepKind(step: Record<string, unknown>): FlowStepKind | null {
 }
 
 export type FlowValidationResult =
-  | { ok: true; steps: Record<string, unknown>[]; budgetMs: number }
-  | { ok: false; error: string };
+  { ok: true; steps: Record<string, unknown>[]; budgetMs: number } | { ok: false; error: string };
 
 /**
  * Server-side validation for `browser.flow`'s `steps` array — defense in

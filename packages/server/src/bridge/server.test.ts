@@ -241,8 +241,7 @@ describe('IpcServer MCP dispatch', () => {
     const response = frames.find(
       (f) => f.kind === 'mcp.response' && (f as { requestId: number }).requestId === 1,
     ) as
-      | { payload: { result: { serverInfo: { name: string }; instructions?: string } } }
-      | undefined;
+      { payload: { result: { serverInfo: { name: string }; instructions?: string } } } | undefined;
     expect(response).toBeDefined();
     expect(response!.payload.result.serverInfo.name).toBe('browser-link');
     expect(response!.payload.result.instructions).toBeTruthy();

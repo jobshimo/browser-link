@@ -246,8 +246,7 @@ export function recordUse(input: RecordUseInput): EntryRow | null {
   db.prepare(sql).run(ts, input.notes ?? null, ts, input.entry_id);
 
   const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(input.entry_id) as
-    | RawEntryRow
-    | undefined;
+    RawEntryRow | undefined;
   return row ? hydrate(row) : null;
 }
 
@@ -368,8 +367,7 @@ export function saveFlow(input: SaveFlowInput): { app: AppRow; flow: FlowRow } {
     )
     .run(app.id, input.name, input.description ?? null, stepsJson, ts, ts);
   const inserted = db.prepare('SELECT * FROM flows WHERE id = ?').get(info.lastInsertRowid) as
-    | RawFlowRow
-    | undefined;
+    RawFlowRow | undefined;
   return { app, flow: hydrateFlow(inserted as RawFlowRow) };
 }
 

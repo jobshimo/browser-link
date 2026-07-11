@@ -99,9 +99,7 @@ const PERM_I18N: Record<
  * navigable). The cursor visits one preset row even though it visually
  * spans multiple pills — left/right navigation moves between pills. */
 type PermRow =
-  | { kind: 'preset' }
-  | { kind: 'tool'; tool: ToolMeta }
-  | { kind: 'header'; family: ToolFamily };
+  { kind: 'preset' } | { kind: 'tool'; tool: ToolMeta } | { kind: 'header'; family: ToolFamily };
 
 interface PermissionsViewProps extends CommonProps {
   onBack: () => void;

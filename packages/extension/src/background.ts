@@ -288,8 +288,7 @@ async function applyContentSetting(
   ).contentSettings;
   if (!root) throw new Error('chrome.contentSettings not available in this build');
   const setter = root[settingKey] as
-    | { set(details: { primaryPattern: string; setting: string }): Promise<void> }
-    | undefined;
+    { set(details: { primaryPattern: string; setting: string }): Promise<void> } | undefined;
   if (!setter || typeof setter.set !== 'function') {
     throw new Error(`chrome.contentSettings.${settingKey} is not exposed in this Chrome build`);
   }
