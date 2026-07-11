@@ -23,6 +23,8 @@ Shipped as designed. `genSelector` lifted into a shared `DOM_HELPERS_JS` templat
 
 Not shipped as a tool. The "4 round-trips for 4 reads" framing was wrong — a competent agent already batches with `(() => ({ a: ..., b: ..., c: ... }))()` in one `browser.evaluate`, ~70 tokens including helpers. A dedicated tool would save ~30 tokens of boilerplate at the cost of a new schema, validation, permissions entry, and tests. The agent-instructions block now teaches the pattern explicitly (see `TOKEN-EFFICIENT PATTERNS`).
 
+**Not a precedent against `browser.flow` (v0.17.0).** This decision was about batching READS — `(() => ({ a: ..., b: ... }))()` already batches N reads into one `browser.evaluate`, client-side, for free. `browser.flow` batches ACTIONS (click/type/press/wait_for), a different problem: actions need real, trusted CDP input events (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`) that `browser.evaluate` cannot produce, plus inter-step waits (`settle_ms`, `wait_for`) between them — there was never a client-side batching escape hatch for actions the way there was for reads. A denied action round trip is a full LLM inference, same as a denied read round trip; the fix here had to be a real tool.
+
 ### [—] 3a. `browser.press_key` — RESOLVED AS PROTOCOL (v0.13.0)
 
 Not shipped as a tool. `dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))` via `browser.evaluate` IS recognised by vanilla DOM listeners AND by React's delegated root listeners (React 17+ delegates to the root, not to the element). For typing into controlled inputs, `browser.type` already uses the native setter — that was the only correctness gap. Verified against React inputs in the playground.

@@ -18,6 +18,16 @@ import {
   type KeyDefinition,
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
+import {
+  runFlow,
+  type ActionOutcome,
+  type ClickStepResult,
+  type FindStepResult,
+  type FlowStep,
+  type PressStepResult,
+  type TypeStepResult,
+  type WaitForStepResult,
+} from './flow.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -770,6 +780,269 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
   });
 }
 
+/**
+ * `performFind` / `performClick` / `performType` / `performPress` /
+ * `performWaitFor` — the extracted bodies of the standalone `find` /
+ * `click` / `type` / `press` / `wait_for` cases in `handleTool` below.
+ *
+ * Both the standalone `case` handlers AND `browser.flow`'s step executor
+ * (`runFlow` in `./flow.js`) call these exact functions — there is one
+ * implementation of each action, never a copy that can drift. Each
+ * returns an `ActionOutcome<T>` (`{ok:true,result} | {ok:false,error}`)
+ * instead of a wire-level `tool.response`, so the two call sites can
+ * unwrap it however they need to (the standalone case wraps it straight
+ * into a `tool.response`; `runFlow` inspects `result` for its own
+ * fail-fast rules — e.g. `wait_for`'s `matched:false` is `ok:true` here,
+ * matching the standalone tool's contract, and it is `runFlow`, not this
+ * function, that decides a non-match should stop the flow).
+ *
+ * `performType`'s `selector` is optional here (the standalone tool's JSON
+ * schema still requires it, so that path never changes): when omitted,
+ * this skips element resolution entirely and types into whatever
+ * currently has focus, mirroring how `performPress` already behaves with
+ * no `selector`. That is what lets a `browser.flow` step continue typing
+ * into a freshly-appeared, auto-focused input (e.g. a search box that
+ * opened after a preceding click) without a selector for it.
+ */
+
+async function performFind(
+  tabId: number,
+  params: { text: string; role?: string; exact?: boolean },
+): Promise<ActionOutcome<FindStepResult>> {
+  try {
+    const { text } = params;
+    if (!text) return { ok: false, error: 'find: text required' };
+    const value = await evaluateInTab<FindStepResult>(
+      tabId,
+      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+    );
+    return { ok: true, result: value };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function performClick(
+  tabId: number,
+  params: { selector: string; force?: boolean; settle_ms?: number; settle_timeout_ms?: number },
+): Promise<ActionOutcome<ClickStepResult>> {
+  try {
+    const { selector, force = false } = params;
+    const settle = resolveSettleParams({
+      settle_ms: params.settle_ms,
+      settle_timeout_ms: params.settle_timeout_ms,
+    });
+    const resolved = await evaluateInTab<ClickResolveResult>(
+      tabId,
+      buildClickResolveJs({ selector, force }),
+    );
+    if (!resolved.ok) {
+      if (resolved.reason === 'occluded') {
+        return {
+          ok: false,
+          error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
+        };
+      }
+      return { ok: false, error: `Element not found: ${selector}` };
+    }
+    await cdp(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: resolved.x,
+      y: resolved.y,
+    });
+    await cdp(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: resolved.x,
+      y: resolved.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await cdp(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: resolved.x,
+      y: resolved.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    const settleResult = await runSettle(tabId, settle);
+    const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
+    if (settleResult) result.settle = settleResult;
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function performType(
+  tabId: number,
+  params: {
+    selector?: string;
+    text: string;
+    clear?: boolean;
+    settle_ms?: number;
+    settle_timeout_ms?: number;
+  },
+): Promise<ActionOutcome<TypeStepResult>> {
+  try {
+    const { selector, text, clear = false } = params;
+    const settle = resolveSettleParams({
+      settle_ms: params.settle_ms,
+      settle_timeout_ms: params.settle_timeout_ms,
+    });
+    if (selector !== undefined) {
+      const focused = await evaluateInTab<boolean>(tabId, buildTypeResolveJs({ selector, clear }));
+      if (!focused) {
+        return { ok: false, error: `Element not found: ${selector}` };
+      }
+    }
+    await cdp(tabId, 'Input.insertText', { text });
+    const settleResult = await runSettle(tabId, settle);
+    const result: TypeStepResult = { typed: text.length };
+    if (selector !== undefined) result.selector = selector;
+    if (settleResult) result.settle = settleResult;
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function performPress(
+  tabId: number,
+  params: {
+    key?: string;
+    modifiers?: string[];
+    selector?: string;
+    settle_ms?: number;
+    settle_timeout_ms?: number;
+  },
+): Promise<ActionOutcome<PressStepResult>> {
+  try {
+    const key = params.key;
+    if (!key) return { ok: false, error: 'press: key required' };
+    const def = resolveKey(key);
+    if (!def) return { ok: false, error: `press: unrecognized key "${key}"` };
+    const modifierNames = params.modifiers ?? [];
+    const modifiers =
+      modifiersToBitmask(modifierNames) | (def.needsShift ? MODIFIER_BITS.Shift : 0);
+    const settle = resolveSettleParams({
+      settle_ms: params.settle_ms,
+      settle_timeout_ms: params.settle_timeout_ms,
+    });
+    if (params.selector) {
+      const focused = await evaluateInTab<boolean>(
+        tabId,
+        buildFocusJs({ selector: params.selector }),
+      );
+      if (!focused) {
+        return { ok: false, error: `Element not found: ${params.selector}` };
+      }
+    }
+    await dispatchKeyEvent(tabId, def, modifiers);
+    const settleResult = await runSettle(tabId, settle);
+    const result: PressStepResult = { key, modifiers: modifierNames };
+    if (settleResult) result.settle = settleResult;
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function performWaitFor(
+  tabId: number,
+  state: TabState,
+  params: {
+    selector?: string;
+    expression?: string;
+    network_url?: string;
+    condition?: string;
+    timeout_ms?: number;
+    poll_interval_ms?: number;
+  },
+): Promise<ActionOutcome<WaitForStepResult>> {
+  try {
+    const waitSelector = params.selector;
+    const waitExpression = params.expression;
+    const waitNetworkUrl = params.network_url;
+    const waitCondition = params.condition ?? 'visible';
+    // Defensive caps mirror the dispatcher's contract and keep CodeQL
+    // happy about setTimeout durations driven by request params.
+    const MAX_WAIT_TIMEOUT_MS = 30_000;
+    const MIN_POLL_MS = 50;
+    const MAX_POLL_MS = 1_000;
+    const requestedTimeout = params.timeout_ms ?? 5_000;
+    const timeoutMs =
+      requestedTimeout < MAX_WAIT_TIMEOUT_MS ? requestedTimeout : MAX_WAIT_TIMEOUT_MS;
+    const requestedPoll = params.poll_interval_ms ?? 100;
+    const pollIntervalMs =
+      requestedPoll < MIN_POLL_MS
+        ? MIN_POLL_MS
+        : requestedPoll > MAX_POLL_MS
+          ? MAX_POLL_MS
+          : requestedPoll;
+
+    // Build the check function based on which mode the caller picked. The
+    // dispatcher already enforced "exactly one of selector / expression /
+    // network_url" so we just pick the first defined one. If none are
+    // defined (shouldn't happen from a well-formed call), the check stays
+    // null and we return matched=false immediately.
+    let check: (() => Promise<boolean>) | null = null;
+    if (waitSelector !== undefined) {
+      const expr = buildWaitSelectorExpr(waitSelector, waitCondition);
+      check = async (): Promise<boolean> => {
+        try {
+          const result = await evaluateInTab(tabId, expr);
+          return Boolean(result);
+        } catch {
+          // If the page is unreachable mid-poll, count as "not yet matched".
+          return false;
+        }
+      };
+    } else if (waitExpression !== undefined) {
+      const wrapped = `Boolean(${waitExpression})`;
+      check = async (): Promise<boolean> => {
+        try {
+          const result = await evaluateInTab(tabId, wrapped);
+          return Boolean(result);
+        } catch {
+          return false;
+        }
+      };
+    } else if (waitNetworkUrl !== undefined) {
+      const needle = waitNetworkUrl.toLowerCase();
+      check = (): Promise<boolean> => {
+        for (const id of state.networkOrder) {
+          const r = state.networkBuffer.get(id);
+          if (!r) continue;
+          if (r.finished_at === undefined) continue;
+          if (r.url.toLowerCase().includes(needle)) return Promise.resolve(true);
+        }
+        return Promise.resolve(false);
+      };
+    }
+
+    const startedAt = Date.now();
+    let checks = 0;
+    let matched = false;
+    while (check) {
+      checks++;
+      if (await check()) {
+        matched = true;
+        break;
+      }
+      if (Date.now() - startedAt >= timeoutMs) break;
+      await sleep(pollIntervalMs);
+    }
+    const elapsedMs = Date.now() - startedAt;
+
+    const result: WaitForStepResult = matched
+      ? { matched: true, elapsed_ms: elapsedMs, checks }
+      : { matched: false, elapsed_ms: elapsedMs, checks, reason: 'timeout' };
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<ExtensionToServer> {
   const tabId = state.tabId;
   // Params come over the wire as JSON: each field is unknown until we
@@ -821,24 +1094,15 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'find': {
-        const text = str('text');
-        if (!text) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'find: text required',
-          };
+        const outcome = await performFind(tabId, {
+          text: str('text'),
+          role: optStr('role'),
+          exact: p.exact === true,
+        });
+        if (!outcome.ok) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
         }
-        const value = await evaluateInTab(
-          tabId,
-          buildFindJs({
-            text,
-            role: optStr('role'),
-            exact: p.exact === true,
-          }),
-        );
-        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
       case 'canvas_screenshot': {
@@ -890,115 +1154,74 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'click': {
-        const selector = str('selector');
-        const force = p.force === true;
-        const settle = resolveSettleParams(p);
-        const resolved = await evaluateInTab<ClickResolveResult>(
-          tabId,
-          buildClickResolveJs({ selector, force }),
-        );
-        if (!resolved.ok) {
-          if (resolved.reason === 'occluded') {
-            return {
-              kind: 'tool.response',
-              id: msg.id,
-              ok: false,
-              error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
-            };
-          }
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `Element not found: ${selector}`,
-          };
+        const outcome = await performClick(tabId, {
+          selector: str('selector'),
+          force: p.force === true,
+          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
+          settle_timeout_ms:
+            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+        });
+        if (!outcome.ok) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
         }
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          x: resolved.x,
-          y: resolved.y,
-        });
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mousePressed',
-          x: resolved.x,
-          y: resolved.y,
-          button: 'left',
-          clickCount: 1,
-        });
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mouseReleased',
-          x: resolved.x,
-          y: resolved.y,
-          button: 'left',
-          clickCount: 1,
-        });
-        const settleResult = await runSettle(tabId, settle);
-        const result: Record<string, unknown> = { clicked: selector, tag: resolved.tag };
-        if (settleResult) result.settle = settleResult;
-        return { kind: 'tool.response', id: msg.id, ok: true, result };
+        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
       case 'type': {
-        const selector = str('selector');
-        const text = str('text');
-        const clear = p.clear === true;
-        const settle = resolveSettleParams(p);
-        const focused = await evaluateInTab<boolean>(
-          tabId,
-          buildTypeResolveJs({ selector, clear }),
-        );
-        if (!focused) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `Element not found: ${selector}`,
-          };
+        const outcome = await performType(tabId, {
+          selector: str('selector'),
+          text: str('text'),
+          clear: p.clear === true,
+          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
+          settle_timeout_ms:
+            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+        });
+        if (!outcome.ok) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
         }
-        await cdp(tabId, 'Input.insertText', { text });
-        const settleResult = await runSettle(tabId, settle);
-        const result: Record<string, unknown> = { typed: text.length, selector };
-        if (settleResult) result.settle = settleResult;
-        return { kind: 'tool.response', id: msg.id, ok: true, result };
+        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
       case 'press': {
-        const key = optStr('key');
-        if (!key) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: 'press: key required' };
-        }
-        const def = resolveKey(key);
-        if (!def) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `press: unrecognized key "${key}"`,
-          };
-        }
         const modifierNames = Array.isArray(p.modifiers)
           ? p.modifiers.filter((m): m is string => typeof m === 'string')
           : [];
-        const modifiers =
-          modifiersToBitmask(modifierNames) | (def.needsShift ? MODIFIER_BITS.Shift : 0);
-        const selector = optStr('selector');
-        const settle = resolveSettleParams(p);
-        if (selector) {
-          const focused = await evaluateInTab<boolean>(tabId, buildFocusJs({ selector }));
-          if (!focused) {
-            return {
-              kind: 'tool.response',
-              id: msg.id,
-              ok: false,
-              error: `Element not found: ${selector}`,
-            };
-          }
+        const outcome = await performPress(tabId, {
+          key: optStr('key'),
+          modifiers: modifierNames,
+          selector: optStr('selector'),
+          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
+          settle_timeout_ms:
+            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+        });
+        if (!outcome.ok) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
         }
-        await dispatchKeyEvent(tabId, def, modifiers);
-        const settleResult = await runSettle(tabId, settle);
-        const result: Record<string, unknown> = { key, modifiers: modifierNames };
-        if (settleResult) result.settle = settleResult;
-        return { kind: 'tool.response', id: msg.id, ok: true, result };
+        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
+      }
+
+      case 'flow': {
+        // Wire-boundary narrowing: `p.steps` is untrusted JSON. Keep only
+        // object-shaped entries here — `runFlow`'s own `stepKind()` guard
+        // re-validates each one at runtime regardless, so a malformed
+        // entry fails the flow cleanly instead of throwing.
+        const rawSteps = Array.isArray(p.steps)
+          ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+          : [];
+        const flowResult = await runFlow(rawSteps as FlowStep[], {
+          performFind: (params) => performFind(tabId, params),
+          performClick: (params) => performClick(tabId, params),
+          performType: (params) => performType(tabId, params),
+          performPress: (params) => performPress(tabId, params),
+          performWaitFor: (params) => performWaitFor(tabId, state, params),
+          buildRecoverySnapshot: () =>
+            evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+        });
+        // The wire-level response is ok:true whenever the flow RAN (even a
+        // failed step is a legitimate business outcome, same pattern as
+        // wait_for's matched:false) — flowResult itself carries the
+        // ok:true/false the agent reads.
+        return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
       }
 
       case 'drag': {
@@ -1296,92 +1519,18 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'wait_for': {
-        const optNum = (key: string): number | undefined => {
-          const v = p[key];
-          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
-        };
-        const waitSelector = optStr('selector');
-        const waitExpression = optStr('expression');
-        const waitNetworkUrl = optStr('network_url');
-        const waitCondition = optStr('condition') ?? 'visible';
-        // Defensive caps mirror the dispatcher's contract and keep CodeQL
-        // happy about setTimeout durations driven by request params.
-        const MAX_WAIT_TIMEOUT_MS = 30_000;
-        const MIN_POLL_MS = 50;
-        const MAX_POLL_MS = 1_000;
-        const requestedTimeout = optNum('timeout_ms') ?? 5_000;
-        const timeoutMs =
-          requestedTimeout < MAX_WAIT_TIMEOUT_MS ? requestedTimeout : MAX_WAIT_TIMEOUT_MS;
-        const requestedPoll = optNum('poll_interval_ms') ?? 100;
-        const pollIntervalMs =
-          requestedPoll < MIN_POLL_MS
-            ? MIN_POLL_MS
-            : requestedPoll > MAX_POLL_MS
-              ? MAX_POLL_MS
-              : requestedPoll;
-
-        // Build the check function based on which mode the caller picked.
-        // The dispatcher already enforced "exactly one of selector / expression
-        // / network_url" so we just pick the first defined one. If none are
-        // defined (shouldn't happen from a well-formed call), the check stays
-        // null and we return matched=false immediately.
-        let check: (() => Promise<boolean>) | null = null;
-        if (waitSelector !== undefined) {
-          const expr = buildWaitSelectorExpr(waitSelector, waitCondition);
-          check = async (): Promise<boolean> => {
-            try {
-              const result = await evaluateInTab(tabId, expr);
-              return Boolean(result);
-            } catch {
-              // If the page is unreachable mid-poll, count as "not yet matched".
-              return false;
-            }
-          };
-        } else if (waitExpression !== undefined) {
-          const wrapped = `Boolean(${waitExpression})`;
-          check = async (): Promise<boolean> => {
-            try {
-              const result = await evaluateInTab(tabId, wrapped);
-              return Boolean(result);
-            } catch {
-              return false;
-            }
-          };
-        } else if (waitNetworkUrl !== undefined) {
-          const needle = waitNetworkUrl.toLowerCase();
-          check = (): Promise<boolean> => {
-            for (const id of state.networkOrder) {
-              const r = state.networkBuffer.get(id);
-              if (!r) continue;
-              if (r.finished_at === undefined) continue;
-              if (r.url.toLowerCase().includes(needle)) return Promise.resolve(true);
-            }
-            return Promise.resolve(false);
-          };
+        const outcome = await performWaitFor(tabId, state, {
+          selector: optStr('selector'),
+          expression: optStr('expression'),
+          network_url: optStr('network_url'),
+          condition: optStr('condition'),
+          timeout_ms: typeof p.timeout_ms === 'number' ? p.timeout_ms : undefined,
+          poll_interval_ms: typeof p.poll_interval_ms === 'number' ? p.poll_interval_ms : undefined,
+        });
+        if (!outcome.ok) {
+          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
         }
-
-        const startedAt = Date.now();
-        let checks = 0;
-        let matched = false;
-        while (check) {
-          checks++;
-          if (await check()) {
-            matched = true;
-            break;
-          }
-          if (Date.now() - startedAt >= timeoutMs) break;
-          await sleep(pollIntervalMs);
-        }
-        const elapsedMs = Date.now() - startedAt;
-
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: matched
-            ? { matched: true, elapsed_ms: elapsedMs, checks }
-            : { matched: false, elapsed_ms: elapsedMs, checks, reason: 'timeout' },
-        };
+        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
       case 'dialog_respond': {

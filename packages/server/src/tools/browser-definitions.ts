@@ -750,6 +750,169 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.flow',
+    description:
+      'Run a declarative sequence of steps (find/click/type/press/wait_for) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step or `{ok, settle?}` for an action/wait_for step. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        steps: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          description:
+            'Ordered list of steps, each exactly one of find | click | type | press | wait_for. Max 20 steps per flow.',
+          items: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  find: {
+                    type: 'object',
+                    properties: {
+                      text: {
+                        type: 'string',
+                        description: 'Visible text to match — same semantics as browser.find.',
+                      },
+                      role: {
+                        type: 'string',
+                        enum: ['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem'],
+                      },
+                    },
+                    required: ['text'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['find'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  click: {
+                    type: 'object',
+                    properties: {
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target from a preceding find step.',
+                      },
+                      force: { type: 'boolean' },
+                      settle_ms: { type: 'number' },
+                    },
+                    additionalProperties: false,
+                  },
+                },
+                required: ['click'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: {
+                    type: 'object',
+                    properties: {
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target, or to type into whatever currently has focus.',
+                      },
+                      text: { type: 'string' },
+                      clear: { type: 'boolean' },
+                      settle_ms: { type: 'number' },
+                    },
+                    required: ['text'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['type'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  press: {
+                    type: 'object',
+                    properties: {
+                      key: { type: 'string' },
+                      modifiers: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] },
+                      },
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target, or to send the key to whatever currently has focus.',
+                      },
+                      settle_ms: { type: 'number' },
+                    },
+                    required: ['key'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['press'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  wait_for: {
+                    type: 'object',
+                    properties: {
+                      selector: { type: 'string' },
+                      condition: {
+                        type: 'string',
+                        enum: ['visible', 'hidden', 'attached', 'detached'],
+                      },
+                      expression: { type: 'string' },
+                      network_url: { type: 'string' },
+                      timeout_ms: { type: 'number' },
+                      poll_interval_ms: { type: 'number' },
+                    },
+                    additionalProperties: false,
+                    description:
+                      'Exactly one of selector | expression | network_url is required — same contract as standalone browser.wait_for.',
+                    oneOf: [
+                      { required: ['selector'] },
+                      { required: ['expression'] },
+                      { required: ['network_url'] },
+                    ],
+                  },
+                },
+                required: ['wait_for'],
+                additionalProperties: false,
+              },
+            ],
+          },
+        },
+      },
+      required: ['tab_id', 'steps'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Run a declarative find/click/type/press/wait_for sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
+      when_to_use: [
+        'ANY interaction that needs more than one action tool call — find a target then act on it, act then wait for a result, fill and submit a form. Each MCP round trip you avoid is a full LLM inference you do not pay for.',
+        'The find → implicit-target → click/type/press pattern: `{find}` followed by an action step with no `selector` resolves against what find just found — no need to re-run browser.find and copy its selector into the next call by hand.',
+        'A flow that might fail partway — the failure response already carries a focused `recovery_snapshot`, so you do not need a follow-up browser.snapshot to see what state the page is in.',
+      ],
+      gotchas: [
+        'Strictly sequential, fail-fast, no branching. If step 3 needs to behave differently depending on what step 2 returned, run the steps individually instead of as one flow.',
+        'The implicit target is single-use: it is available to the very next click/type/press step that omits `selector`, then it is gone — a LATER step still needs its own `selector` or a fresh `find`.',
+        'Only `click` requires a resolved target; `type` and `press` fall back to whatever currently has focus when neither an explicit nor an implicit selector is available, exactly like standalone browser.press.',
+        'A `find` step that resolves with `ambiguous:true` (see browser.find) fails the flow — a selector that could match the wrong structurally-identical twin is never used silently inside a flow.',
+        'An action step that triggers a NAVIGATION should be followed by a `wait_for` step — steps run back-to-back, so the next step can otherwise race the loading document and fail with a misleading "Element not found". When that race happens, the flow error carries a hint if the navigating step\'s settle reported `context-destroyed` (the navigation signal).',
+        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms values or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
+        'evaluate and navigate steps are NOT supported in v1 — see the tool description for why. Navigate before the flow; evaluate after it.',
+        'Max 20 steps per flow. For longer sequences, split into multiple browser.flow calls.',
+      ],
+      example:
+        'browser.flow({ tab_id: "tab_1", steps: [{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }] })',
+    },
+  },
+  {
     name: 'browser.evaluate',
     description:
       'Run a JavaScript expression in the page context and return its result. Use an IIFE with return if you need multi-step logic.',

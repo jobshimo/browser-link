@@ -75,6 +75,19 @@ a cache of navigation, not a substitute.
 when no dedicated tool fits — every dedicated tool below is cheaper in
 tokens AND more reliable than a hand-rolled expression.
 
+- **Any multi-step interaction** (find a target, act on it, wait, act
+  again) → \`browser.flow({ steps: [...] })\` is now the DEFAULT, not a
+  fallback. A sequence like find → click → wait_for → type → press used
+  to cost 5-10+ separate MCP round trips — each one a full LLM inference
+  — and now costs ONE \`browser.flow\` call (two if a step fails and you
+  need a corrective follow-up). A \`find\` step's resolved selector
+  becomes the implicit target for the very next click/type/press step
+  that omits \`selector\`, so you never have to copy a selector from one
+  call into the next by hand. Flow is strictly sequential and fails fast
+  on the first bad step, returning a focused \`recovery_snapshot\` so you
+  do not need a follow-up \`browser.snapshot\` to see where it stopped.
+  Reach for individual click/type/press/find/wait_for calls only when you
+  need to branch on an intermediate result.
 - **Finding an element by visible text** → call \`browser.find\` (not
   \`browser.evaluate\` with a textContent grep). \`find\` covers
   \`<div onclick>\` and other "no testid" markup that a naive

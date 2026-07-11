@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
+import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
   return {
@@ -30,6 +31,7 @@ describe('isBrowserTool', () => {
       'browser.type',
       'browser.press',
       'browser.drag',
+      'browser.flow',
       'browser.evaluate',
       'browser.console',
       'browser.network',
@@ -1096,5 +1098,514 @@ describe('browser.press dispatch', () => {
     const deps = makeDeps();
     await handleBrowserTool('browser.press', { tab_id: 'tab_1', key: 'Enter' }, deps, TEST_CALLER);
     expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'press', expect.any(Object), 15_000);
+  });
+});
+
+describe('browser.flow dispatch', () => {
+  test('forwards a valid steps array unchanged, along with the tab_id', async () => {
+    const deps = makeDeps();
+    const steps = [
+      { find: { text: 'GIF', role: 'button' } },
+      { click: {} },
+      { wait_for: { selector: '[data-testid=picker]', condition: 'visible' } },
+      { type: { text: 'shrek' } },
+      { press: { key: 'Enter' } },
+    ];
+    await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'flow',
+      { steps },
+      expect.any(Number),
+    );
+  });
+
+  test('auto-claims a free tab for the caller (action tool)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+      deps,
+      A,
+    );
+    expect(deps.tabClaims!.getClaim('tab_1')?.agent_id).toBe('sess-A');
+  });
+
+  test('is rejected when another agent already owns the tab, and the bridge is never called', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mockClear();
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+        deps,
+        B,
+      ),
+    ).rejects.toThrow(/in use by another agent/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  describe('validation', () => {
+    test('rejects a missing steps array without hitting the bridge', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1' }, deps, TEST_CALLER),
+      ).rejects.toThrow(/steps must be a non-empty array/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects an empty steps array', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps: [] }, deps, TEST_CALLER),
+      ).rejects.toThrow(/steps must be a non-empty array/);
+    });
+
+    test('rejects more than 20 steps', async () => {
+      const deps = makeDeps();
+      const steps = Array.from({ length: 21 }, () => ({ press: { key: 'Enter' } }));
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(/at most 20 steps allowed, got 21/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('accepts exactly 20 steps', async () => {
+      const deps = makeDeps();
+      const steps = Array.from({ length: 20 }, () => ({ press: { key: 'Enter' } }));
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        { steps },
+        expect.any(Number),
+      );
+    });
+
+    test('rejects a step with an unknown kind', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ navigate: { url: 'https://example.com' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects a step naming more than one kind', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ find: { text: 'GIF' }, click: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+    });
+
+    test('rejects a find step with no text', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ find: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/find.text is required/);
+    });
+
+    test('rejects a press step with no key', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ press: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/press.key is required/);
+    });
+
+    test('rejects a type step with no text', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ type: { selector: '#x' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/type.text is required/);
+    });
+
+    test('rejects a click step with no selector and no preceding find', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ click: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/no preceding find to supply an implicit target/);
+    });
+
+    test('accepts a click step with no selector when a find precedes it', async () => {
+      const deps = makeDeps();
+      const steps = [{ find: { text: 'GIF' } }, { click: {} }];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        { steps },
+        expect.any(Number),
+      );
+    });
+
+    test('accepts a click step with its own explicit selector and no find at all', async () => {
+      const deps = makeDeps();
+      const steps = [{ click: { selector: '#go' } }];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        { steps },
+        expect.any(Number),
+      );
+    });
+
+    test('accepts type/press steps with no selector and no preceding find', async () => {
+      const deps = makeDeps();
+      const steps = [{ type: { text: 'shrek' } }, { press: { key: 'Enter' } }];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        { steps },
+        expect.any(Number),
+      );
+    });
+
+    test('rejects a step carrying extra unrecognized keys next to a valid kind', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ find: { text: 'GIF' }, mystery: 1 }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects a find step with an invalid role', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ find: { text: 'GIF', role: 'banana' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(
+        /find.role must be one of button \| link \| textbox \| checkbox \| tab \| menuitem/,
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects an empty wait_for step (no mode at all)', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ wait_for: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/wait_for requires exactly one of selector \| expression \| network_url/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects a wait_for step naming more than one mode', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ wait_for: { selector: '#x', expression: '1' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/wait_for requires exactly one of selector \| expression \| network_url/);
+    });
+
+    test('rejects a wait_for step with an invalid condition', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ wait_for: { selector: '#x', condition: 'banana' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(
+        /wait_for.condition must be one of visible \| hidden \| attached \| detached/,
+      );
+    });
+
+    test('rejects a wait_for step with a non-numeric timeout_ms', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ wait_for: { selector: '#x', timeout_ms: 'fast' } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/wait_for.timeout_ms must be a finite number/);
+    });
+
+    test('accepts each single wait_for mode: selector, expression, network_url', async () => {
+      for (const body of [
+        { selector: '#x', condition: 'visible' },
+        { expression: 'window.ready === true' },
+        { network_url: '/api/search' },
+      ]) {
+        const deps = makeDeps();
+        const steps = [{ wait_for: body }];
+        await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+        expect(deps.callBrowserTool).toHaveBeenCalledWith(
+          'tab_1',
+          'flow',
+          { steps },
+          expect.any(Number),
+        );
+      }
+    });
+  });
+
+  describe('timeout budget', () => {
+    // Budget model constants (see browser-dispatch.ts):
+    //   base overhead 2_000, per-step slack 500,
+    //   settle-enabled action step 2_000 + 500 = 2_500,
+    //   settle-disabled action step (settle_ms: 0) 500,
+    //   find step 500,
+    //   wait_for step min(timeout_ms, 30_000) + 500 (default timeout 5_000).
+
+    test('floors at 15s for a single short step', async () => {
+      const deps = makeDeps();
+      // 2_000 + 2_500 = 4_500 — below the shared action floor.
+      await handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+        deps,
+        TEST_CALLER,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('a find + 3 action steps still sits under the floor', async () => {
+      const deps = makeDeps();
+      // 2_000 + 500 + 3 * 2_500 = 10_000 → floored to 15_000.
+      await handleBrowserTool(
+        'browser.flow',
+        {
+          tab_id: 'tab_1',
+          steps: [
+            { find: { text: 'GIF' } },
+            { click: {} },
+            { type: { text: 'shrek' } },
+            { press: { key: 'Enter' } },
+          ],
+        },
+        deps,
+        TEST_CALLER,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('wait_for steps contribute their own timeout_ms + slack to the sum', async () => {
+      const deps = makeDeps();
+      // 2_000 + 5 * (10_000 + 500) = 54_500 — the enforced timeout IS the
+      // truthful worst case, not a capped substitute for it.
+      const steps = Array.from({ length: 5 }, () => ({
+        wait_for: { selector: '#x', timeout_ms: 10_000 },
+      }));
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        54_500,
+      );
+    });
+
+    test('a full 20-step flow of action steps with DEFAULT settle fits under the ceiling', async () => {
+      const deps = makeDeps();
+      // 2_000 + 20 * 2_500 = 52_000 ≤ 60_000 — the documented "up to 20
+      // steps" promise holds with default settle; the rejection only bites
+      // genuinely long wait_for-heavy flows.
+      const steps = Array.from({ length: 20 }, () => ({ press: { key: 'Enter' } }));
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        52_000,
+      );
+    });
+
+    test('settle_ms:0 action steps cost only the per-step slack', async () => {
+      const deps = makeDeps();
+      // 2_000 + 20 * 500 = 12_000 → floored to 15_000.
+      const steps = Array.from({ length: 20 }, () => ({
+        press: { key: 'Enter', settle_ms: 0 },
+      }));
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('REJECTS a flow whose truthful worst case exceeds the 60s ceiling (two 30s waits)', async () => {
+      const deps = makeDeps();
+      // 2_000 + 2 * (30_000 + 500) = 63_000 > 60_000. Silently enforcing a
+      // 60s bridge timeout here would drop the response of a flow the
+      // extension is still executing — an agent retry could then duplicate
+      // the actions. Reject up front instead.
+      const steps = Array.from({ length: 2 }, () => ({
+        wait_for: { selector: '#x', timeout_ms: 30_000 },
+      }));
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(/worst-case budget 63s exceeds the 60s ceiling/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('REJECTS a full 20-step flow of long waits with the computed budget in the error', async () => {
+      const deps = makeDeps();
+      // 2_000 + 20 * 30_500 = 612_000 — far over the ceiling.
+      const steps = Array.from({ length: 20 }, () => ({
+        wait_for: { selector: '#x', timeout_ms: 30_000 },
+      }));
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(
+        /worst-case budget 612s exceeds the 60s ceiling — reduce wait_for timeout_ms values or split the flow/,
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('a wait_for timeout_ms above 30s is clamped before summing', async () => {
+      const deps = makeDeps();
+      await handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ wait_for: { selector: '#x', timeout_ms: 999_999 } }] },
+        deps,
+        TEST_CALLER,
+      );
+      // Clamped to 30_000 (the extension enforces the same cap) + 500 slack
+      // + 2_000 base = 32_500 — NOT rejected, and NOT 999_999-based.
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        32_500,
+      );
+    });
+  });
+});
+
+describe('browser.flow schema shape', () => {
+  const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.flow');
+
+  test('is registered with tab_id and steps as required properties', () => {
+    expect(def).toBeDefined();
+    const schema = def!.inputSchema as {
+      required: string[];
+      additionalProperties: boolean;
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required).toEqual(['tab_id', 'steps']);
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.tab_id).toBeDefined();
+    expect(schema.properties.steps).toBeDefined();
+  });
+
+  test('steps is an array capped at 20 items, each a oneOf of the 5 step kinds', () => {
+    const stepsSchema = (
+      def!.inputSchema as {
+        properties: { steps: { type: string; minItems: number; maxItems: number; items: unknown } };
+      }
+    ).properties.steps;
+    expect(stepsSchema.type).toBe('array');
+    expect(stepsSchema.minItems).toBe(1);
+    expect(stepsSchema.maxItems).toBe(20);
+    const oneOf = (stepsSchema.items as { oneOf: { required: string[] }[] }).oneOf;
+    expect(oneOf).toHaveLength(5);
+    expect(oneOf.map((v) => v.required[0]).sort()).toEqual([
+      'click',
+      'find',
+      'press',
+      'type',
+      'wait_for',
+    ]);
+  });
+
+  test('every step variant declares additionalProperties:false at both levels', () => {
+    const oneOf = (
+      def!.inputSchema as {
+        properties: { steps: { items: { oneOf: Record<string, unknown>[] } } };
+      }
+    ).properties.steps.items.oneOf;
+    for (const variant of oneOf) {
+      expect(variant.additionalProperties).toBe(false);
+      const key = (variant.required as unknown as string[])[0];
+      const body = (variant.properties as Record<string, { additionalProperties: boolean }>)[key];
+      expect(body.additionalProperties).toBe(false);
+    }
+  });
+
+  test('has a doc block teaching the find-then-implicit-target pattern', () => {
+    expect(def!.doc).toBeDefined();
+    expect(def!.doc!.example).toContain('find');
+    expect(def!.doc!.example).toContain('press');
+    expect(def!.description).toMatch(/implicit target/i);
+  });
+
+  test('the wait_for variant enforces exactly one mode via oneOf required combos', () => {
+    const oneOf = (
+      def!.inputSchema as {
+        properties: { steps: { items: { oneOf: Record<string, unknown>[] } } };
+      }
+    ).properties.steps.items.oneOf;
+    const waitVariant = oneOf.find((v) => (v.required as string[])[0] === 'wait_for')!;
+    const body = (waitVariant.properties as Record<string, { oneOf?: { required: string[] }[] }>)
+      .wait_for;
+    expect(body.oneOf).toBeDefined();
+    expect(body.oneOf!.map((c) => c.required[0]).sort()).toEqual([
+      'expression',
+      'network_url',
+      'selector',
+    ]);
   });
 });

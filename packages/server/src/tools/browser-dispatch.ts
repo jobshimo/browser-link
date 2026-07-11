@@ -108,6 +108,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.type',
   'browser.press',
   'browser.drag',
+  'browser.flow',
   'browser.evaluate',
   'browser.events',
   'browser.reset',
@@ -136,6 +137,10 @@ const MAX_SETTLE_TIMEOUT_MS = 10_000;
 const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
 
 const PRESS_MODIFIERS = new Set(['Alt', 'Control', 'Meta', 'Shift']);
+
+/** Roles `browser.find` accepts — shared by the standalone find dispatcher
+ * and `browser.flow`'s find-step validation so the two cannot drift. */
+const FIND_ALLOWED_ROLES = new Set(['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem']);
 
 /** Type-predicate narrowing for `browser.press`'s `modifiers` param.
  * `Array.isArray` alone narrows `unknown` to `any[]`, not `unknown[]` —
@@ -175,6 +180,219 @@ function actionTimeoutWithSettle(settleTimeoutMs: unknown): number {
       : DEFAULT_SETTLE_TIMEOUT_MS;
   const clamped = Math.min(requested, MAX_SETTLE_TIMEOUT_MS);
   return Math.max(ACTION_TIMEOUT_FLOOR_MS, clamped + 5_000);
+}
+
+// === browser.flow ========================================================
+
+/** Hard cap on steps per flow — mirrors `maxItems: 20` on the MCP schema
+ * (`browser-definitions.ts`) and the extension's own defense-in-depth
+ * check in `flow.ts`'s `runFlow`. Enforced here too so an oversized flow
+ * is rejected before it ever reaches the extension. */
+const MAX_FLOW_STEPS = 20;
+/** Same ceiling `browser.wait_for_tab` uses for its own timeout budget —
+ * the bridge does not park any single tool call longer than this. A flow
+ * whose TRUTHFUL worst-case budget exceeds this ceiling is REJECTED up
+ * front (see `validateFlowSteps`), never silently capped: the bridge has
+ * no cancel path to the extension, so a bridge timeout below the real
+ * worst case would drop the response of a flow that is still executing —
+ * and an agent retry could then duplicate the actions. */
+const MAX_FLOW_TIMEOUT_MS = 60_000;
+/** Once-per-flow overhead: the WS round trip to the extension plus the
+ * recovery snapshot evaluated on the failure path. */
+const FLOW_BASE_OVERHEAD_MS = 2_000;
+/** Per-step overhead: the step's own in-page evaluate round trip(s) and
+ * CDP input dispatches. Those are local calls that typically take tens of
+ * milliseconds — 500ms per step is generous without inflating the budget
+ * so much that legitimate 20-step flows stop fitting under the ceiling. */
+const FLOW_STEP_SLACK_MS = 500;
+/** Worst-case settle wait for one settle-enabled click/type/press step
+ * inside a flow. Flow steps only expose `settle_ms` (the quiet-PERIOD
+ * length), never `settle_timeout_ms` (the overall CAP) — so every
+ * settle-enabled action step's true upper bound is the extension's
+ * `DEFAULT_SETTLE_TIMEOUT_MS`. A step that explicitly disables settle
+ * (`settle_ms: 0`) skips the wait entirely and costs only the slack.
+ *
+ * Sanity check the constants keep the documented promise: a full 20-step
+ * flow of action steps with DEFAULT settle budgets at
+ * 2_000 + 20 * (2_000 + 500) = 52_000ms — comfortably under the 60s
+ * ceiling. Only genuinely long wait_for-heavy flows hit the rejection. */
+const FLOW_ACTION_SETTLE_WORST_MS = DEFAULT_SETTLE_TIMEOUT_MS;
+/** Mirror the standalone wait_for contract: default 5s, extension clamps
+ * at 30s. The budget uses the same numbers so it never under-models a
+ * step the extension would happily run longer. */
+const FLOW_WAIT_FOR_DEFAULT_TIMEOUT_MS = 5_000;
+const FLOW_WAIT_FOR_MAX_TIMEOUT_MS = 30_000;
+
+const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for'] as const;
+type FlowStepKind = (typeof FLOW_STEP_KINDS)[number];
+
+const FLOW_WAIT_CONDITIONS = new Set(['visible', 'hidden', 'attached', 'detached']);
+
+/** Identify the step kind. A step must have EXACTLY ONE key and that key
+ * must be a recognized kind — extra keys (`{find: {...}, mystery: 1}`)
+ * reject, matching the schema's `additionalProperties: false`. */
+function flowStepKind(step: Record<string, unknown>): FlowStepKind | null {
+  const keys = Object.keys(step);
+  if (keys.length !== 1) return null;
+  const key = keys[0];
+  return (FLOW_STEP_KINDS as readonly string[]).includes(key) ? (key as FlowStepKind) : null;
+}
+
+type FlowValidationResult =
+  | { ok: true; steps: Record<string, unknown>[]; budgetMs: number }
+  | { ok: false; error: string };
+
+/**
+ * Server-side validation for `browser.flow`'s `steps` array — defense in
+ * depth beyond the MCP JSON schema, since the IPC/proxy path in
+ * multi-agent mode can reach `handleBrowserTool` without ever going
+ * through schema validation. Mirrors how `browser.find`/`browser.press`
+ * re-validate their own required fields here rather than trusting the
+ * schema alone.
+ *
+ * Also computes the flow's TRUTHFUL worst-case time budget (`budgetMs`)
+ * in the same pass: base overhead + per-step slack + each wait_for's
+ * clamped `timeout_ms` + each settle-enabled action step's settle
+ * ceiling. A flow whose budget exceeds `MAX_FLOW_TIMEOUT_MS` is rejected
+ * with an actionable error instead of silently capping the enforced
+ * bridge timeout below the modeled need — see the ceiling constant's doc
+ * for why a mid-flow bridge timeout is worse than an up-front rejection.
+ *
+ * Deliberately loose on the "implicit target" check: it only confirms a
+ * `find` step exists SOMEWHERE earlier in the array before a selector-less
+ * `click` — it does not simulate the single-step-lookahead consumption
+ * rule `runFlow` enforces at runtime. A flow that passes this check can
+ * still fail at runtime with a clear per-step error; this check only
+ * catches the flows that could never possibly work.
+ */
+function validateFlowSteps(input: unknown): FlowValidationResult {
+  if (!Array.isArray(input) || input.length === 0) {
+    return { ok: false, error: 'steps must be a non-empty array' };
+  }
+  if (input.length > MAX_FLOW_STEPS) {
+    return { ok: false, error: `at most ${MAX_FLOW_STEPS} steps allowed, got ${input.length}` };
+  }
+  const steps: Record<string, unknown>[] = [];
+  let hasTarget = false;
+  let budgetMs = FLOW_BASE_OVERHEAD_MS;
+  for (let i = 0; i < input.length; i++) {
+    const raw: unknown = input[i];
+    if (typeof raw !== 'object' || raw === null) {
+      return { ok: false, error: `step ${i}: must be an object` };
+    }
+    const step = raw as Record<string, unknown>;
+    const kind = flowStepKind(step);
+    if (!kind) {
+      return {
+        ok: false,
+        error: `step ${i}: must have exactly one of find | click | type | press | wait_for`,
+      };
+    }
+    const body = step[kind];
+    if (typeof body !== 'object' || body === null) {
+      return { ok: false, error: `step ${i}: "${kind}" must be an object` };
+    }
+    const bodyRecord = body as Record<string, unknown>;
+    if (kind === 'find') {
+      if (typeof bodyRecord.text !== 'string' || bodyRecord.text.length === 0) {
+        return { ok: false, error: `step ${i}: find.text is required` };
+      }
+      if (
+        bodyRecord.role !== undefined &&
+        (typeof bodyRecord.role !== 'string' || !FIND_ALLOWED_ROLES.has(bodyRecord.role))
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: find.role must be one of button | link | textbox | checkbox | tab | menuitem`,
+        };
+      }
+      hasTarget = true;
+      budgetMs += FLOW_STEP_SLACK_MS;
+    } else if (kind === 'type') {
+      if (typeof bodyRecord.text !== 'string') {
+        return { ok: false, error: `step ${i}: type.text is required` };
+      }
+      budgetMs += flowActionBudgetMs(bodyRecord);
+    } else if (kind === 'press') {
+      if (typeof bodyRecord.key !== 'string' || bodyRecord.key.length === 0) {
+        return { ok: false, error: `step ${i}: press.key is required` };
+      }
+      budgetMs += flowActionBudgetMs(bodyRecord);
+    } else if (kind === 'click') {
+      if (bodyRecord.selector === undefined && !hasTarget) {
+        return {
+          ok: false,
+          error: `step ${i}: click has no selector and no preceding find to supply an implicit target`,
+        };
+      }
+      budgetMs += flowActionBudgetMs(bodyRecord);
+    } else {
+      // wait_for — mirror the standalone dispatcher's contract checks so a
+      // bad step fails HERE with a clear message instead of in-page with a
+      // misleading "condition not met within timeout (0ms, 0 checks)".
+      const modes = [bodyRecord.selector, bodyRecord.expression, bodyRecord.network_url].filter(
+        (v) => v !== undefined,
+      );
+      if (modes.length !== 1) {
+        return {
+          ok: false,
+          error: `step ${i}: wait_for requires exactly one of selector | expression | network_url`,
+        };
+      }
+      for (const key of ['selector', 'expression', 'network_url'] as const) {
+        if (bodyRecord[key] !== undefined && typeof bodyRecord[key] !== 'string') {
+          return { ok: false, error: `step ${i}: wait_for.${key} must be a string` };
+        }
+      }
+      if (
+        bodyRecord.condition !== undefined &&
+        (typeof bodyRecord.condition !== 'string' ||
+          !FLOW_WAIT_CONDITIONS.has(bodyRecord.condition))
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: wait_for.condition must be one of visible | hidden | attached | detached`,
+        };
+      }
+      for (const key of ['timeout_ms', 'poll_interval_ms'] as const) {
+        if (
+          bodyRecord[key] !== undefined &&
+          (typeof bodyRecord[key] !== 'number' || !Number.isFinite(bodyRecord[key]))
+        ) {
+          return { ok: false, error: `step ${i}: wait_for.${key} must be a finite number` };
+        }
+      }
+      budgetMs += flowWaitForBudgetMs(bodyRecord);
+    }
+    steps.push(step);
+  }
+  if (budgetMs > MAX_FLOW_TIMEOUT_MS) {
+    return {
+      ok: false,
+      error:
+        `flow worst-case budget ${Math.ceil(budgetMs / 1000)}s exceeds the ` +
+        `${MAX_FLOW_TIMEOUT_MS / 1000}s ceiling — reduce wait_for timeout_ms values or split the flow`,
+    };
+  }
+  return { ok: true, steps, budgetMs };
+}
+
+/** Worst case for one click/type/press step: its settle ceiling (unless
+ * the step explicitly disables settle with `settle_ms: 0`) plus the
+ * per-step slack. */
+function flowActionBudgetMs(body: Record<string, unknown>): number {
+  const settleDisabled = body.settle_ms === 0;
+  return (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) + FLOW_STEP_SLACK_MS;
+}
+
+/** Worst case for one wait_for step: its clamped `timeout_ms` (the
+ * extension enforces the same 30s cap) plus the per-step slack. */
+function flowWaitForBudgetMs(body: Record<string, unknown>): number {
+  const requested =
+    typeof body.timeout_ms === 'number' && Number.isFinite(body.timeout_ms) && body.timeout_ms >= 0
+      ? body.timeout_ms
+      : FLOW_WAIT_FOR_DEFAULT_TIMEOUT_MS;
+  return Math.min(requested, FLOW_WAIT_FOR_MAX_TIMEOUT_MS) + FLOW_STEP_SLACK_MS;
 }
 
 /** Convert an internal TabClaim into the wire-safe `PublicClaim`. */
@@ -345,8 +563,7 @@ export async function handleBrowserTool(
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error('browser.find: text required');
       }
-      const ALLOWED_ROLES = new Set(['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem']);
-      if (role !== undefined && (typeof role !== 'string' || !ALLOWED_ROLES.has(role))) {
+      if (role !== undefined && (typeof role !== 'string' || !FIND_ALLOWED_ROLES.has(role))) {
         throw new Error(
           'browser.find: role must be one of button | link | textbox | checkbox | tab | menuitem',
         );
@@ -537,6 +754,23 @@ export async function handleBrowserTool(
         deps,
         caller,
         timeoutMs,
+      );
+    }
+    case 'browser.flow': {
+      const { steps } = (args ?? {}) as { steps?: unknown };
+      const validated = validateFlowSteps(steps);
+      if (!validated.ok) throw new Error(`browser.flow: ${validated.error}`);
+      // budgetMs is the flow's truthful worst case and validateFlowSteps
+      // already rejected anything above MAX_FLOW_TIMEOUT_MS, so the
+      // enforced timeout is never below the modeled need — only the shared
+      // action floor can raise it.
+      return runAction(
+        'flow',
+        requireTabId(args),
+        { steps: validated.steps },
+        deps,
+        caller,
+        Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
       );
     }
     case 'browser.evaluate': {

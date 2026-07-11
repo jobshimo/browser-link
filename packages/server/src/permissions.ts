@@ -124,6 +124,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Drag an element to another element or coordinate',
   },
   {
+    name: 'browser.flow',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Run a find/click/type/press/wait_for step sequence in one round trip',
+  },
+  {
     name: 'browser.dialog_respond',
     family: 'bridge',
     category: 'action',
