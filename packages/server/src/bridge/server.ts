@@ -13,6 +13,7 @@ import {
   isCompatibleVersion,
   parseFrame,
   type Frame,
+  type SettingsPushPayload,
 } from './protocol.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.js';
 import { rotateToken } from './token.js';
@@ -86,14 +87,14 @@ export interface IpcServerOptions {
   peerLookup?: (host: string, port: number) => Promise<PeerProcess | null>;
   /**
    * Called when a `settings.push` frame arrives (from `browser-link config
-   * set idle-ttl`'s one-shot IPC client). Should forward the settings to
-   * every currently-connected extension tab (see `ws-bridge.ts`'s
-   * `pushSettingsToAllTabs`) and return how many tabs were notified — that
-   * count is echoed back in the `settings.push-ack` reply. Left undefined
-   * in tests that don't exercise this path; production wiring is in
-   * `server.ts`'s `runPrimary`.
+   * set idle-ttl` / `config set flow-recording`'s one-shot IPC client).
+   * Should forward the settings to every currently-connected extension tab
+   * (see `ws-bridge.ts`'s `pushSettingsToAllTabs`) and return how many tabs
+   * were notified — that count is echoed back in the `settings.push-ack`
+   * reply. Left undefined in tests that don't exercise this path;
+   * production wiring is in `server.ts`'s `runPrimary`.
    */
-  pushSettings?: (settings: { idleTtlMinutes: number; updatedAt: number }) => number;
+  pushSettings?: (settings: SettingsPushPayload) => number;
 }
 
 export class IpcServer {

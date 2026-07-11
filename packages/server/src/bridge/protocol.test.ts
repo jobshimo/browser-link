@@ -27,6 +27,23 @@ describe('encodeFrame', () => {
       { kind: 'primary-closing' },
       { kind: 'settings.push', settings: { idleTtlMinutes: 15, updatedAt: 1_700_000_000_000 } },
       { kind: 'settings.push', settings: { idleTtlMinutes: 0, updatedAt: 1_700_000_000_000 } },
+      {
+        kind: 'settings.push',
+        settings: { flowRecordingEnabled: true, flowRecordingUpdatedAt: 1_700_000_000_000 },
+      },
+      {
+        kind: 'settings.push',
+        settings: { flowRecordingEnabled: false, flowRecordingUpdatedAt: 1_700_000_000_000 },
+      },
+      {
+        kind: 'settings.push',
+        settings: {
+          idleTtlMinutes: 15,
+          updatedAt: 1_700_000_000_000,
+          flowRecordingEnabled: true,
+          flowRecordingUpdatedAt: 1_700_000_000_001,
+        },
+      },
       { kind: 'settings.push-ack', notified: 3 },
     ];
     for (const f of frames) {
@@ -108,6 +125,49 @@ describe('parseFrame', () => {
     ).toEqual({
       kind: 'settings.push',
       settings: { idleTtlMinutes: 0, updatedAt: 1_700_000_000_000 },
+    });
+  });
+
+  test('rejects settings.push with neither the idle-ttl nor the flow-recording pair', () => {
+    expect(parseFrame('{"kind":"settings.push","settings":{}}')).toBeNull();
+    expect(parseFrame('{"kind":"settings.push","settings":{"foo":1}}')).toBeNull();
+  });
+
+  test('rejects settings.push with a malformed flow-recording pair', () => {
+    expect(
+      parseFrame(
+        '{"kind":"settings.push","settings":{"flowRecordingEnabled":"yes","flowRecordingUpdatedAt":1}}',
+      ),
+    ).toBeNull();
+    expect(
+      parseFrame('{"kind":"settings.push","settings":{"flowRecordingEnabled":true}}'),
+    ).toBeNull();
+  });
+
+  test('accepts a settings.push carrying only the flow-recording pair', () => {
+    expect(
+      parseFrame(
+        '{"kind":"settings.push","settings":{"flowRecordingEnabled":true,"flowRecordingUpdatedAt":1700000000000}}',
+      ),
+    ).toEqual({
+      kind: 'settings.push',
+      settings: { flowRecordingEnabled: true, flowRecordingUpdatedAt: 1_700_000_000_000 },
+    });
+  });
+
+  test('accepts a settings.push carrying both pairs', () => {
+    expect(
+      parseFrame(
+        '{"kind":"settings.push","settings":{"idleTtlMinutes":15,"updatedAt":1,"flowRecordingEnabled":false,"flowRecordingUpdatedAt":2}}',
+      ),
+    ).toEqual({
+      kind: 'settings.push',
+      settings: {
+        idleTtlMinutes: 15,
+        updatedAt: 1,
+        flowRecordingEnabled: false,
+        flowRecordingUpdatedAt: 2,
+      },
     });
   });
 

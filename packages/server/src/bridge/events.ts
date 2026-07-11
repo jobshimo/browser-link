@@ -21,11 +21,17 @@ export type BridgeEventKind =
   | 'tab-claim-rejected'
   | 'dialog-opening'
   | 'dialog-closed'
-  | 'tab-created';
+  | 'tab-created'
+  | 'flow-recorded';
 
 /** Kinds the extension is permitted to push via `bridge.event`. Lifecycle
  * events (primary-elected, tab-registered, etc.) are produced server-side
- * and must NOT be spoofable from the extension side. */
+ * and must NOT be spoofable from the extension side. `flow-recorded` is
+ * ALSO server-owned — the extension sends the dedicated `flow.recorded`
+ * message (validated + persisted by `ws-bridge.ts`'s
+ * `handleFlowRecordedMessage`), never a raw `bridge.event`, so a recipe
+ * cannot be announced to `browser.events` without having actually passed
+ * `validateFlowSteps` and landed in the map. */
 const EXTENSION_EVENT_KINDS: ReadonlySet<BridgeEventKind> = new Set([
   'dialog-opening',
   'dialog-closed',

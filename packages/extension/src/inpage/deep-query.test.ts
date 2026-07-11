@@ -491,3 +491,57 @@ describe('checkOcclusion — shadow root and iframe hit-test paths', () => {
     expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
   });
 });
+
+describe('composedContains', () => {
+  test('an element contains itself', () => {
+    const { composedContains } = loadDeepQuery();
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    expect(composedContains(el, el)).toBe(true);
+  });
+
+  test('true when node is a light-DOM descendant of ancestor', () => {
+    const { composedContains } = loadDeepQuery();
+    const ancestor = document.createElement('div');
+    const child = document.createElement('span');
+    const grandchild = document.createElement('b');
+    child.appendChild(grandchild);
+    ancestor.appendChild(child);
+    document.body.appendChild(ancestor);
+
+    expect(composedContains(ancestor, grandchild)).toBe(true);
+    expect(composedContains(ancestor, child)).toBe(true);
+  });
+
+  test('false for two unrelated elements (neither contains the other)', () => {
+    const { composedContains } = loadDeepQuery();
+    const a = document.createElement('div');
+    const b = document.createElement('div');
+    document.body.append(a, b);
+    expect(composedContains(a, b)).toBe(false);
+    expect(composedContains(b, a)).toBe(false);
+  });
+
+  test('false when the argument order is reversed (descendant does not contain ancestor)', () => {
+    const { composedContains } = loadDeepQuery();
+    const ancestor = document.createElement('div');
+    const child = document.createElement('span');
+    ancestor.appendChild(child);
+    document.body.appendChild(ancestor);
+    expect(composedContains(child, ancestor)).toBe(false);
+  });
+
+  test('crosses a shadow boundary — a shadow-hosted node is contained by the host', () => {
+    const { composedContains } = loadDeepQuery();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('button');
+    shadow.appendChild(inner);
+
+    // Node.contains() would return false here (it does not pierce shadow
+    // boundaries); composedContains walks the COMPOSED tree via the host.
+    expect(composedContains(host, inner)).toBe(true);
+    expect(host.contains(inner)).toBe(false);
+  });
+});

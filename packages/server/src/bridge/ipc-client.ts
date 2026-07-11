@@ -6,6 +6,7 @@ import {
   encodeFrame,
   parseFrame,
   type Frame,
+  type SettingsPushPayload,
 } from './protocol.js';
 
 /**
@@ -150,14 +151,12 @@ export class IpcClient {
 
   /**
    * Push a settings update to the primary (used by `browser-link config set
-   * idle-ttl` — see `commands/config.ts`). Resolves with how many currently
-   * connected extension tabs the primary forwarded a `settings.update` to.
-   * Rejects if the socket closes before the ack arrives.
+   * idle-ttl` / `config set flow-recording` — see `commands/config.ts`).
+   * Resolves with how many currently connected extension tabs the primary
+   * forwarded a `settings.update` to. Rejects if the socket closes before
+   * the ack arrives.
    */
-  sendSettingsPush(settings: {
-    idleTtlMinutes: number;
-    updatedAt: number;
-  }): Promise<{ notified: number }> {
+  sendSettingsPush(settings: SettingsPushPayload): Promise<{ notified: number }> {
     const socket = this.socket;
     if (!socket || this.closed) {
       return Promise.reject(new Error('Not connected to a browser-link primary.'));

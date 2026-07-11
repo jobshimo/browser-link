@@ -71,25 +71,33 @@ export interface BridgeEventMessage {
 }
 
 /**
- * Server-pushed settings, currently just the idle-disconnect TTL
- * (`browser-link config get/set idle-ttl`). The same logical setting is
- * also editable from the extension's own popup, so both sides need a
+ * Server-pushed settings. Two independent settings share this one message
+ * kind — the idle-disconnect TTL (`browser-link config get/set idle-ttl`)
+ * and the opt-in flow-recording toggle (`config get/set flow-recording`) —
+ * each also editable from the extension's own popup, so both need a
  * precedence rule for "who wins" when they disagree:
  *
- * `updatedAt` is the epoch-ms timestamp of when THIS value was written on
- * the server side. The extension compares it against the `updatedAt` it
- * stamped on its own last LOCAL write (from the popup) and only applies
- * the incoming value when it is newer — see the extension's
- * `idle-policy.ts` (`shouldAcceptIncomingSettings`) and the README's
+ * `updatedAt` / `flowRecordingUpdatedAt` is the epoch-ms timestamp of when
+ * THAT value was written on the server side. The extension compares it
+ * against the timestamp it stamped on its own last LOCAL write (from the
+ * popup) and only applies the incoming value when it is newer — see the
+ * extension's `idle-policy.ts` (`shouldAcceptIncomingSettings`, reused by
+ * `flow-recording-policy.ts` for the second setting) and the README's
  * "Idle disconnect" section for the full precedence writeup. Comparing raw
  * wall-clock timestamps across processes is safe here specifically because
  * the server and the browser always run on the same machine (loopback-only
  * bridge) and therefore share one clock — this would NOT be a safe pattern
  * for a distributed, multi-host system.
+ *
+ * Every field is optional — a single message may carry only the idle-TTL
+ * pair, only the flow-recording pair, or both; the extension applies each
+ * independently.
  */
 export interface SettingsUpdatePayload {
-  idleTtlMinutes: number;
-  updatedAt: number;
+  idleTtlMinutes?: number;
+  updatedAt?: number;
+  flowRecordingEnabled?: boolean;
+  flowRecordingUpdatedAt?: number;
 }
 
 export interface SettingsUpdateMessage {
@@ -97,5 +105,37 @@ export interface SettingsUpdateMessage {
   settings: SettingsUpdatePayload;
 }
 
-export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage | BridgeEventMessage;
-export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage;
+/**
+ * A flow recorded by demonstration in the extension (see the extension's
+ * `background.ts`'s `saveRecording` and `recording.ts`), submitted for
+ * validation + persistence into the map's `flows` table. `origin` is
+ * untrusted free text — canonicalized here the same way every other
+ * `origin` the server receives is (`map/origin.ts`), NOT trusted as
+ * already-canonical just because it came from the extension rather than an
+ * agent. `steps` is validated with the exact same `validateFlowSteps`
+ * rules `browser.flow` and `browser.map.save`'s `flows` array enforce.
+ */
+export interface FlowRecordedPayload {
+  tab_id: TabId;
+  origin: string;
+  name: string;
+  description?: string;
+  steps: unknown[];
+}
+
+export interface FlowRecordedMessage {
+  kind: 'flow.recorded';
+  payload: FlowRecordedPayload;
+}
+
+/** Server's reply to `flow.recorded`. No correlation id — see the
+ * identical note on the extension's copy of this type in
+ * `@browser-link/shared`. */
+export type FlowRecordedResultMessage =
+  | { kind: 'flow.recorded.result'; ok: true; name: string }
+  | { kind: 'flow.recorded.result'; ok: false; error: string };
+
+export type ExtensionToServer =
+  TabRegisterMessage | ToolResponseMessage | BridgeEventMessage | FlowRecordedMessage;
+export type ServerToExtension =
+  TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage | FlowRecordedResultMessage;

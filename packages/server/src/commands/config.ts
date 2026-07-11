@@ -11,20 +11,24 @@ import type { Language } from './welcome.js';
 
 /**
  * `browser-link config` — scriptable CLI surface for settings that are also
- * editable from the extension's popup. Today that's just the idle-disconnect
- * TTL (see `packages/extension/src/idle-policy.ts`); `get`/`set` are
- * structured as `<action> <key> [value]` so a future second setting slots in
+ * editable from the extension's popup: the idle-disconnect TTL (see
+ * `packages/extension/src/idle-policy.ts`) and the opt-in flow-recording
+ * toggle (see `packages/extension/src/flow-recording-policy.ts`). `get`/`set`
+ * are structured as `<action> <key> [value]` so each setting slots in
  * without a redesign.
  *
- *   browser-link config get                 Show every known setting.
- *   browser-link config get idle-ttl        Show just the idle-ttl setting.
+ *   browser-link config get                       Show every known setting.
+ *   browser-link config get idle-ttl               Show just idle-ttl.
+ *   browser-link config get flow-recording          Show just flow-recording.
  *   browser-link config set idle-ttl <minutes|never>
+ *   browser-link config set flow-recording <on|off>
  *
- * Precedence with the popup: both editors write to ONE logical value —
- * last write wins, decided by comparing `updatedAt` epoch-ms timestamps
- * (see messages.ts's SettingsUpdatePayload doc and the README's "Idle
- * disconnect" section). `config set` here:
- *   1. Persists `{ idleTtlMinutes, idleTtlUpdatedAt: Date.now() }` to
+ * Precedence with the popup: both editors write to ONE logical value per
+ * setting — last write wins, decided by comparing `updatedAt` epoch-ms
+ * timestamps (see messages.ts's SettingsUpdatePayload doc and the README's
+ * "Idle disconnect" / "Recording flows by demonstration" sections). Each
+ * `config set` here:
+ *   1. Persists the value plus its own `*UpdatedAt: Date.now()` to
  *      config.json — this is what a NEW tab connecting later reads (see
  *      ws-bridge.ts's `tab.register` handler).
  *   2. Best-effort pushes the same value to every ALREADY connected tab
@@ -51,6 +55,12 @@ interface ConfigI18n {
   usage: string;
   unknownKey: (key: string) => string;
   unknownAction: (action: string) => string;
+  flowRecordingLabel: string;
+  flowRecordingEnabled: string;
+  flowRecordingDisabled: string;
+  flowRecordingNotSetViaCli: string;
+  invalidFlowRecordingValue: (raw: string) => string;
+  flowRecordingSetSaved: (label: string) => string;
 }
 
 const CFG_I18N: Record<Language, ConfigI18n> = {
@@ -72,9 +82,17 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl] | browser-link config set idle-ttl <minutes|never>',
-    unknownKey: (key) => `Unknown config key: ${key}. Known keys: idle-ttl.`,
+      'Usage: browser-link config get [idle-ttl|flow-recording] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off>',
+    unknownKey: (key) => `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording.`,
     unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
+    flowRecordingLabel: 'flow-recording',
+    flowRecordingEnabled: 'enabled',
+    flowRecordingDisabled: 'disabled',
+    flowRecordingNotSetViaCli:
+      "not set via CLI — the extension's own default/popup choice applies (off unless enabled in the popup)",
+    invalidFlowRecordingValue: (raw) =>
+      `Invalid flow-recording value: "${raw}". Use "on" or "off".`,
+    flowRecordingSetSaved: (label) => `Flow recording set to ${label}.`,
   },
   es: {
     header: 'Configuración de browser-link',
@@ -95,9 +113,18 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl] | browser-link config set idle-ttl <minutos|never>',
-    unknownKey: (key) => `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl.`,
+      'Uso: browser-link config get [idle-ttl|flow-recording] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off>',
+    unknownKey: (key) =>
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording.`,
     unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
+    flowRecordingLabel: 'flow-recording',
+    flowRecordingEnabled: 'habilitado',
+    flowRecordingDisabled: 'deshabilitado',
+    flowRecordingNotSetViaCli:
+      'no configurado por CLI — se aplica el valor por defecto o el elegido en el popup de la extensión (deshabilitado salvo que se haya habilitado en el popup)',
+    invalidFlowRecordingValue: (raw) =>
+      `Valor de flow-recording inválido: "${raw}". Usá "on" u "off".`,
+    flowRecordingSetSaved: (label) => `Grabación de flows configurada a ${label}.`,
   },
 };
 
@@ -116,9 +143,24 @@ export function getIdleTtlLine(language: Language = 'en'): string {
   return `  ${t.idleTtlLabel}   ${value}`;
 }
 
+/** One formatted line describing the current `flowRecordingEnabled` state —
+ * mirrors `getIdleTtlLine` exactly, shared by `config get` (no key) and
+ * `config get flow-recording`. */
+export function getFlowRecordingLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const value =
+    cfg.flowRecordingEnabled === undefined
+      ? t.flowRecordingNotSetViaCli
+      : cfg.flowRecordingEnabled
+        ? t.flowRecordingEnabled
+        : t.flowRecordingDisabled;
+  return `  ${t.flowRecordingLabel}   ${value}`;
+}
+
 export function listConfig(language: Language = 'en'): string {
   const t = CFG_I18N[language];
-  return [t.header, '', getIdleTtlLine(language)].join('\n');
+  return [t.header, '', getIdleTtlLine(language), getFlowRecordingLine(language)].join('\n');
 }
 
 /**
@@ -164,9 +206,18 @@ export interface IpcPushOptions {
  * hello-reject (stale/mismatched token, version mismatch) proves a primary
  * IS running and gets `pushRejected`, while connection-refused / timeout /
  * missing-token-file — where "no primary, or multi-agent off" is the
- * honest reading — get `pushUnavailable`. */
+ * honest reading — get `pushUnavailable`.
+ *
+ * `settings` accepts the same partial shape `SettingsPushPayload` does — an
+ * idle-ttl pair, a flow-recording pair, or both — so both `setIdleTtl` and
+ * `setFlowRecording` share this one push path instead of two near-copies. */
 async function tryPushLive(
-  settings: { idleTtlMinutes: number; updatedAt: number },
+  settings: {
+    idleTtlMinutes?: number;
+    updatedAt?: number;
+    flowRecordingEnabled?: boolean;
+    flowRecordingUpdatedAt?: number;
+  },
   t: ConfigI18n,
   ipcOptions: IpcPushOptions = {},
 ): Promise<string> {
@@ -217,6 +268,38 @@ export async function setIdleTtl(
   return t.setSaved(label) + pushMessage;
 }
 
+/**
+ * Parse the CLI's raw `<on|off>` argument for `config set flow-recording`.
+ * Mirrors `parseIdleTtlArg`'s "tell the user, don't guess" philosophy: a
+ * handful of common truthy/falsy spellings are accepted, anything else is a
+ * clear error instead of a silent default.
+ */
+function parseFlowRecordingArg(raw: string, t: ConfigI18n): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (['on', 'true', 'enabled', 'enable', '1'].includes(normalized)) return true;
+  if (['off', 'false', 'disabled', 'disable', '0'].includes(normalized)) return false;
+  throw new Error(t.invalidFlowRecordingValue(raw));
+}
+
+export async function setFlowRecording(
+  rawValue: string,
+  language: Language = 'en',
+  ipcOptions: IpcPushOptions = {},
+): Promise<string> {
+  const t = CFG_I18N[language];
+  const enabled = parseFlowRecordingArg(rawValue, t);
+  const updatedAt = Date.now();
+  saveConfig({ flowRecordingEnabled: enabled, flowRecordingUpdatedAt: updatedAt });
+
+  const label = enabled ? t.flowRecordingEnabled : t.flowRecordingDisabled;
+  const pushMessage = await tryPushLive(
+    { flowRecordingEnabled: enabled, flowRecordingUpdatedAt: updatedAt },
+    t,
+    ipcOptions,
+  );
+  return t.flowRecordingSetSaved(label) + pushMessage;
+}
+
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
@@ -226,13 +309,14 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
   if (action === undefined || action === 'get') {
     if (key === undefined) return listConfig(language);
     if (key === 'idle-ttl') return getIdleTtlLine(language);
+    if (key === 'flow-recording') return getFlowRecordingLine(language);
     throw new Error(t.unknownKey(key));
   }
   if (action === 'set') {
     if (key === undefined) throw new Error(t.usage);
-    if (key !== 'idle-ttl') throw new Error(t.unknownKey(key));
+    if (key !== 'idle-ttl' && key !== 'flow-recording') throw new Error(t.unknownKey(key));
     if (value === undefined) throw new Error(t.usage);
-    return setIdleTtl(value, language);
+    return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
   }
   throw new Error(t.unknownAction(action));
 }

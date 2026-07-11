@@ -47,23 +47,36 @@ export type ToolResponseMessage =
   | { kind: 'tool.response'; id: string; ok: false; error: string };
 
 /**
- * Server-pushed settings, currently just the idle-disconnect TTL. The same
- * logical setting is also editable from the extension's own popup, so both
- * sides need a precedence rule for "who wins" when they disagree:
+ * Server-pushed settings. Two independent settings share this one message
+ * kind — the idle-disconnect TTL and the opt-in flow-recording toggle —
+ * each editable from the extension's own popup too, so both need a
+ * precedence rule for "who wins" when they disagree:
  *
- * `updatedAt` is the epoch-ms timestamp of when THIS value was written on
- * the server side (via `browser-link config set idle-ttl`). The extension
- * compares it against the `updatedAt` it stamped on its own last LOCAL
- * write (from the popup) and only applies the incoming value when it is
- * newer — see `idle-policy.ts`'s `shouldAcceptIncomingSettings`. Comparing
- * raw wall-clock timestamps across processes is safe here specifically
+ * `updatedAt` / `flowRecordingUpdatedAt` is the epoch-ms timestamp of when
+ * THAT value was written on the server side (via `browser-link config set
+ * idle-ttl` / `config set flow-recording`). The extension compares it
+ * against the timestamp it stamped on its own last LOCAL write (from the
+ * popup) and only applies the incoming value when it is newer — see
+ * `idle-policy.ts`'s `shouldAcceptIncomingSettings`, reused by
+ * `flow-recording-policy.ts` for the second setting. Comparing raw
+ * wall-clock timestamps across processes is safe here specifically
  * because the server and the browser always run on the same machine
  * (loopback-only bridge) and therefore share one clock — this would NOT
  * be a safe pattern for a distributed, multi-host system.
+ *
+ * Every field is optional because a single `settings.update` message may
+ * carry only the idle-TTL pair, only the flow-recording pair, or both —
+ * the extension applies each pair independently (see `background.ts`'s
+ * `settings.update` case). Omitted entirely by whichever side has never
+ * touched that particular setting via the CLI.
  */
 export interface SettingsUpdatePayload {
-  idleTtlMinutes: number;
-  updatedAt: number;
+  idleTtlMinutes?: number;
+  updatedAt?: number;
+  /** Opt-in flow-recording toggle — see `browser-link config get/set
+   * flow-recording` and the popup's "Enable flow recording" control. */
+  flowRecordingEnabled?: boolean;
+  flowRecordingUpdatedAt?: number;
 }
 
 export interface SettingsUpdateMessage {
@@ -83,8 +96,47 @@ export interface BridgeEventMessage {
   data: Record<string, unknown>;
 }
 
-export type ExtensionToServer = TabRegisterMessage | ToolResponseMessage | BridgeEventMessage;
-export type ServerToExtension = TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage;
+/**
+ * A flow recorded by demonstration (see `background.ts`'s `saveRecording`
+ * and `inpage/recorder.ts` / `recording.ts` for how it is captured),
+ * submitted to the server for validation + persistence into the map's
+ * `flows` table. `tab_id` is the browser-link tab id (post-`tab.registered`).
+ * `origin` is the tab's origin AT THE TIME OF SAVING — the extension, not
+ * the server, is the source of truth for it here because a recording can
+ * span a navigation (see `recording.ts`'s navigation-hint step), and the
+ * server's own `TabSession.url` is only ever the value from `tab.register`
+ * and does not track subsequent navigations. The server still
+ * canonicalizes it the same way every other `origin` it receives is
+ * canonicalized (see `map/origin.ts`) — it is untrusted free text, not a
+ * client-asserted fact. `steps` follows the EXACT `browser.flow` step
+ * grammar and is rejected with the same `validateFlowSteps` rules
+ * `browser.flow` itself enforces.
+ */
+export interface FlowRecordedPayload {
+  tab_id: TabId;
+  origin: string;
+  name: string;
+  description?: string;
+  steps: unknown[];
+}
+
+export interface FlowRecordedMessage {
+  kind: 'flow.recorded';
+  payload: FlowRecordedPayload;
+}
+
+/** Server's reply to `flow.recorded` — validation/persistence result. No
+ * correlation id: the popup disables Save while a request is in flight, so
+ * at most one is ever outstanding per tab (same single-slot pattern as the
+ * IPC bridge's `settings.push`/`settings.push-ack`). */
+export type FlowRecordedResultMessage =
+  | { kind: 'flow.recorded.result'; ok: true; name: string }
+  | { kind: 'flow.recorded.result'; ok: false; error: string };
+
+export type ExtensionToServer =
+  TabRegisterMessage | ToolResponseMessage | BridgeEventMessage | FlowRecordedMessage;
+export type ServerToExtension =
+  TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage | FlowRecordedResultMessage;
 
 export interface PingResult {
   title: string;

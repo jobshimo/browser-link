@@ -65,7 +65,7 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Muestra todas las configuraciones conocidas (por ahora, idle-ttl).
+  browser-link config get       Muestra todas las configuraciones conocidas (idle-ttl, flow-recording).
   browser-link config get idle-ttl
                                 Muestra el TTL de auto-desconexión por inactividad configurado.
   browser-link config set idle-ttl <minutos|never>
@@ -74,6 +74,12 @@ Uso:
                                 extensión — gana la última escritura (ver README). Bajar el TTL
                                 cuenta desde la última actividad de cada pestaña: una pestaña ya
                                 inactiva puede desconectarse en el próximo barrido.
+  browser-link config get flow-recording
+                                Muestra si la grabación de flows por demostración está habilitada.
+  browser-link config set flow-recording <on|off>
+                                Habilita/deshabilita la grabación de flows (opt-in, apagado por
+                                defecto). El mismo valor es editable desde el popup de la
+                                extensión — gana la última escritura (ver README).
   browser-link map              Lista las apps que el mapa persistente de UI conoce
                                 (app_key, origin, cantidad de entradas/flows, última vez).
   browser-link map show <app>   Muestra las entradas y flows guardados de una app
@@ -144,7 +150,7 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Show every known config setting (currently just idle-ttl).
+  browser-link config get       Show every known config setting (idle-ttl, flow-recording).
   browser-link config get idle-ttl
                                 Show the configured idle-disconnect TTL.
   browser-link config set idle-ttl <minutes|never>
@@ -153,6 +159,12 @@ Usage:
                                 last write wins (see README). Lowering the TTL counts from each
                                 tab's last activity: an already-idle tab may disconnect on the
                                 next sweep.
+  browser-link config get flow-recording
+                                Show whether flow recording by demonstration is enabled.
+  browser-link config set flow-recording <on|off>
+                                Enable/disable flow recording (opt-in, off by default). The same
+                                setting is editable from the extension's popup — last write wins
+                                (see README).
   browser-link map              List apps known to the persistent UI map (app_key,
                                 origin, entry/flow counts, last seen).
   browser-link map show <app>   Show the saved entries and flows for one app

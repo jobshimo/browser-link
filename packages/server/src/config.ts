@@ -56,6 +56,25 @@ export interface BrowserLinkConfig {
    * Always set together with `idleTtlMinutes` — never one without the other.
    */
   idleTtlUpdatedAt?: number;
+  /**
+   * CLI-side mirror of the extension's opt-in flow-recording toggle (see
+   * `packages/extension/src/flow-recording-policy.ts`). Set via
+   * `browser-link config set flow-recording <on|off>`. Deliberately left
+   * `undefined` — NOT defaulted to `false` here — when the CLI has never
+   * touched it, mirroring `idleTtlMinutes`'s rationale exactly: the WS
+   * bridge only pushes a `settings.update` for this field when it is
+   * explicitly set, so a popup-only user never sees a spurious overwrite of
+   * their own choice. The extension's OWN default (recording OFF until the
+   * user opts in) applies regardless of whether the CLI has ever run.
+   */
+  flowRecordingEnabled?: boolean;
+  /**
+   * Epoch-ms timestamp of the last `flowRecordingEnabled` write from the
+   * CLI. Sent alongside `flowRecordingEnabled` in every `settings.update`
+   * push, same last-write-wins contract as `idleTtlUpdatedAt` — always set
+   * together, independent of the idle-TTL pair.
+   */
+  flowRecordingUpdatedAt?: number;
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept

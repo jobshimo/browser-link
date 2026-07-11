@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from '../map/paths.js';
-import { getIdleTtlLine, listConfig, runConfigCommand, setIdleTtl } from './config.js';
+import {
+  getFlowRecordingLine,
+  getIdleTtlLine,
+  listConfig,
+  runConfigCommand,
+  setFlowRecording,
+  setIdleTtl,
+} from './config.js';
 import { loadConfig } from '../config.js';
 import { IpcServer } from '../bridge/server.js';
 import { generateToken, writeToken } from '../bridge/token.js';
@@ -174,6 +181,100 @@ describe('setIdleTtl with a running primary (live push)', () => {
   });
 });
 
+describe('getFlowRecordingLine / listConfig', () => {
+  test('reports "not set via CLI" for a fresh install', () => {
+    expect(getFlowRecordingLine()).toMatch(/not set via CLI/);
+    expect(listConfig()).toContain('flow-recording');
+  });
+
+  test('reports enabled after set to on', async () => {
+    await setFlowRecording('on');
+    expect(getFlowRecordingLine()).toMatch(/^\s*flow-recording\s+enabled$/);
+  });
+
+  test('reports disabled after set to off', async () => {
+    await setFlowRecording('off');
+    expect(getFlowRecordingLine()).toMatch(/^\s*flow-recording\s+disabled$/);
+  });
+
+  test('es locale uses Spanish labels', async () => {
+    await setFlowRecording('on', 'es');
+    expect(getFlowRecordingLine('es')).toMatch(/habilitado/);
+  });
+});
+
+describe('setFlowRecording parsing', () => {
+  test.each(['on', 'true', 'enabled', 'enable', '1'])('accepts "%s" as enabled', async (raw) => {
+    await setFlowRecording(raw);
+    expect(loadConfig().flowRecordingEnabled).toBe(true);
+  });
+
+  test.each(['off', 'false', 'disabled', 'disable', '0'])(
+    'accepts "%s" as disabled',
+    async (raw) => {
+      await setFlowRecording(raw);
+      expect(loadConfig().flowRecordingEnabled).toBe(false);
+    },
+  );
+
+  test('is case-insensitive and trims whitespace', async () => {
+    await setFlowRecording('  ON  ');
+    expect(loadConfig().flowRecordingEnabled).toBe(true);
+  });
+
+  test('rejects an unrecognized value with a clear error, without persisting', async () => {
+    await expect(setFlowRecording('maybe')).rejects.toThrow(/Invalid flow-recording value/);
+    expect(loadConfig().flowRecordingEnabled).toBeUndefined();
+  });
+
+  test('every set stamps a fresh flowRecordingUpdatedAt', async () => {
+    const before = Date.now();
+    await setFlowRecording('on');
+    const cfg = loadConfig();
+    expect(cfg.flowRecordingUpdatedAt).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe('setFlowRecording without a running primary', () => {
+  test('reports the value was saved and will apply on next connect', async () => {
+    const msg = await setFlowRecording('on');
+    expect(msg).toMatch(/Flow recording set to enabled/);
+    expect(msg).toMatch(/apply the next time a tab connects/);
+  });
+});
+
+describe('setFlowRecording with a running primary (live push)', () => {
+  let server: IpcServer | null = null;
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop();
+      server = null;
+    }
+  });
+
+  test('pushes to connected tabs and reports the count', async () => {
+    const notifiedCalls: unknown[] = [];
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: (settings) => {
+        notifiedCalls.push(settings);
+        return 3;
+      },
+    });
+    await server.start();
+    const { host, port } = server.boundAddress();
+
+    const msg = await setFlowRecording('on', 'en', { host, port });
+    expect(msg).toMatch(/Pushed immediately to 3 connected tab\(s\)/);
+    expect(notifiedCalls).toHaveLength(1);
+    expect((notifiedCalls[0] as { flowRecordingEnabled?: boolean }).flowRecordingEnabled).toBe(
+      true,
+    );
+  });
+});
+
 describe('runConfigCommand dispatch', () => {
   test('bare "get" lists everything', async () => {
     const out = await runConfigCommand([]);
@@ -204,5 +305,19 @@ describe('runConfigCommand dispatch', () => {
 
   test('an unknown action throws', async () => {
     await expect(runConfigCommand(['bogus'])).rejects.toThrow(/Unknown config action/);
+  });
+
+  test('"get flow-recording" returns just the one line', async () => {
+    const out = await runConfigCommand(['get', 'flow-recording']);
+    expect(out).toMatch(/flow-recording/);
+  });
+
+  test('"set flow-recording <value>" round-trips through loadConfig', async () => {
+    await runConfigCommand(['set', 'flow-recording', 'on']);
+    expect(loadConfig().flowRecordingEnabled).toBe(true);
+  });
+
+  test('"set flow-recording" without a value throws a usage error', async () => {
+    await expect(runConfigCommand(['set', 'flow-recording'])).rejects.toThrow(/Usage/);
   });
 });

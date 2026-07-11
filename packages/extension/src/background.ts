@@ -41,6 +41,24 @@ import {
   shouldScheduleIdleSweep,
   type IncomingIdleSettings,
 } from './idle-policy.js';
+import {
+  DEFAULT_FLOW_RECORDING_ENABLED,
+  FLOW_RECORDING_STORAGE_KEY,
+  FLOW_RECORDING_UPDATED_AT_STORAGE_KEY,
+  normalizeFlowRecordingEnabled,
+  parseIncomingFlowRecordingSettings,
+  type IncomingFlowRecordingSettings,
+} from './flow-recording-policy.js';
+import { buildRecorderJs, buildStopRecorderJs } from './inpage/recorder.js';
+import {
+  appendRecordingStep,
+  buildAmbiguousNote,
+  buildNavigationWaitForStep,
+  generateRecordingSession,
+  isNavigationForRecording,
+  parseRecordedPayload,
+  toFlowStep,
+} from './recording.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -117,6 +135,64 @@ async function applyIncomingSettings(settings: IncomingIdleSettings): Promise<vo
   }
 }
 
+/* Opt-in flow-recording toggle — mirrors the idle-ttl cache/apply pair
+ * above exactly, independent storage keys, independent updatedAt. The
+ * recorder is gated behind `flowRecordingEnabledCache`: `startRecording`
+ * refuses when it is false, and turning it off WHILE a recording is in
+ * progress force-stops and DISCARDS it immediately (see the
+ * chrome.storage.onChanged listener below) — "nothing records when the
+ * popup toggle is off" is enforced the instant the toggle flips, not just
+ * for recordings started afterward. */
+let flowRecordingEnabledCache = DEFAULT_FLOW_RECORDING_ENABLED;
+
+async function loadFlowRecordingEnabled(): Promise<void> {
+  try {
+    const data = await chrome.storage.local.get(FLOW_RECORDING_STORAGE_KEY);
+    flowRecordingEnabledCache = normalizeFlowRecordingEnabled(data[FLOW_RECORDING_STORAGE_KEY]);
+  } catch {
+    flowRecordingEnabledCache = DEFAULT_FLOW_RECORDING_ENABLED;
+  }
+}
+
+void loadFlowRecordingEnabled();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (!(FLOW_RECORDING_STORAGE_KEY in changes)) return;
+  flowRecordingEnabledCache = normalizeFlowRecordingEnabled(
+    changes[FLOW_RECORDING_STORAGE_KEY].newValue,
+  );
+  if (flowRecordingEnabledCache) return;
+  // Turned off (popup toggle, or a losing settings.update — either way the
+  // new effective value is false): stop AND discard every in-progress
+  // recording right now, across every connected tab. `forceStopAndDiscard
+  // Recording` is defined further down (function declarations are hoisted,
+  // so this forward reference is safe) alongside the rest of the recording
+  // engine.
+  for (const tabId of tabStates.keys()) {
+    void forceStopAndDiscardRecording(tabId).catch(() => {
+      // Best effort — the tab may already be mid-teardown.
+    });
+  }
+});
+
+async function applyIncomingFlowRecordingSettings(
+  settings: IncomingFlowRecordingSettings,
+): Promise<void> {
+  try {
+    const data = await chrome.storage.local.get(FLOW_RECORDING_UPDATED_AT_STORAGE_KEY);
+    const rawLocalUpdatedAt = data[FLOW_RECORDING_UPDATED_AT_STORAGE_KEY];
+    const localUpdatedAt = typeof rawLocalUpdatedAt === 'number' ? rawLocalUpdatedAt : undefined;
+    if (!shouldAcceptIncomingSettings(localUpdatedAt, settings.updatedAt)) return;
+    await chrome.storage.local.set({
+      [FLOW_RECORDING_STORAGE_KEY]: settings.flowRecordingEnabled,
+      [FLOW_RECORDING_UPDATED_AT_STORAGE_KEY]: settings.updatedAt,
+    });
+  } catch {
+    // Best effort — same degrade-gracefully rule as applyIncomingSettings.
+  }
+}
+
 interface ConsoleEntry {
   timestamp: number;
   level: string;
@@ -167,6 +243,58 @@ interface TabState {
    * idle-policy.ts). Touched on every tool.request received AND once at
    * connect time. */
   lastActivityAt: number;
+  /** Present from `startRecording` through save/discard. `undefined` means
+   * "not recording and nothing to review" — the common case, and what
+   * every tab starts as regardless of the flow-recording setting. */
+  recording?: RecordingState;
+  /** Single in-flight `flow.recorded` save, resolved by the matching
+   * `flow.recorded.result` WS message (see the `connectTab` message
+   * switch). The popup disables Save while this is set, so at most one is
+   * ever outstanding — same single-slot pattern the IPC bridge's
+   * `settings.push` uses. */
+  pendingFlowSave?: (result: { ok: true } | { ok: false; error: string }) => void;
+}
+
+/**
+ * State for one tab's demonstration recording, see the module-level
+ * "Flow recording by demonstration" section below for the full lifecycle
+ * (`startRecording` -> `handleRecordingNavigation`* -> `stopRecording` ->
+ * `saveRecording` | `discardRecording`).
+ */
+interface RecordingState {
+  /** 'recording': the in-page recorder is installed and capturing.
+   * 'reviewing': recording stopped, steps are held here for the popup's
+   * review panel, awaiting Save or Discard. */
+  status: 'recording' | 'reviewing';
+  steps: FlowStep[];
+  /** The tab's URL the last time recording state observed it — the
+   * baseline `handleRecordingNavigation` diffs `chrome.tabs.onUpdated`
+   * against to detect a REAL navigation (vs. a redundant "complete" event
+   * for the same document). Doubles as the origin source at save time. */
+  lastUrl: string;
+  /** Set once the 20-step cap was hit — surfaced to the popup so it can
+   * show "recording stopped: step limit reached" instead of a plain Stop. */
+  capped: boolean;
+  /** Per-session CDP binding name — randomized every recording start (an
+   * independent random identifier, no shared affix with the other two
+   * globals) so a page script has no stable global to probe for "is
+   * recording active" (see recorder.ts's THREAT MODEL doc). */
+  bindingName: string;
+  /** Per-session in-page idempotency-flag global name (independent random). */
+  activeFlag: string;
+  /** Per-session in-page teardown-function global name (independent
+   * random). Passed to `buildStopRecorderJs` on every exit path. */
+  stopFn: string;
+  /** Per-session shared secret carried in every recorder payload — a
+   * binding call whose payload lacks the right nonce is discarded before
+   * parsing (parseRecordedPayload). Rotated every recording start. */
+  nonce: string;
+  /** 0-based indices of steps whose recorded selector was flagged
+   * `ambiguous` by genSelectorInfo (may match multiple elements,
+   * first-match-wins). Surfaced per-step in the popup's review list and
+   * folded into the saved recipe's description via buildAmbiguousNote —
+   * never silently dropped. */
+  ambiguousStepIndices: number[];
 }
 
 interface ConnectResult {
@@ -278,23 +406,49 @@ type RuntimeMessage =
   | { action: 'status'; tabId: number }
   | { action: 'pendingDialog'; tabId: number }
   | { action: 'respondDialog'; tabId: number; accept: boolean; promptText?: string }
-  | { action: 'versionCheck' };
+  | { action: 'versionCheck' }
+  | { action: 'recordingStatus'; tabId: number }
+  | { action: 'startRecording'; tabId: number }
+  | { action: 'stopRecording'; tabId: number }
+  | { action: 'discardRecording'; tabId: number }
+  | { action: 'saveRecording'; tabId: number; name: string; description?: string };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
   const m = msg as Record<string, unknown>;
   if (m.action === 'versionCheck') return true;
+  if (m.action === 'saveRecording') {
+    return typeof m.tabId === 'number' && typeof m.name === 'string';
+  }
   if (typeof m.tabId !== 'number') return false;
   return (
     m.action === 'connect' ||
     m.action === 'disconnect' ||
     m.action === 'status' ||
     m.action === 'pendingDialog' ||
-    m.action === 'respondDialog'
+    m.action === 'respondDialog' ||
+    m.action === 'recordingStatus' ||
+    m.action === 'startRecording' ||
+    m.action === 'stopRecording' ||
+    m.action === 'discardRecording'
   );
 }
 
 const tabStates = new Map<number, TabState>();
+
+/** Per-tab `chrome.tabs.onUpdated` listener installed while that tab is
+ * recording, so `handleRecordingNavigation` fires on every navigation and
+ * `stopRecording`/`cleanup` can remove EXACTLY this listener rather than
+ * guessing which one belongs to which tab. Kept out of `TabState` itself
+ * (unlike `debuggerListener`) only because it needs to be reachable from
+ * `chrome.tabs.onRemoved`/`cleanup` even in the split second before a
+ * `TabState` exists — in practice that never happens today, but keeping
+ * the two concerns in separate maps avoids coupling tab-removal cleanup to
+ * TabState's shape. */
+const recordingNavListeners = new Map<
+  number,
+  Parameters<typeof chrome.tabs.onUpdated.addListener>[0]
+>();
 
 function send(ws: WebSocket, msg: ExtensionToServer): void {
   ws.send(JSON.stringify(msg));
@@ -622,6 +776,31 @@ function attachDebuggerListener(state: TabState): void {
           tabId: state.serverTabId,
           data,
         });
+      }
+      return;
+    }
+    if (method === 'Runtime.bindingCalled') {
+      // Fired for EVERY CDP binding on the tab, not just ours. Two gates
+      // before a payload is even parsed: the per-session binding name must
+      // match, and — inside parseRecordedPayload — the payload must carry
+      // the per-session nonce only the injected recorder knows. A page
+      // script calling the binding blind (it CAN reach the function — CDP
+      // bindings are page-visible globals) fails the nonce check and
+      // records nothing. See recorder.ts's THREAT MODEL doc.
+      const p = params as { name?: string; payload?: string };
+      const recording = state.recording;
+      if (!recording || recording.status !== 'recording') return;
+      if (p.name !== recording.bindingName) return;
+      const payload = parseRecordedPayload(p.payload ?? '', recording.nonce);
+      if (!payload) return;
+      const result = appendRecordingStep(recording.steps, toFlowStep(payload));
+      recording.steps = result.steps;
+      if (!result.capped && payload.kind !== 'press' && payload.ambiguous === true) {
+        recording.ambiguousStepIndices.push(result.steps.length - 1);
+      }
+      if (result.capped) {
+        recording.capped = true;
+        void finishRecording(state.tabId);
       }
       return;
     }
@@ -1637,6 +1816,21 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 async function cleanup(tabId: number): Promise<void> {
   const state = tabStates.get(tabId);
   if (!state) return;
+  // Recording never survives a disconnect — there is no server connection
+  // left to save to, and leaving captured-but-unsaved steps around after
+  // the tab drops its bridge would be a surprising place for them to
+  // linger.
+  removeRecordingNavListener(tabId);
+  // `chrome.debugger.detach` below drops the CDP binding SUBSCRIPTION but
+  // does NOT remove the plain `window.addEventListener` listeners the
+  // recorder installed in the page — those would leak, staying attached to
+  // a page the user is still browsing. Tear them down in-page FIRST, while
+  // the debugger is still attached and `evaluateInTab` can reach the page.
+  // Best-effort: the tab may already be gone (tab-removal path), in which
+  // case there is nothing left to tear down anyway.
+  if (state.recording) {
+    await teardownRecorderInPage(tabId, state.recording.stopFn);
+  }
   if (state.ws && state.ws.readyState !== WebSocket.CLOSED) {
     try {
       state.ws.close();
@@ -1802,6 +1996,18 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
             // instead of throwing inside the apply path.
             const settings = parseIncomingSettings(msg.settings);
             if (settings) void applyIncomingSettings(settings);
+            const flowRecordingSettings = parseIncomingFlowRecordingSettings(msg.settings);
+            if (flowRecordingSettings)
+              void applyIncomingFlowRecordingSettings(flowRecordingSettings);
+            return;
+          }
+          case 'flow.recorded.result': {
+            // Not agent/tool activity either — same rationale as
+            // settings.update just above.
+            const pending = state.pendingFlowSave;
+            if (!pending) return;
+            if (msg.ok) pending({ ok: true });
+            else pending({ ok: false, error: msg.error });
             return;
           }
           case 'tool.request': {
@@ -1880,6 +2086,306 @@ function getVersionCheck(): {
   };
 }
 
+// === Flow recording by demonstration ===================================
+//
+// STRICTLY OPT-IN (see flowRecordingEnabledCache above) and per-tab/per-
+// session — nothing here runs unless the user both enabled the setting AND
+// pressed Record on this specific connected tab. Lifecycle:
+//
+//   startRecording -> [handleRecordingNavigation]* -> stopRecording
+//     -> saveRecording | discardRecording
+//
+// `Runtime.addBinding` (CDP) is added ONCE at start and left in place for
+// the whole session — per the CDP spec it is re-installed automatically on
+// every new execution context, INCLUDING ones created by a navigation, so
+// it survives document swaps on its own. The in-page LISTENERS
+// (`inpage/recorder.ts`, injected via `Runtime.evaluate`) do NOT survive a
+// navigation — a document swap tears down every JS global the previous
+// document set up — so `handleRecordingNavigation` re-injects the recorder
+// script (not the binding) after every navigation observed while
+// recording, using the same `chrome.tabs.onUpdated` "complete" signal
+// `waitForLoad` already uses elsewhere in this file for the standalone
+// `navigate` tool.
+
+function originOfUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+function removeRecordingNavListener(tabId: number): void {
+  const listener = recordingNavListeners.get(tabId);
+  if (listener) {
+    chrome.tabs.onUpdated.removeListener(listener);
+    recordingNavListeners.delete(tabId);
+  }
+}
+
+async function injectRecorder(
+  tabId: number,
+  session: { bindingName: string; activeFlag: string; stopFn: string; nonce: string },
+): Promise<void> {
+  await evaluateInTab(
+    tabId,
+    buildRecorderJs({
+      bindingName: session.bindingName,
+      activeFlag: session.activeFlag,
+      stopFn: session.stopFn,
+      nonce: session.nonce,
+    }),
+  );
+}
+
+/** Best-effort in-page teardown: calls the installed recorder's own stop
+ * function (named by the session's random `stopFn` global) so its listeners
+ * are removed even before the CDP binding subscription is dropped. A no-op
+ * when the tab already navigated away (nothing installed on the new
+ * document) — which is itself the correct end state, not a failure. Runs on
+ * EVERY exit path — Stop, Discard, setting-off force-stop, and `cleanup`
+ * (disconnect / tab removal / idle sweep) — because
+ * `chrome.debugger.detach` alone only drops the CDP binding subscription,
+ * NOT the plain `window.addEventListener` listeners the recorder installed;
+ * those must be removed in-page. */
+async function teardownRecorderInPage(tabId: number, stopFn: string): Promise<void> {
+  try {
+    await evaluateInTab(tabId, buildStopRecorderJs(stopFn));
+  } catch {
+    // Tab closed/navigated/detached mid-teardown — nothing left to tear down.
+  }
+}
+
+async function handleRecordingNavigation(tabId: number, newUrl: string): Promise<void> {
+  const state = tabStates.get(tabId);
+  const recording = state?.recording;
+  if (!recording || recording.status !== 'recording') return;
+  if (!isNavigationForRecording(recording.lastUrl, newUrl)) return;
+
+  recording.lastUrl = newUrl;
+  const result = appendRecordingStep(recording.steps, buildNavigationWaitForStep());
+  recording.steps = result.steps;
+  if (result.capped) {
+    recording.capped = true;
+    await finishRecording(tabId);
+    return;
+  }
+  // Re-inject only — the CDP binding itself persists across navigations
+  // automatically (see the section doc above). Same session identity: the
+  // nonce/binding name rotate per recording START, not per document.
+  await injectRecorder(tabId, recording);
+}
+
+/** Start recording user interactions on an already-connected tab. Refuses
+ * when the opt-in setting is off, the tab is not connected, or a recording
+ * (recording OR under-review) is already in progress for this tab. */
+async function startRecording(tabId: number): Promise<{ ok: boolean; error?: string }> {
+  if (!flowRecordingEnabledCache) {
+    return { ok: false, error: 'Flow recording is disabled. Enable it in settings first.' };
+  }
+  const state = tabStates.get(tabId);
+  if (!state) return { ok: false, error: 'This tab is not connected.' };
+  if (state.recording) {
+    return { ok: false, error: 'A recording is already in progress (or awaiting review).' };
+  }
+
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { ok: false, error: 'Tab no longer exists.' };
+  }
+
+  // Fresh per-session identity: randomized binding name (no stable global
+  // for a page to probe) + nonce (the shared secret authenticating every
+  // payload). Rotated on EVERY recording start — see recorder.ts's THREAT
+  // MODEL doc.
+  const session = generateRecordingSession();
+  try {
+    await cdp(tabId, 'Runtime.addBinding', { name: session.bindingName });
+    await injectRecorder(tabId, session);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not start recording: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  state.recording = {
+    status: 'recording',
+    steps: [],
+    lastUrl: tab.url ?? '',
+    capped: false,
+    bindingName: session.bindingName,
+    activeFlag: session.activeFlag,
+    stopFn: session.stopFn,
+    nonce: session.nonce,
+    ambiguousStepIndices: [],
+  };
+
+  const navListener: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (
+    updatedId,
+    info,
+    updatedTab,
+  ) => {
+    if (updatedId !== tabId) return;
+    if (info.status !== 'complete') return;
+    void handleRecordingNavigation(tabId, updatedTab.url ?? '');
+  };
+  chrome.tabs.onUpdated.addListener(navListener);
+  recordingNavListeners.set(tabId, navListener);
+
+  return { ok: true };
+}
+
+/** Shared tail of "stop recording": un-injects the in-page recorder,
+ * unsubscribes the CDP binding, removes the navigation listener, and moves
+ * `status` to 'reviewing' — steps stay on `state.recording` for the
+ * popup's review panel. Called both from the explicit Stop action and from
+ * the step-cap auto-stop path (`Runtime.bindingCalled` handler /
+ * `handleRecordingNavigation` above). */
+async function finishRecording(tabId: number): Promise<void> {
+  const state = tabStates.get(tabId);
+  if (!state?.recording || state.recording.status !== 'recording') return;
+  removeRecordingNavListener(tabId);
+  state.recording.status = 'reviewing';
+  try {
+    await cdp(tabId, 'Runtime.removeBinding', { name: state.recording.bindingName });
+  } catch {
+    // Best effort — tab may already be detached.
+  }
+  await teardownRecorderInPage(tabId, state.recording.stopFn);
+}
+
+async function stopRecording(
+  tabId: number,
+): Promise<{ ok: boolean; steps?: FlowStep[]; capped?: boolean; error?: string }> {
+  const state = tabStates.get(tabId);
+  if (!state?.recording || state.recording.status !== 'recording') {
+    return { ok: false, error: 'Not currently recording this tab.' };
+  }
+  await finishRecording(tabId);
+  return { ok: true, steps: state.recording.steps, capped: state.recording.capped };
+}
+
+/** Full teardown, dropping any captured-but-unsaved steps. Used by
+ * Discard, by the "setting turned off mid-recording" force-stop, and by
+ * `cleanup`/disconnect. */
+function clearRecording(tabId: number): void {
+  removeRecordingNavListener(tabId);
+  const state = tabStates.get(tabId);
+  if (state) state.recording = undefined;
+}
+
+/** Discard a recording without saving. The popup only exposes Discard from
+ * the review panel (recorder already torn down by `finishRecording`), but
+ * routing through `forceStopAndDiscardRecording` makes it correct even if
+ * called while a recording is still ACTIVE — it tears the recorder down
+ * in-page first rather than orphaning its page listeners. */
+async function discardRecording(tabId: number): Promise<{ ok: boolean }> {
+  await forceStopAndDiscardRecording(tabId);
+  return { ok: true };
+}
+
+/** Stop (if still actively recording) AND discard in one call — the
+ * privacy-critical path used when the flow-recording setting flips off
+ * while a recording is in progress. Never leaves captured-but-unreviewed
+ * steps sitting in memory once the user has turned the feature off. */
+async function forceStopAndDiscardRecording(tabId: number): Promise<void> {
+  const state = tabStates.get(tabId);
+  if (!state?.recording) return;
+  if (state.recording.status === 'recording') {
+    await finishRecording(tabId);
+  }
+  clearRecording(tabId);
+}
+
+function getRecordingStatus(tabId: number): {
+  active: boolean;
+  reviewing: boolean;
+  stepCount: number;
+  capped: boolean;
+  steps?: FlowStep[];
+  ambiguousStepIndices?: number[];
+} {
+  const recording = tabStates.get(tabId)?.recording;
+  if (!recording) return { active: false, reviewing: false, stepCount: 0, capped: false };
+  return {
+    active: recording.status === 'recording',
+    reviewing: recording.status === 'reviewing',
+    stepCount: recording.steps.length,
+    capped: recording.capped,
+    steps: recording.status === 'reviewing' ? recording.steps : undefined,
+    ambiguousStepIndices:
+      recording.status === 'reviewing' ? recording.ambiguousStepIndices : undefined,
+  };
+}
+
+/** Send the reviewed recording to the server for validation + persistence
+ * (`flow.recorded` -> `flow.recorded.result`, see messages.ts). Clears the
+ * recording state on success only — a validation failure (e.g. an
+ * over-budget wait_for) leaves the steps in place so the user can edit the
+ * name/description and retry rather than losing the capture. */
+async function saveRecording(
+  tabId: number,
+  name: string,
+  description: string | undefined,
+): Promise<{ ok: boolean; error?: string }> {
+  const state = tabStates.get(tabId);
+  const recording = state?.recording;
+  if (!state || !recording || recording.status !== 'reviewing') {
+    return { ok: false, error: 'No reviewed recording to save for this tab.' };
+  }
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.serverTabId) {
+    return { ok: false, error: 'Not connected to the server.' };
+  }
+  const trimmedName = name.trim();
+  if (trimmedName.length === 0) return { ok: false, error: 'Name is required.' };
+  if (recording.steps.length === 0) return { ok: false, error: 'No steps were captured.' };
+
+  // Fold the ambiguous-selector warning into the saved recipe's
+  // description so the computed safety signal travels WITH the recipe, not
+  // just in the transient popup review — an agent (or a human) that later
+  // recalls this flow sees the caution too.
+  const ambiguousNote = buildAmbiguousNote(recording.ambiguousStepIndices);
+  const userDescription = description?.trim() ? description.trim() : undefined;
+  const finalDescription =
+    ambiguousNote && userDescription
+      ? `${userDescription}\n\n${ambiguousNote}`
+      : (ambiguousNote ?? userDescription);
+
+  const ws = state.ws;
+  const serverTabId = state.serverTabId;
+  const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    let settled = false;
+    const settle = (r: { ok: boolean; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      state.pendingFlowSave = undefined;
+      resolve(r);
+    };
+    state.pendingFlowSave = settle;
+    send(ws, {
+      kind: 'flow.recorded',
+      payload: {
+        tab_id: serverTabId,
+        origin: originOfUrl(recording.lastUrl),
+        name: trimmedName,
+        description: finalDescription,
+        steps: recording.steps,
+      },
+    });
+    // Best-effort timeout so the popup never hangs forever if the WS drops
+    // mid-request without a clean close event.
+    setTimeout(() => {
+      settle({ ok: false, error: 'Timed out waiting for the server.' });
+    }, 10_000);
+  });
+
+  if (result.ok) clearRecording(tabId);
+  return result;
+}
+
 async function respondToDialogFromPopup(
   tabId: number,
   accept: boolean,
@@ -1917,6 +2423,26 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (msg.action === 'versionCheck') {
     sendResponse(getVersionCheck());
     return false;
+  }
+  if (msg.action === 'recordingStatus') {
+    sendResponse(getRecordingStatus(msg.tabId));
+    return false;
+  }
+  if (msg.action === 'startRecording') {
+    void startRecording(msg.tabId).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'stopRecording') {
+    void stopRecording(msg.tabId).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'discardRecording') {
+    void discardRecording(msg.tabId).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'saveRecording') {
+    void saveRecording(msg.tabId, msg.name, msg.description).then(sendResponse);
+    return true;
   }
   // 'status'
   sendResponse(getTabStatus(msg.tabId));

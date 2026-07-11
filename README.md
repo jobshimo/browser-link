@@ -149,6 +149,7 @@ browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link config get                    # list every known setting
 browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it)
+browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link map                           # list apps the persistent UI map knows about
 browser-link map show <app>                # entries + flows for one app (app_key or origin)
 browser-link map forget <app> --yes        # delete a whole app and its data
@@ -468,6 +469,135 @@ run `browser-link map` first to look one up.
 > sharing it. The placeholder rule above means the map should never
 > contain real domain data, but an export is only as clean as what an
 > agent actually saved into it.
+
+### Recording flows by demonstration
+
+Instead of asking an agent to rediscover a multi-step UI path (open a
+dialog, fill a form, submit), a human can **demonstrate it once** in a
+connected tab and save the interaction directly as a named, replayable
+`browser.flow` recipe — no agent involved in the capture at all.
+
+**STRICTLY OPT-IN, off by default.** Nothing is ever recorded unless you
+explicitly turn the feature on AND press Record on a specific tab.
+
+**How to record:**
+
+1. In the popup, check **"Enable flow recording"** (a settings toggle,
+   same place and same persistence as the idle-disconnect TTL).
+2. On an already-**connected** tab, the popup now shows a **Record**
+   button. Press it and demonstrate the task: click things, type into
+   fields, use keyboard navigation.
+3. Press **Stop**. The popup shows a compact review — every captured step,
+   in order.
+4. Name the recipe (e.g. `"open task detail dialog"`) and press **Save**
+   — or **Discard** to throw the capture away. Save sends the recipe to
+   the server, which validates it with the exact same rules `browser.flow`
+   itself enforces and writes it into the map's `flows` table (the same
+   table `browser.map.save({ flows: [...] })` writes to). A validation
+   failure (e.g. too many steps) is shown in the popup instead of silently
+   vanishing.
+
+**What gets captured** — v1 grammar, mapping 1:1 onto `browser.flow` step
+kinds: a click becomes `{click:{selector}}`; typing into a field becomes
+ONE `{type:{selector, text:"<TEXT>"}}` step per field, emitted when you
+move on (blur / Enter / change) — **never per keystroke**; Escape/Tab/
+arrow keys outside a text field become `{press:{key}}`; a navigation
+triggered by a step inserts an editable `{wait_for:{expression:
+"document.readyState === 'complete'"}}` suggestion. Capped at 20 steps —
+recording auto-stops and the popup says so when the limit is hit. A step
+whose selector could not be made unique across the page is flagged in the
+review list (⚠ "may match multiple elements") and the caution is folded
+into the saved recipe's description, so the signal follows the recipe.
+
+**Privacy properties — verifiable, not just promised:**
+
+- Recording is **off by default**; the setting lives in
+  `chrome.storage.local` and is also editable via
+  `browser-link config get/set flow-recording` (same last-write-wins
+  precedence as idle-ttl — see [Idle-disconnect TTL](#idle-disconnect-ttl)
+  above).
+- Only ever **user-initiated, per tab**: the recorder script is injected
+  via CDP `Runtime.evaluate` only after you press Record on that
+  specific connected tab, and is removed (its listeners torn down
+  in-page) the MOMENT recording stops — Stop, Discard, disconnect, tab
+  removal, idle-disconnect, or the setting being turned off mid-recording
+  all force this immediately.
+- A `type` step's payload **structurally cannot** carry what you typed —
+  there is no field for it. The placeholder string `"<TEXT>"` is the only
+  value ever written, the same convention hand-written flow recipes
+  already use for free text (see the placeholder privacy rule above).
+  There is no keystroke-level listener anywhere in the recorder.
+- Turning the popup toggle off stops recording instantly across every
+  tab and **discards** whatever was captured so far — it does not sit
+  around waiting to be saved.
+
+**Threat model — safe to leave enabled while browsing arbitrary pages.**
+The recorder reaches the extension through a CDP binding, and a CDP
+binding is a global function reachable by EVERY script in the page (the
+site's own code, ads, third-party widgets, an XSS payload). Several
+layered defenses — not the review list — keep a hostile page from
+fabricating or smuggling steps:
+
+- **Per-session nonce + fully randomized globals.** Each recording start
+  mints a fresh secret nonce and three independent random names for the
+  recorder's in-page globals (the CDP binding, an idle flag, the teardown
+  hook), all known only to the injected recorder. Every payload must carry
+  the right nonce or the extension discards it before parsing — so a page
+  script calling the binding blind records nothing. The global names are
+  bare random identifiers with no shared prefix or suffix, so a page cannot
+  cheaply scan `window` for a predictable pattern to detect that recording
+  is active either.
+- **Trusted events only.** Every recorder listener bails on
+  `!event.isTrusted`, so events a page dispatches programmatically
+  (`el.click()`, `dispatchEvent(new KeyboardEvent(...))`) are never
+  captured. Tradeoff: page code that activates its own widgets via
+  `.click()` during a demonstration is not captured either — reproduce
+  the underlying real gesture.
+- **Gesture correlation for typed fields.** `isTrusted` alone is not
+  enough here: unlike `.click()`, a programmatic `element.focus()` /
+  `.blur()` from page script DOES fire focus/blur events with
+  `isTrusted:true`, so a hostile page could otherwise focus-then-blur an
+  attacker-chosen input to fabricate a `type` step. A type step is
+  therefore recorded only when the field's focus was driven by a real user
+  gesture — a trusted pointerdown/mousedown that landed on the field, or a
+  trusted key event on it while focused. A field that focuses and blurs
+  with no such gesture is dropped.
+- **Stricter-than-agent validation.** Recorder payloads are validated more
+  tightly than agent-authored `browser.flow` steps: selectors are
+  length-capped and rejected on control characters (C0/C1 controls, plus
+  Unicode zero-width/bidi-override/format characters), so the channel
+  cannot smuggle a cookie or token disguised as a selector into the map;
+  and a `press` key must be on the exact recorder allowlist. The server
+  also rejects a `flow.recorded` whose `tab_id` does not match the
+  submitting connection, and caps the recipe name/description length.
+- **Honest residual risk.** The nonce closes the realistic
+  blind-injection hole; it does not defend against a script that can read
+  the recorder closure's own variables — but any script with that power
+  already fully owns the page. The gesture-correlation gate is defeated
+  only in a much narrower way than the original zero-interaction bypass: a
+  page that structurally wraps a real, user-clickable decoy _inside_ its
+  target field can get that field "gestured" by a genuine click, then force
+  the type-commit with a scripted blur — it still requires tricking the
+  user into a real click on attacker-controlled layout, not a
+  fully-silent fabrication. And the review list is a usability aid, not
+  a security control: do not rely on eyeballing 20 steps to spot one
+  fabricated entry — the nonce, the `isTrusted` gate, and the gesture
+  correlation are what actually prevent fabricated entries from ever
+  reaching the list.
+
+**Known limitation.** Single-page-app route changes done purely via the
+History API (`pushState`/`replaceState`, no full document load) do NOT get
+an automatic `wait_for` navigation hint — detection is based on Chrome's
+`tabs.onUpdated` "complete" signal, which History-API navigations don't
+fire. Add a `wait_for` step by hand to the recipe if replay needs to wait
+for such a transition.
+
+**How agents replay a recorded flow:** exactly like any other saved
+recipe — `browser.map.recall` returns it under `flows` (`name`,
+`description`, `steps`, `use_count`); the agent adapts any `<TEXT>`
+placeholder to the real value the task calls for, then calls
+`browser.flow` with the adapted steps. No new MCP tool surface — recording
+only changes how a recipe gets INTO the map, not how an agent gets it out.
 
 ## Customising
 

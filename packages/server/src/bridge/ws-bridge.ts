@@ -1,10 +1,17 @@
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ExtensionToServer, ServerToExtension, SettingsUpdateMessage } from '../messages.js';
+import type {
+  ExtensionToServer,
+  FlowRecordedPayload,
+  ServerToExtension,
+  SettingsUpdateMessage,
+} from '../messages.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcess } from '../auth/process-identity.js';
 import { VERSION } from '../version.js';
 import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
+import { saveFlow } from '../map/queries.js';
+import { validateFlowSteps } from '../tools/browser-dispatch.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = 17529;
@@ -229,6 +236,26 @@ export function startWsBridge(
           events.add(msg.eventKind, data);
           return;
         }
+
+        if (msg.kind === 'flow.recorded') {
+          // Defense in depth: the payload names the tab it came from, but a
+          // connection may only save flows FOR ITSELF. Reject a mismatch
+          // (or a save before this connection registered a tab) so the
+          // `flow-recorded` event log entry's tab_id is trustworthy and one
+          // tab cannot attribute a recipe to another. `assignedTabId` is
+          // the id THIS socket registered under (set in the tab.register
+          // handler above).
+          const result =
+            assignedTabId && msg.payload.tab_id === assignedTabId
+              ? handleFlowRecordedMessage(msg.payload, events)
+              : ({
+                  kind: 'flow.recorded.result',
+                  ok: false,
+                  error: 'flow.recorded: tab_id does not match this connection',
+                } as ServerToExtension);
+          send(ws, result);
+          return;
+        }
       });
 
       ws.on('close', () => {
@@ -248,44 +275,53 @@ export function startWsBridge(
 
 /**
  * Build the `settings.update` a freshly-registered tab should receive, or
- * `null` when nothing should be sent. `idleTtlMinutes` stays undefined in
- * config.json until `browser-link config set idle-ttl` runs at least once —
- * a popup-only user (who never touched the CLI) never gets an unsolicited
- * settings.update overwriting their own popup choice. Note `0` ("never")
- * IS a real value and MUST push — only `undefined` suppresses the message.
- * See messages.ts's SettingsUpdatePayload doc for the newest-wins
+ * `null` when nothing should be sent. Each of `idleTtlMinutes` and
+ * `flowRecordingEnabled` independently stays undefined in config.json until
+ * its own `browser-link config set` command runs at least once — a
+ * popup-only user (who never touched the CLI) never gets an unsolicited
+ * settings.update overwriting their own popup choice for that setting.
+ * Note idle-ttl's `0` ("never") and flow-recording's `false` ("off") ARE
+ * real values and MUST push — only `undefined` suppresses a given pair, and
+ * the two pairs are independent (a message can carry one, the other, or
+ * both). See messages.ts's SettingsUpdatePayload doc for the newest-wins
  * precedence rule the extension applies on receipt. Exported so the
  * register-path push is unit-testable without binding the fixed WS port.
  */
 export function buildRegisterSettingsUpdate(cfg: {
   idleTtlMinutes?: number;
   idleTtlUpdatedAt?: number;
+  flowRecordingEnabled?: boolean;
+  flowRecordingUpdatedAt?: number;
 }): SettingsUpdateMessage | null {
-  if (cfg.idleTtlMinutes === undefined) return null;
-  return {
-    kind: 'settings.update',
-    settings: {
-      idleTtlMinutes: cfg.idleTtlMinutes,
-      updatedAt: cfg.idleTtlUpdatedAt ?? 0,
-    },
-  };
+  const settings: SettingsUpdateMessage['settings'] = {};
+  if (cfg.idleTtlMinutes !== undefined) {
+    settings.idleTtlMinutes = cfg.idleTtlMinutes;
+    settings.updatedAt = cfg.idleTtlUpdatedAt ?? 0;
+  }
+  if (cfg.flowRecordingEnabled !== undefined) {
+    settings.flowRecordingEnabled = cfg.flowRecordingEnabled;
+    settings.flowRecordingUpdatedAt = cfg.flowRecordingUpdatedAt ?? 0;
+  }
+  if (Object.keys(settings).length === 0) return null;
+  return { kind: 'settings.update', settings };
 }
 
 /**
  * Push a `settings.update` to every currently-connected extension tab.
  * Called from the IPC bridge's `settings.push` handler (see
  * `bridge/server.ts`'s `pushSettings` option) when `browser-link config set
- * idle-ttl` runs while a primary is already up — the "on demand, while
- * connected" half of the precedence contract; the "on (re)connect" half
- * lives inline in `startWsBridge`'s `tab.register` handler above (via
- * `buildRegisterSettingsUpdate`), since a tab that connects AFTER this push
- * already gets the fresh value from config.json directly. Returns how many
- * tabs were sent the update, so the CLI can report something more useful
- * than "done" (e.g. "0 tabs connected — applies next time one connects").
+ * idle-ttl` / `config set flow-recording` runs while a primary is already
+ * up — the "on demand, while connected" half of the precedence contract;
+ * the "on (re)connect" half lives inline in `startWsBridge`'s
+ * `tab.register` handler above (via `buildRegisterSettingsUpdate`), since a
+ * tab that connects AFTER this push already gets the fresh value from
+ * config.json directly. Returns how many tabs were sent the update, so the
+ * CLI can report something more useful than "done" (e.g. "0 tabs
+ * connected — applies next time one connects").
  */
 export function pushSettingsToAllTabs(
   tabs: Map<string, TabSession>,
-  settings: { idleTtlMinutes: number; updatedAt: number },
+  settings: SettingsUpdateMessage['settings'],
 ): number {
   let notified = 0;
   for (const session of tabs.values()) {
@@ -294,6 +330,93 @@ export function pushSettingsToAllTabs(
     notified += 1;
   }
   return notified;
+}
+
+/**
+ * Validate + persist a `flow.recorded` message from the extension (see the
+ * extension's `background.ts`'s `saveRecording`) and build the
+ * `flow.recorded.result` reply. Exported so it is unit-testable directly,
+ * without binding the fixed WS port — same rationale as
+ * `buildRegisterSettingsUpdate` above.
+ *
+ * `steps` is validated with the EXACT same `validateFlowSteps` rules
+ * `browser.flow` and `browser.map.save`'s `flows` array enforce — an
+ * invalid recording (over the step cap, a malformed step, an over-budget
+ * wait_for) is rejected here with the same actionable error message an
+ * agent would see from `browser.flow`, sent back to the popup so the user
+ * knows WHY the save failed rather than it silently vanishing.
+ * `origin` is untrusted free text from the extension and is canonicalized
+ * the normal way (`saveFlow` -> `upsertApp` -> `canonicalOrigin`), exactly
+ * like every other write path into the map.
+ *
+ * On success, emits a SERVER-OWNED `flow-recorded` bridge event (see
+ * `events.ts` — this kind is deliberately absent from
+ * `EXTENSION_EVENT_KINDS`, so it can only ever be produced by a recording
+ * that actually passed validation and landed in the map, never spoofed via
+ * a raw `bridge.event`) so `browser.events` surfaces the new recipe to any
+ * agent watching, per the mission's "agents notice new recipes" requirement.
+ */
+/** Length caps on the free-text fields of a recorded flow — consistent
+ * with the selector cap on the recorder side and the map's general "store
+ * UI structure, not blobs" posture. Generous enough for any real recipe
+ * name / caution note, small enough that the channel cannot be used to
+ * park large payloads in the map DB. */
+export const MAX_FLOW_NAME_LENGTH = 200;
+export const MAX_FLOW_DESCRIPTION_LENGTH = 2000;
+
+export function handleFlowRecordedMessage(
+  payload: FlowRecordedPayload,
+  events: BridgeEventLog,
+): ServerToExtension {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  if (name.length === 0) {
+    return { kind: 'flow.recorded.result', ok: false, error: 'flow.recorded: name is required' };
+  }
+  if (name.length > MAX_FLOW_NAME_LENGTH) {
+    return {
+      kind: 'flow.recorded.result',
+      ok: false,
+      error: `flow.recorded: name exceeds ${MAX_FLOW_NAME_LENGTH} characters`,
+    };
+  }
+  if (
+    payload.description !== undefined &&
+    (typeof payload.description !== 'string' ||
+      payload.description.length > MAX_FLOW_DESCRIPTION_LENGTH)
+  ) {
+    return {
+      kind: 'flow.recorded.result',
+      ok: false,
+      error: `flow.recorded: description must be a string of at most ${MAX_FLOW_DESCRIPTION_LENGTH} characters`,
+    };
+  }
+  const validated = validateFlowSteps(payload.steps);
+  if (!validated.ok) {
+    return { kind: 'flow.recorded.result', ok: false, error: `flow.recorded: ${validated.error}` };
+  }
+  try {
+    const { app, flow } = saveFlow({
+      origin: payload.origin,
+      name,
+      description: payload.description ?? null,
+      steps: validated.steps,
+    });
+    events.add('flow-recorded', {
+      tab_id: payload.tab_id,
+      app_key: app.app_key,
+      origin: app.origin,
+      name: flow.name,
+      step_count: validated.steps.length,
+    });
+    return { kind: 'flow.recorded.result', ok: true, name: flow.name };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      kind: 'flow.recorded.result',
+      ok: false,
+      error: `flow.recorded: could not save — ${message}`,
+    };
+  }
 }
 
 /** Build the callback that sends a tool.request frame to a specific tab and
