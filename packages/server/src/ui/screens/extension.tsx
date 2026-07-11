@@ -33,7 +33,7 @@ const EXT_I18N: Record<
     pathLabel: 'Extension assets are at',
     stepsLabel: 'Steps',
     afterLoading:
-      'After loading, open the extension popup on any tab and click "Conectar" to bridge it.',
+      'After loading, open the extension popup on any tab and click "Connect this tab" to bridge it.',
     notFound:
       'Extension assets not found. Run `npm run build:extension` (dev) or reinstall the package.',
     footerBack: 'back to menu',
@@ -44,7 +44,7 @@ const EXT_I18N: Record<
     pathLabel: 'Los assets de la extensión están en',
     stepsLabel: 'Pasos',
     afterLoading:
-      'Después de cargarla, abrí el popup de la extensión en cualquier pestaña y hacé click en "Conectar" para puentearla.',
+      'Después de cargarla, abrí el popup de la extensión en cualquier pestaña y hacé click en "Connect this tab" para puentearla.',
     notFound:
       'No se encontraron los assets. Corré `npm run build:extension` (dev) o reinstalá el paquete.',
     footerBack: 'volver al menú',

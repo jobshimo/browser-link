@@ -47,6 +47,12 @@ Not shipped as a tool. The "bookkeeping" framing was overstated — `lastId = re
 
 _Items move up here when the PR that ships them merges. Format: `- [x] <title> — PR #<n> (<release tag>)`._
 
+- [x] Idle-disconnect TTL — extension popup control (`Auto-disconnect idle tabs`) + `browser-link config get/set idle-ttl <minutes|never>`, synced live between the two with last-write-wins precedence — (v0.19.0)
+- [x] `browser.state` orientation read + `browser.find` near-miss suggestions on no-match + named, replayable map flow recipes (`browser.map.save`/`recall` `flows[]`, validated against the `browser.flow` grammar) — PR #90 (v0.18.0)
+- [x] `browser.flow` — declarative `find`/`click`/`type`/`press`/`wait_for` sequence in one round trip, implicit-target threading, fail-fast with a recovery snapshot — PR #89 (v0.17.0)
+- [x] `browser.press` — trusted CDP keyboard input (+ modifiers) — plus `settle_ms` post-action quiet-wait on `click`/`type`/`press` — PR #88 (v0.16.0)
+- [x] Deep DOM visibility — `browser.snapshot`/`find`/`click`/`type` pierce open Shadow DOM + same-origin iframes; `browser.click` gains an occlusion guard (`force:true` escape hatch) — PR #87 (v0.15.0)
+- [x] `browser.canvas_screenshot` — screenshot a `<canvas>` as PNG/JPEG for Qt-WASM / WebGL / other DOMless UIs — PR #77 (v0.14.0)
 - [x] `browser.find` + filtered `browser.snapshot` + lean serializer + agent-instructions protocol update — PR #72 (v0.13.0)
 - [x] `browser.dialog_respond`, `browser.wait_for_tab`, `browser.set_permission` — PR #71 (v0.12.0)
 - [x] `browser.wait_for` — PR #70 (v0.11.0)

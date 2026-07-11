@@ -5,7 +5,7 @@
 > This package opens a bridge between your MCP client (Claude Code,
 > OpenCode, GitHub Copilot CLI…) and the Chrome tabs you explicitly
 > enable through a companion extension. On every tab where you press
-> "Conectar" in the extension popup, the agent can read its DOM, click,
+> "Connect this tab" in the extension popup, the agent can read its DOM, click,
 > type, run arbitrary JavaScript, and follow links — including any
 > logged-in session, saved card, wallet, banking page or admin panel
 > that tab is currently showing.
@@ -94,7 +94,7 @@ primary swaps via `chrome.storage.session`.
 
 After `install`, restart the MCP client so it picks up the new entry.
 After `extension`, follow the printed steps to load the unpacked extension
-in Chrome. Then click "Conectar" on every tab you want the agent to reach
+in Chrome. Then click "Connect this tab" on every tab you want the agent to reach
 — and only on those.
 
 ## Supported MCP clients

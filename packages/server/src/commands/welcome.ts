@@ -95,7 +95,7 @@ export const I18N_WELCOME: Record<Language, I18n> = {
       'when you are done with it.',
     ].join('\n'),
     responsibility:
-      'You are responsible for every action the agent performs on the tabs you explicitly enable. The extension stays inert on any tab where you have not pressed "Conectar" yourself.',
+      'You are responsible for every action the agent performs on the tabs you explicitly enable. The extension stays inert on any tab where you have not pressed "Connect this tab" yourself.',
     extensionNote:
       'The Chrome extension is custom and ships inside this package. The setup menu after this screen will tell you where it lives so you can load it via chrome://extensions → Load unpacked.',
     prompt: 'How do you want to proceed?',
@@ -150,10 +150,10 @@ export const I18N_WELCOME: Record<Language, I18n> = {
     ].join('\n'),
     warningTitle: 'Leelo antes de continuar',
     warning: [
-      'Conectar una pestaña le da al agente acceso a todo lo que esté en esa',
-      'pestaña: sesiones iniciadas, tarjetas guardadas, wallets, banca,',
+      'Una pestaña conectada le da al agente acceso a todo lo que esté en',
+      'ella: sesiones iniciadas, tarjetas guardadas, wallets, banca,',
       'consolas de trabajo, paneles de administración… lo que el navegador',
-      'esté mostrando en ella en ese momento.',
+      'esté mostrando en ese momento.',
       '',
       'Tratá al agente como a un dev junior con control remoto de esas',
       'pestañas: puede comprar cosas, enviar formularios, cambiar',
@@ -165,7 +165,7 @@ export const I18N_WELCOME: Record<Language, I18n> = {
       'cuando termines de usarla.',
     ].join('\n'),
     responsibility:
-      'Sos responsable de cada acción que el agente haga en las pestañas que habilitás explícitamente. La extensión se mantiene inerte en cualquier pestaña donde no hayas apretado "Conectar" vos mismo.',
+      'Sos responsable de cada acción que el agente haga en las pestañas que habilitás explícitamente. La extensión se mantiene inerte en cualquier pestaña donde no hayas apretado "Connect this tab" vos mismo.',
     extensionNote:
       'La extensión de Chrome es custom y viene incluida en este paquete. El menú que aparece después de esta pantalla te dice exactamente dónde está para que la cargues vía chrome://extensions → Cargar sin empaquetar.',
     prompt: '¿Cómo querés seguir?',

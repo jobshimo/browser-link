@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.1](https://github.com/jobshimo/browser-link/compare/v0.19.0...v0.19.1) (2026-07-11)
+
+### Internal
+
+* **docs:** README.md rewritten to match the actual v0.19.0 tool surface — corrects the "26 tools" claim to the real 31 (25 bridge + 6 map), adds the tables and semantics for `browser.find`, `browser.state`, `browser.canvas_screenshot`, `browser.press` and `browser.flow`, documents Shadow DOM/iframe piercing limits, the click occlusion guard, `settle_ms` ("proves quiet, not effect"), `near_misses`, and named/replayable map flow recipes with the placeholder privacy rule. Corrects multi-agent mode from "opt-in" to its real on-by-default state, documents `browser-link config get/set idle-ttl`, refreshes the interactive-menu mockup to the grouped SETUP/DIAGNOSE/REFERENCE layout, adds `scripts/` and `.github/` to the repository layout, fixes the Windows process-binding description to the actual PR #80 implementation (`netstat -ano` for the PID, PowerShell `Get-Process` for the name, `tasklist` as fallback), and footnotes the two claim exceptions in the actions table (`dialog_respond` is deliberately claim-free, `reset` is global).
+* **docs:** the stale Spanish popup-button label from the pre-v0.9.0 popup is replaced by the real English-only "Connect this tab" everywhere it survived: the root README, the npm package README (`packages/server/README.md`), and the CLI/TUI copy in `commands/about.ts`, `commands/welcome.ts`, `commands/extension.ts` and `ui/screens/extension.tsx` (both EN and ES strings — the ES prose now names the actual English button).
+* **cli:** `commands/about.ts`'s EN/ES quick-reference tool list was missing 10 tools shipped in earlier releases (`browser.drag`, `wait_for`, `wait_for_tab`, `dialog_respond`, `set_permission`, `claim_tab`, `release_tab`, `events`, `reset`, `my_tabs`) — `browser-link about` and the interactive About screen (which reads the same `I18N_ABOUT` table) now list all 25 bridge tools.
+* `ROADMAP.md`'s Done list now records what shipped in v0.14.0 through v0.19.0 (`browser.canvas_screenshot`, deep DOM visibility + occlusion guard, `browser.press` + `settle_ms`, `browser.flow`, `browser.state` + near-misses + map flow recipes, the idle-disconnect TTL).
+
 ## [0.19.0](https://github.com/jobshimo/browser-link/compare/v0.18.3...v0.19.0) (2026-07-11)
 
 
