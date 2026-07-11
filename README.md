@@ -149,6 +149,12 @@ browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link config get                    # list every known setting
 browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it)
+browser-link map                           # list apps the persistent UI map knows about
+browser-link map show <app>                # entries + flows for one app (app_key or origin)
+browser-link map forget <app> --yes        # delete a whole app and its data
+browser-link map forget <app> --flow <name> # delete just one named flow
+browser-link map export --out map.json     # export the map (or one app) as JSON
+browser-link map import map.json           # import an export (merge by default, --replace to overwrite)
 browser-link multi-agent disable           # opt out of the default shared-bridge mode
 browser-link multi-agent auto-reelect enable
 browser-link stop                          # kill a browser-link holding port 17529 (zombie)
@@ -437,6 +443,31 @@ CREATE TABLE flows (
   -- UNIQUE(app_id, name)
 );
 ```
+
+### CLI: `browser-link map`
+
+The six `browser.map.*` tools above are how an **agent** reads and writes
+the map while it works. `browser-link map` is the same data from a
+**human's** terminal — no agent required, useful for auditing what got
+saved or pruning it after a refactor:
+
+| Command                                          | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `browser-link map`                               | Table of every known app: `app_key`, `origin`, entry/flow counts, last seen (relative time)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `browser-link map show <app>`                    | Full detail for one app — entries (kind, purpose, payload snippet, verified/failed) and flows (name, description, step count, use_count). `<app>` resolves by `app_key` or by origin                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `browser-link map forget <app> --flow <name>`    | Delete one named flow recipe. The output names the resolved origin. No confirmation needed when `<app>` is unambiguous; if the same `app_key` exists on more than one origin, it prints which app it resolved to and asks for `--yes` (or pass the origin instead of the `app_key` to disambiguate)                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `browser-link map forget <app> --yes`            | Delete a whole app and everything under it. **Without `--yes`**, prints what would be deleted and the exact command to confirm — nothing is touched                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `browser-link map export [<app>] [--out <file>]` | Export the whole map, or one app, as JSON (`browser_link_map_export` version field for forward compat). Defaults to stdout, so it composes in a pipeline                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `browser-link map import <file> [--replace]`     | Import an export. Default is a **merge**: apps upsert by canonical origin, flows upsert by name (a flow's `use_count` is never lowered), entries append and skip exact duplicates — each entry's `verified_at`/`failed_at` track record is preserved, never re-stamped. `--replace` deletes each imported app's existing data first. The WHOLE file is validated **before** anything is written — flow steps with the same rules `browser.flow` enforces, entry fields against the DB schema, a version check (newer exports are rejected cleanly), and sanity caps (500 apps / 5000 entries / 1000 flows per file, 1 MiB per payload) — any problem aborts the import with one aggregated report, inside a single transaction |
+
+Not found → the error lists every known `app_key` so you don't have to
+run `browser-link map` first to look one up.
+
+> **Privacy note.** An export can carry UI structure and flow steps an
+> agent saved — selectors, notes, multi-step recipes. Review a file before
+> sharing it. The placeholder rule above means the map should never
+> contain real domain data, but an export is only as clean as what an
+> agent actually saved into it.
 
 ## Customising
 

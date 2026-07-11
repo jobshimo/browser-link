@@ -170,6 +170,89 @@ export function saveEntry(input: SaveEntryInput): { app: AppRow; entry: EntryRow
   return { app, entry: hydrate(inserted) };
 }
 
+export interface RestoreEntryInput {
+  origin: string;
+  app_key?: string | null;
+  title?: string | null;
+  url_pattern: string;
+  kind: EntryKind;
+  purpose: string;
+  payload: unknown;
+  notes?: string | null;
+  verified_at?: string | null;
+  failed_at?: string | null;
+}
+
+/**
+ * Restore-only counterpart to `saveEntry`, used by `browser-link map
+ * import`. `saveEntry` models "the agent just successfully executed
+ * this": it stamps `verified_at = now` and clears `failed_at` — the right
+ * semantics for a live save, and the WRONG ones for a backup restore,
+ * where re-stamping would silently "heal" a selector the map knew to be
+ * broken. This writes `verified_at`/`failed_at`/`notes` exactly as given
+ * (including null), preserving the entry's track record through an
+ * export → import round trip. Same upsert key as `saveEntry`
+ * ((app, url_pattern, kind, purpose)); the agent-facing
+ * `browser.map.save` never calls this.
+ */
+export function restoreEntry(input: RestoreEntryInput): { app: AppRow; entry: EntryRow } {
+  const app = upsertApp({
+    origin: input.origin,
+    app_key: input.app_key ?? null,
+    title: input.title ?? null,
+  });
+  const ts = now();
+  const payloadJson = JSON.stringify(input.payload);
+  const db = getDb();
+
+  const existing = db
+    .prepare(
+      `SELECT * FROM entries WHERE app_id = ? AND url_pattern = ? AND kind = ? AND purpose = ?`,
+    )
+    .get(app.id, input.url_pattern, input.kind, input.purpose) as RawEntryRow | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE entries
+       SET payload = ?, notes = ?, verified_at = ?, failed_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      payloadJson,
+      input.notes ?? null,
+      input.verified_at ?? null,
+      input.failed_at ?? null,
+      ts,
+      existing.id,
+    );
+    const updated = db
+      .prepare('SELECT * FROM entries WHERE id = ?')
+      .get(existing.id) as RawEntryRow;
+    return { app, entry: hydrate(updated) };
+  }
+
+  const info = db
+    .prepare(
+      `INSERT INTO entries (app_id, url_pattern, kind, purpose, payload, verified_at, failed_at, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      app.id,
+      input.url_pattern,
+      input.kind,
+      input.purpose,
+      payloadJson,
+      input.verified_at ?? null,
+      input.failed_at ?? null,
+      input.notes ?? null,
+      ts,
+      ts,
+    );
+  const inserted = db
+    .prepare('SELECT * FROM entries WHERE id = ?')
+    .get(info.lastInsertRowid) as RawEntryRow;
+  return { app, entry: hydrate(inserted) };
+}
+
 export interface RecallInput {
   origin: string;
   app_key?: string | null;
@@ -301,6 +384,100 @@ export function listApps(): AppRow[] {
   return getDb().prepare('SELECT * FROM apps ORDER BY last_seen_at DESC').all() as AppRow[];
 }
 
+export interface AppSummary extends AppRow {
+  entries: number;
+  flows: number;
+}
+
+/**
+ * Every app with its entry and flow counts, most-recently-seen first.
+ * Powers `browser-link map ls` — `listApps()` alone does not carry counts,
+ * and the CLI is the only caller that needs them (the MCP-facing
+ * `browser.map.apps` tool intentionally stays lean). Counts are computed
+ * with correlated subqueries rather than a JOIN + GROUP BY so an app with
+ * zero entries or zero flows still gets a row (a JOIN would need two LEFT
+ * JOINs to avoid multiplying rows across both tables).
+ */
+export function listAppsWithCounts(): AppSummary[] {
+  return getDb()
+    .prepare(
+      `SELECT a.*,
+         (SELECT COUNT(*) FROM entries e WHERE e.app_id = a.id) AS entries,
+         (SELECT COUNT(*) FROM flows f WHERE f.app_id = a.id) AS flows
+       FROM apps a
+       ORDER BY a.last_seen_at DESC`,
+    )
+    .all() as AppSummary[];
+}
+
+/**
+ * Every app matching an identifier, most-recently-seen first — by app_key
+ * (exact match) first, falling back to origin (canonicalized, same rule
+ * every other write/lookup path uses) when no app_key matches. app_key
+ * uniqueness is per-origin, so the same key CAN match apps on several
+ * origins; a caller about to DELETE something must check `length > 1`
+ * and confirm with the user rather than silently trusting position 0
+ * (see `browser-link map forget --flow`). Read-only callers can take
+ * position 0 directly — that is exactly what `findApp` does.
+ */
+export function findAppCandidates(identifier: string): AppRow[] {
+  // `id DESC` tiebreak: two apps touched within the same millisecond have
+  // an identical ISO last_seen_at, and "most recently seen" must still be
+  // deterministic — the later-created row wins the tie.
+  const db = getDb();
+  const byKey = db
+    .prepare('SELECT * FROM apps WHERE app_key = ? ORDER BY last_seen_at DESC, id DESC')
+    .all(identifier) as AppRow[];
+  if (byKey.length > 0) return byKey;
+  return db
+    .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC')
+    .all(canonicalOrigin(identifier)) as AppRow[];
+}
+
+/**
+ * Resolve one app by app_key (exact match; most-recently-seen wins if the
+ * same key was used across more than one origin) OR by origin
+ * (canonicalized, same rule every other write/lookup path uses). Backs
+ * `browser-link map show`/`export <app>`, where a human names one app with
+ * whichever identifier they remember. Returns `null` — never throws — so
+ * callers can produce their own "not found, did you mean…" message with
+ * the full app_key list from `listApps()`. Destructive callers must use
+ * `findAppCandidates` instead, so an ambiguous identifier is detected
+ * BEFORE anything is deleted.
+ */
+export function findApp(identifier: string): AppRow | null {
+  const candidates = findAppCandidates(identifier);
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+/**
+ * Exact (origin, app_key) lookup — the same identity `apps`' UNIQUE
+ * constraint (and `upsertApp`) matches on. Used by `browser-link map
+ * import --replace` to find the existing app to wipe before writing the
+ * imported data fresh; unlike `findApp`, this never falls back to a
+ * fuzzier match — replace must target the exact app the export file
+ * describes, not a same-named app_key on a different origin.
+ */
+export function findAppByOriginAndKey(origin: string, app_key: string): AppRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM apps WHERE origin = ? AND app_key = ?')
+    .get(canonicalOrigin(origin), slugify(app_key)) as AppRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Every entry saved for an app, regardless of url_pattern. Unlike
+ * `recall()`, this is not origin/url-scoped and — like `getMapHint` —
+ * deliberately does NOT touch `last_seen_at`: a CLI read (`map show`,
+ * `map export`) is passive and must not affect map freshness.
+ */
+export function listEntries(app_id: number): EntryRow[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM entries WHERE app_id = ? ORDER BY url_pattern, updated_at DESC')
+    .all(app_id) as RawEntryRow[];
+  return rows.map(hydrate);
+}
+
 export interface MapHint {
   app_key: string;
   entries: number;
@@ -422,10 +599,74 @@ export function saveFlow(input: SaveFlowInput): { app: AppRow; flow: FlowRow } {
   return { app, flow: hydrateFlow(inserted as RawFlowRow) };
 }
 
+export interface RestoreFlowInput extends SaveFlowInput {
+  use_count?: number;
+}
+
+/**
+ * Restore-only counterpart to `saveFlow`, used by `browser-link map
+ * import`. `saveFlow` always inserts with `use_count = 0` — right for a
+ * brand-new recipe, wrong for a backup restore, where it would erase the
+ * flow's track record. On insert, the imported `use_count` is written
+ * as-is; on update (merge into an app that already has this flow name),
+ * the LARGER of the existing and imported counts wins, so a merge can
+ * never LOWER a locally-earned track record. Only a non-negative integer
+ * is accepted — anything else falls back to 0 rather than poisoning the
+ * column. The agent-facing `browser.map.save` never calls this.
+ */
+export function restoreFlow(input: RestoreFlowInput): { app: AppRow; flow: FlowRow } {
+  const app = upsertApp({
+    origin: input.origin,
+    app_key: input.app_key ?? null,
+    title: input.title ?? null,
+  });
+  const ts = now();
+  const stepsJson = JSON.stringify(input.steps);
+  const useCount =
+    typeof input.use_count === 'number' && Number.isInteger(input.use_count) && input.use_count >= 0
+      ? input.use_count
+      : 0;
+  const db = getDb();
+
+  const existing = db
+    .prepare('SELECT * FROM flows WHERE app_id = ? AND name = ?')
+    .get(app.id, input.name) as RawFlowRow | undefined;
+
+  if (existing) {
+    db.prepare(
+      'UPDATE flows SET description = ?, steps_json = ?, updated_at = ?, use_count = MAX(use_count, ?) WHERE id = ?',
+    ).run(input.description ?? null, stepsJson, ts, useCount, existing.id);
+    const updated = db.prepare('SELECT * FROM flows WHERE id = ?').get(existing.id) as RawFlowRow;
+    return { app, flow: hydrateFlow(updated) };
+  }
+
+  const info = db
+    .prepare(
+      `INSERT INTO flows (app_id, name, description, steps_json, created_at, updated_at, use_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(app.id, input.name, input.description ?? null, stepsJson, ts, ts, useCount);
+  const inserted = db.prepare('SELECT * FROM flows WHERE id = ?').get(info.lastInsertRowid) as
+    RawFlowRow | undefined;
+  return { app, flow: hydrateFlow(inserted as RawFlowRow) };
+}
+
 /** Every flow recipe saved for an app, alphabetical by name. */
 export function listFlows(app_id: number): FlowRow[] {
   const rows = getDb()
     .prepare('SELECT * FROM flows WHERE app_id = ? ORDER BY name')
     .all(app_id) as RawFlowRow[];
   return rows.map(hydrateFlow);
+}
+
+/**
+ * Delete a single named flow recipe, leaving the app and its entries
+ * untouched. Backs `browser-link map forget <app> --flow <name>` — the
+ * single-flow counterpart to `forget()`'s app_id/entry_id deletion, which
+ * has no notion of a flow name. Returns whether a row was actually
+ * deleted, so the caller can tell "deleted" from "no such flow".
+ */
+export function deleteFlow(app_id: number, name: string): boolean {
+  const info = getDb().prepare('DELETE FROM flows WHERE app_id = ? AND name = ?').run(app_id, name);
+  return info.changes > 0;
 }

@@ -9,6 +9,7 @@ import { runToolsCommand } from './commands/tools.js';
 import { runMultiAgentCommand } from './commands/multi-agent.js';
 import { runFreePort } from './commands/free-port.js';
 import { runConfigCommand } from './commands/config.js';
+import { runMapCommand } from './commands/map.js';
 import {
   formatStatus as formatInstructionsStatus,
   installInstructionsAll,
@@ -73,6 +74,29 @@ Uso:
                                 extensión — gana la última escritura (ver README). Bajar el TTL
                                 cuenta desde la última actividad de cada pestaña: una pestaña ya
                                 inactiva puede desconectarse en el próximo barrido.
+  browser-link map              Lista las apps que el mapa persistente de UI conoce
+                                (app_key, origin, cantidad de entradas/flows, última vez).
+  browser-link map show <app>   Muestra las entradas y flows guardados de una app
+                                (identificada por app_key u origin).
+  browser-link map forget <app> [--flow <nombre>]
+                                Elimina un flow puntual por nombre, o (con --yes) toda
+                                una app y sus datos. Sin --yes solo muestra qué se
+                                borraría y el comando exacto para confirmar. --flow
+                                también pide --yes cuando <app> coincide con más de un
+                                origin.
+  browser-link map export [<app>] [--out <archivo.json>]
+                                Exporta el mapa (o una sola app) como JSON a stdout, o
+                                a --out. El archivo puede contener estructura de UI y
+                                pasos de flows guardados — revisalo antes de compartirlo.
+  browser-link map import <archivo.json> [--replace]
+                                Importa una exportación del mapa. Por defecto hace un
+                                merge (upsert de apps/flows, agrega entradas nuevas,
+                                omite duplicados exactos); --replace primero borra los
+                                datos existentes de cada app importada. Todo el archivo
+                                se valida antes de escribir (pasos de flows, campos de
+                                entradas, versión de exportación, límites de tamaño) —
+                                cualquier elemento inválido aborta la importación sin
+                                escribir nada.
   browser-link instructions     Muestra si el bloque de instrucciones de browser-link
                                 está presente en el .md global de cada cliente
                                 (Claude, OpenCode, Copilot CLI).
@@ -129,6 +153,26 @@ Usage:
                                 last write wins (see README). Lowering the TTL counts from each
                                 tab's last activity: an already-idle tab may disconnect on the
                                 next sweep.
+  browser-link map              List apps known to the persistent UI map (app_key,
+                                origin, entry/flow counts, last seen).
+  browser-link map show <app>   Show the saved entries and flows for one app
+                                (looked up by app_key or origin).
+  browser-link map forget <app> [--flow <name>]
+                                Delete one named flow, or (with --yes) a whole app and
+                                its data. Without --yes, only prints what would be
+                                deleted and the exact command to confirm. --flow also
+                                asks for --yes when <app> matches more than one origin.
+  browser-link map export [<app>] [--out <file.json>]
+                                Export the map (or one app) as JSON, to stdout or to
+                                --out. The file may contain UI structure and flow steps
+                                that were saved — review it before sharing.
+  browser-link map import <file.json> [--replace]
+                                Import a map export. Default is a merge (upsert apps/
+                                flows, append new entries, skip exact duplicates);
+                                --replace deletes each imported app's existing data
+                                first. The whole file is validated up front (flow
+                                steps, entry fields, export version, sanity caps) —
+                                any invalid item aborts the import without writing.
   browser-link instructions     Show whether the browser-link instructions block
                                 is present in each client's global .md file
                                 (Claude, OpenCode, Copilot CLI).
@@ -274,6 +318,10 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'config': {
       console.log(await runConfigCommand(rest, language));
+      return;
+    }
+    case 'map': {
+      console.log(runMapCommand(rest, language));
       return;
     }
     case 'instructions': {

@@ -4,13 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDb } from './db.js';
 import {
+  deleteFlow,
+  findApp,
+  findAppByOriginAndKey,
+  findAppCandidates,
   forget,
   getMapHint,
   listApps,
+  listAppsWithCounts,
+  listEntries,
   listFlows,
   recall,
   recordUse,
   renameApp,
+  restoreEntry,
+  restoreFlow,
   saveEntry,
   saveFlow,
   upsertApp,
@@ -369,5 +377,196 @@ describe('origin canonicalization across save and recall', () => {
     upsertApp({ origin: 'https://myapp.example.com', title: 'My App' });
     expect(listApps()).toHaveLength(1);
     expect(listApps()[0]?.origin).toBe('https://myapp.example.com');
+  });
+});
+
+describe('listAppsWithCounts', () => {
+  test('reports zero counts for an app with no entries or flows', () => {
+    upsertApp({ origin: 'http://x', title: 'My App' });
+    const [summary] = listAppsWithCounts();
+    expect(summary).toMatchObject({ app_key: 'my-app', entries: 0, flows: 0 });
+  });
+
+  test('counts entries and flows independently per app', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#a' },
+    });
+    saveFlow({ origin: 'http://y', title: 'Other App', name: 'f', steps: [{ click: {} }] });
+
+    const byKey = Object.fromEntries(listAppsWithCounts().map((a) => [a.app_key, a]));
+    expect(byKey['my-app']).toMatchObject({ entries: 1, flows: 0 });
+    expect(byKey['other-app']).toMatchObject({ entries: 0, flows: 1 });
+  });
+});
+
+describe('findApp', () => {
+  test('resolves by exact app_key', () => {
+    upsertApp({ origin: 'http://x', app_key: 'custom-key', title: 'My App' });
+    expect(findApp('custom-key')?.origin).toBe('http://x');
+  });
+
+  test('resolves by canonicalized origin when no app_key matches', () => {
+    upsertApp({ origin: 'https://myapp.example.com', title: 'My App' });
+    expect(findApp('https://myapp.example.com/')?.app_key).toBe('my-app');
+  });
+
+  test('returns null when nothing matches either identifier', () => {
+    expect(findApp('nope')).toBeNull();
+  });
+});
+
+describe('findAppByOriginAndKey', () => {
+  test('finds the exact (origin, app_key) pair', () => {
+    const app = upsertApp({ origin: 'http://x', app_key: 'k', title: 'My App' });
+    expect(findAppByOriginAndKey('http://x', 'k')?.id).toBe(app.id);
+  });
+
+  test('does not fall back to a different origin sharing the same app_key', () => {
+    upsertApp({ origin: 'http://x', app_key: 'k', title: 'A' });
+    expect(findAppByOriginAndKey('http://y', 'k')).toBeNull();
+  });
+});
+
+describe('listEntries', () => {
+  test('returns every entry for an app regardless of url_pattern, without touching last_seen_at', () => {
+    const app = upsertApp({ origin: 'http://x', title: 'My App' });
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p1',
+      payload: { selector: '#a' },
+    });
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/b',
+      kind: 'gotcha',
+      purpose: 'p2',
+      payload: { body: 'x' },
+    });
+    const before = listApps().find((a) => a.id === app.id)?.last_seen_at;
+    const entries = listEntries(app.id);
+    expect(entries).toHaveLength(2);
+    const after = listApps().find((a) => a.id === app.id)?.last_seen_at;
+    expect(after).toBe(before);
+  });
+});
+
+describe('deleteFlow', () => {
+  test('deletes a flow by (app_id, name) and returns true', () => {
+    const { app } = saveFlow({ origin: 'http://x', name: 'login', steps: [{ click: {} }] });
+    expect(deleteFlow(app.id, 'login')).toBe(true);
+    expect(listFlows(app.id)).toHaveLength(0);
+  });
+
+  test('returns false and leaves other flows untouched when the name does not exist', () => {
+    const { app } = saveFlow({ origin: 'http://x', name: 'login', steps: [{ click: {} }] });
+    expect(deleteFlow(app.id, 'does-not-exist')).toBe(false);
+    expect(listFlows(app.id)).toHaveLength(1);
+  });
+});
+
+describe('findAppCandidates', () => {
+  test('returns every app sharing an app_key, later-created first on a timestamp tie', () => {
+    const a = upsertApp({ origin: 'http://a', app_key: 'shared' });
+    const b = upsertApp({ origin: 'http://b', app_key: 'shared' });
+    const candidates = findAppCandidates('shared');
+    expect(candidates.map((c) => c.id)).toEqual([b.id, a.id]);
+  });
+
+  test('falls back to a canonicalized-origin match when no app_key matches', () => {
+    upsertApp({ origin: 'https://myapp.example.com', title: 'My App' });
+    const candidates = findAppCandidates('https://myapp.example.com/');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.app_key).toBe('my-app');
+  });
+
+  test('returns an empty array when nothing matches', () => {
+    expect(findAppCandidates('nope')).toEqual([]);
+  });
+});
+
+describe('restoreEntry', () => {
+  test('writes verified_at and failed_at exactly as given, unlike saveEntry', () => {
+    const { entry } = restoreEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#a' },
+      verified_at: '2026-01-01T00:00:00.000Z',
+      failed_at: '2026-02-01T00:00:00.000Z',
+    });
+    expect(entry.verified_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(entry.failed_at).toBe('2026-02-01T00:00:00.000Z');
+  });
+
+  test('restores a never-verified entry with both timestamps null', () => {
+    const { entry } = restoreEntry({
+      origin: 'http://x',
+      url_pattern: '/a',
+      kind: 'gotcha',
+      purpose: 'p',
+      payload: { body: 'x' },
+    });
+    expect(entry.verified_at).toBeNull();
+    expect(entry.failed_at).toBeNull();
+  });
+
+  test('on update, overwrites the existing track record with the restored one', () => {
+    // A live save stamps verified_at=now; restoring on top of it must
+    // carry the imported timestamps, not keep the fresher local ones —
+    // an explicit restore is the user saying "this file is the truth".
+    saveEntry({
+      origin: 'http://x',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#old' },
+    });
+    const { entry } = restoreEntry({
+      origin: 'http://x',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#new' },
+      verified_at: null,
+      failed_at: '2026-02-01T00:00:00.000Z',
+    });
+    expect(entry.verified_at).toBeNull();
+    expect(entry.failed_at).toBe('2026-02-01T00:00:00.000Z');
+    expect((entry.payload as { selector: string }).selector).toBe('#new');
+  });
+});
+
+describe('restoreFlow', () => {
+  const STEPS = [{ click: { selector: '#a' } }];
+
+  test('inserts with the imported use_count, unlike saveFlow which starts at 0', () => {
+    const { flow } = restoreFlow({ origin: 'http://x', name: 'login', steps: STEPS, use_count: 7 });
+    expect(flow.use_count).toBe(7);
+  });
+
+  test('on update, never lowers an existing use_count (MAX wins)', () => {
+    restoreFlow({ origin: 'http://x', name: 'login', steps: STEPS, use_count: 5 });
+    const lower = restoreFlow({ origin: 'http://x', name: 'login', steps: STEPS, use_count: 2 });
+    expect(lower.flow.use_count).toBe(5);
+    const higher = restoreFlow({ origin: 'http://x', name: 'login', steps: STEPS, use_count: 9 });
+    expect(higher.flow.use_count).toBe(9);
+  });
+
+  test('a missing or invalid use_count falls back to 0', () => {
+    const missing = restoreFlow({ origin: 'http://x', name: 'a', steps: STEPS });
+    expect(missing.flow.use_count).toBe(0);
+    const negative = restoreFlow({ origin: 'http://x', name: 'b', steps: STEPS, use_count: -3 });
+    expect(negative.flow.use_count).toBe(0);
   });
 });
