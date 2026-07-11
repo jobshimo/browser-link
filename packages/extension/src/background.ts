@@ -9,6 +9,7 @@ import {
   buildClickResolveJs,
   buildTypeResolveJs,
   buildFocusJs,
+  buildStateJs,
 } from './inpage/builders.js';
 import {
   buildKeyEventSequence,
@@ -746,8 +747,15 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 /** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string }
+  | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
   | { ok: false; reason: 'occluded'; blocker: string };
+
+/** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
+type TypeResolveResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-selector'; error: string }
+  | { ok: false; reason: 'not-found' };
 
 async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
   const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
@@ -843,6 +851,9 @@ async function performClick(
           error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
         };
       }
+      if (resolved.reason === 'invalid-selector') {
+        return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
+      }
       return { ok: false, error: `Element not found: ${selector}` };
     }
     await cdp(tabId, 'Input.dispatchMouseEvent', {
@@ -890,8 +901,14 @@ async function performType(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     if (selector !== undefined) {
-      const focused = await evaluateInTab<boolean>(tabId, buildTypeResolveJs({ selector, clear }));
-      if (!focused) {
+      const resolved = await evaluateInTab<TypeResolveResult>(
+        tabId,
+        buildTypeResolveJs({ selector, clear }),
+      );
+      if (!resolved.ok) {
+        if (resolved.reason === 'invalid-selector') {
+          return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
+        }
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
@@ -1090,6 +1107,11 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
             max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
           }),
         );
+        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+      }
+
+      case 'state': {
+        const value = await evaluateInTab(tabId, buildStateJs());
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
 

@@ -43,6 +43,15 @@ export interface FindStepResult {
   matched: boolean;
   reason?: string;
   candidates?: { selector: string; text: string; tag: string }[];
+  /** Up to 3 near-miss candidates on a `not-found` result — see
+   * `buildFindJs` in `inpage/builders.ts` for the ranking rules. Not
+   * consumed by `runFlow` today (the flow failure message stays as-is);
+   * carried through so a future caller of the raw `performFind` outcome
+   * (or a richer flow error message) can use it without a shape change. */
+  near_misses?: { text: string; selector: string; role?: string }[];
+  /** Human-readable detail on a `not-found` result — currently only set
+   * when `role` excluded matches that existed under a broader scan. */
+  error?: string;
   selector?: string;
   ambiguous?: boolean;
   tag?: string;

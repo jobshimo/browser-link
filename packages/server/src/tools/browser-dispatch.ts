@@ -100,6 +100,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.navigate',
   'browser.snapshot',
   'browser.find',
+  'browser.state',
   'browser.canvas_screenshot',
   'browser.console',
   'browser.network',
@@ -238,7 +239,7 @@ function flowStepKind(step: Record<string, unknown>): FlowStepKind | null {
   return (FLOW_STEP_KINDS as readonly string[]).includes(key) ? (key as FlowStepKind) : null;
 }
 
-type FlowValidationResult =
+export type FlowValidationResult =
   | { ok: true; steps: Record<string, unknown>[]; budgetMs: number }
   | { ok: false; error: string };
 
@@ -264,8 +265,13 @@ type FlowValidationResult =
  * rule `runFlow` enforces at runtime. A flow that passes this check can
  * still fail at runtime with a clear per-step error; this check only
  * catches the flows that could never possibly work.
+ *
+ * Exported so `map/tools.ts` can validate `browser.map.save`'s optional
+ * `flows` recipes with the EXACT same rules `browser.flow` itself enforces
+ * — a steps array `browser.flow` would reject must be rejected here too,
+ * never a second, slightly-different copy of this logic.
  */
-function validateFlowSteps(input: unknown): FlowValidationResult {
+export function validateFlowSteps(input: unknown): FlowValidationResult {
   if (!Array.isArray(input) || input.length === 0) {
     return { ok: false, error: 'steps must be a non-empty array' };
   }
@@ -575,6 +581,10 @@ export async function handleBrowserTool(
         exact: exact === true,
       });
     }
+    case 'browser.state':
+      // state is a read tool, same bucket as find/snapshot: no claim
+      // enforcement, no params beyond tab_id.
+      return deps.callBrowserTool(requireTabId(args), 'state', {});
     case 'browser.canvas_screenshot': {
       const { selector, region, format } = (args ?? {}) as {
         selector?: unknown;

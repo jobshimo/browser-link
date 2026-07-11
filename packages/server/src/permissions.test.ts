@@ -22,10 +22,10 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 30 tools currently exposed', () => {
+  test('covers exactly the 31 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(30);
+    expect(TOOL_CATALOGUE.length).toBe(31);
   });
 
   test('includes browser.press as an action tool', () => {
@@ -47,6 +47,13 @@ describe('TOOL_CATALOGUE', () => {
     expect(find).toBeDefined();
     expect(find?.family).toBe('bridge');
     expect(find?.category).toBe('read');
+  });
+
+  test('includes browser.state as a read tool', () => {
+    const state = TOOL_CATALOGUE.find((t) => t.name === 'browser.state');
+    expect(state).toBeDefined();
+    expect(state?.family).toBe('bridge');
+    expect(state?.category).toBe('read');
   });
 
   test('includes browser.canvas_screenshot as a read tool', () => {

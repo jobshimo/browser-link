@@ -3,7 +3,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDb } from './db.js';
-import { forget, listApps, recall, recordUse, renameApp, saveEntry, upsertApp } from './queries.js';
+import {
+  forget,
+  listApps,
+  listFlows,
+  recall,
+  recordUse,
+  renameApp,
+  saveEntry,
+  saveFlow,
+  upsertApp,
+} from './queries.js';
 
 let dataDir: string;
 
@@ -169,5 +179,78 @@ describe('renameApp', () => {
     const a = upsertApp({ origin: 'http://x', title: 'Bad Key' });
     const renamed = renameApp(a.id, 'better-key');
     expect(renamed?.app_key).toBe('better-key');
+  });
+});
+
+describe('saveFlow, listFlows and recall', () => {
+  const STEPS = [{ find: { text: '<QUERY>', role: 'textbox' } }, { click: {} }];
+
+  test('save + listFlows round-trips steps as a parsed array', () => {
+    const { flow } = saveFlow({
+      origin: 'http://x',
+      title: 'My App',
+      name: 'open search',
+      description: 'Opens the search box and focuses it',
+      steps: STEPS,
+    });
+    expect(flow.steps).toEqual(STEPS);
+    expect(flow.use_count).toBe(0);
+
+    const flows = listFlows(flow.app_id);
+    expect(flows).toHaveLength(1);
+    expect(flows[0]?.name).toBe('open search');
+  });
+
+  test('save is an upsert keyed by (app, name) — steps/description replaced, use_count untouched', () => {
+    const first = saveFlow({ origin: 'http://x', name: 'login', steps: STEPS });
+    const second = saveFlow({
+      origin: 'http://x',
+      name: 'login',
+      description: 'updated',
+      steps: [{ click: { selector: '#new' } }],
+    });
+    expect(second.flow.id).toBe(first.flow.id);
+    expect(second.flow.description).toBe('updated');
+    expect(second.flow.steps).toEqual([{ click: { selector: '#new' } }]);
+    expect(listFlows(first.flow.app_id)).toHaveLength(1);
+  });
+
+  test('two different names for the same app both persist', () => {
+    const { flow: a } = saveFlow({ origin: 'http://x', name: 'flow a', steps: STEPS });
+    saveFlow({ origin: 'http://x', name: 'flow b', steps: STEPS });
+    expect(
+      listFlows(a.app_id)
+        .map((f) => f.name)
+        .sort(),
+    ).toEqual(['flow a', 'flow b']);
+  });
+
+  test('recall returns saved flows alongside entries for the app', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'open search', steps: STEPS });
+
+    const recalled = recall({ origin: 'http://x' });
+    expect(recalled.entries).toHaveLength(1);
+    expect(recalled.flows).toHaveLength(1);
+    expect(recalled.flows[0]?.name).toBe('open search');
+    expect(recalled.flows[0]?.steps).toEqual(STEPS);
+  });
+
+  test('recall returns an empty flows array when the app has none', () => {
+    upsertApp({ origin: 'http://x', title: 'My App' });
+    const recalled = recall({ origin: 'http://x' });
+    expect(recalled.flows).toEqual([]);
+  });
+
+  test('recall on an unknown origin returns flows: []', () => {
+    const recalled = recall({ origin: 'http://does-not-exist' });
+    expect(recalled).toEqual({ app: null, entries: [], flows: [] });
   });
 });

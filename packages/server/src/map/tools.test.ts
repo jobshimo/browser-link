@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 /* Mock queries — they have their own integration tests against a real
- * SQLite. Here we only verify routing + argument normalisation. */
+ * SQLite. Here we only verify routing + argument normalisation.
+ * `validateFlowSteps` (from browser-dispatch.js) is NOT mocked — it is
+ * pure, side-effect-free validation logic, and using the real thing here
+ * is exactly the "reuse, do not duplicate" guarantee under test: a steps
+ * array browser.flow would reject must be rejected here too. */
 vi.mock('./queries.js', () => ({
   recall: vi.fn(),
   saveEntry: vi.fn(),
+  saveFlow: vi.fn(),
   recordUse: vi.fn(),
   forget: vi.fn(),
   renameApp: vi.fn(),
@@ -12,7 +17,7 @@ vi.mock('./queries.js', () => ({
 }));
 
 import { handleMapTool, isMapTool, MAP_TOOL_DEFINITIONS } from './tools.js';
-import { forget, listApps, recall, recordUse, renameApp, saveEntry } from './queries.js';
+import { forget, listApps, recall, recordUse, renameApp, saveEntry, saveFlow } from './queries.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -141,6 +146,155 @@ describe('handleMapTool — routing', () => {
       payload: { steps: [] },
       notes: 'tricky modal',
     });
+  });
+
+  test('save: with no flows, saveFlow is never called and the entry result is returned as-is', () => {
+    vi.mocked(saveEntry).mockReturnValue({ app: { id: 1 } as never, entry: { id: 2 } as never });
+    const result = handleMapTool('browser.map.save', {
+      origin: 'http://x',
+      url_pattern: '/cga',
+      kind: 'selector',
+      purpose: 'open',
+      payload: { selector: '#x' },
+    });
+    expect(saveFlow).not.toHaveBeenCalled();
+    expect(result).toEqual({ app: { id: 1 }, entry: { id: 2 } });
+  });
+
+  test('save: with flows, validates and forwards each recipe to saveFlow and attaches flows to the result', () => {
+    vi.mocked(saveEntry).mockReturnValue({ app: { id: 1 } as never, entry: { id: 2 } as never });
+    vi.mocked(saveFlow).mockImplementation(
+      (input) => ({ app: { id: 1 } as never, flow: { name: input.name } as never }) as never,
+    );
+    const steps = [{ find: { text: '<QUERY>', role: 'textbox' } }, { click: {} }];
+    const result = handleMapTool('browser.map.save', {
+      origin: 'http://x',
+      app_key: 'app',
+      title: 'My App',
+      url_pattern: '/cga',
+      kind: 'selector',
+      purpose: 'open',
+      payload: { selector: '#x' },
+      flows: [{ name: 'open search', description: 'opens the search box', steps }],
+    });
+    expect(saveFlow).toHaveBeenCalledExactlyOnceWith({
+      origin: 'http://x',
+      app_key: 'app',
+      title: 'My App',
+      name: 'open search',
+      description: 'opens the search box',
+      steps,
+    });
+    expect(result).toEqual({
+      app: { id: 1 },
+      entry: { id: 2 },
+      flows: [{ name: 'open search' }],
+    });
+  });
+
+  test('save: rejects a flow with an empty name without calling saveEntry or saveFlow', () => {
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: [{ name: '', steps: [{ click: { selector: '#x' } }] }],
+      }),
+    ).toThrow(/non-empty name/);
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(saveFlow).not.toHaveBeenCalled();
+  });
+
+  test('save: rejects a flow whose steps browser.flow would also reject (validator reuse) — no partial write', () => {
+    // Same rule validateFlowSteps enforces for browser.flow itself: an
+    // empty steps array is invalid. Reusing the exact same validator means
+    // this must fail identically, and — importantly — the base entry must
+    // NOT be saved either, since validation runs before any write.
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: [{ name: 'broken flow', steps: [] }],
+      }),
+    ).toThrow(/non-empty array/);
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(saveFlow).not.toHaveBeenCalled();
+  });
+
+  test('save: rejects a flow with a selector-less click and no preceding find (validator reuse)', () => {
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: [{ name: 'broken flow', steps: [{ click: {} }] }],
+      }),
+    ).toThrow(/no preceding find/);
+    expect(saveEntry).not.toHaveBeenCalled();
+  });
+
+  test('save: rejects a flow whose truthful worst-case budget exceeds the 60s ceiling (validator reuse)', () => {
+    // Two wait_for steps at the 30s maximum sum past the 60s bridge
+    // ceiling once base + per-step overhead is added — the exact case
+    // browser.flow itself rejects up front. The shared validateFlowSteps
+    // must reject it here too, before anything is written.
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: [
+          {
+            name: 'over-budget flow',
+            steps: [
+              { wait_for: { selector: '#a', timeout_ms: 30_000 } },
+              { wait_for: { selector: '#b', timeout_ms: 30_000 } },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/exceeds the 60s ceiling/);
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(saveFlow).not.toHaveBeenCalled();
+  });
+
+  test('save: rejects a non-array flows value with a clean validation error', () => {
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: { name: 'not an array', steps: [] },
+      }),
+    ).toThrow(/flows must be an array/);
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(saveFlow).not.toHaveBeenCalled();
+  });
+
+  test('save: rejects a non-object flow entry with a clean validation error', () => {
+    expect(() =>
+      handleMapTool('browser.map.save', {
+        origin: 'http://x',
+        url_pattern: '/cga',
+        kind: 'selector',
+        purpose: 'open',
+        payload: { selector: '#x' },
+        flows: ['not an object'],
+      }),
+    ).toThrow(/each flow must be an object/);
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(saveFlow).not.toHaveBeenCalled();
   });
 
   test('record_use: defaults notes to null when omitted', () => {

@@ -46,9 +46,9 @@ over the same Chrome tab, a cooperative claim layer is in place:
   agent holds the tab, they return an error naming the owner — do NOT
   retry blindly; ask the user whose tab it should be, or use a
   different tab.
-- Read tools (\`browser.snapshot\`, \`browser.console\`, \`browser.network\`,
-  \`browser.network_body\`, \`browser.events\`, \`browser.ping\`) ignore
-  claims.
+- Read tools (\`browser.snapshot\`, \`browser.state\`, \`browser.console\`,
+  \`browser.network\`, \`browser.network_body\`, \`browser.events\`,
+  \`browser.ping\`) ignore claims.
 - Use \`browser.claim_tab\` with a stable \`label\` ("claude-code",
   "opencode") to reserve a tab before a multi-step flow; release with
   \`browser.release_tab\` (or let the inactivity TTL handle it).
@@ -68,6 +68,22 @@ from \`list_tabs\`, or surface the conflict to the user.
 
 The live snapshot is always the source of truth. The persistent map is
 a cache of navigation, not a substitute.
+
+## Replaying a saved flow recipe
+
+\`browser.map.save\` can persist named flow recipes (\`flows: [{ name,
+description?, steps }]\`) alongside selectors/gotchas — \`steps\` follows
+the EXACT \`browser.flow\` step grammar and is validated with the same
+rules. \`browser.map.recall\` returns the app's saved flows
+(\`name\`, \`description\`, \`steps\`, \`use_count\`). The pattern:
+recall → ADAPT the steps (substitute placeholder text like
+\`type text "<QUERY>"\` for the real value the user asked for) →
+\`browser.flow\` with the adapted steps. Never replay a saved flow
+verbatim when it contains a placeholder — substitute first. This is the
+SAME privacy rule as every other map entry: flows store UI STRUCTURE
+only, never domain data (real names, IDs, dates, message content) —
+placeholders exist precisely so a flow can be saved without ever writing
+that data to disk.
 
 ## Token-efficient patterns (READ THIS BEFORE REACHING FOR EVALUATE)
 
@@ -102,6 +118,15 @@ tokens AND more reliable than a hand-rolled expression.
   repeated landmarks, \`max_interactive\` overrides the cap of 120.
   Cuts token cost on the most-called tool; not hackeable from the
   client side (the filtering happens in-page).
+- **Quick orientation without a full snapshot** → \`browser.state\`. Returns
+  \`{ url, title, focused?, dialogs?, scroll?, viewport }\` — cheaper than
+  \`browser.snapshot\` when you only need to know where you are (is a
+  dialog open, what has focus, did the page scroll) before deciding
+  whether a full snapshot is even needed.
+- **\`browser.find\` returned \`not-found\`** → read \`near_misses\` (up to 3
+  ranked candidates) before giving up or re-snapshotting blind. When
+  \`error\` names a role mismatch (text exists, wrong role), drop \`role\`
+  or match the role the closest near-miss actually has.
 - **Reading N values** → ONE \`browser.evaluate\` that returns an
   object: \`(() => ({ a: document.querySelector('#a').value, b: ... }))()\`.
   Never call \`browser.evaluate\` N times in a row to read N values.

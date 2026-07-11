@@ -216,7 +216,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.find',
     description:
-      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }` on a unique hit, `{ matched: false, reason: "not-found" }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying.',
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -255,8 +255,37 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.snapshot.',
         'A result with `ambiguous: true` names an element whose generated selector matches structurally-identical twins in other roots. It still works (first-match-wins, deterministic order) but must be used immediately and never saved to the persistent map.',
+        'A `not-found` with `near_misses` is a suggestion list, not a match — re-run `find` with adjusted text/role, do not act on a near-miss selector blindly. Near-miss selectors do NOT carry the `ambiguous` flag, so one that collides with structurally-identical twins in other shadow roots/iframes silently resolves first-match-wins — treat them as hints for the next `find`, never as click targets.',
+        'An `error` mentioning a role mismatch means the text exists on the page but on an element of a different role than requested — drop `role` or pick the role the closest near-miss actually has.',
       ],
       example: 'browser.find({ tab_id: "tab_1", text: "Save changes", role: "button" })',
+    },
+  },
+  {
+    name: 'browser.state',
+    description:
+      'Compact orientation snapshot — cheaper than a full browser.snapshot when the agent only needs to know where it is. Returns { url, title, viewport:{w,h}, focused?, dialogs?, scroll? }. `focused` is the innermost actually-focused element (descending through open Shadow DOM roots and same-origin iframes past `document.activeElement`, which by itself only reports a shadow host or an <iframe> element) as `{ selector, tag, ambiguous? }`. `dialogs` lists visible `[role=dialog]`, `[role=alertdialog]` and open `<dialog>` elements as `{ selector, role, label? }`, `label` best-effort from aria-label / aria-labelledby / the first heading inside. `scroll` is `{x,y}` and is omitted when the page is at its default (0,0) position. Every optional field is omitted when there is nothing to report.',
+    inputSchema: {
+      type: 'object',
+      properties: { tab_id: { type: 'string' } },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Cheap orientation read — url, title, focused element, open dialogs, scroll position, viewport — without the cost of a full snapshot.',
+      when_to_use: [
+        'At the start of a turn, to check where you are before deciding whether a snapshot/find/click is even needed.',
+        'After a navigation or a flow step, to confirm a dialog opened or focus landed where expected, cheaper than only_interactive:true snapshot.',
+        'When you only need "is a dialog open right now" or "what has focus" and do not need the full interactive element list.',
+      ],
+      gotchas: [
+        'This is a read tool: no tab claim, multiple agents can call it on the same tab in parallel.',
+        'focused/dialogs/scroll are omitted entirely when there is nothing to report (focus at <body>, no open dialog, scroll at (0,0)) — read them with optional-chaining.',
+        'Same deep-search limitations as browser.snapshot/find: CLOSED shadow roots and cross-origin iframes are unreachable.',
+        '`focused.ambiguous: true` follows the same rule as browser.snapshot/find — the selector resolves first-match-wins, use it immediately, never cache it.',
+      ],
+      example: 'browser.state({ tab_id: "tab_1" })',
     },
   },
   {
@@ -609,6 +638,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
         'The result carries a compact `settle` object (`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason? }`) unless `settle_ms:0`. `settled:false` means the page never went quiet within `settle_timeout_ms` — not necessarily an error, some pages never stop mutating (tickers, spinners). When the settle wait itself could not run to completion, `settled:false` comes with `reason`: "context-destroyed" (the action navigated the page, destroying the observer\'s execution context — the action still succeeded, and this is itself a strong navigation signal) or "settle-error" (any other settle-side failure). With settle on, a separate browser.wait_for right after a click is usually unnecessary.',
+        'The error message distinguishes a malformed selector ("Invalid selector …") from a well-formed selector that matches nothing ("Element not found …") — a syntax error means fix the selector string itself, not retry against a fresher snapshot.',
       ],
     },
   },
@@ -638,6 +668,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
         'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
         'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+        'Same error distinction as browser.click: "Invalid selector …" (malformed CSS) vs "Element not found …" (well-formed, no match).',
       ],
     },
   },

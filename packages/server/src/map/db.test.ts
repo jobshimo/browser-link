@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import Database from 'better-sqlite3';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -143,6 +144,109 @@ describe('schema migrations', () => {
 
     db.prepare('DELETE FROM apps WHERE id = 1').run();
     expect(db.prepare('SELECT COUNT(*) AS n FROM entries').get()).toEqual({ n: 0 });
+  });
+
+  test('creates the flows table and its app index', () => {
+    const db = getDb();
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index') ORDER BY name")
+      .all() as { name: string }[];
+    const names = tables.map((t) => t.name);
+    expect(names).toContain('flows');
+    expect(names).toContain('idx_flows_app');
+  });
+
+  test('UNIQUE(app_id, name) prevents duplicate flow names within an app', () => {
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    ).run('http://x', 'app', '2026-05-12', '2026-05-12');
+    const insert = db.prepare(
+      'INSERT INTO flows (app_id, name, steps_json, created_at, updated_at, use_count) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    insert.run(1, 'open task detail', '[]', '2026-05-12', '2026-05-12', 0);
+    expect(() => insert.run(1, 'open task detail', '[]', '2026-05-12', '2026-05-12', 0)).toThrow(
+      /UNIQUE constraint failed/i,
+    );
+  });
+
+  test('flows.use_count defaults to 0', () => {
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    ).run('http://x', 'app', '2026-05-12', '2026-05-12');
+    db.prepare(
+      'INSERT INTO flows (app_id, name, steps_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(1, 'open task detail', '[]', '2026-05-12', '2026-05-12');
+    const row = db.prepare('SELECT use_count FROM flows WHERE app_id = 1').get() as {
+      use_count: number;
+    };
+    expect(row.use_count).toBe(0);
+  });
+
+  test('FK CASCADE deletes flows when their app is removed', () => {
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    ).run('http://x', 'app', '2026-05-12', '2026-05-12');
+    db.prepare(
+      'INSERT INTO flows (app_id, name, steps_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(1, 'open task detail', '[]', '2026-05-12', '2026-05-12');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM flows').get()).toEqual({ n: 1 });
+
+    db.prepare('DELETE FROM apps WHERE id = 1').run();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM flows').get()).toEqual({ n: 0 });
+  });
+
+  test('migrating a pre-v0.18.0 DB (apps + entries only) adds the flows table without touching existing rows', () => {
+    // Simulate a DB created before the flows table existed: build the OLD
+    // schema by hand (apps + entries only, no flows table), seed a row,
+    // close it, then reopen through the real getDb() — the idempotent
+    // CREATE TABLE IF NOT EXISTS migration must add `flows` on top without
+    // disturbing the pre-existing `apps` row.
+    closeDb();
+    const path = getDbPath();
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE apps (
+        id INTEGER PRIMARY KEY,
+        origin TEXT NOT NULL,
+        app_key TEXT NOT NULL,
+        title TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        UNIQUE(origin, app_key)
+      );
+      CREATE TABLE entries (
+        id INTEGER PRIMARY KEY,
+        app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        url_pattern TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('selector', 'flow', 'gotcha')),
+        purpose TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        verified_at TEXT,
+        failed_at TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(app_id, url_pattern, kind, purpose)
+      );
+    `);
+    legacy
+      .prepare('INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)')
+      .run('http://legacy', 'legacy-app', '2026-01-01', '2026-01-01');
+    legacy.close();
+
+    const migrated = getDb();
+    const tables = migrated
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[];
+    expect(tables.map((t) => t.name)).toContain('flows');
+    expect(migrated.prepare('SELECT origin, app_key FROM apps').all()).toEqual([
+      { origin: 'http://legacy', app_key: 'legacy-app' },
+    ]);
+    expect(() => migrated.prepare('SELECT * FROM flows').all()).not.toThrow();
   });
 });
 

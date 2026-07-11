@@ -5,15 +5,18 @@ import {
   recordUse,
   renameApp,
   saveEntry,
+  saveFlow,
   type EntryKind,
+  type FlowRow,
 } from './queries.js';
+import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { ToolDefinition } from '../tools/types.js';
 
 export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.recall',
     description:
-      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname.',
+      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response includes `flows`: named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -41,6 +44,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         'If recall returns entries with failed_at more recent than verified_at, treat them as suspect — re-verify with snapshot before reusing.',
         'After every interaction that used a map entry, call browser.map.record_use with { entry_id, ok } so the map stays honest.',
+        'For a saved flow recipe: ADAPT its steps (substitute placeholder text for the real value) BEFORE calling browser.flow — never replay a placeholder-bearing recipe verbatim.',
       ],
       example: 'browser.map.recall({ origin: "https://app.example.com" })',
     },
@@ -48,7 +52,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.save',
     description:
-      'Persist something learned about a browser app. Three kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (an ordered list of steps to reach an outcome), and "gotcha" (a free-form note). Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed.',
+      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -78,21 +82,46 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
             'Kind-specific payload. selector: { selector: string, evidence?: string }. flow: { steps: array<{action,...}>}. gotcha: { body: string }.',
         },
         notes: { type: 'string' },
+        flows: {
+          type: 'array',
+          description:
+            'Optional named, replayable flow recipes for this app. Each `steps` array follows the EXACT browser.flow step grammar (find/click/type/press/wait_for) and is rejected with the same validation browser.flow applies. Use placeholder text for free-text values instead of real domain data (e.g. `type text "<QUERY>"`) — agents substitute the placeholder before calling browser.flow. Upserts on (app, name).',
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description:
+                  'Stable, reusable name for this recipe (e.g. "open task detail dialog").',
+              },
+              description: { type: 'string' },
+              steps: {
+                type: 'array',
+                description: 'Ordered find/click/type/press/wait_for steps — browser.flow grammar.',
+                items: { type: 'object' },
+              },
+            },
+            required: ['name', 'steps'],
+            additionalProperties: false,
+          },
+        },
       },
       required: ['origin', 'url_pattern', 'kind', 'purpose', 'payload'],
       additionalProperties: false,
     },
     doc: {
       purpose:
-        'Persist UI structure you just discovered — a selector, a multi-step flow, or a gotcha — keyed by app and url pattern.',
+        'Persist UI structure you just discovered — a selector, a note, a gotcha, and/or one or more named replayable flow recipes — keyed by app (and, for the entry, a url pattern).',
       when_to_use: [
         'After a non-trivial flow worked end-to-end (opened a dialog, completed a form, found a setting).',
+        'The multi-step path you just ran is worth replaying later as-is → attach it via `flows` so a future browser.map.recall can hand it straight to browser.flow.',
       ],
       gotchas: [
         'NEVER save selectors or flows you have not just successfully executed.',
-        'NEVER store domain data (IDs, user names, dates, etc.). The map captures UI structure only.',
+        'NEVER store domain data (IDs, user names, dates, etc.). The map captures UI structure only — `flows` steps must use placeholders (`<QUERY>`, `<NAME>`) for any free-text value, never the real value you just typed.',
         'Use url_pattern = exact pathname by default; only promote to a glob if you have evidence of a parametric route.',
-        'Give `purpose` a stable, reusable label ("open task detail dialog", not "open IB0311 detail").',
+        'Give `purpose` a stable, reusable label ("open task detail dialog", not "open IB0311 detail"). Same rule for a flow recipe\'s `name`.',
+        "A `flows` entry's `steps` is validated with the SAME rules browser.flow enforces — an invalid steps array is rejected before anything is written, including the base entry.",
       ],
     },
   },
@@ -113,9 +142,12 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
     doc: {
       purpose:
         'Update verified_at / failed_at on a map entry after you reused it, so the next agent knows whether it still works.',
-      when_to_use: ['Right after using any selector or flow you got from browser.map.recall.'],
+      when_to_use: [
+        'Right after using any selector or gotcha entry you got from browser.map.recall.',
+      ],
       gotchas: [
         'ok:true updates verified_at and clears failed_at. ok:false updates failed_at — keep the map honest about what works today.',
+        "Scoped to entries (selector/flow-note/gotcha rows), NOT to the named flow recipes in `flows` — those track only `use_count` (no verified/failed distinction), a deliberately simpler model that this tool's ok:true/false contract does not map onto cleanly. Re-`browser.map.save` a recipe with the same name to refresh it.",
       ],
     },
   },
@@ -175,6 +207,12 @@ interface RecallArgs {
   url?: string;
 }
 
+interface SaveFlowArg {
+  name: string;
+  description?: string;
+  steps: unknown;
+}
+
 interface SaveArgs {
   origin: string;
   app_key?: string;
@@ -184,6 +222,11 @@ interface SaveArgs {
   purpose: string;
   payload: unknown;
   notes?: string;
+  /** Untrusted until narrowed — the IPC/proxy path in multi-agent mode
+   * reaches handleMapTool without JSON-schema validation, so the handler
+   * re-checks array/object shape at runtime before treating an entry as
+   * a `SaveFlowArg`. */
+  flows?: unknown;
 }
 
 interface RecordUseArgs {
@@ -215,7 +258,32 @@ export function handleMapTool(name: string, args: unknown): unknown {
     }
     case 'browser.map.save': {
       const a = args as SaveArgs;
-      return saveEntry({
+      // Validate every flow recipe BEFORE writing anything — a steps array
+      // browser.flow would reject must fail browser.map.save cleanly too,
+      // without leaving a half-saved entry behind (see the reuse note on
+      // `validateFlowSteps` in browser-dispatch.ts). The shape guards run
+      // here and not just in the JSON schema because the IPC/proxy path in
+      // multi-agent mode reaches handleMapTool without schema validation.
+      if (a.flows !== undefined && !Array.isArray(a.flows)) {
+        throw new Error('browser.map.save: flows must be an array');
+      }
+      const rawFlows: unknown[] = a.flows ?? [];
+      const validatedFlows = rawFlows.map((raw) => {
+        if (typeof raw !== 'object' || raw === null) {
+          throw new Error('browser.map.save: each flow must be an object');
+        }
+        const f = raw as SaveFlowArg;
+        if (typeof f.name !== 'string' || f.name.trim().length === 0) {
+          throw new Error('browser.map.save: each flow requires a non-empty name');
+        }
+        const validated = validateFlowSteps(f.steps);
+        if (!validated.ok) {
+          throw new Error(`browser.map.save: flow "${f.name}": ${validated.error}`);
+        }
+        return { name: f.name, description: f.description ?? null, steps: validated.steps };
+      });
+
+      const savedEntry = saveEntry({
         origin: a.origin,
         app_key: a.app_key ?? null,
         title: a.title ?? null,
@@ -225,6 +293,21 @@ export function handleMapTool(name: string, args: unknown): unknown {
         payload: a.payload,
         notes: a.notes ?? null,
       });
+
+      if (validatedFlows.length === 0) return savedEntry;
+
+      const flows: FlowRow[] = validatedFlows.map(
+        (f) =>
+          saveFlow({
+            origin: a.origin,
+            app_key: a.app_key ?? null,
+            title: a.title ?? null,
+            name: f.name,
+            description: f.description,
+            steps: f.steps,
+          }).flow,
+      );
+      return { ...savedEntry, flows };
     }
     case 'browser.map.record_use': {
       const a = args as RecordUseArgs;

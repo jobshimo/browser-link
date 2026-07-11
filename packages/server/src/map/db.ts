@@ -71,6 +71,33 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_entries_lookup ON entries(app_id, url_pattern);
   `);
+
+  // v0.18.0: named, replayable browser.flow recipes per app. Deliberately a
+  // separate table from `entries` — the pre-existing `entries.kind='flow'`
+  // is a free-form payload with no shape guarantee, while a row here always
+  // holds a `steps_json` array validated against the EXACT browser.flow step
+  // grammar (see `validateFlowSteps` in tools/browser-dispatch.ts, reused by
+  // map/tools.ts). Not scoped by url_pattern like entries — a flow recipe
+  // is identified by (app, name) only, since a multi-step recipe is not
+  // tied to a single route the way a selector or gotcha usually is.
+  // Same idempotent CREATE-TABLE-IF-NOT-EXISTS pattern as above, so an
+  // existing DB from before this table existed picks it up on next getDb()
+  // without touching any pre-existing row.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS flows (
+      id INTEGER PRIMARY KEY,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      steps_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      use_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(app_id, name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_flows_app ON flows(app_id);
+  `);
 }
 
 export function closeDb(): void {

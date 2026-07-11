@@ -26,6 +26,7 @@ describe('isBrowserTool', () => {
       'browser.navigate',
       'browser.snapshot',
       'browser.find',
+      'browser.state',
       'browser.canvas_screenshot',
       'browser.click',
       'browser.type',
@@ -864,6 +865,19 @@ describe('action-tool claim enforcement', () => {
       ),
     ).rejects.toThrow(/role must be one of/);
     expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('state forwards to the bridge with no params beyond tab_id', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.state', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'state', {});
+  });
+
+  test('state bypasses claim enforcement (read tool — multiple agents can read state)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    await handleBrowserTool('browser.state', { tab_id: 'tab_1' }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'state', {});
   });
 
   test('canvas_screenshot forwards selector + region + format when provided', async () => {

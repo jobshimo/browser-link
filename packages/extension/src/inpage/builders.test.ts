@@ -5,6 +5,7 @@ import {
   buildFocusJs,
   buildSettleJs,
   buildSnapshotJs,
+  buildStateJs,
   buildTypeResolveJs,
 } from './builders.js';
 
@@ -38,9 +39,17 @@ interface FindMatch {
   frame?: string;
   ambiguous?: boolean;
 }
+interface NearMiss {
+  text: string;
+  selector: string;
+  role?: string;
+}
 interface FindNoMatch {
   matched: false;
   reason: string;
+  error?: string;
+  near_misses?: NearMiss[];
+  candidates?: { selector: string; text: string; tag: string }[];
 }
 type FindResult = FindMatch | FindNoMatch;
 
@@ -60,8 +69,14 @@ interface SnapshotResult {
 
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string }
+  | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
   | { ok: false; reason: 'occluded'; blocker: string };
+
+type TypeResolveResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-selector'; error: string }
+  | { ok: false; reason: 'not-found' };
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -109,6 +124,100 @@ describe('buildFindJs -> buildClickResolveJs round trip (the core agent workflow
   test('not-found reason when the text does not match anything', () => {
     const found = evalExpr<FindResult>(buildFindJs({ text: 'nonexistent label xyz' }));
     expect(found).toEqual({ matched: false, reason: 'not-found' });
+  });
+});
+
+describe('buildFindJs — near-miss suggestions on not-found', () => {
+  test('omits near_misses entirely when nothing plausible is on the page', () => {
+    const btn = document.createElement('button');
+    btn.textContent = 'Completely unrelated label';
+    document.body.appendChild(btn);
+    makeVisible(btn);
+
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'zzz-nomatch-zzz' }));
+    expect(found).toEqual({ matched: false, reason: 'not-found' });
+  });
+
+  test('ranks a substring-containment candidate above a token-overlap-only candidate (exact:true so a containing-but-not-equal element misses the primary scan)', () => {
+    // With exact:true the primary scan requires an EXACT text match, so an
+    // element that merely CONTAINS the needle never becomes a `matches`
+    // entry — it only surfaces through the near-miss ranker, which always
+    // checks containment regardless of `exact`. That is what makes the
+    // containment tier reachable at all in the no-role branch (without
+    // exact:true, anything containing the needle would already be a
+    // primary match and the not-found branch would never run).
+    const overlapOnly = document.createElement('button');
+    overlapOnly.textContent = 'changes saved to disk';
+    document.body.appendChild(overlapOnly);
+    makeVisible(overlapOnly);
+
+    const containment = document.createElement('button');
+    containment.textContent = 'Save changes now';
+    document.body.appendChild(containment);
+    makeVisible(containment);
+
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'Save changes', exact: true }));
+    expect(found.matched).toBe(false);
+    if (found.matched) return;
+    expect(found.near_misses).toBeDefined();
+    expect(found.near_misses?.[0]?.text).toBe('Save changes now');
+    expect(found.near_misses?.length).toBeLessThanOrEqual(3);
+  });
+
+  test('near_misses caps at 3 candidates and only considers VISIBLE elements', () => {
+    for (let i = 0; i < 5; i++) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Save item ' + i;
+      document.body.appendChild(btn);
+      makeVisible(btn);
+    }
+    const hidden = document.createElement('button');
+    hidden.textContent = 'Save hidden item';
+    document.body.appendChild(hidden);
+    // Not marked visible — offsetParent stays null, isVisible() must drop it.
+
+    // exact:true so "Save item N" (contains, not equal) stays out of the
+    // primary match scan — see the containment-tier test above for why.
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'Save', exact: true }));
+    expect(found.matched).toBe(false);
+    if (found.matched) return;
+    expect(found.near_misses).toHaveLength(3);
+    for (const nm of found.near_misses ?? []) {
+      expect(nm.text).not.toBe('Save hidden item');
+    }
+  });
+
+  test('role exclusion: text matched broadly but not within the requested role names it explicitly', () => {
+    const div = document.createElement('div');
+    div.setAttribute('onclick', 'void 0');
+    div.textContent = 'GIF picker';
+    document.body.appendChild(div);
+    makeVisible(div);
+
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'GIF picker', role: 'button' }));
+    expect(found.matched).toBe(false);
+    if (found.matched) return;
+    expect(found.reason).toBe('not-found');
+    expect(found.error).toContain('text matched 1 element but none with role "button"');
+    expect(found.error).toContain('GIF picker');
+    expect(found.near_misses).toBeDefined();
+    expect(found.near_misses?.[0]?.selector).toBeTruthy();
+  });
+
+  test('role provided, no exact substring match anywhere: falls back to token-overlap near-miss ranking, no error field', () => {
+    // A token-overlap-only candidate (no full substring containment
+    // anywhere on the page) must NOT trigger the role-exclusion error path
+    // — that path is reserved for text that fully matched broadly.
+    const link = document.createElement('a');
+    link.textContent = 'Changes list';
+    document.body.appendChild(link);
+    makeVisible(link);
+
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'Save changes', role: 'checkbox' }));
+    expect(found.matched).toBe(false);
+    if (found.matched) return;
+    expect(found.error).toBeUndefined();
+    expect(found.near_misses?.[0]?.text).toBe('Changes list');
   });
 });
 
@@ -261,6 +370,17 @@ describe('buildClickResolveJs — occlusion guard', () => {
     expect(resolved).toEqual({ ok: false, reason: 'not-found' });
   });
 
+  test('invalid-selector when the selector syntax is malformed, distinct from not-found', () => {
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: 'button[', force: false }),
+    );
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok || resolved.reason !== 'invalid-selector') {
+      throw new Error('expected invalid-selector');
+    }
+    expect(resolved.error.length).toBeGreaterThan(0);
+  });
+
   test('hit-tests and dispatches at the FIRST client rect center of a line-wrapped inline element', () => {
     // Bounding-rect center of a wrapped link lands in the unpainted gap
     // between its two line boxes — hit-testing there reports whatever is
@@ -311,8 +431,10 @@ describe('buildTypeResolveJs', () => {
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = '<input id="email" value="old" />';
 
-    const focused = evalExpr<boolean>(buildTypeResolveJs({ selector: '#email', clear: false }));
-    expect(focused).toBe(true);
+    const resolved = evalExpr<TypeResolveResult>(
+      buildTypeResolveJs({ selector: '#email', clear: false }),
+    );
+    expect(resolved).toEqual({ ok: true });
     expect((shadow.getElementById('email') as HTMLInputElement).value).toBe('old');
   });
 
@@ -322,16 +444,29 @@ describe('buildTypeResolveJs', () => {
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = '<input id="email" value="old" />';
 
-    const focused = evalExpr<boolean>(buildTypeResolveJs({ selector: '#email', clear: true }));
-    expect(focused).toBe(true);
+    const resolved = evalExpr<TypeResolveResult>(
+      buildTypeResolveJs({ selector: '#email', clear: true }),
+    );
+    expect(resolved).toEqual({ ok: true });
     expect((shadow.getElementById('email') as HTMLInputElement).value).toBe('');
   });
 
-  test('false when the selector matches nothing', () => {
-    const focused = evalExpr<boolean>(
+  test('not-found when the selector matches nothing', () => {
+    const resolved = evalExpr<TypeResolveResult>(
       buildTypeResolveJs({ selector: '#does-not-exist', clear: false }),
     );
-    expect(focused).toBe(false);
+    expect(resolved).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  test('invalid-selector when the selector syntax is malformed', () => {
+    const resolved = evalExpr<TypeResolveResult>(
+      buildTypeResolveJs({ selector: 'input[', clear: false }),
+    );
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok || resolved.reason !== 'invalid-selector') {
+      throw new Error('expected invalid-selector');
+    }
+    expect(resolved.error.length).toBeGreaterThan(0);
   });
 });
 
@@ -436,5 +571,92 @@ describe('buildSettleJs', () => {
       buildSettleJs({ settle_ms: 10, settle_timeout_ms: 200 }),
     );
     expect(result.focus_moved).toBeUndefined();
+  });
+});
+
+describe('buildStateJs', () => {
+  interface StateResult {
+    url: string;
+    title: string;
+    viewport: { w: number; h: number };
+    focused?: { selector: string; tag: string; ambiguous?: boolean };
+    dialogs?: { selector: string; role: string; label?: string }[];
+    scroll?: { x: number; y: number };
+  }
+
+  test('always reports url, title and viewport', () => {
+    document.title = 'My Page';
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.url).toContain('://');
+    expect(result.title).toBe('My Page');
+    expect(result.viewport).toEqual({ w: expect.any(Number), h: expect.any(Number) });
+  });
+
+  test('omits focused, dialogs and scroll when there is nothing to report', () => {
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.focused).toBeUndefined();
+    expect(result.dialogs).toBeUndefined();
+    expect(result.scroll).toBeUndefined();
+  });
+
+  test('reports the focused element with a selector that resolves back to it', () => {
+    const input = document.createElement('input');
+    input.id = 'search';
+    document.body.appendChild(input);
+    input.focus();
+
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.focused?.tag).toBe('input');
+    expect(result.focused?.selector).toBeTruthy();
+    expect(document.querySelector(result.focused!.selector)).toBe(input);
+  });
+
+  test('descends through an open shadow root to the real focused element', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<input id="inner" />';
+    const inner = shadow.getElementById('inner') as HTMLInputElement;
+    inner.focus();
+
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.focused?.tag).toBe('input');
+    // Structural selectors are root-scoped by design (see genSelectorInfo's
+    // doc comment) — resolving it against the shadow root itself proves the
+    // deep descent found the INNER input, not the shadow host.
+    expect(shadow.querySelector(result.focused!.selector)).toBe(inner);
+  });
+
+  test('reports visible role=dialog elements with a resolved label', () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.id = 'confirm-dialog';
+    dialog.setAttribute('aria-label', 'Confirm deletion');
+    document.body.appendChild(dialog);
+    makeVisible(dialog);
+
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.dialogs).toHaveLength(1);
+    expect(document.querySelector(result.dialogs![0].selector)).toBe(dialog);
+    expect(result.dialogs?.[0]?.role).toBe('dialog');
+    expect(result.dialogs?.[0]?.label).toBe('Confirm deletion');
+  });
+
+  test('does not report a hidden dialog', () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    // Not marked visible.
+
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.dialogs).toBeUndefined();
+  });
+
+  test('reports scroll only when the page is scrolled away from (0,0)', () => {
+    Object.defineProperty(window, 'scrollX', { value: 120, configurable: true });
+    Object.defineProperty(window, 'scrollY', { value: 40, configurable: true });
+
+    const result = evalExpr<StateResult>(buildStateJs());
+    expect(result.scroll).toEqual({ x: 120, y: 40 });
   });
 });

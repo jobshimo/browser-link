@@ -174,6 +174,7 @@ export interface RecallInput {
 export interface RecallResult {
   app: AppRow | null;
   entries: EntryRow[];
+  flows: FlowRow[];
 }
 
 export function recall(input: RecallInput): RecallResult {
@@ -191,7 +192,7 @@ export function recall(input: RecallInput): RecallResult {
       .get(input.origin) as AppRow | undefined;
   }
 
-  if (!app) return { app: null, entries: [] };
+  if (!app) return { app: null, entries: [], flows: [] };
 
   // Touch last_seen_at so apps that are actively used bubble up.
   db.prepare('UPDATE apps SET last_seen_at = ? WHERE id = ?').run(now(), app.id);
@@ -209,7 +210,10 @@ export function recall(input: RecallInput): RecallResult {
           .all(app.id)
   ) as RawEntryRow[];
 
-  return { app, entries: rows.map(hydrate) };
+  // Flow recipes are not url_pattern-scoped (see the schema comment in
+  // db.ts) — recall always returns every flow saved for the app, regardless
+  // of the optional `url` filter.
+  return { app, entries: rows.map(hydrate), flows: listFlows(app.id) };
 }
 
 function extractPathname(url: string): string {
@@ -288,4 +292,91 @@ export function renameApp(app_id: number, new_app_key: string): AppRow | null {
 
 export function listApps(): AppRow[] {
   return getDb().prepare('SELECT * FROM apps ORDER BY last_seen_at DESC').all() as AppRow[];
+}
+
+// === Flow recipes ==========================================================
+//
+// Named, replayable browser.flow step sequences per app. See the schema
+// comment in db.ts for why this is a separate table from `entries` rather
+// than reusing entries.kind='flow'. `steps` is validated by the CALLER
+// (map/tools.ts, reusing browser-dispatch.ts's `validateFlowSteps` — the
+// exact rules browser.flow itself enforces) before it ever reaches here;
+// queries.ts stays a thin persistence layer, same as saveEntry/recall above.
+
+export interface FlowRow {
+  id: number;
+  app_id: number;
+  name: string;
+  description: string | null;
+  steps: unknown;
+  created_at: string;
+  updated_at: string;
+  use_count: number;
+}
+
+interface RawFlowRow extends Omit<FlowRow, 'steps'> {
+  steps_json: string;
+}
+
+function hydrateFlow(row: RawFlowRow): FlowRow {
+  const { steps_json, ...rest } = row;
+  return { ...rest, steps: parsePayload(steps_json) };
+}
+
+export interface SaveFlowInput {
+  origin: string;
+  app_key?: string | null;
+  title?: string | null;
+  name: string;
+  description?: string | null;
+  steps: unknown;
+}
+
+/** Upsert on (app, name) — saving an existing name replaces its
+ * description/steps and bumps updated_at, mirroring saveEntry's upsert
+ * semantics. `use_count` is left untouched on update (re-saving is not a
+ * "use"). */
+export function saveFlow(input: SaveFlowInput): { app: AppRow; flow: FlowRow } {
+  const app = upsertApp({
+    origin: input.origin,
+    app_key: input.app_key ?? null,
+    title: input.title ?? null,
+  });
+  const ts = now();
+  const stepsJson = JSON.stringify(input.steps);
+  const db = getDb();
+
+  const existing = db
+    .prepare('SELECT * FROM flows WHERE app_id = ? AND name = ?')
+    .get(app.id, input.name) as RawFlowRow | undefined;
+
+  if (existing) {
+    db.prepare('UPDATE flows SET description = ?, steps_json = ?, updated_at = ? WHERE id = ?').run(
+      input.description ?? null,
+      stepsJson,
+      ts,
+      existing.id,
+    );
+    const updated = db.prepare('SELECT * FROM flows WHERE id = ?').get(existing.id) as RawFlowRow;
+    return { app, flow: hydrateFlow(updated) };
+  }
+
+  const info = db
+    .prepare(
+      `INSERT INTO flows (app_id, name, description, steps_json, created_at, updated_at, use_count)
+       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+    )
+    .run(app.id, input.name, input.description ?? null, stepsJson, ts, ts);
+  const inserted = db.prepare('SELECT * FROM flows WHERE id = ?').get(info.lastInsertRowid) as
+    | RawFlowRow
+    | undefined;
+  return { app, flow: hydrateFlow(inserted as RawFlowRow) };
+}
+
+/** Every flow recipe saved for an app, alphabetical by name. */
+export function listFlows(app_id: number): FlowRow[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM flows WHERE app_id = ? ORDER BY name')
+    .all(app_id) as RawFlowRow[];
+  return rows.map(hydrateFlow);
 }

@@ -56,6 +56,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Find one element by visible text and return a stable selector + coords',
   },
   {
+    name: 'browser.state',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Compact orientation snapshot: focused element, open dialogs, scroll, viewport',
+  },
+  {
     name: 'browser.canvas_screenshot',
     family: 'bridge',
     category: 'read',
