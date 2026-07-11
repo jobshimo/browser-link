@@ -9,6 +9,7 @@ import { runToolsCommand } from './commands/tools.js';
 import { runMultiAgentCommand } from './commands/multi-agent.js';
 import { runFreePort } from './commands/free-port.js';
 import { runConfigCommand } from './commands/config.js';
+import { runCdpCommand } from './commands/cdp.js';
 import { runMapCommand } from './commands/map.js';
 import {
   formatStatus as formatInstructionsStatus,
@@ -80,6 +81,30 @@ Uso:
                                 Habilita/deshabilita la grabación de flows (opt-in, apagado por
                                 defecto). El mismo valor es editable desde el popup de la
                                 extensión — gana la última escritura (ver README).
+  browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
+                                Muestra la configuración de cdp-direct (ver "browser-link cdp"
+                                más abajo).
+  browser-link config set cdp-direct.enabled <true|false>
+                                Habilita/deshabilita el modo cdp-direct (apagado por defecto).
+                                Habilitarlo NO alcanza para que un agente use una pestaña cdp: —
+                                además hace falta un permiso vigente (browser-link cdp allow).
+  browser-link config set cdp-direct.port <puerto>
+                                Puerto loopback para cdp-direct (default 9222). El host es
+                                siempre 127.0.0.1, nunca configurable.
+  browser-link config set cdp-direct.grant-ttl <minutos|never>
+                                Duración por defecto de un permiso otorgado con
+                                "browser-link cdp allow" cuando no se pasa --minutes (default
+                                60, 1-1440, o "never" — reduce la postura de seguridad).
+  browser-link cdp allow [--minutes N]
+                                Otorga un permiso de tiempo limitado para que los agentes usen
+                                cdp-direct (ver la sección "cdp-direct mode" del README). Solo
+                                vos podés correr esto — ningún agente puede otorgárselo a sí
+                                mismo.
+  browser-link cdp revoke      Revoca el permiso de cdp-direct vigente.
+  browser-link cdp status      Muestra si cdp-direct está habilitado, el puerto configurado,
+                                el estado del permiso (ninguno/vigente/expirado, tiempo
+                                restante) y si hay un endpoint de Chrome DevTools alcanzable
+                                ahora mismo en ese puerto.
   browser-link map              Lista las apps que el mapa persistente de UI conoce
                                 (app_key, origin, cantidad de entradas/flows, última vez).
   browser-link map show <app>   Muestra las entradas y flows guardados de una app
@@ -165,6 +190,27 @@ Usage:
                                 Enable/disable flow recording (opt-in, off by default). The same
                                 setting is editable from the extension's popup — last write wins
                                 (see README).
+  browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
+                                Show cdp-direct's configuration (see "browser-link cdp" below).
+  browser-link config set cdp-direct.enabled <true|false>
+                                Enable/disable cdp-direct mode (off by default). Enabling it
+                                alone does NOT let an agent use a cdp: tab — a live grant is
+                                also required (browser-link cdp allow).
+  browser-link config set cdp-direct.port <port>
+                                Loopback port cdp-direct dials (default 9222). The host is
+                                always 127.0.0.1, never configurable.
+  browser-link config set cdp-direct.grant-ttl <minutes|never>
+                                Default lifetime of a grant recorded by "browser-link cdp allow"
+                                when --minutes is not passed (default 60, 1-1440, or "never" —
+                                reduces the security posture).
+  browser-link cdp allow [--minutes N]
+                                Record a time-boxed grant letting agents use cdp-direct (see the
+                                README's "cdp-direct mode" section). Only you can run this — no
+                                agent can grant itself access.
+  browser-link cdp revoke      Revoke the current cdp-direct grant.
+  browser-link cdp status      Show whether cdp-direct is enabled, the configured port, the
+                                grant state (none/active/expired, remaining time), and whether a
+                                Chrome DevTools endpoint is reachable right now on that port.
   browser-link map              List apps known to the persistent UI map (app_key,
                                 origin, entry/flow counts, last seen).
   browser-link map show <app>   Show the saved entries and flows for one app
@@ -330,6 +376,10 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'config': {
       console.log(await runConfigCommand(rest, language));
+      return;
+    }
+    case 'cdp': {
+      console.log(await runCdpCommand(rest, language));
       return;
     }
     case 'map': {

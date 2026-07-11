@@ -1679,3 +1679,165 @@ describe('browser.flow schema shape', () => {
     ]);
   });
 });
+
+describe('cdp-direct routing', () => {
+  const OK_GATE = { ok: true as const };
+  const FAIL_GATE = {
+    ok: false as const,
+    error:
+      'cdp-direct is disabled. The user can enable it with: browser-link config set cdp-direct.enabled true',
+  };
+
+  test('an extension tab_id never touches callCdpTool/cdpGate — byte-equivalent path', async () => {
+    const cdpGate = vi.fn(() => OK_GATE);
+    const callCdpTool = vi.fn(async () => ({ ok: true }));
+    const deps = makeDeps({ cdpGate, callCdpTool });
+    await handleBrowserTool('browser.ping', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'ping', {});
+    expect(callCdpTool).not.toHaveBeenCalled();
+    expect(cdpGate).not.toHaveBeenCalled();
+  });
+
+  test('a supported tool on a cdp: tab routes to callCdpTool, not callBrowserTool', async () => {
+    const callCdpTool = vi.fn(async () => ({ title: 't', url: 'https://x' }));
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
+    const out = await handleBrowserTool('browser.ping', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER);
+    expect(callCdpTool).toHaveBeenCalledWith('cdp:ABC', 'ping', {});
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    expect(out).toEqual({ title: 't', url: 'https://x' });
+  });
+
+  test('click on a cdp: tab routes through the claim registry AND callCdpTool', async () => {
+    const callCdpTool = vi.fn(async () => ({ clicked: '#a', tag: 'button' }));
+    const tabClaims = new TabClaimRegistry({ onEvent: () => {} });
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool, tabClaims });
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'cdp:ABC', selector: '#a' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callCdpTool).toHaveBeenCalledWith(
+      'cdp:ABC',
+      'click',
+      expect.objectContaining({ selector: '#a' }),
+      expect.any(Number),
+    );
+    expect(tabClaims.getClaim('cdp:ABC')?.agent_id).toBe(TEST_CALLER.agent_id);
+  });
+
+  test('a cdp: tab surfaces the exact gate error and never reaches callCdpTool', async () => {
+    const callCdpTool = vi.fn(async () => ({}));
+    const deps = makeDeps({ cdpGate: () => FAIL_GATE, callCdpTool });
+    await expect(
+      handleBrowserTool('browser.ping', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(FAIL_GATE.error);
+    expect(callCdpTool).not.toHaveBeenCalled();
+  });
+
+  test('no cdpGate wired at all treats every cdp: tab as unreachable', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.ping', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/cdp-direct is not available/i);
+  });
+
+  test('an out-of-v1-scope tool on a cdp: tab is rejected before callCdpTool runs', async () => {
+    const callCdpTool = vi.fn(async () => ({}));
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
+    await expect(
+      handleBrowserTool(
+        'browser.drag',
+        { tab_id: 'cdp:ABC', to_x: 1, to_y: 1, from_x: 0, from_y: 0 },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/browser.drag is not supported over cdp-direct/i);
+    expect(callCdpTool).not.toHaveBeenCalled();
+  });
+
+  test('browser.console on a cdp: tab is rejected the same way', async () => {
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool: vi.fn(async () => ({})) });
+    await expect(
+      handleBrowserTool('browser.console', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/browser.console is not supported over cdp-direct/i);
+  });
+
+  test('list_tabs merges deps.listCdpTabs() results after extension tabs', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'https://ext.example', title: 'ext' }]),
+      listCdpTabs: vi.fn(async () => [
+        { tab_id: 'cdp:XYZ', url: 'https://cdp.example', title: 'cdp', transport: 'cdp' as const },
+      ]),
+    });
+    const out = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+    expect(out).toEqual([
+      {
+        tab_id: 'tab_1',
+        url: 'https://ext.example',
+        title: 'ext',
+        claimed_by: null,
+        claimed_by_me: false,
+      },
+      {
+        tab_id: 'cdp:XYZ',
+        url: 'https://cdp.example',
+        title: 'cdp',
+        transport: 'cdp',
+        claimed_by: null,
+        claimed_by_me: false,
+      },
+    ]);
+  });
+
+  test('list_tabs without listCdpTabs wired behaves exactly as before (no transport key anywhere)', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'https://ext.example', title: 'ext' }]),
+    });
+    const out = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+    expect(out).toEqual([
+      {
+        tab_id: 'tab_1',
+        url: 'https://ext.example',
+        title: 'ext',
+        claimed_by: null,
+        claimed_by_me: false,
+      },
+    ]);
+  });
+
+  test('wait_for_tab gates on a cdp: opened_from before touching subscribeEvents', async () => {
+    const subscribeEvents = vi.fn();
+    const deps = makeDeps({ cdpGate: () => FAIL_GATE, subscribeEvents });
+    await expect(
+      handleBrowserTool('browser.wait_for_tab', { opened_from: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(FAIL_GATE.error);
+    expect(subscribeEvents).not.toHaveBeenCalled();
+  });
+
+  test('wait_for_tab on a granted cdp: opened_from reports the v1 limitation', async () => {
+    const subscribeEvents = vi.fn();
+    const deps = makeDeps({ cdpGate: () => OK_GATE, subscribeEvents });
+    await expect(
+      handleBrowserTool('browser.wait_for_tab', { opened_from: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/browser.wait_for_tab is not supported over cdp-direct/i);
+    expect(subscribeEvents).not.toHaveBeenCalled();
+  });
+
+  test('wait_for_tab on an extension opened_from is unaffected by cdp-direct', async () => {
+    const deps = makeDeps({
+      cdpGate: () => FAIL_GATE,
+      subscribeEvents: vi.fn(() => () => {}),
+    });
+    // Should not throw the cdp gate error — it should proceed to the normal
+    // subscribe/timeout path (resolved via the timeout since no event fires).
+    const result = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1', timeout_ms: 10 },
+      deps,
+      TEST_CALLER,
+    )) as { matched: boolean; reason?: string };
+    expect(result.matched).toBe(false);
+    expect(result.reason).toBe('timeout');
+  });
+});

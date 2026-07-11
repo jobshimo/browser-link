@@ -38,19 +38,20 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.list_tabs',
     description:
-      "List Chrome tabs currently connected to browser-link. A tab is connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it), claimed_by_me (true when YOU hold the claim), and an optional map field ({ app_key, entries, flows }) present ONLY when the persistent UI map already has data for that tab's origin — absent entirely when it does not.",
+      "List Chrome tabs currently reachable by browser-link. A tab is normally connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it), claimed_by_me (true when YOU hold the claim), an optional map field ({ app_key, entries, flows }) present ONLY when the persistent UI map already has data for that tab's origin, and — only when the user has enabled AND granted cdp-direct mode (off by default, see the cdp-direct docs) — additional tab_id values starting with cdp: carrying transport: 'cdp', reached without the extension.",
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     doc: {
       purpose:
-        'List the Chrome tabs the user has explicitly connected through the browser-link extension popup.',
+        'List the Chrome tabs the user has explicitly connected through the browser-link extension popup, plus any cdp-direct tabs when that optional mode is enabled and granted.',
       when_to_use: [
         'Before doing anything on a tab whose state you do not already own.',
         'When the user mentions a UI bug, web page, or asks "does X work" — call this FIRST.',
         'To see which tabs are claimed by other agents (claimed_by) and which are yours (claimed_by_me).',
       ],
       gotchas: [
-        'Returns only tabs the user has connected manually. If the list is empty the user has not connected anything yet — ask them to open the extension popup.',
+        'Returns only tabs the user has connected manually, plus cdp-direct tabs when that optional mode is enabled and granted (off by default — see cdp-direct docs). If the list is empty, ask the user to open the extension popup.',
         'When an entry carries a map field, call browser.map.recall BEFORE snapshotting that tab — the persistent map already has selectors, gotchas, or flow recipes for it, and re-discovering them via a fresh snapshot/find wastes a round trip.',
+        "A tab_id starting with cdp: (transport: 'cdp') works with every tool except browser.drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab in v1 — those return a clear error naming the extension transport as the fallback.",
       ],
     },
   },

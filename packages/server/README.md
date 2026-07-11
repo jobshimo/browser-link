@@ -118,6 +118,11 @@ browser-link map import map.json            # restore it (merge by default, --re
   the same bridge and map. `browser-link multi-agent` shows the current
   state; see [Multi-agent mode](https://github.com/jobshimo/browser-link#multi-agent-mode)
   for how it works.
+- **cdp-direct mode** (off by default): an extension-free transport gated
+  behind `browser-link config set cdp-direct.enabled true` PLUS a
+  time-boxed `browser-link cdp allow` grant — see
+  [cdp-direct mode](https://github.com/jobshimo/browser-link#cdp-direct-mode-no-extension)
+  for the security tradeoff and the v1 tool-support table.
 
 ## Where the data lives
 

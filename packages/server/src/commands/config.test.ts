@@ -321,3 +321,76 @@ describe('runConfigCommand dispatch', () => {
     await expect(runConfigCommand(['set', 'flow-recording'])).rejects.toThrow(/Usage/);
   });
 });
+
+describe('cdp-direct.* keys', () => {
+  test('"get" (bare) includes all three cdp-direct lines', async () => {
+    const out = await runConfigCommand(['get']);
+    expect(out).toMatch(/cdp-direct\.enabled\s+off/);
+    expect(out).toMatch(/cdp-direct\.port\s+9222/);
+    expect(out).toMatch(/cdp-direct\.grant-ttl\s+60 min/);
+  });
+
+  test('"get cdp-direct.enabled" defaults to off', async () => {
+    expect(await runConfigCommand(['get', 'cdp-direct.enabled'])).toMatch(/off/);
+  });
+
+  test('"set cdp-direct.enabled true" round-trips through loadConfig', async () => {
+    const msg = await runConfigCommand(['set', 'cdp-direct.enabled', 'true']);
+    expect(loadConfig().cdpDirectEnabled).toBe(true);
+    expect(msg).toMatch(/cdp allow/);
+  });
+
+  test('"set cdp-direct.enabled" rejects a nonsense value', async () => {
+    await expect(runConfigCommand(['set', 'cdp-direct.enabled', 'maybe'])).rejects.toThrow(
+      /Invalid cdp-direct\.enabled value/,
+    );
+  });
+
+  test('"get cdp-direct.port" defaults to 9222', async () => {
+    expect(await runConfigCommand(['get', 'cdp-direct.port'])).toMatch(/9222/);
+  });
+
+  test('"set cdp-direct.port <n>" round-trips through loadConfig', async () => {
+    await runConfigCommand(['set', 'cdp-direct.port', '9333']);
+    expect(loadConfig().cdpDirectPort).toBe(9333);
+  });
+
+  test('"set cdp-direct.port" clamps an out-of-range value with a note', async () => {
+    const msg = await runConfigCommand(['set', 'cdp-direct.port', '99999999']);
+    expect(loadConfig().cdpDirectPort).toBe(65535);
+    expect(msg).toMatch(/clamped from 99999999 to 65535/);
+  });
+
+  test('"set cdp-direct.port" rejects a non-numeric value', async () => {
+    await expect(runConfigCommand(['set', 'cdp-direct.port', 'banana'])).rejects.toThrow(
+      /Invalid cdp-direct\.port value/,
+    );
+  });
+
+  test('"get cdp-direct.grant-ttl" defaults to 60 min', async () => {
+    expect(await runConfigCommand(['get', 'cdp-direct.grant-ttl'])).toMatch(/60 min/);
+  });
+
+  test('"set cdp-direct.grant-ttl never" persists 0', async () => {
+    await runConfigCommand(['set', 'cdp-direct.grant-ttl', 'never']);
+    expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(0);
+    expect(await runConfigCommand(['get', 'cdp-direct.grant-ttl'])).toMatch(/never/);
+  });
+
+  test('"set cdp-direct.grant-ttl <minutes>" round-trips through loadConfig', async () => {
+    await runConfigCommand(['set', 'cdp-direct.grant-ttl', '15']);
+    expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(15);
+  });
+
+  test('"get"/"set" on cdp-direct keys is listed in unknown-key errors for genuinely unknown keys', async () => {
+    await expect(runConfigCommand(['get', 'cdp-direct.bogus'])).rejects.toThrow(
+      /Known keys:.*cdp-direct\.enabled.*cdp-direct\.port.*cdp-direct\.grant-ttl/s,
+    );
+  });
+
+  test('es locale uses Spanish labels for cdp-direct', async () => {
+    await runConfigCommand(['set', 'cdp-direct.enabled', 'true'], 'es');
+    const out = await runConfigCommand(['get', 'cdp-direct.enabled'], 'es');
+    expect(out).toMatch(/activado/);
+  });
+});

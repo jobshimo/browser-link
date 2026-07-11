@@ -28,6 +28,8 @@ function handleReset(
 import { requireTabId } from './responses.js';
 import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
 import type { MapHint } from '../map/queries.js';
+import { isCdpTabId } from '../cdp/targets.js';
+import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
   formatClaimConflict,
   type AgentCaller,
@@ -45,6 +47,10 @@ export interface TabSnapshot {
   tab_id: string;
   url: string;
   title: string;
+  /** Present ONLY on tabs discovered via cdp-direct (`tab_id` starts with
+   * `cdp:`) — omitted entirely for extension tabs so their wire shape stays
+   * byte-equivalent to every release before this feature existed. */
+  transport?: 'cdp';
 }
 
 /** Public view of a TabClaim — what other agents and the user are allowed to see.
@@ -104,6 +110,28 @@ export interface BrowserToolDeps {
    * keep compiling and so a build without the map DB wired up just omits
    * the field on every tab, same degrade-gracefully pattern as `tabClaims`. */
   getMapHint?(origin: string): MapHint | null;
+  /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
+   * merges its result into `listTabs()`'s. Internally gated on
+   * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
+   * whenever cdp-direct is off or ungranted, so an extension-only build (or
+   * an install that has simply never enabled the feature) behaves exactly
+   * as it did before cdp-direct existed. Optional so existing test fixtures
+   * keep compiling. */
+  listCdpTabs?(): Promise<TabSnapshot[]>;
+  /** Optional cdp-direct tool transport — mirrors `callBrowserTool`'s shape
+   * exactly. Invoked ONLY for tab_ids `isCdpTabId()` recognizes, and only
+   * after `cdpGate()` and the v1 tool-support table both pass (see
+   * `routeToolCall` below). Optional so existing test fixtures and any
+   * build without cdp-direct wired up keep compiling — those simply never
+   * see a `cdp:` tab_id in the first place. */
+  callCdpTool?(tabId: string, tool: string, params: unknown, timeoutMs?: number): Promise<unknown>;
+  /** Optional cdp-direct permission gate — the live `cdp-direct.enabled` +
+   * grant check from `cdp/gate.ts`. Checked on EVERY call that addresses a
+   * `cdp:` tab, not cached, so a setting flip or grant expiry mid-session is
+   * honoured on the very next tool call. Absent entirely in a build without
+   * cdp-direct wired up, in which case any `cdp:` tab_id is treated as
+   * unreachable — there is no bypass. */
+  cdpGate?(): { ok: true } | { ok: false; error: string };
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -434,6 +462,58 @@ function toPublicClaim(claim: TabClaim): PublicClaim {
   return publicClaim;
 }
 
+/**
+ * Route a wire-level tool call (`'click'`, not `'browser.click'`) to the
+ * correct transport based on the tab_id's prefix: a `cdp:` tab_id goes to
+ * the cdp-direct transport (`deps.callCdpTool`), every other tab_id goes to
+ * the extension WS-bridge path (`deps.callBrowserTool`) — EXACTLY the same
+ * call this function made before cdp-direct existed, so an extension tab's
+ * path through this dispatcher is byte-equivalent.
+ *
+ * For a `cdp:` tab, this is where the whole cdp-direct permission model is
+ * enforced, in order, before `deps.callCdpTool` is ever invoked:
+ *   1. `deps.cdpGate()` — `cdp-direct.enabled` + a live grant (see
+ *      `cdp/gate.ts`). An agent that reuses/guesses a stale `cdp:` tab_id
+ *      after the setting was disabled or the grant expired gets the exact
+ *      gate error text, never a confusing downstream failure.
+ *   2. The v1 declarative support table (`cdp/support.ts`) — a tool valid
+ *      in general but out of cdp-direct's v1 scope (drag, console,
+ *      network*, canvas_screenshot, dialog_respond, set_permission,
+ *      wait_for_tab) gets a clear "not supported over cdp-direct" error
+ *      naming the extension transport as the fallback.
+ * There is no bypass: every one of the read-tool call sites below and
+ * `runAction` (used by every action tool) go through this one function.
+ */
+function routeToolCall(
+  tool: string,
+  tabId: string,
+  params: unknown,
+  deps: BrowserToolDeps,
+  timeoutMs?: number,
+): Promise<unknown> {
+  if (isCdpTabId(tabId)) {
+    const gate = deps.cdpGate
+      ? deps.cdpGate()
+      : { ok: false as const, error: 'cdp-direct is not available in this build of browser-link.' };
+    if (!gate.ok) return Promise.reject(new Error(gate.error));
+    if (!isCdpToolSupported(tool)) return Promise.reject(cdpUnsupportedToolError(tool));
+    if (!deps.callCdpTool) {
+      return Promise.reject(
+        new Error('cdp-direct is not available in this build of browser-link.'),
+      );
+    }
+    return timeoutMs !== undefined
+      ? deps.callCdpTool(tabId, tool, params, timeoutMs)
+      : deps.callCdpTool(tabId, tool, params);
+  }
+  // Preserve the pre-cdp-direct call shape — only forward timeoutMs when
+  // set so existing assertions and the bridge's default behaviour stay
+  // unchanged.
+  return timeoutMs !== undefined
+    ? deps.callBrowserTool(tabId, tool, params, timeoutMs)
+    : deps.callBrowserTool(tabId, tool, params);
+}
+
 /** Run an action through the claim registry. Returns the response payload of
  * the action when the agent is allowed, or throws a descriptive Error otherwise.
  * When no registry is wired (test fixtures, or future configs that disable
@@ -452,11 +532,7 @@ async function runAction(
       throw new Error(formatClaimConflict(caller, outcome.existing));
     }
   }
-  // Preserve the pre-claim call shape — only forward timeoutMs when set so
-  // existing assertions and the bridge's default behaviour stay unchanged.
-  return timeoutMs !== undefined
-    ? deps.callBrowserTool(tabId, tool, params, timeoutMs)
-    : deps.callBrowserTool(tabId, tool, params);
+  return routeToolCall(tool, tabId, params, deps, timeoutMs);
 }
 
 /** Best-effort origin extraction for the map-hint lookup. A tab URL that
@@ -470,8 +546,22 @@ function originOf(url: string): string | null {
   }
 }
 
-function handleListTabs(deps: BrowserToolDeps, caller: AgentCaller): EnrichedTabSnapshot[] {
-  return deps.listTabs().map((t) => {
+/**
+ * List every tab the agent can see: extension tabs (always) plus cdp-direct
+ * tabs (only when `deps.listCdpTabs` is wired AND the two-step gate passes
+ * — see `cdp/targets.ts`'s `listCdpTargets`, which returns `[]` silently
+ * otherwise). Enrichment (claim status, map hint) is transport-agnostic —
+ * both origin-keyed lookups run identically over the merged list, so a
+ * cdp-direct tab gets the exact same `claimed_by`/`map` treatment an
+ * extension tab does.
+ */
+async function handleListTabs(
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<EnrichedTabSnapshot[]> {
+  const extensionTabs = deps.listTabs();
+  const cdpTabs = deps.listCdpTabs ? await deps.listCdpTabs() : [];
+  return [...extensionTabs, ...cdpTabs].map((t) => {
     const claim = deps.tabClaims?.getClaim(t.tab_id) ?? null;
     const origin = deps.getMapHint ? originOf(t.url) : null;
     const hint = origin ? (deps.getMapHint?.(origin) ?? null) : null;
@@ -563,7 +653,7 @@ export async function handleBrowserTool(
     case 'browser.my_tabs':
       return handleMyTabs(deps, caller);
     case 'browser.ping':
-      return deps.callBrowserTool(requireTabId(args), 'ping', {});
+      return routeToolCall('ping', requireTabId(args), {}, deps);
     case 'browser.navigate': {
       const { url, wait_for_load = true } = args as { url: string; wait_for_load?: boolean };
       return runAction(
@@ -585,12 +675,12 @@ export async function handleBrowserTool(
       const filterExclude = Array.isArray(exclude)
         ? exclude.filter((v): v is string => typeof v === 'string')
         : undefined;
-      return deps.callBrowserTool(requireTabId(args), 'snapshot', {
-        within_selector,
-        only_interactive,
-        exclude: filterExclude,
-        max_interactive,
-      });
+      return routeToolCall(
+        'snapshot',
+        requireTabId(args),
+        { within_selector, only_interactive, exclude: filterExclude, max_interactive },
+        deps,
+      );
     }
     case 'browser.find': {
       const { text, role, exact } = (args ?? {}) as {
@@ -607,16 +697,12 @@ export async function handleBrowserTool(
         );
       }
       // find is a read tool: no claim enforcement, no userGesture concerns.
-      return deps.callBrowserTool(requireTabId(args), 'find', {
-        text,
-        role,
-        exact: exact === true,
-      });
+      return routeToolCall('find', requireTabId(args), { text, role, exact: exact === true }, deps);
     }
     case 'browser.state':
       // state is a read tool, same bucket as find/snapshot: no claim
       // enforcement, no params beyond tab_id.
-      return deps.callBrowserTool(requireTabId(args), 'state', {});
+      return routeToolCall('state', requireTabId(args), {}, deps);
     case 'browser.canvas_screenshot': {
       const { selector, region, format } = (args ?? {}) as {
         selector?: unknown;
@@ -652,23 +738,24 @@ export async function handleBrowserTool(
       }
       // canvas_screenshot is a read tool — multiple agents can inspect the
       // same canvas in parallel. No claim enforcement.
-      return deps.callBrowserTool(requireTabId(args), 'canvas_screenshot', {
-        selector,
-        region: normalizedRegion,
-        format,
-      });
+      return routeToolCall(
+        'canvas_screenshot',
+        requireTabId(args),
+        { selector, region: normalizedRegion, format },
+        deps,
+      );
     }
     case 'browser.console': {
       const { level } = (args ?? {}) as { level?: string };
-      return deps.callBrowserTool(requireTabId(args), 'console', { level });
+      return routeToolCall('console', requireTabId(args), { level }, deps);
     }
     case 'browser.network': {
       const { url_filter } = (args ?? {}) as { url_filter?: string };
-      return deps.callBrowserTool(requireTabId(args), 'network', { url_filter });
+      return routeToolCall('network', requireTabId(args), { url_filter }, deps);
     }
     case 'browser.network_body': {
       const { request_id } = args as { request_id: string };
-      return deps.callBrowserTool(requireTabId(args), 'network_body', { request_id });
+      return routeToolCall('network_body', requireTabId(args), { request_id }, deps);
     }
     case 'browser.click': {
       const {
@@ -832,6 +919,22 @@ export async function handleBrowserTool(
       if (typeof opened_from !== 'string' || opened_from.length === 0) {
         throw new Error('browser.wait_for_tab: opened_from required');
       }
+      // wait_for_tab is not supported over cdp-direct in v1 — a new tab
+      // opened by a cdp-direct tab produces no bridge event to wait on
+      // (only the extension emits `tab-created`). Gate first (so a
+      // disabled/ungranted setup gets the standard gate error, not a
+      // confusing "not supported" for a tool it was never allowed to try),
+      // then report the limitation.
+      if (isCdpTabId(opened_from)) {
+        const gate = deps.cdpGate
+          ? deps.cdpGate()
+          : {
+              ok: false as const,
+              error: 'cdp-direct is not available in this build of browser-link.',
+            };
+        if (!gate.ok) throw new Error(gate.error);
+        throw cdpUnsupportedToolError('wait_for_tab');
+      }
       if (!deps.subscribeEvents) {
         return {
           matched: false,
@@ -920,10 +1023,7 @@ export async function handleBrowserTool(
       // dialog because it read browser.events, and unblocking a frozen
       // tab should not require holding the claim. Other agents may also
       // be observing — first responder wins.
-      return deps.callBrowserTool(requireTabId(args), 'dialog_respond', {
-        accept,
-        prompt_text,
-      });
+      return routeToolCall('dialog_respond', requireTabId(args), { accept, prompt_text }, deps);
     }
     case 'browser.set_permission': {
       const { origin, name, state } = (args ?? {}) as {
@@ -970,17 +1070,11 @@ export async function handleBrowserTool(
       // has to cover the worst case the caller asked for, plus a small
       // overhead for the final round-trip when the condition fires.
       const requestTimeoutMs = Math.max(15_000, (timeout_ms ?? 5000) + 5_000);
-      return deps.callBrowserTool(
-        requireTabId(args),
+      return routeToolCall(
         'wait_for',
-        {
-          selector,
-          expression,
-          network_url,
-          condition,
-          timeout_ms,
-          poll_interval_ms,
-        },
+        requireTabId(args),
+        { selector, expression, network_url, condition, timeout_ms, poll_interval_ms },
+        deps,
         requestTimeoutMs,
       );
     }

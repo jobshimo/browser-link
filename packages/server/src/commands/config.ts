@@ -1,6 +1,12 @@
 import {
+  MAX_CDP_DIRECT_PORT,
+  MAX_GRANT_TTL_MINUTES,
   MAX_IDLE_TTL_MINUTES,
+  MIN_CDP_DIRECT_PORT,
+  MIN_GRANT_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
+  clampCdpDirectPort,
+  clampGrantTtlMinutes,
   clampIdleTtlMinutes,
   loadConfig,
   saveConfig,
@@ -39,7 +45,7 @@ import type { Language } from './welcome.js';
  *      still applies the next time a tab (re)connects.
  */
 
-interface ConfigI18n {
+export interface ConfigI18n {
   header: string;
   idleTtlLabel: string;
   never: string;
@@ -61,9 +67,24 @@ interface ConfigI18n {
   flowRecordingNotSetViaCli: string;
   invalidFlowRecordingValue: (raw: string) => string;
   flowRecordingSetSaved: (label: string) => string;
+  cdpDirectEnabledLabel: string;
+  cdpDirectPortLabel: string;
+  cdpDirectGrantTtlLabel: string;
+  cdpDirectOn: string;
+  cdpDirectOff: string;
+  invalidCdpDirectEnabledValue: (raw: string) => string;
+  cdpDirectEnabledSetSaved: (label: string) => string;
+  invalidCdpDirectPortValue: (raw: string) => string;
+  cdpDirectPortSetSaved: (port: number) => string;
+  invalidGrantTtlValue: (raw: string) => string;
+  grantTtlNever: string;
+  cdpDirectGrantTtlSetSaved: (label: string) => string;
 }
 
-const CFG_I18N: Record<Language, ConfigI18n> = {
+/** Exported so `commands/cdp.ts` can reuse `parseGrantTtlArg`'s exact
+ * localized wording for `cdp allow --minutes`'s per-call override — same
+ * error/clamp messages `config set cdp-direct.grant-ttl` produces. */
+export const CFG_I18N: Record<Language, ConfigI18n> = {
   en: {
     header: 'browser-link config',
     idleTtlLabel: 'idle-ttl',
@@ -82,8 +103,9 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off>',
-    unknownKey: (key) => `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording.`,
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never>',
+    unknownKey: (key) =>
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl.`,
     unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'enabled',
@@ -93,6 +115,23 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     invalidFlowRecordingValue: (raw) =>
       `Invalid flow-recording value: "${raw}". Use "on" or "off".`,
     flowRecordingSetSaved: (label) => `Flow recording set to ${label}.`,
+    cdpDirectEnabledLabel: 'cdp-direct.enabled',
+    cdpDirectPortLabel: 'cdp-direct.port',
+    cdpDirectGrantTtlLabel: 'cdp-direct.grant-ttl',
+    cdpDirectOn: 'on',
+    cdpDirectOff: 'off (default)',
+    invalidCdpDirectEnabledValue: (raw) =>
+      `Invalid cdp-direct.enabled value: "${raw}". Use "true" or "false".`,
+    cdpDirectEnabledSetSaved: (label) =>
+      `cdp-direct.enabled set to ${label}. This alone does not let an agent use a cdp: tab — run \`browser-link cdp allow\` to also grant it.`,
+    invalidCdpDirectPortValue: (raw) =>
+      `Invalid cdp-direct.port value: "${raw}". Use a whole number (${MIN_CDP_DIRECT_PORT}-${MAX_CDP_DIRECT_PORT}).`,
+    cdpDirectPortSetSaved: (port) => `cdp-direct.port set to ${port}.`,
+    invalidGrantTtlValue: (raw) =>
+      `Invalid cdp-direct.grant-ttl value: "${raw}". Use a whole number of minutes (${MIN_GRANT_TTL_MINUTES}-${MAX_GRANT_TTL_MINUTES}) or "never".`,
+    grantTtlNever: 'never (grants never expire until revoked — reduces the security posture)',
+    cdpDirectGrantTtlSetSaved: (label) =>
+      `cdp-direct.grant-ttl (default for \`cdp allow\`) set to ${label}.`,
   },
   es: {
     header: 'Configuración de browser-link',
@@ -113,9 +152,9 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off>',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never>',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl.`,
     unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'habilitado',
@@ -125,6 +164,24 @@ const CFG_I18N: Record<Language, ConfigI18n> = {
     invalidFlowRecordingValue: (raw) =>
       `Valor de flow-recording inválido: "${raw}". Usá "on" u "off".`,
     flowRecordingSetSaved: (label) => `Grabación de flows configurada a ${label}.`,
+    cdpDirectEnabledLabel: 'cdp-direct.enabled',
+    cdpDirectPortLabel: 'cdp-direct.port',
+    cdpDirectGrantTtlLabel: 'cdp-direct.grant-ttl',
+    cdpDirectOn: 'activado',
+    cdpDirectOff: 'desactivado (por defecto)',
+    invalidCdpDirectEnabledValue: (raw) =>
+      `Valor de cdp-direct.enabled inválido: "${raw}". Usá "true" o "false".`,
+    cdpDirectEnabledSetSaved: (label) =>
+      `cdp-direct.enabled configurado a ${label}. Esto solo no permite que un agente use una pestaña cdp: — corré \`browser-link cdp allow\` para además otorgar el permiso.`,
+    invalidCdpDirectPortValue: (raw) =>
+      `Valor de cdp-direct.port inválido: "${raw}". Usá un número entero (${MIN_CDP_DIRECT_PORT}-${MAX_CDP_DIRECT_PORT}).`,
+    cdpDirectPortSetSaved: (port) => `cdp-direct.port configurado a ${port}.`,
+    invalidGrantTtlValue: (raw) =>
+      `Valor de cdp-direct.grant-ttl inválido: "${raw}". Usá un número entero de minutos (${MIN_GRANT_TTL_MINUTES}-${MAX_GRANT_TTL_MINUTES}) o "never".`,
+    grantTtlNever:
+      'nunca (los permisos no expiran hasta revocarlos — reduce la postura de seguridad)',
+    cdpDirectGrantTtlSetSaved: (label) =>
+      `cdp-direct.grant-ttl (valor por defecto para \`cdp allow\`) configurado a ${label}.`,
   },
 };
 
@@ -158,9 +215,46 @@ export function getFlowRecordingLine(language: Language = 'en'): string {
   return `  ${t.flowRecordingLabel}   ${value}`;
 }
 
+/** One formatted line describing the current `cdpDirectEnabled` state. */
+export function getCdpDirectEnabledLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const value = cfg.cdpDirectEnabled === true ? t.cdpDirectOn : t.cdpDirectOff;
+  return `  ${t.cdpDirectEnabledLabel}   ${value}`;
+}
+
+/** One formatted line describing the current `cdpDirectPort` state. */
+export function getCdpDirectPortLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  return `  ${t.cdpDirectPortLabel}       ${cfg.cdpDirectPort}`;
+}
+
+/** One formatted line describing the current `cdpDirectGrantTtlMinutes`
+ * state — the DEFAULT lifetime `browser-link cdp allow` applies when no
+ * `--minutes` override is passed, not the state of any grant itself (see
+ * `browser-link cdp status` for that). */
+export function getCdpDirectGrantTtlLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const value =
+    cfg.cdpDirectGrantTtlMinutes === 0
+      ? t.grantTtlNever
+      : t.minutes(cfg.cdpDirectGrantTtlMinutes ?? 60);
+  return `  ${t.cdpDirectGrantTtlLabel}   ${value}`;
+}
+
 export function listConfig(language: Language = 'en'): string {
   const t = CFG_I18N[language];
-  return [t.header, '', getIdleTtlLine(language), getFlowRecordingLine(language)].join('\n');
+  return [
+    t.header,
+    '',
+    getIdleTtlLine(language),
+    getFlowRecordingLine(language),
+    getCdpDirectEnabledLine(language),
+    getCdpDirectPortLine(language),
+    getCdpDirectGrantTtlLine(language),
+  ].join('\n');
 }
 
 /**
@@ -300,6 +394,103 @@ export async function setFlowRecording(
   return t.flowRecordingSetSaved(label) + pushMessage;
 }
 
+/**
+ * Parse the CLI's raw `<true|false>` argument for
+ * `config set cdp-direct.enabled`. No IPC live-push counterpart — unlike
+ * idle-ttl/flow-recording, cdp-direct has no popup-side value to race
+ * against, so this only ever writes config.json.
+ */
+function parseCdpDirectEnabledArg(raw: string, t: ConfigI18n): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (['true', 'on', '1'].includes(normalized)) return true;
+  if (['false', 'off', '0'].includes(normalized)) return false;
+  throw new Error(t.invalidCdpDirectEnabledValue(raw));
+}
+
+export function setCdpDirectEnabled(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const enabled = parseCdpDirectEnabledArg(rawValue, t);
+  saveConfig({ cdpDirectEnabled: enabled });
+  return t.cdpDirectEnabledSetSaved(enabled ? t.cdpDirectOn : t.cdpDirectOff);
+}
+
+/** Parse the CLI's raw `<port>` argument for `config set cdp-direct.port`.
+ * Same "tell the user, don't guess" philosophy as `parseIdleTtlArg`: a
+ * genuinely unparsable value is rejected outright, an out-of-range integer
+ * is clamped to the boundary with a note. */
+function parseCdpDirectPortArg(raw: string, t: ConfigI18n): { port: number; note: string } {
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error(t.invalidCdpDirectPortValue(raw));
+  }
+  if (parsed < MIN_CDP_DIRECT_PORT || parsed > MAX_CDP_DIRECT_PORT) {
+    const clamped = Math.min(Math.max(parsed, MIN_CDP_DIRECT_PORT), MAX_CDP_DIRECT_PORT);
+    return { port: clamped, note: t.clampedNote(parsed, clamped) };
+  }
+  return { port: parsed, note: '' };
+}
+
+export function setCdpDirectPort(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const { port: parsedPort, note } = parseCdpDirectPortArg(rawValue, t);
+  const port = clampCdpDirectPort(parsedPort);
+  saveConfig({ cdpDirectPort: port });
+  return t.cdpDirectPortSetSaved(port) + note;
+}
+
+/**
+ * Parse the CLI's raw `<minutes|never>` argument for
+ * `config set cdp-direct.grant-ttl` — mirrors `parseIdleTtlArg` exactly,
+ * with the grant's own bounds/wording. Exported so `commands/cdp.ts` can
+ * reuse the SAME parsing for `cdp allow --minutes`'s per-call override —
+ * one implementation of "what counts as a valid TTL argument", not two
+ * that could drift.
+ */
+export function parseGrantTtlArg(raw: string, t: ConfigI18n): { minutes: number; note: string } {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'never' || normalized === '0') return { minutes: 0, note: '' };
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error(t.invalidGrantTtlValue(raw));
+  }
+  if (parsed < MIN_GRANT_TTL_MINUTES || parsed > MAX_GRANT_TTL_MINUTES) {
+    const clamped = Math.min(Math.max(parsed, MIN_GRANT_TTL_MINUTES), MAX_GRANT_TTL_MINUTES);
+    return { minutes: clamped, note: t.clampedNote(parsed, clamped) };
+  }
+  return { minutes: parsed, note: '' };
+}
+
+export function setCdpDirectGrantTtl(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const { minutes: parsedMinutes, note } = parseGrantTtlArg(rawValue, t);
+  const minutes = clampGrantTtlMinutes(parsedMinutes);
+  saveConfig({ cdpDirectGrantTtlMinutes: minutes });
+  const label = (minutes === 0 ? t.grantTtlNever : t.minutes(minutes)) + note;
+  return t.cdpDirectGrantTtlSetSaved(label);
+}
+
+/** Config keys `cdp-direct.*` this module knows — shared by `get`/`set`
+ * dispatch below so the branching stays a lookup, not repeated equality
+ * chains. */
+const CDP_DIRECT_KEYS = ['cdp-direct.enabled', 'cdp-direct.port', 'cdp-direct.grant-ttl'] as const;
+type CdpDirectKey = (typeof CDP_DIRECT_KEYS)[number];
+
+function isCdpDirectKey(key: string): key is CdpDirectKey {
+  return (CDP_DIRECT_KEYS as readonly string[]).includes(key);
+}
+
+function getCdpDirectLine(key: CdpDirectKey, language: Language): string {
+  if (key === 'cdp-direct.enabled') return getCdpDirectEnabledLine(language);
+  if (key === 'cdp-direct.port') return getCdpDirectPortLine(language);
+  return getCdpDirectGrantTtlLine(language);
+}
+
+function setCdpDirectKey(key: CdpDirectKey, value: string, language: Language): string {
+  if (key === 'cdp-direct.enabled') return setCdpDirectEnabled(value, language);
+  if (key === 'cdp-direct.port') return setCdpDirectPort(value, language);
+  return setCdpDirectGrantTtl(value, language);
+}
+
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
@@ -310,13 +501,20 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === undefined) return listConfig(language);
     if (key === 'idle-ttl') return getIdleTtlLine(language);
     if (key === 'flow-recording') return getFlowRecordingLine(language);
+    if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
     throw new Error(t.unknownKey(key));
   }
   if (action === 'set') {
     if (key === undefined) throw new Error(t.usage);
-    if (key !== 'idle-ttl' && key !== 'flow-recording') throw new Error(t.unknownKey(key));
-    if (value === undefined) throw new Error(t.usage);
-    return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
+    if (key === 'idle-ttl' || key === 'flow-recording') {
+      if (value === undefined) throw new Error(t.usage);
+      return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
+    }
+    if (isCdpDirectKey(key)) {
+      if (value === undefined) throw new Error(t.usage);
+      return setCdpDirectKey(key, value, language);
+    }
+    throw new Error(t.unknownKey(key));
   }
   throw new Error(t.unknownAction(action));
 }

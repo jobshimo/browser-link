@@ -75,6 +75,30 @@ export interface BrowserLinkConfig {
    * together, independent of the idle-TTL pair.
    */
   flowRecordingUpdatedAt?: number;
+  /**
+   * cdp-direct mode: let the server drive Chrome tabs DIRECTLY over a
+   * user-launched `--remote-debugging-port`, bypassing the extension
+   * entirely. Off by default and — even when on — gated behind a separate,
+   * explicit, time-boxed human grant (see `cdp/grant.ts`, `cdp/gate.ts`):
+   * an agent can never enable this itself, and enabling it here alone is
+   * NOT enough to let a tool touch a `cdp:` tab. Set via
+   * `browser-link config set cdp-direct.enabled <true|false>`.
+   */
+  cdpDirectEnabled?: boolean;
+  /**
+   * Loopback port the server dials for cdp-direct discovery/connections.
+   * The HOST is never configurable — always `127.0.0.1` — only the port
+   * is. Set via `browser-link config set cdp-direct.port <port>`.
+   */
+  cdpDirectPort?: number;
+  /**
+   * Default lifetime, in minutes, of a `browser-link cdp allow` grant when
+   * no `--minutes` override is passed on that command. `0` ("never") is
+   * allowed but reduces the security posture — documented as such in the
+   * CLI help and the README. Set via
+   * `browser-link config set cdp-direct.grant-ttl <minutes|never>`.
+   */
+  cdpDirectGrantTtlMinutes?: number;
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
@@ -85,6 +109,72 @@ export interface BrowserLinkConfig {
 export const MIN_IDLE_TTL_MINUTES = 1;
 export const MAX_IDLE_TTL_MINUTES = 1440;
 export const DEFAULT_IDLE_TTL_MINUTES = 30;
+
+/** cdp-direct bounds — same clamp-at-the-boundary philosophy as the
+ * idle-TTL constants above, independent copies since the two settings are
+ * unrelated. */
+export const DEFAULT_CDP_DIRECT_PORT = 9222;
+export const MIN_CDP_DIRECT_PORT = 1;
+export const MAX_CDP_DIRECT_PORT = 65535;
+export const MIN_GRANT_TTL_MINUTES = 1;
+export const MAX_GRANT_TTL_MINUTES = 1440;
+export const DEFAULT_GRANT_TTL_MINUTES = 60;
+
+/** Defensive safety net for a `cdp-direct.grant-ttl` value THE USER NEVER
+ * TYPED (a corrupted config.json, a hand-edited file) — mirrors
+ * `clampIdleTtlMinutes` exactly: `0` ("never expires") passes through
+ * untouched, anything else malformed or out of range falls back to
+ * `DEFAULT_GRANT_TTL_MINUTES` rather than being snapped to the nearest
+ * boundary. `commands/cdp.ts` applies its own user-facing clamp-with-note
+ * for values typed at the CLI right now, the same split idle-ttl uses
+ * between this module and `commands/config.ts`. */
+export function clampGrantTtlMinutes(value: number): number {
+  if (value === 0) return 0;
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return DEFAULT_GRANT_TTL_MINUTES;
+  if (value < MIN_GRANT_TTL_MINUTES || value > MAX_GRANT_TTL_MINUTES)
+    return DEFAULT_GRANT_TTL_MINUTES;
+  return value;
+}
+
+/** Same defensive-fallback philosophy as `clampGrantTtlMinutes`, for the
+ * cdp-direct port. No "never" sentinel here — a port is always a port.
+ * Used by the CLI `config set cdp-direct.port` path, where the value has
+ * already been parsed from a terminal argument. For the READ path — where
+ * the value comes straight from an untrusted config.json and is about to be
+ * interpolated into a URL — use `sanitizeCdpPort` instead. */
+export function clampCdpDirectPort(value: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return DEFAULT_CDP_DIRECT_PORT;
+  if (value < MIN_CDP_DIRECT_PORT || value > MAX_CDP_DIRECT_PORT) return DEFAULT_CDP_DIRECT_PORT;
+  return value;
+}
+
+/**
+ * Trust-boundary sanitizer for the cdp-direct port. config.json is UNTRUSTED
+ * (hand-edited or corrupted), and the port is interpolated into
+ * `http://127.0.0.1:<port>/...` and `ws://127.0.0.1:<port>/...` discovery /
+ * connection URLs. A value like the STRING `"9222@attacker.com"` would, by
+ * URL userinfo syntax, resolve to host `attacker.com` — an off-host SSRF
+ * breakout despite the hardcoded loopback literal (the plain `?? 9222`
+ * fallback only ever caught null/undefined, never a malformed string).
+ *
+ * This coerces the raw value with `Number()` — NOT `parseInt`, which would
+ * read `"9222@attacker.com"` as `9222` and quietly accept it — and returns
+ * it ONLY when it is a whole port in `[1, 65535]`. Anything else (a string
+ * with trailing garbage, a float, `NaN`, out of range, a non-number) falls
+ * back to the default. The return is ALWAYS a fresh validated integer, never
+ * the raw value, so no attacker-controlled text can ever reach URL
+ * construction — this is also the numeric barrier that breaks CodeQL's
+ * `js/file-access-to-http` taint flow. Applied on every read (via
+ * `withDefaults`, so `cfg.cdpDirectPort` is valid by construction) AND again
+ * at each URL construction site as defense in depth.
+ */
+export function sanitizeCdpPort(raw: unknown): number {
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= MIN_CDP_DIRECT_PORT && n <= MAX_CDP_DIRECT_PORT) {
+    return n;
+  }
+  return DEFAULT_CDP_DIRECT_PORT;
+}
 
 /**
  * Clamp a CLI-provided idle-TTL value the same way the extension clamps a
@@ -106,6 +196,7 @@ export function clampIdleTtlMinutes(value: number): number {
  * when the user overrides the default, keeping the on-disk config minimal. */
 const DEFAULT_MULTI_AGENT = true;
 const DEFAULT_AUTO_REELECT = true;
+const DEFAULT_CDP_DIRECT_ENABLED = false;
 
 function configFile(): string {
   return join(getDataDir(), 'config.json');
@@ -119,7 +210,21 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // has no effect, so the effective value is forced to false to avoid any
   // ambiguity for the consumer.
   const autoReelect = multiAgent ? (cfg.autoReelect ?? DEFAULT_AUTO_REELECT) : false;
-  return { ...cfg, multiAgent, autoReelect };
+  const cdpDirectEnabled = cfg.cdpDirectEnabled ?? DEFAULT_CDP_DIRECT_ENABLED;
+  // sanitizeCdpPort (not `?? DEFAULT`) so cfg.cdpDirectPort is ALWAYS a valid
+  // integer by construction — an untrusted config.json string that would
+  // otherwise reach a discovery URL is neutralized here, at the read
+  // boundary, for every consumer. See sanitizeCdpPort's doc.
+  const cdpDirectPort = sanitizeCdpPort(cfg.cdpDirectPort);
+  const cdpDirectGrantTtlMinutes = cfg.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES;
+  return {
+    ...cfg,
+    multiAgent,
+    autoReelect,
+    cdpDirectEnabled,
+    cdpDirectPort,
+    cdpDirectGrantTtlMinutes,
+  };
 }
 
 /** Strip fields that hold their default value before writing — the on-disk
@@ -153,6 +258,18 @@ function normaliseForWrite(cfg: BrowserLinkConfig): BrowserLinkConfig {
   if (next.autoReelect === DEFAULT_AUTO_REELECT) {
     const { autoReelect: _omit4, ...rest4 } = next;
     next = rest4;
+  }
+  if (next.cdpDirectEnabled === DEFAULT_CDP_DIRECT_ENABLED) {
+    const { cdpDirectEnabled: _omit5, ...rest5 } = next;
+    next = rest5;
+  }
+  if (next.cdpDirectPort === DEFAULT_CDP_DIRECT_PORT) {
+    const { cdpDirectPort: _omit6, ...rest6 } = next;
+    next = rest6;
+  }
+  if (next.cdpDirectGrantTtlMinutes === DEFAULT_GRANT_TTL_MINUTES) {
+    const { cdpDirectGrantTtlMinutes: _omit7, ...rest7 } = next;
+    next = rest7;
   }
   return next;
 }

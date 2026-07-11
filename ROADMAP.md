@@ -47,6 +47,7 @@ Not shipped as a tool. The "bookkeeping" framing was overstated — `lastId = re
 
 _Items move up here when the PR that ships them merges. Format: `- [x] <title> — PR #<n> (<release tag>)`._
 
+- [x] cdp-direct mode — extension-free transport driving Chrome tabs directly over `--remote-debugging-port`, gated behind `cdp-direct.enabled` + a separate time-boxed `browser-link cdp allow` grant an agent can never issue itself; v1 covers list_tabs/ping/snapshot/find/state/click/type/press/evaluate/wait_for/navigate/flow, with drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab deferred to a future v2 — (v0.23.0)
 - [x] Idle-disconnect TTL — extension popup control (`Auto-disconnect idle tabs`) + `browser-link config get/set idle-ttl <minutes|never>`, synced live between the two with last-write-wins precedence — (v0.19.0)
 - [x] `browser.state` orientation read + `browser.find` near-miss suggestions on no-match + named, replayable map flow recipes (`browser.map.save`/`recall` `flows[]`, validated against the `browser.flow` grammar) — PR #90 (v0.18.0)
 - [x] `browser.flow` — declarative `find`/`click`/`type`/`press`/`wait_for` sequence in one round trip, implicit-target threading, fail-fast with a recovery snapshot — PR #89 (v0.17.0)

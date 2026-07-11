@@ -62,6 +62,25 @@ The label is display only — security relies on the IPC session id
 claim-conflict error: do NOT spin-retry. Either work on a different tab
 from \`list_tabs\`, or surface the conflict to the user.
 
+## cdp-direct tabs (optional, off by default, human-gated)
+
+\`browser.list_tabs\` may show tabs whose \`tab_id\` starts with \`cdp:\` and
+carry \`transport: "cdp"\` — the server reached them directly over Chrome's
+remote-debugging protocol instead of through the extension. This ONLY
+happens when the user has BOTH enabled cdp-direct AND granted a live,
+time-boxed permission — you cannot request, enable, or grant this
+yourself. Every \`browser.*\` tool works on a \`cdp:\` tab exactly like on an
+extension tab, EXCEPT \`browser.drag\`, \`browser.console\`,
+\`browser.network\`, \`browser.network_body\`, \`browser.canvas_screenshot\`,
+\`browser.dialog_respond\`, \`browser.set_permission\` and
+\`browser.wait_for_tab\`, which are not implemented for this transport yet —
+those calls fail with a clear error naming the extension as the fallback.
+If any tool call on a \`cdp:\` tab fails with "cdp-direct is disabled" or
+"cdp-direct requires an active grant", that is the two-step permission gate
+talking, not a bug — relay the exact suggested command
+(\`browser-link config set cdp-direct.enabled true\` or
+\`browser-link cdp allow\`) to the user; there is no way around it from here.
+
 ## Identifying the app
 
 - \`origin\` = scheme://host:port of the tab.

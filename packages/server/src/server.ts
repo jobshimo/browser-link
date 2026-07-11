@@ -13,6 +13,9 @@ import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/proxy.js';
 import { BridgeEventLog } from './bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tools/tab-claims.js';
+import { checkCdpDirectGate } from './cdp/gate.js';
+import { listCdpTargets } from './cdp/targets.js';
+import { callCdpTool } from './cdp/transport.js';
 import {
   WS_HOST,
   WS_PORT,
@@ -160,6 +163,12 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
         return null;
       }
     },
+    // cdp-direct wiring — see cdp/gate.ts, cdp/targets.ts, cdp/transport.ts.
+    // Each call re-checks the live enabled+grant gate itself; there is no
+    // caching here that could let a disabled/revoked setting linger.
+    listCdpTabs: () => listCdpTargets(),
+    callCdpTool,
+    cdpGate: () => checkCdpDirectGate(),
     resetBridge: () => {
       // Close every WS to the extension first so the client side flips to
       // "Not connected" before we drop the local state. Best-effort: a tab

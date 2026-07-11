@@ -46,6 +46,7 @@
 - [What the agent can do](#what-the-agent-can-do)
 - [Persistent UI map](#persistent-ui-map)
 - [Customising](#customising)
+- [cdp-direct mode (no extension)](#cdp-direct-mode-no-extension)
 - [Security model](#security-model)
 - [Where your data lives](#where-your-data-lives)
 - [For contributors](#for-contributors)
@@ -150,6 +151,10 @@ browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link config get                    # list every known setting
 browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it)
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
+browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
+browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
+browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
+browser-link cdp revoke                    # revoke the current cdp-direct grant
 browser-link map                           # list apps the persistent UI map knows about
 browser-link map show <app>                # entries + flows for one app (app_key or origin)
 browser-link map forget <app> --yes        # delete a whole app and its data
@@ -750,6 +755,123 @@ saved and applies the next time a tab connects. Comparing raw
 timestamps between the CLI (Node) and the extension (Chrome) is safe
 here specifically because both always run on the same machine — this
 is a loopback-only bridge, not a distributed system.
+
+## cdp-direct mode (no extension)
+
+**Off by default.** An alternative, faster transport that lets the server
+drive Chrome tabs **directly** over a Chrome launch flag
+(`--remote-debugging-port`, default `9222`), skipping the extension
+entirely — no `chrome.debugger` attach, no popup, no per-tab "Connect this
+tab" click. Useful when you already run Chrome headless/remote-debuggable
+for other tooling and do not want to also load the extension.
+
+### The security tradeoff, plainly
+
+The extension's model gives you two independent signals per tab: an
+explicit click ("Connect this tab") **and** Chrome's own yellow
+"started debugging this browser" infobar for as long as that tab is
+attached (see the [FAQ above](#faq-the-yellow-started-debugging-this-browser-bar)).
+cdp-direct has **neither** — once Chrome is listening on the debug port,
+**any** page target on it is drivable, with no per-tab consent step and no
+persistent on-tab indicator. That is a real reduction in transparency, not
+a cosmetic one, which is why cdp-direct requires you to opt in at TWO
+independent levels before any agent can touch it:
+
+1. **The feature itself** — `cdp-direct.enabled`, off by default,
+   `config.json`-persisted.
+2. **A live, time-boxed grant** — a separate, short-lived permission you
+   issue explicitly and that expires on its own (default 60 minutes,
+   configurable, `never` allowed but discouraged).
+
+An agent cannot flip either one — both are terminal-only commands. When a
+tool call reaches a `cdp:` tab without both conditions met, it fails with
+one of exactly two errors naming the missing step:
+
+```
+cdp-direct is disabled. The user can enable it with: browser-link config set cdp-direct.enabled true
+cdp-direct requires an active grant. Ask the user to run: browser-link cdp allow
+```
+
+Two residual caveats worth stating plainly, in the same spirit as the
+[security model](#security-model)'s "malware already inside Chrome" caveat:
+
+- **Revoke does not interrupt a `browser.flow` already in progress.** The
+  gate is checked at the START of every tool call, including a flow; a flow
+  that has already begun runs its remaining steps to completion even if you
+  revoke mid-flow. The exposure is bounded to that one flow's worst-case
+  budget (**≤ 60 s** by the flow step-budget cap) — after it returns, the
+  next tool call sees the revoked grant and is refused. Every other tool
+  call re-checks the gate fresh, so revoke takes effect immediately for
+  everything except an in-flight flow.
+- **Port squatting.** browser-link verifies the debug endpoint is really
+  Chrome (its `/json/version` `Browser` string must contain `"Chrome"`)
+  before trusting anything on it — but a local process that manages to bind
+  the debug port _before_ Chrome does could present that string and
+  impersonate the endpoint. The blast radius is **data spoofing** (feeding
+  the agent fake page content over loopback), not server RCE, and it
+  requires an attacker who already has local code execution on your machine
+  — the same precondition under which the extension transport's own
+  process-binding check is likewise moot. Loopback-only binding means no
+  remote party can reach the port regardless.
+
+### Enable → allow → use → revoke
+
+```bash
+# 1. Launch Chrome with the remote-debugging port open (you do this — browser-link never launches Chrome).
+google-chrome --remote-debugging-port=9222          # Linux
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222   # Windows
+open -a "Google Chrome" --args --remote-debugging-port=9222                            # macOS
+
+# 2. Turn the feature on (persists in config.json; still not usable without a grant).
+browser-link config set cdp-direct.enabled true
+
+# 3. Grant time-boxed access. Only you can run this — no agent can grant itself access.
+browser-link cdp allow                    # uses cdp-direct.grant-ttl (default 60 min)
+browser-link cdp allow --minutes 15       # a shorter one-off grant
+browser-link cdp allow --minutes never    # never expires — reduces the security posture, see above
+
+# 4. Check state at any time.
+browser-link cdp status                   # enabled?, port, grant remaining, endpoint reachable?
+
+# 5. Revoke whenever you want the door shut again.
+browser-link cdp revoke
+```
+
+Once both conditions hold, `browser.list_tabs` also returns cdp-direct
+page targets — real Chrome tabs, filtered to exclude `devtools://` and
+`chrome-extension://` pages — with `tab_id` values shaped `cdp:<targetId>`
+and `transport: "cdp"`, alongside your normal extension tabs (which keep
+working exactly as before, unaffected). Claims, the persistent map's
+origin-keyed hints, and every other cross-cutting feature work on a `cdp:`
+tab the same as an extension tab.
+
+```bash
+browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
+browser-link config set cdp-direct.port 9333             # loopback port only — the host is always 127.0.0.1
+browser-link config set cdp-direct.grant-ttl 15           # default TTL future `cdp allow` calls use
+```
+
+### v1 tool support
+
+Every tool that reaches into page/JS content works identically over
+cdp-direct — same in-page logic, same CDP commands (`Runtime.evaluate`,
+`Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). A handful
+of tools that depend on extension-only state (buffered console/network
+history, canvas capture wiring, native permission grants, the popup's
+dialog channel, or `window.open` tab-creation events) are explicitly out of
+v1 scope and return a clear error naming the extension as the fallback.
+
+| Supported in v1                                                                                                          | NOT supported in v1 (use the extension instead)                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag` |
+
+\* `wait_for`'s `network_url` mode also falls back to "use the extension"
+— cdp-direct does not buffer network requests, so there is nothing to poll
+against. `selector` and `expression` modes are fully supported.
+
+Claims apply to `cdp:` tab_ids through the same registry extension tabs
+use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add
+(console/network mirroring, canvas capture, drag).
 
 ## Security model
 
