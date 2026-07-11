@@ -359,8 +359,8 @@ export async function handleBrowserTool(
       return deps.callBrowserTool(requireTabId(args), 'network_body', { request_id });
     }
     case 'browser.click': {
-      const { selector } = args as { selector: string };
-      return runAction('click', requireTabId(args), { selector }, deps, caller);
+      const { selector, force = false } = args as { selector: string; force?: boolean };
+      return runAction('click', requireTabId(args), { selector, force }, deps, caller);
     }
     case 'browser.type': {
       const {

@@ -635,7 +635,24 @@ describe('action-tool claim enforcement', () => {
     const deps = makeDepsWithClaims();
     await handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#go' }, deps, A);
     expect(deps.tabClaims!.getClaim('tab_1')?.agent_id).toBe('sess-A');
-    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', { selector: '#go' });
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', {
+      selector: '#go',
+      force: false,
+    });
+  });
+
+  test('click forwards force:true when the caller opts out of the occlusion guard', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#go', force: true },
+      deps,
+      A,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', {
+      selector: '#go',
+      force: true,
+    });
   });
 
   test('click is rejected when another agent already owns the tab, and the bridge is never called', async () => {

@@ -122,7 +122,17 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-call': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-return': 'off',
-      'no-unused-vars': [
+      // The core `no-unused-vars` rule does not understand TS-only
+      // constructs (interface method signatures, function-type
+      // properties): it treats every parameter identifier in a type
+      // position as a real binding needing a use, which false-positives
+      // on any test file that types a helper's return shape with an
+      // interface. `@typescript-eslint/no-unused-vars` parses the same
+      // TSESTree AST correctly and does NOT require `parserOptions.project`
+      // (unlike the `strictTypeChecked` rules above), so it stays valid
+      // here without re-enabling type-aware checking on tests.
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
         'error',
         {
           argsIgnorePattern: '^_',
@@ -130,6 +140,20 @@ export default tseslint.config(
           caughtErrorsIgnorePattern: '^_',
         },
       ],
+    },
+  },
+
+  // Extension package tests run under vitest's `jsdom` environment, so the
+  // shipped in-page JS constants and their tests reference real DOM
+  // globals (document, Element, HTMLIFrameElement, DOMRect, ...). The
+  // general test block above only declares Node globals — add the browser
+  // set here, scoped to this package only, so a typo'd identifier in a
+  // Node-only test elsewhere doesn't accidentally start resolving against
+  // an unrelated browser global (e.g. `name`, `status`, `open`).
+  {
+    files: ['packages/extension/src/**/*.test.{ts,tsx}'],
+    languageOptions: {
+      globals: { ...globals.browser },
     },
   },
 );

@@ -141,7 +141,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.snapshot',
     description:
-      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. Optional filters keep the response small: `within_selector` restricts the scan to a subtree; `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key.',
+      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. The scan pierces OPEN Shadow DOM roots and same-origin iframes (nested arbitrarily) — a web component internal or an in-page iframe shows up without extra steps. An entry for an element living inside an iframe carries an extra `frame` field (the CSS selector of the innermost hosting iframe) so you know it is framed; entries in the top document or in Shadow DOM omit it. An entry whose selector could not be made unique across all roots (structurally-identical component twins) carries `ambiguous: true` — that selector resolves first-match-wins, so use it immediately and do NOT store it in the persistent map. Optional filters keep the response small: `within_selector` restricts the scan to a subtree (also deep-search-aware — it can target a subtree inside a shadow root or iframe); `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -184,6 +184,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'The snapshot is the source of truth; the persistent map is a cache, not a substitute.',
         'Filters are applied in-page, so the dropped material never travels back — they are a token win, not a post-filter.',
         'Empty-string fields (`placeholder`, `aria_label`, etc.) are omitted from each entry. Read by key with optional-chaining or fall back to "".',
+        'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable from any CDP-based tool — there is no workaround. Cross-origin iframes are also unreachable (same-origin policy); their content is invisible to this scan.',
+        'Two structurally-identical component instances in different roots (e.g. twin web components with byte-identical internals) cannot be told apart by any CSS selector — no syntax scopes a selector to one shadow root. Affected entries carry `ambiguous: true`; their selector resolves to the FIRST match in a deterministic traversal order. Use it right away, never cache it.',
       ],
       example:
         'browser.snapshot({ tab_id: "tab_1", within_selector: "main", exclude: ["nav", "footer"] })',
@@ -192,7 +194,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.find',
     description:
-      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Returns `{ matched: true, selector, coords:{x,y}, tag, text }` on a unique hit, `{ matched: false, reason: "not-found" }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback), so a subsequent `browser.click` / `browser.type` works without re-querying.',
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }` on a unique hit, `{ matched: false, reason: "not-found" }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -229,6 +231,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'A `<div onclick>` IS considered clickable here — the broad selector set (`[onclick]`, `[role]`, `[tabindex]`, `[contenteditable]`) is the whole point. A naive `querySelectorAll("button")` misses these silently.',
         'On `multiple-matches`, the response includes up to 5 candidates with their selectors and snippets so the agent can disambiguate without another round-trip. Retry with `exact:true` or a longer/unique substring.',
         '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.snapshot.',
+        'A result with `ambiguous: true` names an element whose generated selector matches structurally-identical twins in other roots. It still works (first-match-wins, deterministic order) but must be used immediately and never saved to the persistent map.',
       ],
       example: 'browser.find({ tab_id: "tab_1", text: "Save changes", role: "button" })',
     },
@@ -555,12 +559,18 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.click',
     description:
-      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot.',
+      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard.',
     inputSchema: {
       type: 'object',
       properties: {
         tab_id: { type: 'string' },
         selector: { type: 'string' },
+        force: {
+          type: 'boolean',
+          default: false,
+          description:
+            'Skip the occlusion guard and dispatch the click even if another element currently covers the click point. Escape hatch for cases where the "covering" element is intentional (e.g. a transparent hit-target layer) or the guard produces a false positive. Default false.',
+        },
       },
       required: ['tab_id', 'selector'],
       additionalProperties: false,
@@ -573,13 +583,15 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         'Never click a selector you have not just verified via browser.snapshot or browser.map.recall — speculating wastes a turn.',
         'Auto-claims the tab on first use in multi-agent mode.',
+        'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
+        'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
       ],
     },
   },
   {
     name: 'browser.type',
     description:
-      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first.',
+      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -598,6 +610,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
       gotchas: [
         'Pass clear:true when you need to replace the current value instead of appending to it.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
       ],
     },
   },

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.0](https://github.com/jobshimo/browser-link/compare/v0.14.1...v0.15.0) (2026-07-11)
+
+
+### Features
+
+* **bridge:** `browser.snapshot`, `browser.find`, `browser.click` and `browser.type` now pierce OPEN Shadow DOM roots and same-origin iframes, nested arbitrarily (shadow roots inside iframes and vice versa). Previously all four walked the DOM with plain `document.querySelector` / `querySelectorAll`, so anything behind an `attachShadow({ mode: "open" })` boundary or inside an in-page iframe was invisible to agents. The scan enumerates every reachable root and queries each independently; selectors returned by `snapshot`/`find` are verified unique across the FULL deep search scope before being handed out, so the find → click round trip keeps working when the target lives inside a web component or iframe. Entries for iframe-hosted elements carry an optional `frame` field (the CSS selector of the innermost hosting iframe) — the result shape stays backward compatible.
+* **bridge:** `browser.click` gains an occlusion guard. Before dispatching CDP mouse events, the click point is hit-tested starting from the target's own root (shadow root or iframe document, descending nested open shadow roots). If a different element covers the point — modal backdrop, loading overlay, dropdown — the call returns `ok:false` with `Element covered by <tag#id.class> — click the covering element or dismiss it first` instead of silently clicking the wrong thing. Clicks on the target itself, its own descendants, or a wrapper containing it (composed-tree containment) pass. A new optional `force: true` parameter skips the guard as a documented escape hatch. `pointer-events: none` overlays never block (elementFromPoint skips them natively).
+* **bridge:** correct coordinate mapping for iframe-hosted elements. CDP `Input.dispatchMouseEvent` takes TOP-LEVEL viewport coordinates; clicks and `find` coords now accumulate each ancestor iframe's bounding rect PLUS its border and padding (the embedded document's viewport origin sits at the frame's content box, not its border box). Every ancestor iframe is scrolled into view alongside the target before measuring.
+* **bridge:** click point accuracy for line-wrapped inline elements. The center of `getBoundingClientRect()` for a link wrapped across two lines can land in the unpainted gap between line boxes — hit-testing there reported a false blocker and dispatching there missed. Both the occlusion hit-test and the dispatched CDP coordinates now use the center of the FIRST client rect (`getClientRects()[0]`), which is always a painted fragment; they are guaranteed to be the same point.
+
+### Known limitations
+
+* CLOSED shadow roots (`attachShadow({ mode: "closed" })`) are unreachable from page-world JS — `element.shadowRoot` is `null` by design and there is no CDP-level workaround via `Runtime.evaluate`.
+* Cross-origin iframes are unreachable under the same-origin policy; their content is invisible to the scan (access is caught, never thrown).
+* Two structurally-identical component twins in different roots (byte-identical shadow internals, no id/testid/label) cannot be told apart by any CSS selector — no syntax scopes a selector to one root. Affected `snapshot`/`find` entries carry `ambiguous: true`: the selector resolves first-match-wins in a deterministic traversal order, must be used immediately, and must never be saved to the persistent map.
+* `browser.drag` does NOT yet resolve its endpoint selectors through the deep search — deferred to a later release.
+
+### Internal
+
+* `packages/extension` gains its first test infrastructure: Vitest + jsdom (`environment: "jsdom"` for real shadow-root and iframe `contentDocument` support), mirroring the server package's setup, wired into the root `pnpm -r run test` so CI runs it. 49 tests cover the deep-query primitives, selector round-trip invariants, iframe coordinate accumulation (including styled frames with border/padding), the occlusion guard's shadow/iframe hit-test paths, and the `ambiguous` selector flag.
+* The in-page JS shipped through CDP `Runtime.evaluate` moved out of `background.ts` into `packages/extension/src/inpage/` (`deep-query.ts`, `dom-helpers.ts`, `builders.ts`), so the exact strings the extension injects are unit-tested by evaluating them in the DOM environment — no test-only rewriting.
+* ESLint test-file block switched from core `no-unused-vars` to `@typescript-eslint/no-unused-vars` (the core rule false-positives on parameter names in TS type positions) and extension test files get browser globals, scoped to that package only.
+
 ## [0.14.0](https://github.com/jobshimo/browser-link/compare/v0.13.4...v0.14.0) (2026-05-20)
 
 
