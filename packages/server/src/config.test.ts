@@ -6,8 +6,10 @@ import * as paths from './map/paths.js';
 import {
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_GRANT_TTL_MINUTES,
+  DEFAULT_IDLE_TTL_MINUTES,
   clampCdpDirectPort,
   clampGrantTtlMinutes,
+  clampIdleTtlMinutes,
   loadConfig,
   sanitizeCdpPort,
   saveConfig,
@@ -95,6 +97,91 @@ describe('sanitizeCdpPort (SSRF trust-boundary sanitizer)', () => {
       spy.mockRestore();
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('loadConfig neutralizes corrupted numeric fields at the read boundary', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-clamp-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function writeRawConfig(contents: Record<string, unknown>): void {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify(contents) + '\n', 'utf8');
+  }
+
+  describe('idleTtlMinutes', () => {
+    test('a string value falls back to the default', () => {
+      writeRawConfig({ idleTtlMinutes: 'abc' });
+      expect(loadConfig().idleTtlMinutes).toBe(DEFAULT_IDLE_TTL_MINUTES);
+    });
+
+    test('a negative value falls back to the default', () => {
+      writeRawConfig({ idleTtlMinutes: -5 });
+      expect(loadConfig().idleTtlMinutes).toBe(DEFAULT_IDLE_TTL_MINUTES);
+    });
+
+    test('a float value falls back to the default', () => {
+      writeRawConfig({ idleTtlMinutes: 1.5 });
+      expect(loadConfig().idleTtlMinutes).toBe(DEFAULT_IDLE_TTL_MINUTES);
+    });
+
+    test('an absurdly large value falls back to the default', () => {
+      writeRawConfig({ idleTtlMinutes: 1e9 });
+      expect(loadConfig().idleTtlMinutes).toBe(DEFAULT_IDLE_TTL_MINUTES);
+    });
+
+    test('0 ("never") survives the clamp — it is a real value, not garbage', () => {
+      writeRawConfig({ idleTtlMinutes: 0 });
+      expect(loadConfig().idleTtlMinutes).toBe(0);
+    });
+
+    test('a value never written by the CLI stays undefined (not defaulted)', () => {
+      writeRawConfig({});
+      expect(loadConfig().idleTtlMinutes).toBeUndefined();
+    });
+  });
+
+  describe('cdpDirectGrantTtlMinutes', () => {
+    test('a string value falls back to the default', () => {
+      writeRawConfig({ cdpDirectGrantTtlMinutes: 'abc' });
+      expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(DEFAULT_GRANT_TTL_MINUTES);
+    });
+
+    test('a negative value falls back to the default', () => {
+      writeRawConfig({ cdpDirectGrantTtlMinutes: -5 });
+      expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(DEFAULT_GRANT_TTL_MINUTES);
+    });
+
+    test('a float value falls back to the default', () => {
+      writeRawConfig({ cdpDirectGrantTtlMinutes: 1.5 });
+      expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(DEFAULT_GRANT_TTL_MINUTES);
+    });
+
+    test('an absurdly large value falls back to the default', () => {
+      writeRawConfig({ cdpDirectGrantTtlMinutes: 1e9 });
+      expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(DEFAULT_GRANT_TTL_MINUTES);
+    });
+
+    test('0 ("never") survives the clamp — it is a real value, not garbage', () => {
+      writeRawConfig({ cdpDirectGrantTtlMinutes: 0 });
+      expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(0);
+    });
+  });
+
+  test('clampIdleTtlMinutes and clampGrantTtlMinutes agree on the "0 is never" contract', () => {
+    // Both clamps must treat 0 identically — sanity check the shared
+    // contract the two describe blocks above each exercise in isolation.
+    expect(clampIdleTtlMinutes(0)).toBe(0);
+    expect(clampGrantTtlMinutes(0)).toBe(0);
   });
 });
 

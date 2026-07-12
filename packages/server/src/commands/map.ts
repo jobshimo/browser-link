@@ -161,6 +161,7 @@ interface MapI18n {
   statusUnverified: string;
   appNotFound: (identifier: string, known: string[]) => string;
   forgetUsage: string;
+  flowFlagRequiresValue: string;
   flowNotFound: (flowName: string, appKey: string, origin: string) => string;
   flowForgotten: (flowName: string, appKey: string, origin: string) => string;
   flowForgetAmbiguous: (
@@ -213,6 +214,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
         ? `No app matches "${identifier}" — the map is empty.`
         : `No app matches "${identifier}" by app_key or origin. Known app_keys: ${known.join(', ')}`,
     forgetUsage: 'Usage: browser-link map forget <app> [--flow <name>] [--yes]',
+    flowFlagRequiresValue:
+      '--flow requires a flow name: browser-link map forget <app> --flow <name>',
     flowNotFound: (flowName, appKey, origin) =>
       `No flow named "${flowName}" on app "${appKey}" (${origin}).`,
     flowForgotten: (flowName, appKey, origin) =>
@@ -280,6 +283,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
         ? `Ninguna app coincide con "${identifier}" — el mapa está vacío.`
         : `Ninguna app coincide con "${identifier}" por app_key u origen. App_keys conocidas: ${known.join(', ')}`,
     forgetUsage: 'Uso: browser-link map forget <app> [--flow <nombre>] [--yes]',
+    flowFlagRequiresValue:
+      '--flow requiere un nombre de flow: browser-link map forget <app> --flow <nombre>',
     flowNotFound: (flowName, appKey, origin) =>
       `No hay un flow llamado "${flowName}" en la app "${appKey}" (${origin}).`,
     flowForgotten: (flowName, appKey, origin) =>
@@ -413,6 +418,14 @@ function runForget(argv: string[], language: Language): string {
   const identifier = positionals[0];
   if (!identifier) throw new Error(t.forgetUsage);
 
+  // A valueless `--flow` parses as boolean `true` (see parseArgs) — reading
+  // that as "no --flow given" would silently widen scope to the whole-app
+  // path below, so a user who forgot the flow name gets a whole-app dry-run
+  // instead of a clear error. Reject it here, before any DB lookup, so a
+  // mistyped `--flow` never even resolves an app or touches the database.
+  if (flags.flow === true) throw new Error(t.flowFlagRequiresValue);
+  const flowName = typeof flags.flow === 'string' ? flags.flow : undefined;
+
   // Destructive command — resolve through findAppCandidates, not findApp,
   // so an ambiguous identifier (same app_key saved on two origins) is
   // DETECTED instead of silently resolving to the most-recently-seen app
@@ -428,7 +441,6 @@ function runForget(argv: string[], language: Language): string {
   }
   const app = candidates[0];
 
-  const flowName = typeof flags.flow === 'string' ? flags.flow : undefined;
   if (flowName !== undefined) {
     // Check existence BEFORE the ambiguity gate so a typo'd flow name gets
     // its clear not-found error (naming the resolved origin) either way.

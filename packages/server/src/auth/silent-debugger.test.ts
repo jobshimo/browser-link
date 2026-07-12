@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { parseCommandLines, SILENT_DEBUGGER_FLAG } from './silent-debugger.js';
+import {
+  detectSilentDebuggerFlag,
+  parseCommandLines,
+  SILENT_DEBUGGER_FLAG,
+  type ExecLike,
+} from './silent-debugger.js';
 
 describe('parseCommandLines', () => {
   test('detects the flag on a Chrome command line', () => {
@@ -49,5 +54,56 @@ describe('parseCommandLines', () => {
     // choke on ordinary non-browser process listings.
     const out = ['/usr/bin/node server.js', ''].join('\n');
     expect(parseCommandLines(out)).toEqual({ detected: null });
+  });
+});
+
+describe('detectSilentDebuggerFlag (injected exec)', () => {
+  test('degrades to detected:null when the exec call times out', async () => {
+    const execFn: ExecLike = () =>
+      Promise.reject(
+        Object.assign(new Error('Command timed out'), { killed: true, signal: 'SIGTERM' }),
+      );
+    expect(await detectSilentDebuggerFlag('win32', execFn)).toEqual({ detected: null });
+  });
+
+  test('degrades to detected:null when the exec call errors (missing tool, permission denied)', async () => {
+    const execFn: ExecLike = () => Promise.reject(new Error('spawn powershell ENOENT'));
+    expect(await detectSilentDebuggerFlag('win32', execFn)).toEqual({ detected: null });
+  });
+
+  test('resolves detected:true when the injected stdout carries the flag (win32 path)', async () => {
+    const execFn: ExecLike = (command) => {
+      expect(command).toContain('Get-CimInstance');
+      return Promise.resolve({
+        stdout: `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ${SILENT_DEBUGGER_FLAG}\n`,
+      });
+    };
+    expect(await detectSilentDebuggerFlag('win32', execFn)).toEqual({ detected: true });
+  });
+
+  test('resolves detected:false when browsers are running without the flag (unix path)', async () => {
+    const execFn: ExecLike = (command) => {
+      expect(command).toBe('ps -axo command=');
+      return Promise.resolve({
+        stdout:
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Default\n',
+      });
+    };
+    expect(await detectSilentDebuggerFlag('darwin', execFn)).toEqual({ detected: false });
+  });
+
+  test('resolves detected:null on an unsupported OS without ever calling exec', async () => {
+    const execFn: ExecLike = () => Promise.reject(new Error('should not be called'));
+    expect(await detectSilentDebuggerFlag('aix', execFn)).toEqual({ detected: null });
+  });
+
+  test('passes the raised DETECT_TIMEOUT_MS (5000ms) budget through to the exec call', async () => {
+    let capturedTimeout: number | undefined;
+    const execFn: ExecLike = (_command, options) => {
+      capturedTimeout = options.timeout;
+      return Promise.resolve({ stdout: '' });
+    };
+    await detectSilentDebuggerFlag('win32', execFn);
+    expect(capturedTimeout).toBe(5000);
   });
 });

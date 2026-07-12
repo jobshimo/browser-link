@@ -183,6 +183,45 @@ describe('map forget', () => {
     expect(() => runMapCommand(['forget', 'nope', '--yes'])).toThrowError(/map is empty/);
   });
 
+  test('--flow with no value throws a usage error instead of widening to a whole-app dry run', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#a' },
+    });
+    expect(() => runMapCommand(['forget', 'my-app', '--flow'])).toThrowError(
+      /--flow requires a flow name/,
+    );
+    // Nothing was deleted, and the whole-app dry-run text never printed —
+    // there's nothing to assert it against since the call throws, but the
+    // app must still be intact.
+    expect(listApps()).toHaveLength(1);
+  });
+
+  test('--flow with no value followed by another flag still throws (does not swallow --yes as the value)', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#a' },
+    });
+    expect(() => runMapCommand(['forget', 'my-app', '--flow', '--yes'])).toThrowError(
+      /--flow requires a flow name/,
+    );
+    expect(listApps()).toHaveLength(1);
+  });
+
+  test('--flow <name> still works after the fix (regression guard)', () => {
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
+    const out = runMapCommand(['forget', 'my-app', '--flow', 'login']);
+    expect(out).toMatch(/Deleted flow "login"/);
+  });
+
   test('--yes before the positional works the same as after it', () => {
     saveEntry({
       origin: 'http://x',
@@ -633,5 +672,20 @@ describe('es locale', () => {
     });
     const out = runMapCommand(['forget', 'my-app'], 'es');
     expect(out).toMatch(/Esto eliminaría la app "my-app"/);
+  });
+
+  test('"--flow" with no value throws the Spanish usage error', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'p',
+      payload: { selector: '#a' },
+    });
+    expect(() => runMapCommand(['forget', 'my-app', '--flow'], 'es')).toThrowError(
+      /--flow requiere un nombre de flow/,
+    );
+    expect(listApps()).toHaveLength(1);
   });
 });

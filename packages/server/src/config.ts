@@ -216,7 +216,22 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // otherwise reach a discovery URL is neutralized here, at the read
   // boundary, for every consumer. See sanitizeCdpPort's doc.
   const cdpDirectPort = sanitizeCdpPort(cfg.cdpDirectPort);
-  const cdpDirectGrantTtlMinutes = cfg.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES;
+  // clampGrantTtlMinutes (not `?? DEFAULT`) so cfg.cdpDirectGrantTtlMinutes is
+  // ALWAYS a valid value by construction, same trust-boundary treatment as
+  // cdpDirectPort above: a corrupted config.json ("abc", -5, 1.5, 1e9) would
+  // otherwise flow straight through `??` (which only catches null/undefined)
+  // into `browser-link config get`, the `settings.update` WS push, and the
+  // CLI's own display line.
+  const cdpDirectGrantTtlMinutes = clampGrantTtlMinutes(
+    cfg.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES,
+  );
+  // idleTtlMinutes keeps its "never touched by the CLI" undefined sentinel
+  // (see the field doc above) — only clamp when a value is actually present,
+  // so a popup-only user's absence of a value still reads as "not set" and
+  // not as a coerced default. When present, clampIdleTtlMinutes neutralizes
+  // a corrupted config.json the same way sanitizeCdpPort does for the port.
+  const idleTtlMinutes =
+    cfg.idleTtlMinutes === undefined ? undefined : clampIdleTtlMinutes(cfg.idleTtlMinutes);
   return {
     ...cfg,
     multiAgent,
@@ -224,6 +239,7 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
     cdpDirectEnabled,
     cdpDirectPort,
     cdpDirectGrantTtlMinutes,
+    idleTtlMinutes,
   };
 }
 
