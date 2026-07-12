@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.23.5](https://github.com/jobshimo/browser-link/compare/v0.23.4...v0.23.5) (2026-07-12)
+
+### Internal
+
+- **extension:** `background.ts`'s `handleTool` switch (grown to ~575 of the file's 2625 lines across the last three releases) is now a thin dispatcher — its eleven remaining unextracted case bodies (`ping`, `navigate`, `snapshot`, `canvas_screenshot`, `console`, `network`, `network_body`, `flow`, `drag`, `dialog_respond`, `set_permission`) move into named module-level `handle<Tool>` functions alongside the existing `performFind`/`performClick`/`performType`/`performPress`/`performWaitFor` helpers, following the same small-named-function pattern `tools/browser-dispatch.ts`'s `handleBrowserTool` already uses. `handleTool` shrinks to ~140 lines; genuinely trivial cases (`state`, `evaluate`) and the five already backed by `perform*` helpers stay inline. Zero behavior change — pure code motion, verified by dedented line-by-line comparison of every extracted body against its original case block (byte-identical, the only non-mechanical line in the diff being one `eslint-disable-line no-useless-assignment` in `handleDrag`, where the new function scope let the linter see a pre-existing dead initializer the original switch nesting hid) and by `git diff --color-moved=dimmed-zebra`. The cdp-direct drift guards (`cdp/drift.test.ts`, `cdp/builders-parity.test.ts`) pass untouched — the shared in-page/settle/keymap/flow sources this file consumes did not move.
+
 ## [0.23.4](https://github.com/jobshimo/browser-link/compare/v0.23.3...v0.23.4) (2026-07-12)
 
 ### Bug Fixes

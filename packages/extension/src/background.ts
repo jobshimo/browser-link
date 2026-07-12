@@ -1240,6 +1240,525 @@ async function performWaitFor(
   }
 }
 
+/**
+ * `handlePing` through `handleSetPermission` — the extracted bodies of the
+ * remaining standalone tool cases in `handleTool` below that never got the
+ * `perform*` treatment above. Each takes exactly the locals its original
+ * `case` block closed over (`tabId`, `state`, `msg`, the raw params `p`,
+ * and/or the `str`/`optStr` readers) and returns the same wire-level
+ * `tool.response` envelope the case used to build inline — pure code
+ * motion, not a rewrite of tool behavior.
+ */
+
+async function handlePing(tabId: number, msg: ToolRequestMessage): Promise<ExtensionToServer> {
+  const tab = await chrome.tabs.get(tabId);
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: { title: tab.title ?? '', url: tab.url ?? '' },
+  };
+}
+
+async function handleNavigate(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  str: (key: string) => string,
+): Promise<ExtensionToServer> {
+  const url = str('url');
+  const waitForLoadFlag = p.wait_for_load !== false;
+  await cdp(tabId, 'Page.navigate', { url });
+  if (waitForLoadFlag) await waitForLoad(tabId);
+  const tab = await chrome.tabs.get(tabId);
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: { url: tab.url ?? '', title: tab.title ?? '' },
+  };
+}
+
+async function handleSnapshot(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  optStr: (key: string) => string | undefined,
+): Promise<ExtensionToServer> {
+  const value = await evaluateInTab(
+    tabId,
+    buildSnapshotJs({
+      within_selector: optStr('within_selector'),
+      only_interactive: p.only_interactive === true,
+      exclude: Array.isArray(p.exclude)
+        ? p.exclude.filter((x): x is string => typeof x === 'string')
+        : undefined,
+      max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
+    }),
+  );
+  return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+}
+
+async function handleCanvasScreenshot(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  optStr: (key: string) => string | undefined,
+): Promise<ExtensionToServer> {
+  const selector = optStr('selector');
+  const format = optStr('format') === 'jpeg' ? 'jpeg' : 'png';
+  const regionRaw = p.region;
+  let region: { x: number; y: number; w: number; h: number } | undefined;
+  if (regionRaw && typeof regionRaw === 'object') {
+    const r = regionRaw as Record<string, unknown>;
+    if (
+      typeof r.x === 'number' &&
+      typeof r.y === 'number' &&
+      typeof r.w === 'number' &&
+      typeof r.h === 'number'
+    ) {
+      region = { x: r.x, y: r.y, w: r.w, h: r.h };
+    }
+  }
+  const value = await evaluateInTab(tabId, buildCanvasScreenshotJs({ selector, region, format }));
+  return { kind: 'tool.response', id: msg.id, ok: true, result: value };
+}
+
+function handleConsole(
+  state: TabState,
+  msg: ToolRequestMessage,
+  optStr: (key: string) => string | undefined,
+): ExtensionToServer {
+  const level = optStr('level');
+  const entries = level
+    ? state.consoleBuffer.filter((e) => e.level === level)
+    : state.consoleBuffer;
+  return { kind: 'tool.response', id: msg.id, ok: true, result: entries };
+}
+
+function handleNetwork(
+  state: TabState,
+  msg: ToolRequestMessage,
+  optStr: (key: string) => string | undefined,
+): ExtensionToServer {
+  const filter = optStr('url_filter')?.toLowerCase();
+  const list = state.networkOrder
+    .map((id) => state.networkBuffer.get(id))
+    .filter((e): e is NetworkEntry => e !== undefined)
+    .filter((e) => (filter ? e.url.toLowerCase().includes(filter) : true));
+  return { kind: 'tool.response', id: msg.id, ok: true, result: list };
+}
+
+async function handleNetworkBody(
+  tabId: number,
+  msg: ToolRequestMessage,
+  str: (key: string) => string,
+): Promise<ExtensionToServer> {
+  const requestId = str('request_id');
+  const body = await cdp<CdpNetworkGetResponseBody>(tabId, 'Network.getResponseBody', {
+    requestId,
+  });
+  return { kind: 'tool.response', id: msg.id, ok: true, result: body };
+}
+
+async function handleFlow(
+  tabId: number,
+  state: TabState,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+): Promise<ExtensionToServer> {
+  // Wire-boundary narrowing: `p.steps` is untrusted JSON. Keep only
+  // object-shaped entries here — `runFlow`'s own `stepKind()` guard
+  // re-validates each one at runtime regardless, so a malformed
+  // entry fails the flow cleanly instead of throwing.
+  const rawSteps = Array.isArray(p.steps)
+    ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+    : [];
+  const flowResult = await runFlow(rawSteps as FlowStep[], {
+    performFind: (params) => performFind(tabId, params),
+    performClick: (params) => performClick(tabId, params),
+    performType: (params) => performType(tabId, params),
+    performPress: (params) => performPress(tabId, params),
+    performWaitFor: (params) => performWaitFor(tabId, state, params),
+    buildRecoverySnapshot: () =>
+      evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+  });
+  // The wire-level response is ok:true whenever the flow RAN (even a
+  // failed step is a legitimate business outcome, same pattern as
+  // wait_for's matched:false) — flowResult itself carries the
+  // ok:true/false the agent reads.
+  return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
+}
+
+async function handleDrag(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  optStr: (key: string) => string | undefined,
+): Promise<ExtensionToServer> {
+  const optNum = (key: string): number | undefined => {
+    const v = p[key];
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  };
+  const clamp = (v: number, max: number): number => Math.min(v, max);
+  const fromSelector = optStr('from_selector');
+  const toSelector = optStr('to_selector');
+  const fromXRaw = optNum('from_x');
+  const fromYRaw = optNum('from_y');
+  const toXRaw = optNum('to_x');
+  const toYRaw = optNum('to_y');
+  // Cap every duration that ends up in a setTimeout to keep CodeQL's
+  // "user-controlled timer duration" check happy and to prevent a
+  // misbehaving agent from parking the bridge for hours on a typo.
+  const durationMs = clamp(optNum('duration_ms') ?? 1500, MAX_DRAG_DURATION_MS);
+  const holdBeforeMoveMs = clamp(optNum('hold_before_move_ms') ?? 0, MAX_DRAG_HOLD_MS);
+  const holdBeforeReleaseMs = clamp(optNum('hold_before_release_ms') ?? 0, MAX_DRAG_HOLD_MS);
+
+  const hasFromCoords = fromXRaw !== undefined && fromYRaw !== undefined;
+  const hasToCoords = toXRaw !== undefined && toYRaw !== undefined;
+  if (!fromSelector && !hasFromCoords) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'drag: provide from_selector or both from_x and from_y',
+    };
+  }
+  if (!toSelector && !hasToCoords) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'drag: provide to_selector or both to_x and to_y',
+    };
+  }
+
+  const probeExpr = buildDragProbeJs({
+    from_selector: fromSelector,
+    to_selector: toSelector,
+    from_x: fromXRaw,
+    from_y: fromYRaw,
+    to_x: toXRaw,
+    to_y: toYRaw,
+  });
+  const probe = await evaluateInTab<{
+    err?: string;
+    from?: { x: number; y: number; in_viewport: boolean };
+    to?: { x: number; y: number; in_viewport: boolean };
+    draggable?: boolean;
+  }>(tabId, probeExpr);
+  if (probe.err) {
+    return { kind: 'tool.response', id: msg.id, ok: false, error: `drag: ${probe.err}` };
+  }
+  if (!probe.from || !probe.to) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'drag: could not resolve coordinates',
+    };
+  }
+  if (!probe.from.in_viewport) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'drag: source point is offscreen — scroll first or pass viewport coords',
+    };
+  }
+  if (!probe.to.in_viewport) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'drag: destination point is offscreen — scroll first or pass viewport coords',
+    };
+  }
+
+  const fromX = probe.from.x;
+  const fromY = probe.from.y;
+  const toX = probe.to.x;
+  const toY = probe.to.y;
+  const isDraggable = !!probe.draggable;
+
+  // ~30fps interpolation; minimum 2 steps so the path actually has a midpoint.
+  const steps = durationMs > 0 ? Math.max(2, Math.round(durationMs / 33)) : 1;
+  const stepDelayMs = steps > 0 ? durationMs / steps : 0;
+  const eventsFired: string[] = [];
+  // Every branch below reassigns `dragMode` before the final `return` reads it.
+  let dragMode: 'html5' | 'pointer' = 'pointer'; // eslint-disable-line no-useless-assignment -- see comment above
+  let interceptReceived = false;
+  const dragStart = Date.now();
+  let interceptionEnabled = false;
+
+  const interpolate = (t: number): { x: number; y: number } => ({
+    x: fromX + (toX - fromX) * t,
+    y: fromY + (toY - fromY) * t,
+  });
+
+  // Mouse move WITH the left button held down. Chrome's HTML5 drag
+  // system only treats movement as a drag when the button state is
+  // signalled on every move after mousePressed; omitting it makes
+  // Blink ignore the move for drag-detection purposes.
+  const moveHeld = (x: number, y: number): Promise<unknown> =>
+    cdp(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x,
+      y,
+      button: 'left',
+      buttons: 1,
+    });
+
+  // Wiggle distance has to comfortably clear `kDragThreshold` (~5px on
+  // Mac, 4px on Linux/Windows). 5px landed *right* at the boundary and
+  // Chrome did not start the drag — 20px crosses it on every platform.
+  const WIGGLE_PX = 20;
+  // Time to wait for Input.dragIntercepted after the wiggle. 120ms was
+  // enough on local-only synthetic tests but flaky in real Chrome —
+  // 250ms is comfortable without dragging out the overall latency.
+  const INTERCEPT_TIMEOUT_MS = 250;
+
+  try {
+    if (isDraggable) {
+      try {
+        await cdp(tabId, 'Input.setInterceptDrags', { enabled: true });
+        interceptionEnabled = true;
+      } catch {
+        // setInterceptDrags is experimental — fall back to pointer mode silently.
+      }
+    }
+
+    if (interceptionEnabled) {
+      // Arm the listener BEFORE the press+wiggle that may trigger it.
+      const interceptPromise = waitForCdpEvent<CdpInputDragIntercepted>(
+        tabId,
+        'Input.dragIntercepted',
+        INTERCEPT_TIMEOUT_MS,
+      );
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: fromX,
+        y: fromY,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: fromX,
+        y: fromY,
+        button: 'left',
+        clickCount: 1,
+      });
+      if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
+      // Wiggle toward the destination so Chrome's native drag system
+      // crosses its activation threshold. Direction matters for libs
+      // that have direction-sensitive activation constraints.
+      const dx = toX - fromX;
+      const dy = toY - fromY;
+      const len = Math.hypot(dx, dy) || 1;
+      const wx = fromX + (dx / len) * WIGGLE_PX;
+      const wy = fromY + (dy / len) * WIGGLE_PX;
+      await moveHeld(wx, wy);
+
+      const intercepted = await interceptPromise;
+      if (intercepted) {
+        dragMode = 'html5';
+        interceptReceived = true;
+        eventsFired.push('Input.dragIntercepted');
+        const dragData = intercepted.data as Record<string, unknown>;
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          const { x, y } = interpolate(t);
+          await moveHeld(x, y);
+          await cdp(tabId, 'Input.dispatchDragEvent', {
+            type: 'dragOver',
+            x,
+            y,
+            data: dragData,
+          });
+          if (i === 1) eventsFired.push('dragOver');
+          if (stepDelayMs > 0) await sleep(stepDelayMs);
+        }
+        await cdp(tabId, 'Input.dispatchDragEvent', {
+          type: 'dragEnter',
+          x: toX,
+          y: toY,
+          data: dragData,
+        });
+        eventsFired.push('dragEnter');
+        await cdp(tabId, 'Input.dispatchDragEvent', {
+          type: 'dragOver',
+          x: toX,
+          y: toY,
+          data: dragData,
+        });
+        if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+        await cdp(tabId, 'Input.dispatchDragEvent', {
+          type: 'drop',
+          x: toX,
+          y: toY,
+          data: dragData,
+        });
+        eventsFired.push('drop');
+        await cdp(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: toX,
+          y: toY,
+          button: 'left',
+          clickCount: 1,
+        });
+      } else {
+        // Element was tagged draggable but no native drag fired — the page
+        // either preventDefault'd dragstart or wires its own pointer logic.
+        // Continue with pointer-only events from where we already pressed.
+        dragMode = 'pointer';
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          const { x, y } = interpolate(t);
+          await moveHeld(x, y);
+          if (stepDelayMs > 0) await sleep(stepDelayMs);
+        }
+        if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+        await cdp(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: toX,
+          y: toY,
+          button: 'left',
+          clickCount: 1,
+        });
+      }
+    } else {
+      // Pointer-only branch: no native drag involvement at all.
+      dragMode = 'pointer';
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: fromX,
+        y: fromY,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: fromX,
+        y: fromY,
+        button: 'left',
+        clickCount: 1,
+      });
+      if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const { x, y } = interpolate(t);
+        await moveHeld(x, y);
+        if (stepDelayMs > 0) await sleep(stepDelayMs);
+      }
+      if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: toX,
+        y: toY,
+        button: 'left',
+        clickCount: 1,
+      });
+    }
+  } finally {
+    // Critical: leaving interception on would block the human user from
+    // dragging anything in this tab. Best-effort cleanup, swallow errors.
+    if (interceptionEnabled) {
+      try {
+        await cdp(tabId, 'Input.setInterceptDrags', { enabled: false });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: {
+      from: { x: fromX, y: fromY, selector: fromSelector ?? null },
+      to: { x: toX, y: toY, selector: toSelector ?? null },
+      duration_ms_actual: Date.now() - dragStart,
+      drag_mode: dragMode,
+      interception_attempted: interceptionEnabled,
+      intercept_received: interceptReceived,
+      events_fired: eventsFired,
+    },
+  };
+}
+
+async function handleDialogRespond(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  optStr: (key: string) => string | undefined,
+): Promise<ExtensionToServer> {
+  const accept = p.accept === true;
+  const promptText = optStr('prompt_text');
+  // No probing — if there is no dialog open, CDP returns an error.
+  // We propagate it; the caller decides if "no dialog to respond to"
+  // is a problem or a race they can ignore.
+  const params: Record<string, unknown> = { accept };
+  if (promptText !== undefined) params.promptText = promptText;
+  await cdp(tabId, 'Page.handleJavaScriptDialog', params);
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: { accepted: accept },
+  };
+}
+
+async function handleSetPermission(
+  msg: ToolRequestMessage,
+  str: (key: string) => string,
+): Promise<ExtensionToServer> {
+  const origin = str('origin');
+  const name = str('name');
+  const state_ = str('state');
+  // CDP `Browser.setPermission` requires a browser-level target,
+  // which `chrome.debugger.attach({ tabId })` does NOT give us in
+  // MV3. We use `chrome.contentSettings` instead — that surface IS
+  // available to extensions and covers the realistic permissions
+  // an agent needs to pre-set (geolocation, notifications, camera,
+  // microphone, clipboard, sensors).
+  const settingKey = CONTENT_SETTING_BY_PERMISSION[name];
+  if (!settingKey) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: `set_permission: '${name}' is not supported by chrome.contentSettings in MV3. Supported names: ${Object.keys(CONTENT_SETTING_BY_PERMISSION).join(', ')}.`,
+    };
+  }
+  const setting = STATE_TO_CONTENT_SETTING[state_];
+  if (!setting) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: `set_permission: unknown state '${state_}' (expected granted | denied | prompt).`,
+    };
+  }
+  // `chrome.contentSettings.<name>.set({ primaryPattern, setting })`
+  // requires a URL pattern, not a bare origin. Append `/*` so the
+  // pattern covers every path on the origin.
+  const primaryPattern = origin.endsWith('/*') ? origin : `${origin}/*`;
+  try {
+    await applyContentSetting(settingKey, primaryPattern, setting);
+  } catch (err) {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: `set_permission: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: { origin, name, state: state_, applied_as: settingKey },
+  };
+}
+
 async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<ExtensionToServer> {
   const tabId = state.tabId;
   // Params come over the wire as JSON: each field is unknown until we
@@ -1251,44 +1770,14 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
     typeof p[key] === 'string' ? p[key] : undefined;
   try {
     switch (msg.tool) {
-      case 'ping': {
-        const tab = await chrome.tabs.get(tabId);
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { title: tab.title ?? '', url: tab.url ?? '' },
-        };
-      }
+      case 'ping':
+        return await handlePing(tabId, msg);
 
-      case 'navigate': {
-        const url = str('url');
-        const waitForLoadFlag = p.wait_for_load !== false;
-        await cdp(tabId, 'Page.navigate', { url });
-        if (waitForLoadFlag) await waitForLoad(tabId);
-        const tab = await chrome.tabs.get(tabId);
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { url: tab.url ?? '', title: tab.title ?? '' },
-        };
-      }
+      case 'navigate':
+        return await handleNavigate(tabId, msg, p, str);
 
-      case 'snapshot': {
-        const value = await evaluateInTab(
-          tabId,
-          buildSnapshotJs({
-            within_selector: optStr('within_selector'),
-            only_interactive: p.only_interactive === true,
-            exclude: Array.isArray(p.exclude)
-              ? p.exclude.filter((x): x is string => typeof x === 'string')
-              : undefined,
-            max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
-          }),
-        );
-        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-      }
+      case 'snapshot':
+        return await handleSnapshot(tabId, msg, p, optStr);
 
       case 'state': {
         const value = await evaluateInTab(tabId, buildStateJs());
@@ -1307,53 +1796,17 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
-      case 'canvas_screenshot': {
-        const selector = optStr('selector');
-        const format = optStr('format') === 'jpeg' ? 'jpeg' : 'png';
-        const regionRaw = p.region;
-        let region: { x: number; y: number; w: number; h: number } | undefined;
-        if (regionRaw && typeof regionRaw === 'object') {
-          const r = regionRaw as Record<string, unknown>;
-          if (
-            typeof r.x === 'number' &&
-            typeof r.y === 'number' &&
-            typeof r.w === 'number' &&
-            typeof r.h === 'number'
-          ) {
-            region = { x: r.x, y: r.y, w: r.w, h: r.h };
-          }
-        }
-        const value = await evaluateInTab(
-          tabId,
-          buildCanvasScreenshotJs({ selector, region, format }),
-        );
-        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-      }
+      case 'canvas_screenshot':
+        return await handleCanvasScreenshot(tabId, msg, p, optStr);
 
-      case 'console': {
-        const level = optStr('level');
-        const entries = level
-          ? state.consoleBuffer.filter((e) => e.level === level)
-          : state.consoleBuffer;
-        return { kind: 'tool.response', id: msg.id, ok: true, result: entries };
-      }
+      case 'console':
+        return handleConsole(state, msg, optStr);
 
-      case 'network': {
-        const filter = optStr('url_filter')?.toLowerCase();
-        const list = state.networkOrder
-          .map((id) => state.networkBuffer.get(id))
-          .filter((e): e is NetworkEntry => e !== undefined)
-          .filter((e) => (filter ? e.url.toLowerCase().includes(filter) : true));
-        return { kind: 'tool.response', id: msg.id, ok: true, result: list };
-      }
+      case 'network':
+        return handleNetwork(state, msg, optStr);
 
-      case 'network_body': {
-        const requestId = str('request_id');
-        const body = await cdp<CdpNetworkGetResponseBody>(tabId, 'Network.getResponseBody', {
-          requestId,
-        });
-        return { kind: 'tool.response', id: msg.id, ok: true, result: body };
-      }
+      case 'network_body':
+        return await handleNetworkBody(tabId, msg, str);
 
       case 'click': {
         const outcome = await performClick(tabId, {
@@ -1402,317 +1855,11 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
-      case 'flow': {
-        // Wire-boundary narrowing: `p.steps` is untrusted JSON. Keep only
-        // object-shaped entries here — `runFlow`'s own `stepKind()` guard
-        // re-validates each one at runtime regardless, so a malformed
-        // entry fails the flow cleanly instead of throwing.
-        const rawSteps = Array.isArray(p.steps)
-          ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
-          : [];
-        const flowResult = await runFlow(rawSteps as FlowStep[], {
-          performFind: (params) => performFind(tabId, params),
-          performClick: (params) => performClick(tabId, params),
-          performType: (params) => performType(tabId, params),
-          performPress: (params) => performPress(tabId, params),
-          performWaitFor: (params) => performWaitFor(tabId, state, params),
-          buildRecoverySnapshot: () =>
-            evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
-        });
-        // The wire-level response is ok:true whenever the flow RAN (even a
-        // failed step is a legitimate business outcome, same pattern as
-        // wait_for's matched:false) — flowResult itself carries the
-        // ok:true/false the agent reads.
-        return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
-      }
+      case 'flow':
+        return await handleFlow(tabId, state, msg, p);
 
-      case 'drag': {
-        const optNum = (key: string): number | undefined => {
-          const v = p[key];
-          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
-        };
-        const clamp = (v: number, max: number): number => Math.min(v, max);
-        const fromSelector = optStr('from_selector');
-        const toSelector = optStr('to_selector');
-        const fromXRaw = optNum('from_x');
-        const fromYRaw = optNum('from_y');
-        const toXRaw = optNum('to_x');
-        const toYRaw = optNum('to_y');
-        // Cap every duration that ends up in a setTimeout to keep CodeQL's
-        // "user-controlled timer duration" check happy and to prevent a
-        // misbehaving agent from parking the bridge for hours on a typo.
-        const durationMs = clamp(optNum('duration_ms') ?? 1500, MAX_DRAG_DURATION_MS);
-        const holdBeforeMoveMs = clamp(optNum('hold_before_move_ms') ?? 0, MAX_DRAG_HOLD_MS);
-        const holdBeforeReleaseMs = clamp(optNum('hold_before_release_ms') ?? 0, MAX_DRAG_HOLD_MS);
-
-        const hasFromCoords = fromXRaw !== undefined && fromYRaw !== undefined;
-        const hasToCoords = toXRaw !== undefined && toYRaw !== undefined;
-        if (!fromSelector && !hasFromCoords) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'drag: provide from_selector or both from_x and from_y',
-          };
-        }
-        if (!toSelector && !hasToCoords) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'drag: provide to_selector or both to_x and to_y',
-          };
-        }
-
-        const probeExpr = buildDragProbeJs({
-          from_selector: fromSelector,
-          to_selector: toSelector,
-          from_x: fromXRaw,
-          from_y: fromYRaw,
-          to_x: toXRaw,
-          to_y: toYRaw,
-        });
-        const probe = await evaluateInTab<{
-          err?: string;
-          from?: { x: number; y: number; in_viewport: boolean };
-          to?: { x: number; y: number; in_viewport: boolean };
-          draggable?: boolean;
-        }>(tabId, probeExpr);
-        if (probe.err) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: `drag: ${probe.err}` };
-        }
-        if (!probe.from || !probe.to) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'drag: could not resolve coordinates',
-          };
-        }
-        if (!probe.from.in_viewport) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'drag: source point is offscreen — scroll first or pass viewport coords',
-          };
-        }
-        if (!probe.to.in_viewport) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: 'drag: destination point is offscreen — scroll first or pass viewport coords',
-          };
-        }
-
-        const fromX = probe.from.x;
-        const fromY = probe.from.y;
-        const toX = probe.to.x;
-        const toY = probe.to.y;
-        const isDraggable = !!probe.draggable;
-
-        // ~30fps interpolation; minimum 2 steps so the path actually has a midpoint.
-        const steps = durationMs > 0 ? Math.max(2, Math.round(durationMs / 33)) : 1;
-        const stepDelayMs = steps > 0 ? durationMs / steps : 0;
-        const eventsFired: string[] = [];
-        let dragMode: 'html5' | 'pointer' = 'pointer';
-        let interceptReceived = false;
-        const dragStart = Date.now();
-        let interceptionEnabled = false;
-
-        const interpolate = (t: number): { x: number; y: number } => ({
-          x: fromX + (toX - fromX) * t,
-          y: fromY + (toY - fromY) * t,
-        });
-
-        // Mouse move WITH the left button held down. Chrome's HTML5 drag
-        // system only treats movement as a drag when the button state is
-        // signalled on every move after mousePressed; omitting it makes
-        // Blink ignore the move for drag-detection purposes.
-        const moveHeld = (x: number, y: number): Promise<unknown> =>
-          cdp(tabId, 'Input.dispatchMouseEvent', {
-            type: 'mouseMoved',
-            x,
-            y,
-            button: 'left',
-            buttons: 1,
-          });
-
-        // Wiggle distance has to comfortably clear `kDragThreshold` (~5px on
-        // Mac, 4px on Linux/Windows). 5px landed *right* at the boundary and
-        // Chrome did not start the drag — 20px crosses it on every platform.
-        const WIGGLE_PX = 20;
-        // Time to wait for Input.dragIntercepted after the wiggle. 120ms was
-        // enough on local-only synthetic tests but flaky in real Chrome —
-        // 250ms is comfortable without dragging out the overall latency.
-        const INTERCEPT_TIMEOUT_MS = 250;
-
-        try {
-          if (isDraggable) {
-            try {
-              await cdp(tabId, 'Input.setInterceptDrags', { enabled: true });
-              interceptionEnabled = true;
-            } catch {
-              // setInterceptDrags is experimental — fall back to pointer mode silently.
-            }
-          }
-
-          if (interceptionEnabled) {
-            // Arm the listener BEFORE the press+wiggle that may trigger it.
-            const interceptPromise = waitForCdpEvent<CdpInputDragIntercepted>(
-              tabId,
-              'Input.dragIntercepted',
-              INTERCEPT_TIMEOUT_MS,
-            );
-            await cdp(tabId, 'Input.dispatchMouseEvent', {
-              type: 'mouseMoved',
-              x: fromX,
-              y: fromY,
-            });
-            await cdp(tabId, 'Input.dispatchMouseEvent', {
-              type: 'mousePressed',
-              x: fromX,
-              y: fromY,
-              button: 'left',
-              clickCount: 1,
-            });
-            if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
-            // Wiggle toward the destination so Chrome's native drag system
-            // crosses its activation threshold. Direction matters for libs
-            // that have direction-sensitive activation constraints.
-            const dx = toX - fromX;
-            const dy = toY - fromY;
-            const len = Math.hypot(dx, dy) || 1;
-            const wx = fromX + (dx / len) * WIGGLE_PX;
-            const wy = fromY + (dy / len) * WIGGLE_PX;
-            await moveHeld(wx, wy);
-
-            const intercepted = await interceptPromise;
-            if (intercepted) {
-              dragMode = 'html5';
-              interceptReceived = true;
-              eventsFired.push('Input.dragIntercepted');
-              const dragData = intercepted.data as Record<string, unknown>;
-              for (let i = 1; i <= steps; i++) {
-                const t = i / steps;
-                const { x, y } = interpolate(t);
-                await moveHeld(x, y);
-                await cdp(tabId, 'Input.dispatchDragEvent', {
-                  type: 'dragOver',
-                  x,
-                  y,
-                  data: dragData,
-                });
-                if (i === 1) eventsFired.push('dragOver');
-                if (stepDelayMs > 0) await sleep(stepDelayMs);
-              }
-              await cdp(tabId, 'Input.dispatchDragEvent', {
-                type: 'dragEnter',
-                x: toX,
-                y: toY,
-                data: dragData,
-              });
-              eventsFired.push('dragEnter');
-              await cdp(tabId, 'Input.dispatchDragEvent', {
-                type: 'dragOver',
-                x: toX,
-                y: toY,
-                data: dragData,
-              });
-              if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-              await cdp(tabId, 'Input.dispatchDragEvent', {
-                type: 'drop',
-                x: toX,
-                y: toY,
-                data: dragData,
-              });
-              eventsFired.push('drop');
-              await cdp(tabId, 'Input.dispatchMouseEvent', {
-                type: 'mouseReleased',
-                x: toX,
-                y: toY,
-                button: 'left',
-                clickCount: 1,
-              });
-            } else {
-              // Element was tagged draggable but no native drag fired — the page
-              // either preventDefault'd dragstart or wires its own pointer logic.
-              // Continue with pointer-only events from where we already pressed.
-              dragMode = 'pointer';
-              for (let i = 1; i <= steps; i++) {
-                const t = i / steps;
-                const { x, y } = interpolate(t);
-                await moveHeld(x, y);
-                if (stepDelayMs > 0) await sleep(stepDelayMs);
-              }
-              if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-              await cdp(tabId, 'Input.dispatchMouseEvent', {
-                type: 'mouseReleased',
-                x: toX,
-                y: toY,
-                button: 'left',
-                clickCount: 1,
-              });
-            }
-          } else {
-            // Pointer-only branch: no native drag involvement at all.
-            dragMode = 'pointer';
-            await cdp(tabId, 'Input.dispatchMouseEvent', {
-              type: 'mouseMoved',
-              x: fromX,
-              y: fromY,
-            });
-            await cdp(tabId, 'Input.dispatchMouseEvent', {
-              type: 'mousePressed',
-              x: fromX,
-              y: fromY,
-              button: 'left',
-              clickCount: 1,
-            });
-            if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
-            for (let i = 1; i <= steps; i++) {
-              const t = i / steps;
-              const { x, y } = interpolate(t);
-              await moveHeld(x, y);
-              if (stepDelayMs > 0) await sleep(stepDelayMs);
-            }
-            if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-            await cdp(tabId, 'Input.dispatchMouseEvent', {
-              type: 'mouseReleased',
-              x: toX,
-              y: toY,
-              button: 'left',
-              clickCount: 1,
-            });
-          }
-        } finally {
-          // Critical: leaving interception on would block the human user from
-          // dragging anything in this tab. Best-effort cleanup, swallow errors.
-          if (interceptionEnabled) {
-            try {
-              await cdp(tabId, 'Input.setInterceptDrags', { enabled: false });
-            } catch {
-              // ignore
-            }
-          }
-        }
-
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: {
-            from: { x: fromX, y: fromY, selector: fromSelector ?? null },
-            to: { x: toX, y: toY, selector: toSelector ?? null },
-            duration_ms_actual: Date.now() - dragStart,
-            drag_mode: dragMode,
-            interception_attempted: interceptionEnabled,
-            intercept_received: interceptReceived,
-            events_fired: eventsFired,
-          },
-        };
-      }
+      case 'drag':
+        return await handleDrag(tabId, msg, p, optStr);
 
       case 'evaluate': {
         const expression = str('expression');
@@ -1735,72 +1882,11 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
-      case 'dialog_respond': {
-        const accept = p.accept === true;
-        const promptText = optStr('prompt_text');
-        // No probing — if there is no dialog open, CDP returns an error.
-        // We propagate it; the caller decides if "no dialog to respond to"
-        // is a problem or a race they can ignore.
-        const params: Record<string, unknown> = { accept };
-        if (promptText !== undefined) params.promptText = promptText;
-        await cdp(tabId, 'Page.handleJavaScriptDialog', params);
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { accepted: accept },
-        };
-      }
+      case 'dialog_respond':
+        return await handleDialogRespond(tabId, msg, p, optStr);
 
-      case 'set_permission': {
-        const origin = str('origin');
-        const name = str('name');
-        const state_ = str('state');
-        // CDP `Browser.setPermission` requires a browser-level target,
-        // which `chrome.debugger.attach({ tabId })` does NOT give us in
-        // MV3. We use `chrome.contentSettings` instead — that surface IS
-        // available to extensions and covers the realistic permissions
-        // an agent needs to pre-set (geolocation, notifications, camera,
-        // microphone, clipboard, sensors).
-        const settingKey = CONTENT_SETTING_BY_PERMISSION[name];
-        if (!settingKey) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `set_permission: '${name}' is not supported by chrome.contentSettings in MV3. Supported names: ${Object.keys(CONTENT_SETTING_BY_PERMISSION).join(', ')}.`,
-          };
-        }
-        const setting = STATE_TO_CONTENT_SETTING[state_];
-        if (!setting) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `set_permission: unknown state '${state_}' (expected granted | denied | prompt).`,
-          };
-        }
-        // `chrome.contentSettings.<name>.set({ primaryPattern, setting })`
-        // requires a URL pattern, not a bare origin. Append `/*` so the
-        // pattern covers every path on the origin.
-        const primaryPattern = origin.endsWith('/*') ? origin : `${origin}/*`;
-        try {
-          await applyContentSetting(settingKey, primaryPattern, setting);
-        } catch (err) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: `set_permission: ${err instanceof Error ? err.message : String(err)}`,
-          };
-        }
-        return {
-          kind: 'tool.response',
-          id: msg.id,
-          ok: true,
-          result: { origin, name, state: state_, applied_as: settingKey },
-        };
-      }
+      case 'set_permission':
+        return await handleSetPermission(msg, str);
 
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };
