@@ -51,11 +51,13 @@ import {
 } from './flow-recording-policy.js';
 import { buildRecorderJs, buildStopRecorderJs } from './inpage/recorder.js';
 import {
+  DISCARDED_WHILE_SAVING_MESSAGE,
   appendRecordingStep,
   buildAmbiguousNote,
   buildNavigationWaitForStep,
   generateRecordingSession,
   isNavigationForRecording,
+  isSameRecordingSession,
   parseRecordedPayload,
   toFlowStep,
 } from './recording.js';
@@ -2203,8 +2205,28 @@ async function startRecording(tabId: number): Promise<{ ok: boolean; error?: str
   const session = generateRecordingSession();
   try {
     await cdp(tabId, 'Runtime.addBinding', { name: session.bindingName });
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not start recording: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  try {
     await injectRecorder(tabId, session);
   } catch (err) {
+    // The binding registered above is now orphaned — nothing else will ever
+    // call Runtime.removeBinding for a session that never reached
+    // `state.recording` (finishRecording, the normal binding-removal path,
+    // only runs for a recording that actually started). Without this
+    // rollback, every retried Record click after a failed injection (e.g. a
+    // page CSP blocking the injected script) leaks another binding on the
+    // same debugger session. Best-effort: a rollback failure must not mask
+    // the original injection error the caller needs to see.
+    try {
+      await cdp(tabId, 'Runtime.removeBinding', { name: session.bindingName });
+    } catch {
+      // Tab likely already detached — nothing left to roll back.
+    }
     return {
       ok: false,
       error: `Could not start recording: ${err instanceof Error ? err.message : String(err)}`,
@@ -2270,11 +2292,31 @@ async function stopRecording(
 
 /** Full teardown, dropping any captured-but-unsaved steps. Used by
  * Discard, by the "setting turned off mid-recording" force-stop, and by
- * `cleanup`/disconnect. */
+ * `cleanup`/disconnect.
+ *
+ * Also settles a `saveRecording` call still in flight for this tab, as a
+ * failure — without this, `state.pendingFlowSave` would keep waiting for
+ * the real `flow.recorded.result` (or the 10s timeout) after the recording
+ * it belongs to is already gone, and its success continuation would run
+ * LATER, re-clearing whatever recording state exists by then (see
+ * `isSameRecordingSession` in recording.ts for the other half of this
+ * fix — belt-and-braces against that same class of stale-continuation
+ * bug). This is what makes Discard-while-saving actually inert on the
+ * extension side instead of merely racing the real response.
+ *
+ * See `DISCARDED_WHILE_SAVING_MESSAGE`'s doc for the honest limitation:
+ * this cannot retract a `flow.recorded` request the server already
+ * received and persisted before this ran. */
 function clearRecording(tabId: number): void {
   removeRecordingNavListener(tabId);
   const state = tabStates.get(tabId);
-  if (state) state.recording = undefined;
+  if (!state) return;
+  state.recording = undefined;
+  const pending = state.pendingFlowSave;
+  if (pending) {
+    state.pendingFlowSave = undefined;
+    pending({ ok: false, error: DISCARDED_WHILE_SAVING_MESSAGE });
+  }
 }
 
 /** Discard a recording without saving. The popup only exposes Discard from
@@ -2356,6 +2398,11 @@ async function saveRecording(
 
   const ws = state.ws;
   const serverTabId = state.serverTabId;
+  // Captured before the await below so the continuation can tell THIS
+  // session apart from whatever `state.recording` holds once the server
+  // round trip resolves — see `isSameRecordingSession`'s doc in
+  // recording.ts.
+  const sessionNonce = recording.nonce;
   const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
     let settled = false;
     const settle = (r: { ok: boolean; error?: string }): void => {
@@ -2382,7 +2429,14 @@ async function saveRecording(
     }, 10_000);
   });
 
-  if (result.ok) clearRecording(tabId);
+  // The identity check guards against a Discard-then-Record race: Discard
+  // already settles `pendingFlowSave` synchronously (see `clearRecording`),
+  // so `result.ok` alone would normally be enough — this check is
+  // belt-and-braces for the same class of bug in case a NEW recording
+  // session is now live on this tab by the time the real response lands.
+  if (result.ok && isSameRecordingSession(state.recording?.nonce, sessionNonce)) {
+    clearRecording(tabId);
+  }
   return result;
 }
 

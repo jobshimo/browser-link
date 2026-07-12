@@ -103,19 +103,23 @@ afterEach(() => {
   stop();
 });
 
-function pointerDown(el: Element): void {
-  dispatchTrusted(el, new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+/** `button` defaults to 0 (left/primary) — the SECURITY block below passes
+ * 1 (middle) / 2 (right) explicitly to exercise the non-left-button gate. */
+function pointerDown(el: Element, button = 0): void {
+  dispatchTrusted(el, new MouseEvent('pointerdown', { bubbles: true, composed: true, button }));
 }
 
 /** A trusted mousedown — the recorder notes it as a user gesture but does
  * NOT emit a click (unlike pointerdown). Used to satisfy the type-commit
- * gesture gate in tests that assert on the type step alone. */
-function mouseDown(el: Element): void {
-  dispatchTrusted(el, new MouseEvent('mousedown', { bubbles: true, composed: true }));
+ * gesture gate in tests that assert on the type step alone. `button`
+ * defaults to 0 (left/primary); the button-filter block passes 2 to prove a
+ * non-left mousedown does not authorize a commit. */
+function mouseDown(el: Element, button = 0): void {
+  dispatchTrusted(el, new MouseEvent('mousedown', { bubbles: true, composed: true, button }));
 }
 
-function click(el: Element): void {
-  dispatchTrusted(el, new MouseEvent('click', { bubbles: true, composed: true }));
+function click(el: Element, button = 0): void {
+  dispatchTrusted(el, new MouseEvent('click', { bubbles: true, composed: true, button }));
 }
 
 function focusIn(el: Element): void {
@@ -139,8 +143,10 @@ function change(el: Element): void {
   dispatchTrusted(el, new Event('change', { bubbles: true }));
 }
 
-function keyDown(el: EventTarget, key: string): void {
-  dispatchTrusted(el, new KeyboardEvent('keydown', { key, bubbles: true }));
+/** `repeat` defaults to false — the SECURITY block below passes true to
+ * simulate OS key-repeat from a held-down key. */
+function keyDown(el: EventTarget, key: string, repeat = false): void {
+  dispatchTrusted(el, new KeyboardEvent('keydown', { key, bubbles: true, repeat }));
 }
 
 describe('click capture', () => {
@@ -193,6 +199,71 @@ describe('click capture', () => {
       { kind: 'click', selector: '#a-btn' },
       { kind: 'click', selector: '#b-btn' },
     ]);
+  });
+});
+
+describe('click capture — right/middle click is not recorded as a click', () => {
+  test('a right-click (button:2) pointerdown records no step', () => {
+    install();
+    const btn = document.createElement('button');
+    btn.id = 'ctx-btn';
+    document.body.appendChild(btn);
+
+    pointerDown(btn, 2);
+
+    expect(captured).toHaveLength(0);
+  });
+
+  test('a middle-click (button:1) pointerdown records no step', () => {
+    install();
+    const btn = document.createElement('button');
+    btn.id = 'mid-btn';
+    document.body.appendChild(btn);
+
+    pointerDown(btn, 1);
+
+    expect(captured).toHaveLength(0);
+  });
+
+  test('a non-left-button click event alone (no pointerdown) records no step', () => {
+    install();
+    const btn = document.createElement('button');
+    btn.id = 'aux-btn';
+    document.body.appendChild(btn);
+
+    click(btn, 2);
+
+    expect(captured).toHaveLength(0);
+  });
+
+  test('a left-click that follows a right-click on the same element is still recorded on its own', () => {
+    install();
+    const btn = document.createElement('button');
+    btn.id = 'menu-btn';
+    document.body.appendChild(btn);
+
+    pointerDown(btn, 2); // opens a context menu — no step
+    pointerDown(btn, 0); // a real left click right after — recorded normally
+
+    expect(steps()).toEqual([{ kind: 'click', selector: '#menu-btn' }]);
+  });
+
+  test('a non-left mousedown does NOT authorize a subsequent type-commit', () => {
+    install();
+    const input = document.createElement('input');
+    input.id = 'ctx-input';
+    document.body.appendChild(input);
+
+    // A right-click on a field (e.g. to open the paste context menu) is not
+    // the gesture that authorizes recording a type step for it — only a
+    // primary-button gesture (or a trusted key event while focused) is.
+    // Without the button gate in onMouseDown, this sequence emitted a
+    // fabricated {kind:'type'} step.
+    mouseDown(input, 2); // trusted, but right button — no gesture noted
+    focusIn(input);
+    focusOut(input);
+
+    expect(captured).toHaveLength(0);
   });
 });
 
@@ -412,6 +483,43 @@ describe('press capture — special keys outside text-field commits', () => {
       keyDown(input, key);
     }
     expect(captured).toEqual([]);
+  });
+});
+
+describe('press capture — OS key-repeat does not flood the step budget', () => {
+  test('a repeated (held-down) special key records no step', () => {
+    install();
+    keyDown(window, 'Escape', true);
+
+    expect(captured).toHaveLength(0);
+  });
+
+  test('holding a key down emits ONE press step (the initial keydown), not one per repeat', () => {
+    install();
+    const btn = document.createElement('button');
+    document.body.appendChild(btn);
+
+    keyDown(btn, 'Enter', false); // initial press — recorded
+    keyDown(btn, 'Enter', true); // OS repeat — ignored
+    keyDown(btn, 'Enter', true); // OS repeat — ignored
+
+    expect(steps()).toEqual([{ kind: 'press', key: 'Enter' }]);
+  });
+
+  test('holding Tab inside a focused field emits ONE commit+press pair, not one per repeat', () => {
+    install();
+    const input = document.createElement('input');
+    input.id = 'held-tab';
+    document.body.appendChild(input);
+
+    focusIn(input);
+    keyDown(input, 'Tab', false); // initial press — commits the type AND emits press
+    keyDown(input, 'Tab', true); // OS repeat — must not emit another press step
+
+    expect(steps()).toEqual([
+      { kind: 'type', selector: '#held-tab' },
+      { kind: 'press', key: 'Tab' },
+    ]);
   });
 });
 

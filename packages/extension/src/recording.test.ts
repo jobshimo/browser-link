@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
-import type { FlowStep } from './flow.js';
+import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
 import {
+  DISCARDED_WHILE_SAVING_MESSAGE,
   MAX_RECORDED_SELECTOR_LENGTH,
   MAX_RECORDING_STEPS,
   TEXT_PLACEHOLDER,
@@ -10,6 +11,7 @@ import {
   describeFlowStep,
   generateRecordingSession,
   isNavigationForRecording,
+  isSameRecordingSession,
   parseRecordedPayload,
   toFlowStep,
 } from './recording.js';
@@ -211,6 +213,30 @@ describe('generateRecordingSession', () => {
   });
 });
 
+describe('isSameRecordingSession — Discard/Save race guard', () => {
+  test('true when the live nonce matches the captured session nonce', () => {
+    expect(isSameRecordingSession('nonce-a', 'nonce-a')).toBe(true);
+  });
+
+  test('false when a DIFFERENT recording is now live on the tab (new nonce)', () => {
+    // The Discard-then-Record race: the user discarded the session
+    // saveRecording captured, then immediately started a new one on the
+    // same tab before the old save's server response arrived.
+    expect(isSameRecordingSession('nonce-b', 'nonce-a')).toBe(false);
+  });
+
+  test('false when nothing is recording anymore (live nonce undefined, e.g. after Discard)', () => {
+    expect(isSameRecordingSession(undefined, 'nonce-a')).toBe(false);
+  });
+});
+
+describe('DISCARDED_WHILE_SAVING_MESSAGE', () => {
+  test('is a non-empty, human-readable string', () => {
+    expect(typeof DISCARDED_WHILE_SAVING_MESSAGE).toBe('string');
+    expect(DISCARDED_WHILE_SAVING_MESSAGE.length).toBeGreaterThan(0);
+  });
+});
+
 describe('buildAmbiguousNote', () => {
   test('returns null when nothing was ambiguous', () => {
     expect(buildAmbiguousNote([])).toBeNull();
@@ -284,6 +310,10 @@ describe('appendRecordingStep — cap enforcement', () => {
 
   test('MAX_RECORDING_STEPS matches the browser.flow ceiling (20)', () => {
     expect(MAX_RECORDING_STEPS).toBe(20);
+  });
+
+  test('MAX_RECORDING_STEPS IS MAX_FLOW_STEPS — one source of truth, not two literals that happen to match', () => {
+    expect(MAX_RECORDING_STEPS).toBe(MAX_FLOW_STEPS);
   });
 });
 

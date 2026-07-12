@@ -13,11 +13,15 @@
  * (`"<TEXT>"`) — there is no code path here, or in `inpage/recorder.ts`,
  * that has access to a field's real value in the first place.
  */
-import type { FlowStep } from './flow.js';
+import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
 
-/** Mirrors `MAX_FLOW_STEPS` in flow.ts / the server's `browser.flow` schema
- * — a recording can never produce more steps than a flow recipe can hold. */
-export const MAX_RECORDING_STEPS = 20;
+/** Reuses `MAX_FLOW_STEPS` from flow.ts (itself mirroring the server's
+ * `browser.flow` schema) as the single source of truth — a recording can
+ * never produce more steps than a flow recipe can hold. Re-exported under
+ * this name so existing consumers (background.ts, the popup) don't need to
+ * churn their import path; this used to be a second hardcoded `20` that
+ * merely happened to match. */
+export const MAX_RECORDING_STEPS = MAX_FLOW_STEPS;
 
 /** The ONLY string ever used for a recorded `type` step's `text` field.
  * See the module doc — recorder.ts never transmits the real value, so this
@@ -83,6 +87,45 @@ export function generateRecordingSession(): RecordingSession {
     return firstLetter + hex.slice(1);
   };
   return { bindingName: rand(), activeFlag: rand(), stopFn: rand(), nonce: rand() };
+}
+
+/**
+ * Synthetic failure `background.ts`'s `clearRecording` hands to an in-flight
+ * `saveRecording` call's pending resolver when Discard (or any other
+ * teardown path — force-stop, disconnect, idle sweep) fires before the
+ * server's real `flow.recorded.result` arrives. Exported as a constant so
+ * background.ts and its tests share the exact same string rather than
+ * duplicating the literal.
+ *
+ * HONEST LIMITATION: this only reflects the EXTENSION's bookkeeping. If the
+ * `flow.recorded` request had already reached the server before the
+ * teardown ran, the server may have validated and persisted the flow
+ * regardless — there is no server-side "unsave" in this codebase (out of
+ * scope for this fix), so a Discard is a promise about what the extension
+ * does with the capture, not a guarantee the server never saw it.
+ */
+export const DISCARDED_WHILE_SAVING_MESSAGE = 'Discarded before the save finished.';
+
+/**
+ * Pure guard for `saveRecording`'s success continuation: true only when
+ * `liveSessionNonce` (the tab's CURRENT `RecordingState.nonce`, or
+ * `undefined` if nothing is recording right now) still identifies the SAME
+ * session `saveRecording` captured before awaiting the server round trip.
+ *
+ * Needed because `state.recording` can change out from under an in-flight
+ * save in more ways than a plain "was it cleared" check would catch: a
+ * Discard clears it to `undefined`, but the user can then immediately start
+ * a BRAND NEW recording on the same tab (`startRecording` only refuses when
+ * `state.recording` is set) — at which point `state.recording` is defined
+ * again, just for a different session. Without this guard, a late save
+ * response for the OLD session would run `clearRecording` and wipe the NEW
+ * session's in-progress or under-review steps.
+ */
+export function isSameRecordingSession(
+  liveSessionNonce: string | undefined,
+  capturedSessionNonce: string,
+): boolean {
+  return liveSessionNonce === capturedSessionNonce;
 }
 
 /** Upper bound on a recorded selector's length. genSelectorInfo's worst

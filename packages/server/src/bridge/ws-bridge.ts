@@ -368,6 +368,19 @@ export function handleFlowRecordedMessage(
   payload: FlowRecordedPayload,
   events: BridgeEventLog,
 ): ServerToExtension {
+  // `payload` arrives over the wire as a `JSON.parse` cast to
+  // `FlowRecordedPayload` (see `safeParse` above) — the static type is not
+  // enforced at runtime, so every field needs its own check here regardless
+  // of what the TS type claims. `name`/`description` already get one below;
+  // `origin` needs the same treatment before it reaches `saveFlow` ->
+  // `canonicalOrigin`: a non-string value either gets silently coerced by
+  // `new URL()` into some unrelated string, or falls through
+  // `canonicalOrigin`'s catch-all and gets stored completely as-is — either
+  // way a bogus, non-origin value would land in the map indistinguishable
+  // from a real one.
+  if (typeof payload.origin !== 'string' || payload.origin.trim().length === 0) {
+    return { kind: 'flow.recorded.result', ok: false, error: 'flow.recorded: origin is required' };
+  }
   const name = typeof payload.name === 'string' ? payload.name.trim() : '';
   if (name.length === 0) {
     return { kind: 'flow.recorded.result', ok: false, error: 'flow.recorded: name is required' };

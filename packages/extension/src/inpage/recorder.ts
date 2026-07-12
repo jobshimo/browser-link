@@ -194,6 +194,14 @@ export function buildRecorderJs(opts: RecorderInjectionOptions): string {
 
   function onPointerDown(ev) {
     if (!ev.isTrusted) return;
+    // Only the primary (left) button represents a click gesture for replay
+    // purposes. A right-click opens a context menu and a middle-click
+    // commonly opens a new tab or triggers autoscroll — recording either as
+    // a {kind:'click'} step would replay the wrong action. This also skips
+    // the gesture-tracking below for non-left buttons, which is correct:
+    // a right-click on a field should not be able to authorize a
+    // subsequent fabricated type-commit either.
+    if (ev.button !== 0) return;
     const target = deepestTarget(ev);
     if (!target) return;
     noteTrustedPointer(target);
@@ -209,12 +217,23 @@ export function buildRecorderJs(opts: RecorderInjectionOptions): string {
   // legitimate field focus in those cases.
   function onMouseDown(ev) {
     if (!ev.isTrusted) return;
+    // Same left-button gate as onPointerDown — WITHOUT it, a trusted
+    // right/middle mousedown on a field would still note a gesture and
+    // authorize a type-commit that the pointerdown gate above just refused,
+    // making the "cannot authorize a fabricated type-commit" claim false.
+    if (ev.button !== 0) return;
     const target = deepestTarget(ev);
     if (target) noteTrustedPointer(target);
   }
 
   function onClick(ev) {
     if (!ev.isTrusted) return;
+    // Same button gate as onPointerDown above — Chrome only fires 'click'
+    // for the primary button in practice (other buttons fire 'auxclick'
+    // instead), but check explicitly rather than relying on that behavior:
+    // this keeps the keyboard-activation fallback path (Enter/Space on a
+    // focused button, which always reports button:0) correct regardless.
+    if (ev.button !== 0) return;
     const target = deepestTarget(ev);
     if (!target) return;
     if (target === lastPointerDownTarget && Date.now() - lastPointerDownAt < CLICK_DEDUPE_MS) {
@@ -296,6 +315,12 @@ export function buildRecorderJs(opts: RecorderInjectionOptions): string {
   // action distinct from "the field lost focus". ===
   function onKeyDown(ev) {
     if (!ev.isTrusted) return;
+    // OS key-repeat (holding a key down) fires a fresh keydown every
+    // repeat interval for ONE physical keystroke. Recording each as its own
+    // press step would burn through the 20-step recording budget on a
+    // single held key; only the initial, non-repeat keydown is a genuine
+    // new user action.
+    if (ev.repeat) return;
     const key = ev.key;
     const inTrackedField = !!focusedField && ev.target === focusedField.el;
     // A trusted key event ON the focused field is itself a user gesture —

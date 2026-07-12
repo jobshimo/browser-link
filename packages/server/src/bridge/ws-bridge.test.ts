@@ -245,6 +245,26 @@ describe('handleFlowRecordedMessage', () => {
     expect(recalled.flows[0]?.description).toBe('opens the detail dialog');
   });
 
+  test('rejects a non-string origin, saving nothing and emitting no event', () => {
+    // `payload` arrives over the wire as an unchecked JSON.parse cast (see
+    // ws-bridge.ts's `safeParse`) — the static `origin: string` type is not
+    // enforced at runtime, so a malformed/hostile message can carry any
+    // JSON value here. Same treatment `name`/`description` already get.
+    const result = handleFlowRecordedMessage(payload({ origin: 42 as unknown as string }), events);
+    expect(result).toEqual({
+      kind: 'flow.recorded.result',
+      ok: false,
+      error: 'flow.recorded: origin is required',
+    });
+    expect(events.recent()).toHaveLength(0);
+  });
+
+  test('rejects an empty/whitespace origin, saving nothing and emitting no event', () => {
+    expect(handleFlowRecordedMessage(payload({ origin: '' }), events).ok).toBe(false);
+    expect(handleFlowRecordedMessage(payload({ origin: '   ' }), events).ok).toBe(false);
+    expect(events.recent()).toHaveLength(0);
+  });
+
   test('rejects an empty/whitespace name, saving nothing and emitting no event', () => {
     expect(handleFlowRecordedMessage(payload({ name: '' }), events)).toEqual({
       kind: 'flow.recorded.result',
