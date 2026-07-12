@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
-import { getMapHint } from './map/queries.js';
+import { getMapHints } from './map/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
 import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
@@ -154,13 +154,13 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     tabClaims,
     // list_tabs is on the hot path of nearly every agent turn — a map DB
     // problem (locked file, corrupt schema) must never take tab listing
-    // down with it. Degrade to "no hint" rather than letting the error
+    // down with it. Degrade to "no hints" rather than letting the error
     // propagate.
-    getMapHint: (origin) => {
+    getMapHints: (origins) => {
       try {
-        return getMapHint(origin);
+        return getMapHints(origins);
       } catch {
-        return null;
+        return new Map();
       }
     },
     // cdp-direct wiring — see cdp/gate.ts, cdp/targets.ts, cdp/transport.ts.

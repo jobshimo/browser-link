@@ -7,7 +7,7 @@ import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
 import { saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR } from './gate.js';
-import { callCdpTool, resetConnectionsForTest } from './transport.js';
+import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
 
 /* Fake single-target CDP-over-WS server: a real ephemeral WebSocketServer
  * (no real Chrome required) that answers whatever commands the test wires
@@ -17,6 +17,11 @@ import { callCdpTool, resetConnectionsForTest } from './transport.js';
 let wss: WebSocketServer | null = null;
 let dataDir: string;
 let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+/** Cumulative count of client sockets the fake server has accepted since
+ * the last `startFakeTarget` call — the connection-cache lifecycle tests
+ * assert against this directly to prove how many WebSockets a sequence of
+ * `callCdpTool` calls actually opened. */
+let connectionCount = 0;
 
 type Handler = (params: unknown) => unknown;
 
@@ -35,6 +40,7 @@ function startFakeTarget(
   return new Promise((resolve) => {
     wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     wss.on('connection', (ws) => {
+      connectionCount++;
       ws.on('message', (raw) => {
         const msg = JSON.parse(raw.toString()) as { id: number; method: string; params: unknown };
         const handler = handlers[msg.method];
@@ -62,9 +68,33 @@ function pushEvent(method: string, params: unknown): void {
   ws?.send(JSON.stringify({ method, params }));
 }
 
+/** Simulate the tab/Chrome dropping the debugger connection (tab closed,
+ * browser restarted, etc.) by closing the server-side end of the last
+ * accepted socket. */
+function closeTargetSocket(): void {
+  const ws = (wss as unknown as { _testWs?: WebSocket })._testWs;
+  ws?.close();
+}
+
+/** Bind a WebSocketServer on an OS-assigned port, then immediately close
+ * it, to get a port number that is (with overwhelming probability) not
+ * listening — used to make `CdpClient.connect()` fail fast with
+ * ECONNREFUSED instead of waiting out its 5s connect timeout. */
+function unusedPort(): Promise<number> {
+  return new Promise((resolve) => {
+    const probe = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    probe.on('listening', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'browser-link-cdp-transport-'));
   getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  connectionCount = 0;
 });
 
 afterEach(async () => {
@@ -215,5 +245,82 @@ describe('callCdpTool — tool dispatch', () => {
     await expect(
       callCdpTool(`cdp:${targetId}`, 'press', { key: 'this-is-not-a-real-key-name' }),
     ).rejects.toThrow(/unrecognized key/i);
+  });
+});
+
+/*
+ * Connection-cache lifecycle: `getConnection` in transport.ts pools one
+ * WebSocket per CDP targetId. These tests exercise that pool directly
+ * through the public `callCdpTool` entry point, counting how many sockets
+ * the fake server actually accepts — the pool is an internal cache with no
+ * other externally observable surface.
+ */
+describe('callCdpTool — connection cache lifecycle', () => {
+  test('two sequential calls to the same target reuse one cached connection', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test('two overlapping calls to a not-yet-cached target open exactly one connection', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    // Both calls miss the cache at the same tick — without single-flighting
+    // the dial, each would open its own socket and the loser would never
+    // make it into the cache to be swept (the leak this test guards).
+    const [a, b] = await Promise.all([
+      callCdpTool(`cdp:${targetId}`, 'ping', {}),
+      callCdpTool(`cdp:${targetId}`, 'ping', {}),
+    ]);
+    expect(connectionCount).toBe(1);
+    expect(a).toEqual(b);
+  });
+
+  test('a failed connection attempt does not poison the cache — the next call retries and succeeds', async () => {
+    const deadPort = await unusedPort();
+    grantAccess(deadPort);
+    await expect(callCdpTool('cdp:FAKE-TARGET-1', 'ping', {})).rejects.toThrow();
+
+    // Same targetId, now pointed at a real endpoint — must dial fresh
+    // rather than replay the earlier rejection.
+    const { port, targetId } = await startFakeTarget({});
+    saveConfig({ cdpDirectEnabled: true, cdpDirectPort: port });
+    const result = await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(result).toEqual({ title: '', url: 'https://example.com/' });
+    expect(connectionCount).toBe(1);
+  });
+
+  test('re-dials after the fake server closes the target socket', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(1);
+
+    closeTargetSocket();
+    // Let the client-side socket observe the close before the next call —
+    // real loopback close propagation, not simulated.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(2);
+  });
+
+  test('an idle connection is closed and evicted after the idle window', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    setIdleCleanupConfigForTest(30, 20);
+
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(1);
+
+    // Wait out the (shortened) idle window plus a couple of sweep ticks.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // The idle sweep must have closed and evicted the pooled connection —
+    // the next call dials fresh instead of reusing a stale cache entry.
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(2);
   });
 });

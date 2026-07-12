@@ -104,12 +104,16 @@ export interface BrowserToolDeps {
    * session, releases every claim, clears the event log — without killing
    * the MCP server. Optional so unit tests can omit it. */
   resetBridge?(): { dropped_tabs: number; released_claims: number; cleared_events: number };
-  /** Optional persistent-map hint lookup, keyed by tab origin — backs the
-   * `map` field `browser.list_tabs` attaches per tab (see
-   * `map/queries.ts`'s `getMapHint`). Optional so existing test fixtures
-   * keep compiling and so a build without the map DB wired up just omits
-   * the field on every tab, same degrade-gracefully pattern as `tabClaims`. */
-  getMapHint?(origin: string): MapHint | null;
+  /** Optional persistent-map hint lookup, batched over every DISTINCT tab
+   * origin in one call — backs the `map` field `browser.list_tabs` attaches
+   * per tab (see `map/queries.ts`'s `getMapHints`). `list_tabs` runs on
+   * nearly every agent turn, so resolving hints one origin at a time here
+   * would mean one origin lookup per tab on the hottest tool path; batching
+   * keeps it to one lookup per `list_tabs` call regardless of tab count.
+   * Optional so existing test fixtures keep compiling and so a build
+   * without the map DB wired up just omits the field on every tab, same
+   * degrade-gracefully pattern as `tabClaims`. */
+  getMapHints?(origins: string[]): Map<string, MapHint>;
   /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
    * merges its result into `listTabs()`'s. Internally gated on
    * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
@@ -561,10 +565,24 @@ async function handleListTabs(
 ): Promise<EnrichedTabSnapshot[]> {
   const extensionTabs = deps.listTabs();
   const cdpTabs = deps.listCdpTabs ? await deps.listCdpTabs() : [];
-  return [...extensionTabs, ...cdpTabs].map((t) => {
+  const allTabs = [...extensionTabs, ...cdpTabs];
+
+  // Resolve every tab's map hint in ONE batched call over the DISTINCT
+  // origins present, instead of one lookup per tab — see `getMapHints`'
+  // doc comment in browser-dispatch.ts's BrowserToolDeps for why this
+  // matters on a tool that runs nearly every agent turn.
+  let hintsByOrigin: Map<string, MapHint> = new Map();
+  if (deps.getMapHints) {
+    const origins = [...new Set(allTabs.map((t) => originOf(t.url)))].filter(
+      (o): o is string => o !== null,
+    );
+    if (origins.length > 0) hintsByOrigin = deps.getMapHints(origins);
+  }
+
+  return allTabs.map((t) => {
     const claim = deps.tabClaims?.getClaim(t.tab_id) ?? null;
-    const origin = deps.getMapHint ? originOf(t.url) : null;
-    const hint = origin ? (deps.getMapHint?.(origin) ?? null) : null;
+    const origin = originOf(t.url);
+    const hint = origin ? (hintsByOrigin.get(origin) ?? null) : null;
     return {
       ...t,
       claimed_by: claim ? toPublicClaim(claim) : null,

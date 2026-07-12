@@ -501,24 +501,74 @@ export interface MapHint {
  */
 export function getMapHint(origin: string): MapHint | null {
   if (!origin) return null;
+  return getMapHints([origin]).get(canonicalOrigin(origin)) ?? null;
+}
+
+/**
+ * Batched counterpart to `getMapHint`, for `browser.list_tabs`: resolving
+ * one hint per tab used to run `getMapHint` (3 synchronous queries: an app
+ * lookup + 2 COUNTs) once per tab, so a list of N tabs cost 3N queries on a
+ * tool call that runs on nearly every agent turn. This resolves every
+ * DISTINCT origin in exactly 3 queries total — one `WHERE origin IN (...)`
+ * app lookup, then one `WHERE app_id IN (...)` COUNT per table — regardless
+ * of how many tabs/origins are requested.
+ *
+ * Returns a `Map` keyed by the CANONICALIZED form of each input origin
+ * (same `canonicalOrigin` rule every other lookup path uses), holding only
+ * origins that actually have a hint — same "omit rather than ship a zero
+ * hint" contract as `getMapHint`, just batched. `getMapHint` itself is a
+ * thin single-origin wrapper around this, so both paths share one query
+ * shape and can never drift apart.
+ */
+export function getMapHints(origins: string[]): Map<string, MapHint> {
+  const result = new Map<string, MapHint>();
+  const canonicalOrigins = [...new Set(origins.filter((o) => o.length > 0).map(canonicalOrigin))];
+  if (canonicalOrigins.length === 0) return result;
+
   const db = getDb();
-  // The caller (handleListTabs) already passes `new URL(url).origin`, which
-  // IS canonical — canonicalizing again here is defense in depth for any
-  // other future caller handing in free text.
-  const app = db
-    .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC LIMIT 1')
-    .get(canonicalOrigin(origin)) as AppRow | undefined;
-  if (!app) return null;
+  const originPlaceholders = canonicalOrigins.map(() => '?').join(', ');
+  // One row per (origin, app) pair, most-recently-seen first — the same
+  // tie-break `findAppCandidates` uses (last_seen_at DESC, id DESC), so a
+  // multi-app origin resolves the same "winner" getMapHint's single-origin
+  // `ORDER BY ... LIMIT 1` would pick. Picking the per-origin winner in JS
+  // (first row seen per origin, below) rather than in SQL avoids a
+  // top-1-per-group query shape (correlated subquery or window function)
+  // for a table with, at most, tens of rows.
+  const apps = db
+    .prepare(
+      `SELECT * FROM apps WHERE origin IN (${originPlaceholders}) ORDER BY last_seen_at DESC, id DESC`,
+    )
+    .all(...canonicalOrigins) as AppRow[];
 
-  const { entries } = db
-    .prepare('SELECT COUNT(*) AS entries FROM entries WHERE app_id = ?')
-    .get(app.id) as { entries: number };
-  const { flows } = db
-    .prepare('SELECT COUNT(*) AS flows FROM flows WHERE app_id = ?')
-    .get(app.id) as { flows: number };
-  if (entries === 0 && flows === 0) return null;
+  const winnerByOrigin = new Map<string, AppRow>();
+  for (const app of apps) {
+    if (!winnerByOrigin.has(app.origin)) winnerByOrigin.set(app.origin, app);
+  }
+  if (winnerByOrigin.size === 0) return result;
 
-  return { app_key: app.app_key, entries, flows };
+  const appIds = [...winnerByOrigin.values()].map((app) => app.id);
+  const idPlaceholders = appIds.map(() => '?').join(', ');
+  const entryCounts = db
+    .prepare(
+      `SELECT app_id, COUNT(*) AS n FROM entries WHERE app_id IN (${idPlaceholders}) GROUP BY app_id`,
+    )
+    .all(...appIds) as { app_id: number; n: number }[];
+  const flowCounts = db
+    .prepare(
+      `SELECT app_id, COUNT(*) AS n FROM flows WHERE app_id IN (${idPlaceholders}) GROUP BY app_id`,
+    )
+    .all(...appIds) as { app_id: number; n: number }[];
+
+  const entriesByAppId = new Map(entryCounts.map((row) => [row.app_id, row.n]));
+  const flowsByAppId = new Map(flowCounts.map((row) => [row.app_id, row.n]));
+
+  for (const [origin, app] of winnerByOrigin) {
+    const entries = entriesByAppId.get(app.id) ?? 0;
+    const flows = flowsByAppId.get(app.id) ?? 0;
+    if (entries === 0 && flows === 0) continue;
+    result.set(origin, { app_key: app.app_key, entries, flows });
+  }
+  return result;
 }
 
 // === Flow recipes ==========================================================

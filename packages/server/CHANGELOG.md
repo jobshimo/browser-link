@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.3](https://github.com/jobshimo/browser-link/compare/v0.23.2...v0.23.3) (2026-07-12)
+
+### Bug Fixes
+
+- **cdp-direct:** fixed a WebSocket leak in the transport's per-target connection cache — `getConnection` only cached a RESOLVED `CdpClient`, so two concurrent tool calls to the same `cdp:` tab that both missed the cache (routine under multi-agent mode, or one agent issuing parallel calls to the same tab) each opened their own connection, both ran `connect()` + target re-validation + `Page.enable`, and both raced to `connections.set(targetId, ...)` — the second write overwrote the first, leaving the loser's open WebSocket with no map entry at all, invisible to the idle sweep and leaked until process exit. The cache now single-flights the dial: an in-flight `Promise<connection>` is cached per targetId so concurrent callers await the SAME attempt and exactly one socket is ever opened; a FAILED attempt is evicted the moment it settles (rejections are never cached, so the next call retries fresh), and the existing behaviors are preserved unchanged — a cached entry whose client is no longer open (tab closed, WS dropped) is still replaced with a fresh dial on the next call, connect-time target re-validation still runs via the same `isDrivablePageTarget` predicate, and the idle sweep keeps its exact 5-minute-unused / 60-second-interval contract.
+
+### Performance
+
+- **map:** `browser.list_tabs` now resolves the persistent-map hint for ALL connected tabs in one batched lookup instead of one `getMapHint` call (3 synchronous SQL queries: app lookup + 2 COUNTs) per tab — on a tool that runs on nearly every agent turn, N tabs cost 3N queries just for hint enrichment. New `getMapHints(origins)` in `map/queries.ts` resolves every DISTINCT origin in exactly 3 queries total regardless of tab count (`WHERE origin IN (...)` for the app rows with the same `last_seen_at DESC, id DESC` winner-per-origin rule the single lookup used, then one `WHERE app_id IN (...) GROUP BY app_id` COUNT per table); `handleListTabs` batches over the distinct origins of the merged extension + cdp tab list in one call. `getMapHint` is now a thin single-origin wrapper around the batched version, so the two paths share one query shape and cannot drift. The returned `MapHint` shape, the "omit the field rather than ship a zero hint" semantics, and `server.ts`'s degrade-to-no-hints try/catch (a map DB failure must never break tab listing) are all byte-identical to before.
+
+### Internal
+
+- **cdp-direct:** the transport's connection-cache lifecycle — shipped untested in v0.23.0 — is now covered directly in `cdp/transport.test.ts` against the existing fake CDP-over-WS server, counting the sockets the fake server actually accepts: cache reuse across sequential calls, the concurrency race above (verified to FAIL against the pre-fix `getConnection`: two sockets opened, plus a teardown hang from the leaked one), failed-attempt eviction (a dead endpoint does not poison the cache for a later retry), re-dial after the server closes the target's socket, and the idle sweep closing + evicting an unused connection. The idle thresholds are overridable through a test-only `setIdleCleanupConfigForTest` export (restored to the real defaults by `resetConnectionsForTest`) because waiting out the real 5-minute window in a test is not practical.
+- **map:** `map-hint.integration.test.ts` (real temp-dir SQLite, real handlers) gains the multi-tab batch paths: several tabs on one origin all carrying the same hint, a mix of tabs with and without a saved app, and a per-tab equivalence assertion that the batched `list_tabs` result matches the single-origin `getMapHint` for every tab's origin.
+
 ## [0.23.2](https://github.com/jobshimo/browser-link/compare/v0.23.1...v0.23.2) (2026-07-12)
 
 ### Bug Fixes

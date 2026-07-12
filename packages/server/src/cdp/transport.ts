@@ -61,13 +61,31 @@ interface CdpConnection {
   lastUsedAt: number;
 }
 
+/** Resolved connections currently believed live, keyed by CDP targetId.
+ * Only ever holds SETTLED, successful dials — see `getConnection`. */
 const connections = new Map<string, CdpConnection>();
+
+/** In-flight dial attempts, keyed by CDP targetId. A call that misses
+ * `connections` for a targetId already being dialed awaits THIS SAME
+ * promise instead of starting a second WebSocket — without it, two
+ * concurrent misses (routine under multi-agent mode, or one agent issuing
+ * parallel tool calls to the same tab) would each open their own
+ * connection and race to `connections.set`; the loser's socket would then
+ * have no map entry at all, so the idle sweep below could never find it
+ * and it would leak until process exit. Cleared the moment its attempt
+ * settles, win or lose (see `getConnection`'s `finally`), so a failed dial
+ * never poisons the cache for the next call. */
+const inFlight = new Map<string, Promise<CdpConnection>>();
 
 /** Idle connections are closed after this long unused — keeps a long-lived
  * server process from accumulating an unbounded number of open WebSockets
- * to targets an agent stopped touching hours ago. */
-const IDLE_CLEANUP_MS = 5 * 60_000;
-const IDLE_SWEEP_INTERVAL_MS = 60_000;
+ * to targets an agent stopped touching hours ago. `let`, not `const`:
+ * `setIdleCleanupConfigForTest` overrides both for tests, where waiting
+ * out the real 5-minute window is not practical. */
+const DEFAULT_IDLE_CLEANUP_MS = 5 * 60_000;
+const DEFAULT_IDLE_SWEEP_INTERVAL_MS = 60_000;
+let idleCleanupMs = DEFAULT_IDLE_CLEANUP_MS;
+let idleSweepIntervalMs = DEFAULT_IDLE_SWEEP_INTERVAL_MS;
 
 let cleanupTimer: NodeJS.Timeout | null = null;
 
@@ -76,23 +94,22 @@ function ensureCleanupTimer(): void {
   cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [targetId, conn] of connections) {
-      if (now - conn.lastUsedAt > IDLE_CLEANUP_MS) {
+      if (now - conn.lastUsedAt > idleCleanupMs) {
         conn.client.close();
         connections.delete(targetId);
       }
     }
-  }, IDLE_SWEEP_INTERVAL_MS);
+  }, idleSweepIntervalMs);
   cleanupTimer.unref();
 }
 
-async function getConnection(targetId: string): Promise<CdpClient> {
-  const existing = connections.get(targetId);
-  if (existing && existing.client.isOpen) {
-    existing.lastUsedAt = Date.now();
-    return existing.client;
-  }
-  if (existing) connections.delete(targetId);
-
+/**
+ * The actual dial: open the WebSocket, re-validate the target, enable
+ * `Page`. Extracted out of `getConnection` so concurrent callers can share
+ * ONE in-flight `Promise<CdpConnection>` (see `inFlight` above) instead of
+ * each running this independently.
+ */
+async function dial(targetId: string): Promise<CdpConnection> {
   const cfg = loadConfig();
   // sanitizeCdpPort neutralizes an untrusted config.json port string before
   // it reaches the ws URL; the host-assert below is defense in depth.
@@ -132,20 +149,68 @@ async function getConnection(targetId: string): Promise<CdpClient> {
   // wait_for_load uses. Runtime.evaluate and Input.* commands work without
   // their own domain being explicitly enabled.
   await client.send('Page.enable');
-  ensureCleanupTimer();
-  connections.set(targetId, { client, lastUsedAt: Date.now() });
-  return client;
+  return { client, lastUsedAt: Date.now() };
 }
 
-/** Drop every cached connection immediately, closing each WebSocket.
- * Exported for tests; not on any agent-reachable path. */
+async function getConnection(targetId: string): Promise<CdpClient> {
+  const existing = connections.get(targetId);
+  if (existing && existing.client.isOpen) {
+    existing.lastUsedAt = Date.now();
+    return existing.client;
+  }
+  if (existing) connections.delete(targetId);
+
+  // Single-flight the dial: a concurrent call for the same target joins
+  // whichever attempt is already in progress instead of starting its own
+  // (see `inFlight`'s doc comment for the leak this closes).
+  let attempt = inFlight.get(targetId);
+  if (!attempt) {
+    attempt = dial(targetId);
+    inFlight.set(targetId, attempt);
+  }
+
+  let conn: CdpConnection;
+  try {
+    conn = await attempt;
+  } finally {
+    // Clear the marker as soon as the attempt settles, win or lose — but
+    // only if it is still OURS. A later call may already have installed a
+    // fresh attempt of its own by the time we get here (e.g. right after
+    // this one failed); clearing that one instead would defeat its own
+    // single-flighting.
+    if (inFlight.get(targetId) === attempt) inFlight.delete(targetId);
+  }
+  // A rejected `attempt` propagates out of the `await` above before this
+  // line runs — nothing is ever written to `connections` on failure, so
+  // the very next call for this targetId dials fresh instead of replaying
+  // the same rejection forever.
+  connections.set(targetId, conn);
+  ensureCleanupTimer();
+  return conn.client;
+}
+
+/** Drop every cached connection immediately, closing each WebSocket, and
+ * restore the idle-cleanup thresholds to their defaults. Exported for
+ * tests; not on any agent-reachable path. */
 export function resetConnectionsForTest(): void {
   for (const conn of connections.values()) conn.client.close();
   connections.clear();
+  inFlight.clear();
   if (cleanupTimer) {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
+  idleCleanupMs = DEFAULT_IDLE_CLEANUP_MS;
+  idleSweepIntervalMs = DEFAULT_IDLE_SWEEP_INTERVAL_MS;
+}
+
+/** Test-only override for the idle-cleanup thresholds — the real values
+ * (5 min idle / 60s sweep) are far too slow to wait out for real in a
+ * test. Same footing as `resetConnectionsForTest`, which restores the
+ * defaults; not on any agent-reachable path. */
+export function setIdleCleanupConfigForTest(idleMs: number, sweepIntervalMs: number): void {
+  idleCleanupMs = idleMs;
+  idleSweepIntervalMs = sweepIntervalMs;
 }
 
 // === CDP primitives ========================================================

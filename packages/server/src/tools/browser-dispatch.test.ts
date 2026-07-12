@@ -577,7 +577,7 @@ describe('list_tabs enrichment', () => {
 });
 
 describe('list_tabs — map hint enrichment (v0.20.0)', () => {
-  test('omits the map field entirely when getMapHint is not wired up', async () => {
+  test('omits the map field entirely when getMapHints is not wired up', async () => {
     const deps = makeDeps({
       listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://a', title: 'A' }]),
     });
@@ -587,10 +587,10 @@ describe('list_tabs — map hint enrichment (v0.20.0)', () => {
     expect(tabs[0]).not.toHaveProperty('map');
   });
 
-  test('omits the map field when getMapHint returns null for the tab origin', async () => {
+  test('omits the map field when getMapHints returns nothing for the tab origin', async () => {
     const deps = makeDeps({
       listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://a', title: 'A' }]),
-      getMapHint: vi.fn(() => null),
+      getMapHints: vi.fn(() => new Map()),
     });
     const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
       Record<string, unknown>
@@ -598,16 +598,16 @@ describe('list_tabs — map hint enrichment (v0.20.0)', () => {
     expect(tabs[0]).not.toHaveProperty('map');
   });
 
-  test('attaches the map field when getMapHint has data for the tab origin', async () => {
-    const getMapHint = vi.fn((origin: string) =>
-      origin === 'http://a' ? { app_key: 'my-app', entries: 3, flows: 1 } : null,
+  test('attaches the map field when getMapHints has data for the tab origin', async () => {
+    const getMapHints = vi.fn(
+      () => new Map([['http://a', { app_key: 'my-app', entries: 3, flows: 1 }]]),
     );
     const deps = makeDeps({
       listTabs: vi.fn(() => [
         { tab_id: 'tab_1', url: 'http://a/page', title: 'A' },
         { tab_id: 'tab_2', url: 'http://b/page', title: 'B' },
       ]),
-      getMapHint,
+      getMapHints,
     });
     const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
       Record<string, unknown>
@@ -616,14 +616,38 @@ describe('list_tabs — map hint enrichment (v0.20.0)', () => {
       map: { app_key: 'my-app', entries: 3, flows: 1 },
     });
     expect(tabs.find((t) => t.tab_id === 'tab_2')).not.toHaveProperty('map');
-    // Called with the ORIGIN (scheme://host:port), not the full URL with path.
-    expect(getMapHint).toHaveBeenCalledWith('http://a');
+    // Called ONCE with every DISTINCT ORIGIN (scheme://host:port, not the
+    // full URL with path) — the batching this field exists to prove.
+    expect(getMapHints).toHaveBeenCalledTimes(1);
+    expect(getMapHints).toHaveBeenCalledWith(['http://a', 'http://b']);
+  });
+
+  test('resolves hints for every distinct origin in one call, regardless of tab count', async () => {
+    const getMapHints = vi.fn(
+      () => new Map([['http://a', { app_key: 'my-app', entries: 1, flows: 0 }]]),
+    );
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [
+        { tab_id: 'tab_1', url: 'http://a/one', title: 'A1' },
+        { tab_id: 'tab_2', url: 'http://a/two', title: 'A2' },
+        { tab_id: 'tab_3', url: 'http://a/three', title: 'A3' },
+      ]),
+      getMapHints,
+    });
+    const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+    expect(getMapHints).toHaveBeenCalledTimes(1);
+    expect(getMapHints).toHaveBeenCalledWith(['http://a']);
+    for (const tab of tabs) {
+      expect(tab).toMatchObject({ map: { app_key: 'my-app', entries: 1, flows: 0 } });
+    }
   });
 
   test('never throws and just omits map for a tab whose url does not parse', async () => {
     const deps = makeDeps({
       listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: '', title: 'blank' }]),
-      getMapHint: vi.fn(() => ({ app_key: 'x', entries: 1, flows: 0 })),
+      getMapHints: vi.fn(() => new Map([['http://a', { app_key: 'x', entries: 1, flows: 0 }]])),
     });
     const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
       Record<string, unknown>
