@@ -20,10 +20,14 @@ import { fileURLToPath } from 'node:url';
  *   - The injected `DEEP_QUERY_JS` / `DOM_HELPERS_JS` bodies (visibility,
  *     selector generation, deep traversal, occlusion hit-testing — the
  *     actual JS that runs in the page) must be byte-identical.
- *   - The numeric safety invariants of settle/flow/keymap must match.
+ *   - `settle.ts`, `keymap.ts` and `flow.ts` are compared FULL-BODY (every
+ *     line below the leading file-header doc comment, not just the
+ *     numeric constants) — the header itself is allowed to differ since it
+ *     names the sibling path, which is necessarily file-specific.
  *
  * If you INTENTIONALLY change one copy, apply the identical change to its
- * sibling and this test goes green again — that is the whole point.
+ * sibling (adjusting only the header if needed) and this test goes green
+ * again — that is the whole point.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,13 +55,16 @@ function templateBody(text: string, name: string): string {
   return text.slice(open + 1, close);
 }
 
-/** Pull `export const NAME = <number>;` values so numeric contracts can be
- * compared regardless of surrounding comments. Underscored numeric
- * separators (10_000) are normalized away. */
-function numericConst(text: string, name: string): number {
-  const m = new RegExp(`export const ${name} = ([0-9_]+);`).exec(text);
-  if (!m) throw new Error(`could not find numeric const ${name}`);
-  return Number(m[1].replace(/_/g, ''));
+/** Strip the leading `/** ... *\/` file-header doc comment and return
+ * everything after it. The header is the one place the two copies are
+ * INTENTIONALLY allowed to differ (it names the sibling path, which is
+ * necessarily file-specific) — everything else must be byte-identical. */
+function stripHeader(text: string): string {
+  const start = text.indexOf('/**');
+  if (start !== 0) throw new Error('expected file to start with a header doc comment');
+  const end = text.indexOf('*/', start);
+  if (end < 0) throw new Error('unterminated header doc comment');
+  return text.slice(end + 2);
 }
 
 describe('cdp verbatim-copy drift guard: injected DOM logic', () => {
@@ -79,39 +86,31 @@ describe('cdp verbatim-copy drift guard: injected DOM logic', () => {
   });
 });
 
-describe('cdp verbatim-copy drift guard: numeric safety invariants', () => {
-  test('settle constants match the extension original', () => {
-    const ext = read(join(EXT_ROOT, 'settle.ts'));
-    const srv = read(join(SRV_ROOT, 'settle.ts'));
-    for (const name of [
-      'DEFAULT_SETTLE_MS',
-      'MAX_SETTLE_MS',
-      'DEFAULT_SETTLE_TIMEOUT_MS',
-      'MAX_SETTLE_TIMEOUT_MS',
-    ]) {
-      expect(numericConst(srv, name)).toBe(numericConst(ext, name));
-    }
-  });
-
-  test('MAX_FLOW_STEPS matches the extension original', () => {
-    const ext = read(join(EXT_ROOT, 'flow.ts'));
-    const srv = read(join(SRV_ROOT, 'flow.ts'));
-    expect(numericConst(srv, 'MAX_FLOW_STEPS')).toBe(numericConst(ext, 'MAX_FLOW_STEPS'));
-  });
-
-  test('keymap MODIFIER_BITS mapping matches the extension original', () => {
-    // The modifier bitmask feeds trusted CDP key events — a drift here would
-    // silently change what Shift/Control/etc. dispatch as. Compare the raw
-    // object literal text (bit values only) between the two copies.
-    const grabBits = (text: string): string => {
-      // Anchor on the EXPORT, not a doc-comment mention of MODIFIER_BITS.
-      const m = /export const MODIFIER_BITS[^=]*=\s*\{([\s\S]*?)\}/.exec(text);
-      if (!m) throw new Error('could not find MODIFIER_BITS');
-      return m[1].replace(/\s+/g, '');
-    };
-    const ext = grabBits(read(join(EXT_ROOT, 'keymap.ts')));
-    const srv = grabBits(read(join(SRV_ROOT, 'keymap.ts')));
+describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => {
+  test('settle.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_ROOT, 'settle.ts')));
+    const srv = stripHeader(read(join(SRV_ROOT, 'settle.ts')));
     expect(srv).toBe(ext);
-    expect(srv).toContain('Shift:8');
+    // Sanity: the stripped body is the real module, not an empty match.
+    expect(srv).toContain('export const MAX_SETTLE_MS');
+    expect(srv).toContain('export async function settleSafely');
+  });
+
+  test('keymap.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_ROOT, 'keymap.ts')));
+    const srv = stripHeader(read(join(SRV_ROOT, 'keymap.ts')));
+    expect(srv).toBe(ext);
+    // Sanity: the modifier bitmask feeds trusted CDP key events — a drift
+    // here would silently change what Shift/Control/etc. dispatch as.
+    expect(srv).toContain('Shift: 8');
+    expect(srv).toContain('export function buildKeyEventSequence');
+  });
+
+  test('flow.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_ROOT, 'flow.ts')));
+    const srv = stripHeader(read(join(SRV_ROOT, 'flow.ts')));
+    expect(srv).toBe(ext);
+    expect(srv).toContain('export const MAX_FLOW_STEPS = 20;');
+    expect(srv).toContain('export async function runFlow');
   });
 });

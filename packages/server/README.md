@@ -66,7 +66,8 @@ browser-link doctor                        # diagnose current setup
 browser-link tools                         # show which of the 31 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link map                           # list apps the persistent UI map knows about
-browser-link about                         # full help — every command, every tool
+browser-link about                         # overview — what this is, how it works, every tool
+browser-link help                          # list every subcommand
 ```
 
 After `install`, restart your MCP client. After `extension`, load the

@@ -5,32 +5,35 @@
  * succeed, and threads an "implicit target" from a `find` step into the
  * very next click/type/press step that omits its own `selector`.
  *
- * Deliberately decoupled from chrome.debugger / CDP: every side effect
- * goes through the `FlowDeps` the caller injects. `background.ts` wires
- * the real perform* functions (already closed over the tab id and, for
- * wait_for, the tab's network buffer state); tests wire fakes. This is
- * what makes the sequencing logic — step-shape validation, implicit-target
- * threading, fail-fast, result shaping — unit-testable without a real
- * browser tab or CDP session.
+ * Deliberately decoupled from any specific transport: every side effect
+ * goes through the `FlowDeps` the caller injects. The concrete wiring —
+ * `background.ts` in the extension, `cdp/transport.ts` on the server —
+ * binds the real perform* functions (already closed over the tab id / CDP
+ * client); tests wire fakes. This is what makes the sequencing logic —
+ * step-shape validation, implicit-target threading, fail-fast, result
+ * shaping — unit-testable without a real browser tab or CDP session.
  *
- * `background.ts`'s `case 'click'` / `'type'` / `'press'` / `'find'` /
- * `'wait_for'` handlers and this module's step executor call the exact
- * SAME perform* functions — there is one implementation of each action,
- * never two copies that can drift apart.
+ * The individual `click` / `type` / `press` / `find` / `wait_for` tool
+ * handlers (`background.ts`'s `handleTool` switch in the extension,
+ * `callCdpTool`'s switch in `cdp/transport.ts` on the server) and this
+ * module's step executor call the exact SAME perform* functions — there
+ * is one implementation of each action, never two copies that can drift
+ * apart.
  */
 
-/** Structured success/failure outcome shared by every extracted perform*
- * function in background.ts. `ok:false` carries the exact same error
- * string the standalone tool.response would have returned for that
- * failure — both the thin `case` wrappers and this module's step executor
- * consume this shape, so the two call paths can never drift. */
+/** Structured success/failure outcome shared by every perform* function
+ * (`background.ts` in the extension, `cdp/transport.ts` on the server).
+ * `ok:false` carries the exact same error string the standalone
+ * tool.response would have returned for that failure — both the thin
+ * `case`/switch wrappers and this module's step executor consume this
+ * shape, so the two call paths can never drift. */
 export type ActionOutcome<T> = { ok: true; result: T } | { ok: false; error: string };
 
 /** Hard cap on steps per flow — mirrors the `maxItems: 20` on the MCP
  * schema (`browser-definitions.ts`) and the server-side validation
- * (`browser-dispatch.ts`). Enforced again here so the extension never
- * runs an oversized flow even if a future caller bypasses the server's
- * own check (e.g. a directly-wired test harness). */
+ * (`browser-dispatch.ts`). Enforced again here so neither the extension
+ * nor cdp-direct ever runs an oversized flow even if a future caller
+ * bypasses the server's own check (e.g. a directly-wired test harness). */
 export const MAX_FLOW_STEPS = 20;
 
 export interface FindStepParams {
@@ -141,7 +144,8 @@ function stepKind(step: unknown): StepKind | null {
 }
 
 /** Everything the step executor needs from the outside world. `background.ts`
- * binds each method to the real perform* function; tests bind fakes.
+ * (extension) / `cdp/transport.ts` (server) binds each method to the real
+ * perform* function; tests bind fakes.
  * `buildRecoverySnapshot` is called only on failure, and always renders the
  * same focused view (`only_interactive:true, max_interactive:40`) via the
  * shared `buildSnapshotJs` builder — same DOM walk `browser.snapshot` uses,
@@ -241,8 +245,8 @@ const NAVIGATION_RACE_HINT =
  * `steps` is typed as `FlowStep[]` for ergonomic test-writing, but every
  * element is re-validated at runtime via `stepKind()` before use — the
  * array may originate from an untrusted JSON payload cast at the wire
- * boundary in `background.ts`, and a malformed entry must fail the flow
- * cleanly rather than throw.
+ * boundary in `background.ts` (extension) / `cdp/transport.ts` (server),
+ * and a malformed entry must fail the flow cleanly rather than throw.
  */
 export async function runFlow(steps: readonly FlowStep[], deps: FlowDeps): Promise<FlowResult> {
   if (!Array.isArray(steps) || steps.length === 0) {

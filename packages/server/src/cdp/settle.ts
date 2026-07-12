@@ -8,14 +8,17 @@
  * `packages/extension/src/settle.ts`.
  *
  * Shared `settle_ms` / `settle_timeout_ms` handling for the click / type /
- * press actions in `cdp/transport.ts`. Takes the evaluate function as a
- * parameter so the failure handling is unit-testable without a real CDP
- * connection.
+ * press actions (`background.ts` in the extension, `cdp/transport.ts` on
+ * the server). Lives outside `inpage/` — this is caller-context logic, not
+ * injected page JS — and takes the evaluate function as a parameter so the
+ * failure handling is unit-testable without a live connection: the caller
+ * passes a closure over its own evaluate primitive (`evaluateInTab` in the
+ * extension, the CDP client on the server).
  */
 import { buildSettleJs } from './inpage/builders.js';
 
 /** Defaults and hard ceilings — same clamp-at-the-boundary philosophy as
- * the drag durations in the extension's background.ts. Mirrored by the
+ * the drag durations in the extension's `background.ts`. Mirrored by the
  * schema bounds in `tools/browser-definitions.ts`. */
 export const DEFAULT_SETTLE_MS = 150;
 export const MAX_SETTLE_MS = 2000;
@@ -50,7 +53,10 @@ export function resolveSettleParams(p: Record<string, unknown>): SettleParams | 
   return { settleMs, settleTimeoutMs };
 }
 
-/** Evaluate-in-page function shape settleSafely needs. */
+/** Evaluate-in-page function shape settleSafely needs — the caller passes
+ * a closure over its own evaluate primitive: `(expr) =>
+ * evaluateInTab(tabId, expr)` in the extension, `(expr) =>
+ * evaluateInTab(client, expr)` on the server. */
 export type EvaluateFn = (expression: string) => Promise<unknown>;
 
 /**

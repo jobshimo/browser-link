@@ -210,8 +210,9 @@ export function modifiersToBitmask(modifiers: readonly string[] | undefined): nu
 
 /** One CDP `Input.dispatchKeyEvent` command payload. A type alias (not an
  * interface) so it carries an implicit index signature and is directly
- * assignable to the `Record<string, unknown>` the transport's `cdp()`
- * helper takes. */
+ * assignable to the `Record<string, unknown>` params object the CDP
+ * command dispatcher (`cdp()` in the extension, `CdpClient.send()` on the
+ * server) takes. */
 export type CdpKeyEvent = {
   type: 'keyDown' | 'rawKeyDown' | 'char' | 'keyUp';
   modifiers: number;
@@ -225,7 +226,9 @@ export type CdpKeyEvent = {
 
 /**
  * Build the CDP `Input.dispatchKeyEvent` sequence for one key press.
- * Pure function so the exact event shapes are unit-testable.
+ * Pure function so the exact event shapes are unit-testable; the caller
+ * (`background.ts` in the extension, `cdp/transport.ts` on the server)
+ * dispatches each entry in order.
  *
  * Shape: a text-bearing key (printable characters, Space, Enter) gets a
  * `keyDown` (identity only, no `text` field — Chrome would insert text

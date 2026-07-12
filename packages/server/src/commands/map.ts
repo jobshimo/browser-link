@@ -104,7 +104,7 @@ const ES_UNIT_PLURAL: Record<string, string> = {
  * `last_seen_at`. Falls back to the raw ISO string for an unparsable
  * date rather than throwing — a display helper must never crash `map ls`
  * over one malformed timestamp. */
-function formatRelative(iso: string, language: Language): string {
+export function formatRelative(iso: string, language: Language): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return iso;
   const diffSec = Math.max(0, Math.round((Date.now() - then) / 1000));
@@ -152,6 +152,7 @@ interface MapI18n {
   showUsage: string;
   showHeader: (appKey: string, origin: string) => string;
   titleLabel: string;
+  notesLabel: string;
   lastSeenLabel: string;
   entriesHeader: (n: number) => string;
   flowsHeader: (n: number) => string;
@@ -202,6 +203,7 @@ const MAP_I18N: Record<Language, MapI18n> = {
     showUsage: 'Usage: browser-link map show <app>',
     showHeader: (appKey, origin) => `${appKey}  (${origin})`,
     titleLabel: 'title:',
+    notesLabel: 'notes:',
     lastSeenLabel: 'last seen:',
     entriesHeader: (n) => `Entries (${n}):`,
     flowsHeader: (n) => `Flows (${n}):`,
@@ -271,6 +273,7 @@ const MAP_I18N: Record<Language, MapI18n> = {
     showUsage: 'Uso: browser-link map show <app>',
     showHeader: (appKey, origin) => `${appKey}  (${origin})`,
     titleLabel: 'título:',
+    notesLabel: 'notas:',
     lastSeenLabel: 'última vez:',
     entriesHeader: (n) => `Entradas (${n}):`,
     flowsHeader: (n) => `Flows (${n}):`,
@@ -378,6 +381,7 @@ function runShow(argv: string[], language: Language): string {
   const lines: string[] = [];
   lines.push(t.showHeader(app.app_key, app.origin));
   if (app.title) lines.push(`  ${t.titleLabel} ${app.title}`);
+  if (app.notes) lines.push(`  ${t.notesLabel} ${app.notes}`);
   lines.push(`  ${t.lastSeenLabel} ${formatRelative(app.last_seen_at, language)}`);
   lines.push('');
   lines.push(t.entriesHeader(entries.length));
@@ -394,6 +398,7 @@ function runShow(argv: string[], language: Language): string {
           : t.statusUnverified;
       lines.push(`  [${e.kind}] ${e.url_pattern} — ${e.purpose} (${status})`);
       lines.push(`      ${payloadSnippet(e.payload)}`);
+      if (e.notes) lines.push(`      ${t.notesLabel} ${e.notes}`);
     }
   }
   lines.push('');

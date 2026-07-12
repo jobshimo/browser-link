@@ -361,6 +361,12 @@ On every MCP `initialize` handshake the server pushes a structured usage
 protocol to the client (when to call `recall`, what kinds to save, what
 to _never_ save) — no manual prompt engineering required.
 
+`browser.list_tabs` also surfaces the map directly: any tab whose origin
+already has saved knowledge carries a `map` field (`{ app_key, entries,
+flows }`). The usage protocol above instructs the agent to call
+`browser.map.recall` for that origin BEFORE taking a fresh `browser.snapshot`
+— no separate lookup needed to know memory already exists for that page.
+
 ## Persistent UI map
 
 > Every time the agent figures something out about a web app (where a
@@ -764,6 +770,11 @@ drive Chrome tabs **directly** over a Chrome launch flag
 entirely — no `chrome.debugger` attach, no popup, no per-tab "Connect this
 tab" click. Useful when you already run Chrome headless/remote-debuggable
 for other tooling and do not want to also load the extension.
+
+[Recording flows by demonstration](#recording-flows-by-demonstration) is
+popup-only — with no popup on a `cdp:` tab, there is nothing to press
+Record on, so recording does not apply to cdp-direct; replaying an
+already-saved recipe with `browser.flow` works the same on both transports.
 
 ### The security tradeoff, plainly
 

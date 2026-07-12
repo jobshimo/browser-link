@@ -970,7 +970,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.events',
     description:
-      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
+      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap), tab-claimed / tab-released / tab-claim-rejected (multi-agent tab ownership changes — see browser.claim_tab), dialog-opening / dialog-closed (a native alert/confirm/prompt/beforeunload started or finished blocking a tab — see browser.dialog_respond), tab-created (a new tab opened from an existing one, e.g. target="_blank" or window.open — see browser.wait_for_tab), flow-recorded (a demonstrated flow was saved to the persistent map — see browser.map.recall). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work, or just to notice a newly-recorded flow without polling. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -987,10 +987,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Inspect bridge lifecycle events — primary elections, tab registrations, tab renames.',
+        'Inspect bridge lifecycle events — primary elections, tab registrations/renames, tab claims, dialogs, new tabs, and newly-recorded flows.',
       when_to_use: [
         'When a tool call returns "Tab not connected: …" — look for a tab-renamed entry to find the new tab_id.',
         'To diagnose why a tab disappeared between calls.',
+        'To notice a flow-recorded entry — a recipe was just demonstrated and saved; recall it via browser.map.recall instead of re-discovering it.',
       ],
       gotchas: [
         'Pass latest_id from the previous call as since_id to page through new entries efficiently.',
