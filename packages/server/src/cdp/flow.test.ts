@@ -15,6 +15,18 @@ function fakeDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
       ok: true,
       result: { matched: true, elapsed_ms: 1, checks: 1 },
     })),
+    performDrag: vi.fn(async () => ({
+      ok: true,
+      result: {
+        from: { x: 1, y: 2, selector: '#a' },
+        to: { x: 3, y: 4, selector: '#b' },
+        duration_ms_actual: 50,
+        drag_mode: 'pointer' as const,
+        interception_attempted: false,
+        intercept_received: false,
+        events_fired: [],
+      },
+    })),
     buildRecoverySnapshot: vi.fn(async () => ({ interactive: [] })),
     ...overrides,
   };
@@ -92,5 +104,53 @@ describe('runFlow', () => {
     const result = await runFlow([{ wait_for: { selector: '#late' } }], deps);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/condition not met/);
+  });
+
+  test('a drag step executes via the injected performDrag and compacts to { ok, drag_mode }', async () => {
+    const deps = fakeDeps();
+    const result = await runFlow([{ drag: { from_selector: '#a', to_x: 300, to_y: 40 } }], deps);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.results).toEqual([{ ok: true, drag_mode: 'pointer' }]);
+    expect(deps.performDrag).toHaveBeenCalledWith({ from_selector: '#a', to_x: 300, to_y: 40 });
+  });
+
+  test('a drag step does not consume the implicit target from a preceding find', async () => {
+    const deps = fakeDeps();
+    const result = await runFlow(
+      [
+        { find: { text: 'Save' } },
+        { drag: { from_selector: '#a', to_selector: '#b' } },
+        { click: {} },
+      ],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(deps.performDrag).toHaveBeenCalledWith({ from_selector: '#a', to_selector: '#b' });
+    expect(deps.performClick).toHaveBeenCalledWith(expect.objectContaining({ selector: '#found' }));
+  });
+
+  test('the cdp wiring style of performDrag (always ok:false) fails the flow with the unsupported error', async () => {
+    // Mirrors transport.ts's flow-case binding for cdp-direct tabs, where
+    // drag is out of v1 scope — the flow must fail fast AT the drag step
+    // with the exact standalone-tool error, after earlier steps ran.
+    const deps = fakeDeps({
+      performDrag: vi.fn(async () => ({
+        ok: false as const,
+        error:
+          'browser.drag is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.',
+      })),
+    });
+    const result = await runFlow(
+      [{ press: { key: 'Enter' } }, { drag: { from_selector: '#a', to_selector: '#b' } }],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failed_step).toBe(1);
+      expect(result.step_kind).toBe('drag');
+      expect(result.steps_completed).toBe(1);
+      expect(result.error).toMatch(/not supported over cdp-direct/);
+      expect(result.error).toMatch(/Chrome extension/);
+    }
   });
 });

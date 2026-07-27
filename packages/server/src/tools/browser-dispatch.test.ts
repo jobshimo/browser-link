@@ -1286,7 +1286,9 @@ describe('browser.flow dispatch', () => {
           deps,
           TEST_CALLER,
         ),
-      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+      ).rejects.toThrow(
+        /must have exactly one of find \| click \| type \| press \| wait_for \| drag/,
+      );
       expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
 
@@ -1299,7 +1301,9 @@ describe('browser.flow dispatch', () => {
           deps,
           TEST_CALLER,
         ),
-      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+      ).rejects.toThrow(
+        /must have exactly one of find \| click \| type \| press \| wait_for \| drag/,
+      );
     });
 
     test('rejects a find step with no text', async () => {
@@ -1395,7 +1399,9 @@ describe('browser.flow dispatch', () => {
           deps,
           TEST_CALLER,
         ),
-      ).rejects.toThrow(/must have exactly one of find \| click \| type \| press \| wait_for/);
+      ).rejects.toThrow(
+        /must have exactly one of find \| click \| type \| press \| wait_for \| drag/,
+      );
       expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
 
@@ -1481,6 +1487,69 @@ describe('browser.flow dispatch', () => {
           expect.any(Number),
         );
       }
+    });
+
+    test('accepts drag steps with selector endpoints, coordinate endpoints, or a mix', async () => {
+      for (const body of [
+        { from_selector: '#card', to_selector: '#slot' },
+        { from_x: 10, from_y: 20, to_x: 300, to_y: 40 },
+        { from_selector: '#card', to_x: 300, to_y: 40, duration_ms: 500 },
+      ]) {
+        const deps = makeDeps();
+        const steps = [{ drag: body }];
+        await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+        expect(deps.callBrowserTool).toHaveBeenCalledWith(
+          'tab_1',
+          'flow',
+          { steps },
+          expect.any(Number),
+        );
+      }
+    });
+
+    test('rejects a drag step missing its source endpoint (no implicit-target fallback)', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          // A preceding find must NOT rescue the drag — drag stays out of
+          // the implicit-target chain, unlike a selector-less click.
+          {
+            tab_id: 'tab_1',
+            steps: [{ find: { text: 'Card' } }, { drag: { to_selector: '#slot' } }],
+          },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/drag requires from_selector or both from_x and from_y/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('rejects a drag step missing its destination endpoint', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ drag: { from_selector: '#card', to_x: 300 } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/drag requires to_selector or both to_x and to_y/);
+    });
+
+    test('rejects a drag step with a non-numeric coordinate', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          {
+            tab_id: 'tab_1',
+            steps: [{ drag: { from_x: 'left', from_y: 20, to_selector: '#slot' } }],
+          },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/drag.from_x must be a finite number/);
     });
   });
 
@@ -1609,6 +1678,71 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
 
+    test('a drag step contributes its duration_ms plus holds to the sum', async () => {
+      const deps = makeDeps();
+      // 2_000 + (20_000 + 5_000 + 5_000 + 500) = 32_500 — the drag's own
+      // movement/hold budget is modeled truthfully, not settle-based.
+      const steps = [
+        {
+          drag: {
+            from_selector: '#card',
+            to_selector: '#slot',
+            duration_ms: 20_000,
+            hold_before_move_ms: 5_000,
+            hold_before_release_ms: 5_000,
+          },
+        },
+      ];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        32_500,
+      );
+    });
+
+    test('a default drag step costs 1_500 + slack and sits under the floor', async () => {
+      const deps = makeDeps();
+      // 2_000 + (1_500 + 500) = 4_000 → floored to 15_000.
+      const steps = [{ drag: { from_selector: '#card', to_selector: '#slot' } }];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('a drag hold above the 10s extension cap is clamped before summing', async () => {
+      const deps = makeDeps();
+      // 2_000 + (1_500 + min(999_999, 10_000) + 500) = 14_000 → floored to
+      // 15_000 — NOT rejected, and NOT 999_999-based.
+      const steps = [
+        { drag: { from_selector: '#a', to_selector: '#b', hold_before_release_ms: 999_999 } },
+      ];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('REJECTS a flow of long drags whose truthful worst case exceeds the ceiling', async () => {
+      const deps = makeDeps();
+      // 2_000 + 2 * (40_000 + 500) = 83_000 > 60_000.
+      const steps = Array.from({ length: 2 }, () => ({
+        drag: { from_selector: '#a', to_selector: '#b', duration_ms: 40_000 },
+      }));
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(/worst-case budget 83s exceeds the 60s ceiling/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
     test('a wait_for timeout_ms above 30s is clamped before summing', async () => {
       const deps = makeDeps();
       await handleBrowserTool(
@@ -1645,7 +1779,7 @@ describe('browser.flow schema shape', () => {
     expect(schema.properties.steps).toBeDefined();
   });
 
-  test('steps is an array capped at 20 items, each a oneOf of the 5 step kinds', () => {
+  test('steps is an array capped at 20 items, each a oneOf of the 6 step kinds', () => {
     const stepsSchema = (
       def!.inputSchema as {
         properties: { steps: { type: string; minItems: number; maxItems: number; items: unknown } };
@@ -1655,9 +1789,10 @@ describe('browser.flow schema shape', () => {
     expect(stepsSchema.minItems).toBe(1);
     expect(stepsSchema.maxItems).toBe(20);
     const oneOf = (stepsSchema.items as { oneOf: { required: string[] }[] }).oneOf;
-    expect(oneOf).toHaveLength(5);
+    expect(oneOf).toHaveLength(6);
     expect(oneOf.map((v) => v.required[0]).sort()).toEqual([
       'click',
+      'drag',
       'find',
       'press',
       'type',

@@ -247,6 +247,29 @@ describe('callCdpTool — tool dispatch', () => {
     );
   });
 
+  test('a flow containing a drag step fails AT that step with the same unsupported-drag error', async () => {
+    // Runtime.evaluate serves the failure path's recovery snapshot here —
+    // the drag step itself never reaches the page: the flow's performDrag
+    // binding rejects it locally as out of cdp-direct's v1 scope.
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({ result: { value: { interactive: [] } } }),
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ drag: { from_selector: '#card', to_selector: '#slot' } }],
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      failed_step: 0,
+      step_kind: 'drag',
+      steps_completed: 0,
+      recovery_snapshot: { interactive: [] },
+    });
+    const error = (result as { error: string }).error;
+    expect(error).toMatch(/browser\.drag is not supported over cdp-direct/);
+    expect(error).toMatch(/Chrome extension/);
+  });
+
   test('click rejects with "Element not found" when resolution fails', async () => {
     const { port, targetId } = await startFakeTarget({
       'Runtime.evaluate': () => ({ result: { value: { ok: false, reason: 'not-found' } } }),

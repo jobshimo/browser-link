@@ -3,6 +3,7 @@ import {
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
+  type DragStepResult,
   type FindStepResult,
   type FlowDeps,
   type PressStepResult,
@@ -38,7 +39,24 @@ function makeDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
       ok: true,
       result: { matched: true, elapsed_ms: 10, checks: 1 },
     })) as FlowDeps['performWaitFor'],
+    performDrag: vi.fn(async () => ({
+      ok: true,
+      result: okDragResult(),
+    })) as FlowDeps['performDrag'],
     buildRecoverySnapshot: vi.fn(async () => ({ title: 'recovered', interactive: [] })),
+    ...overrides,
+  };
+}
+
+function okDragResult(overrides: Partial<DragStepResult> = {}): DragStepResult {
+  return {
+    from: { x: 10, y: 20, selector: '#card' },
+    to: { x: 300, y: 20, selector: '#slot' },
+    duration_ms_actual: 120,
+    drag_mode: 'pointer',
+    interception_attempted: false,
+    intercept_received: false,
+    events_fired: [],
     ...overrides,
   };
 }
@@ -196,6 +214,90 @@ describe('runFlow — implicit target threading', () => {
       expect.objectContaining({ selector: undefined, text: 'shrek' }),
     );
     expect(performPress).toHaveBeenCalledWith(expect.objectContaining({ selector: undefined }));
+  });
+});
+
+describe('runFlow — drag steps', () => {
+  test('executes via performDrag and compacts the result to { ok, drag_mode }', async () => {
+    const performDrag = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          result: okDragResult({ drag_mode: 'html5' }),
+        }) satisfies ActionOutcome<DragStepResult>,
+    );
+    const deps = makeDeps({ performDrag });
+    const result = await runFlow(
+      [{ drag: { from_selector: '#card', to_selector: '#slot' } }],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([{ ok: true, drag_mode: 'html5' }]);
+    expect(performDrag).toHaveBeenCalledWith({ from_selector: '#card', to_selector: '#slot' });
+  });
+
+  test('coordinate endpoints and duration/hold options pass through unchanged', async () => {
+    const deps = makeDeps();
+    const params = {
+      from_x: 10,
+      from_y: 20,
+      to_x: 300,
+      to_y: 40,
+      duration_ms: 500,
+      hold_before_move_ms: 100,
+      hold_before_release_ms: 200,
+    };
+    const result = await runFlow([{ drag: params }], deps);
+    expect(result.ok).toBe(true);
+    expect(deps.performDrag).toHaveBeenCalledWith(params);
+  });
+
+  test('drag neither consumes nor sets the implicit target', async () => {
+    const performClick = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          result: { clicked: '#gif-btn', tag: 'button' },
+        }) satisfies ActionOutcome<ClickStepResult>,
+    );
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#gif-btn' })),
+      performClick,
+    });
+    const result = await runFlow(
+      [
+        { find: { text: 'GIF' } },
+        { drag: { from_selector: '#card', to_selector: '#slot' } },
+        { click: {} },
+      ],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    // The drag step received EXACTLY its own params — no injected selector —
+    // and the find's implicit target survived it for the later click.
+    expect(deps.performDrag).toHaveBeenCalledWith({ from_selector: '#card', to_selector: '#slot' });
+    expect(performClick).toHaveBeenCalledWith(expect.objectContaining({ selector: '#gif-btn' }));
+  });
+
+  test('a failing drag stops the flow with step_kind drag and the standalone error string', async () => {
+    const deps = makeDeps({
+      performDrag: vi.fn(async () => ({
+        ok: false,
+        error: 'drag: provide from_selector or both from_x and from_y',
+      })) as FlowDeps['performDrag'],
+    });
+    const result = await runFlow(
+      [{ drag: { to_selector: '#slot' } }, { press: { key: 'Enter' } }],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(0);
+    expect(result.step_kind).toBe('drag');
+    expect(result.error).toBe('drag: provide from_selector or both from_x and from_y');
+    expect(result.recovery_snapshot).toEqual({ title: 'recovered', interactive: [] });
+    expect(deps.performPress).not.toHaveBeenCalled();
   });
 });
 

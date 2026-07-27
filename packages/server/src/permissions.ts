@@ -133,7 +133,7 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     name: 'browser.flow',
     family: 'bridge',
     category: 'action',
-    summary: 'Run a find/click/type/press/wait_for step sequence in one round trip',
+    summary: 'Run a find/click/type/press/wait_for/drag step sequence in one round trip',
   },
   {
     name: 'browser.dialog_respond',

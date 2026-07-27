@@ -295,8 +295,17 @@ const FLOW_ACTION_SETTLE_WORST_MS = DEFAULT_SETTLE_TIMEOUT_MS;
  * step the extension would happily run longer. */
 const FLOW_WAIT_FOR_DEFAULT_TIMEOUT_MS = 5_000;
 const FLOW_WAIT_FOR_MAX_TIMEOUT_MS = 30_000;
+/** Mirror the standalone drag contract: interpolation defaults to 1500ms,
+ * the extension clamps `duration_ms` at 60s and each hold at 10s
+ * (`MAX_DRAG_DURATION_MS` / `MAX_DRAG_HOLD_MS` in `background.ts`). The
+ * budget uses the same numbers so it never under-models a step the
+ * extension would happily run longer — a max-duration drag inside a flow
+ * honestly exceeds the 60s ceiling and is rejected up front. */
+const FLOW_DRAG_DEFAULT_DURATION_MS = 1_500;
+const FLOW_DRAG_MAX_DURATION_MS = 60_000;
+const FLOW_DRAG_MAX_HOLD_MS = 10_000;
 
-const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for'] as const;
+const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for', 'drag'] as const;
 type FlowStepKind = (typeof FLOW_STEP_KINDS)[number];
 
 const FLOW_WAIT_CONDITIONS = new Set(['visible', 'hidden', 'attached', 'detached']);
@@ -362,7 +371,7 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
     if (!kind) {
       return {
         ok: false,
-        error: `step ${i}: must have exactly one of find | click | type | press | wait_for`,
+        error: `step ${i}: must have exactly one of find | click | type | press | wait_for | drag`,
       };
     }
     const body = step[kind];
@@ -403,6 +412,49 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
         };
       }
       budgetMs += flowActionBudgetMs(bodyRecord);
+    } else if (kind === 'drag') {
+      // Mirror the standalone browser.drag contract checks: each endpoint
+      // is a selector OR a complete coordinate pair. Deliberately no
+      // implicit-target participation — a drag has TWO endpoint slots, so
+      // a preceding find's single selector could not unambiguously fill
+      // one; both endpoints are always explicit.
+      for (const key of ['from_selector', 'to_selector'] as const) {
+        if (bodyRecord[key] !== undefined && typeof bodyRecord[key] !== 'string') {
+          return { ok: false, error: `step ${i}: drag.${key} must be a string` };
+        }
+      }
+      for (const key of [
+        'from_x',
+        'from_y',
+        'to_x',
+        'to_y',
+        'duration_ms',
+        'hold_before_move_ms',
+        'hold_before_release_ms',
+      ] as const) {
+        if (
+          bodyRecord[key] !== undefined &&
+          (typeof bodyRecord[key] !== 'number' || !Number.isFinite(bodyRecord[key]))
+        ) {
+          return { ok: false, error: `step ${i}: drag.${key} must be a finite number` };
+        }
+      }
+      const hasFrom =
+        bodyRecord.from_selector !== undefined ||
+        (bodyRecord.from_x !== undefined && bodyRecord.from_y !== undefined);
+      const hasTo =
+        bodyRecord.to_selector !== undefined ||
+        (bodyRecord.to_x !== undefined && bodyRecord.to_y !== undefined);
+      if (!hasFrom) {
+        return {
+          ok: false,
+          error: `step ${i}: drag requires from_selector or both from_x and from_y`,
+        };
+      }
+      if (!hasTo) {
+        return { ok: false, error: `step ${i}: drag requires to_selector or both to_x and to_y` };
+      }
+      budgetMs += flowDragBudgetMs(bodyRecord);
     } else {
       // wait_for — mirror the standalone dispatcher's contract checks so a
       // bad step fails HERE with a clear message instead of in-page with a
@@ -460,6 +512,21 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
 function flowActionBudgetMs(body: Record<string, unknown>): number {
   const settleDisabled = body.settle_ms === 0;
   return (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) + FLOW_STEP_SLACK_MS;
+}
+
+/** Worst case for one drag step: its clamped `duration_ms` (default 1500,
+ * extension cap 60s) plus both clamped holds (extension cap 10s each)
+ * plus the per-step slack. Negative or non-finite values fall back to the
+ * defaults, matching the extension's own guard. */
+function flowDragBudgetMs(body: Record<string, unknown>): number {
+  const num = (v: unknown, fallback: number, max: number): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(v, max) : fallback;
+  return (
+    num(body.duration_ms, FLOW_DRAG_DEFAULT_DURATION_MS, FLOW_DRAG_MAX_DURATION_MS) +
+    num(body.hold_before_move_ms, 0, FLOW_DRAG_MAX_HOLD_MS) +
+    num(body.hold_before_release_ms, 0, FLOW_DRAG_MAX_HOLD_MS) +
+    FLOW_STEP_SLACK_MS
+  );
 }
 
 /** Worst case for one wait_for step: its clamped `timeout_ms` (the

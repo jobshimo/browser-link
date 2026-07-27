@@ -85,7 +85,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         flows: {
           type: 'array',
           description:
-            'Optional named, replayable flow recipes for this app. Each `steps` array follows the EXACT browser.flow step grammar (find/click/type/press/wait_for) and is rejected with the same validation browser.flow applies. Use placeholder text for free-text values instead of real domain data (e.g. `type text "<QUERY>"`) — agents substitute the placeholder before calling browser.flow. Upserts on (app, name).',
+            'Optional named, replayable flow recipes for this app. Each `steps` array follows the EXACT browser.flow step grammar (find/click/type/press/wait_for/drag) and is rejected with the same validation browser.flow applies. Use placeholder text for free-text values instead of real domain data (e.g. `type text "<QUERY>"`) — agents substitute the placeholder before calling browser.flow. Upserts on (app, name).',
           items: {
             type: 'object',
             properties: {
@@ -97,7 +97,8 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
               description: { type: 'string' },
               steps: {
                 type: 'array',
-                description: 'Ordered find/click/type/press/wait_for steps — browser.flow grammar.',
+                description:
+                  'Ordered find/click/type/press/wait_for/drag steps — browser.flow grammar.',
                 items: { type: 'object' },
               },
             },

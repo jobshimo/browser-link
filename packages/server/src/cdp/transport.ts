@@ -715,6 +715,12 @@ export async function callCdpTool(
         performType: (tp) => performType(client, tp),
         performPress: (pp) => performPress(client, pp),
         performWaitFor: (wp) => performWaitFor(client, wp),
+        // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it
+        // to false), so a flow drag step fails fast at this step with the
+        // exact error the standalone browser.drag returns on a cdp: tab —
+        // naming the extension transport as the fallback.
+        performDrag: () =>
+          Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
         buildRecoverySnapshot: () =>
           evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
       });

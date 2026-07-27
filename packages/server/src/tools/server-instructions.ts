@@ -70,7 +70,8 @@ remote-debugging protocol instead of through the extension. This ONLY
 happens when the user has BOTH enabled cdp-direct AND granted a live,
 time-boxed permission — you cannot request, enable, or grant this
 yourself. Every \`browser.*\` tool works on a \`cdp:\` tab exactly like on an
-extension tab, EXCEPT \`browser.drag\`, \`browser.console\`,
+extension tab, EXCEPT \`browser.drag\` (standalone and as a
+\`browser.flow\` drag step), \`browser.console\`,
 \`browser.network\`, \`browser.network_body\`, \`browser.canvas_screenshot\`,
 \`browser.dialog_respond\`, \`browser.set_permission\` and
 \`browser.wait_for_tab\`, which are not implemented for this transport yet —
@@ -122,11 +123,16 @@ tokens AND more reliable than a hand-rolled expression.
   need a corrective follow-up). A \`find\` step's resolved selector
   becomes the implicit target for the very next click/type/press step
   that omits \`selector\`, so you never have to copy a selector from one
-  call into the next by hand. Flow is strictly sequential and fails fast
+  call into the next by hand. Repeated drag-and-drop (card-matching
+  exercises, sortable lists) batches the same way: N \`drag\` steps —
+  same params as \`browser.drag\`, endpoints always explicit, drag stays
+  OUT of the implicit-target chain — in ONE flow instead of N
+  \`browser.drag\` calls (extension tabs only; a drag step on a \`cdp:\`
+  tab fails at that step). Flow is strictly sequential and fails fast
   on the first bad step, returning a focused \`recovery_snapshot\` so you
   do not need a follow-up \`browser.snapshot\` to see where it stopped.
-  Reach for individual click/type/press/find/wait_for calls only when you
-  need to branch on an intermediate result.
+  Reach for individual click/type/press/find/wait_for/drag calls only
+  when you need to branch on an intermediate result.
 - **Finding an element by visible text** → call \`browser.find\` (not
   \`browser.evaluate\` with a textContent grep). \`find\` covers
   \`<div onclick>\` and other "no testid" markup that a naive

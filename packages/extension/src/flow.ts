@@ -1,9 +1,13 @@
 /**
  * browser.flow step sequencing — the logic behind the composite action
- * tool. Runs a short, declarative list of find/click/type/press/wait_for
- * steps strictly in order, fails fast on the first step that does not
- * succeed, and threads an "implicit target" from a `find` step into the
- * very next click/type/press step that omits its own `selector`.
+ * tool. Runs a short, declarative list of find/click/type/press/wait_for/
+ * drag steps strictly in order, fails fast on the first step that does
+ * not succeed, and threads an "implicit target" from a `find` step into
+ * the very next click/type/press step that omits its own `selector`. A
+ * `drag` step stays OUT of that chain: both of its endpoints are always
+ * explicit (selector or coords), so it neither consumes nor sets the
+ * implicit target — a pending target survives a drag step untouched for
+ * a later click/type/press, exactly like it survives a wait_for.
  *
  * Deliberately decoupled from any specific transport: every side effect
  * goes through the `FlowDeps` the caller injects. The concrete wiring —
@@ -13,12 +17,16 @@
  * step-shape validation, implicit-target threading, fail-fast, result
  * shaping — unit-testable without a real browser tab or CDP session.
  *
- * The individual `click` / `type` / `press` / `find` / `wait_for` tool
- * handlers (`background.ts`'s `handleTool` switch in the extension,
- * `callCdpTool`'s switch in `cdp/transport.ts` on the server) and this
- * module's step executor call the exact SAME perform* functions — there
- * is one implementation of each action, never two copies that can drift
- * apart.
+ * The individual `click` / `type` / `press` / `find` / `wait_for` /
+ * `drag` tool handlers (`background.ts`'s `handleTool` switch in the
+ * extension, `callCdpTool`'s switch in `cdp/transport.ts` on the server)
+ * and this module's step executor call the exact SAME perform* functions
+ * — there is one implementation of each action, never two copies that
+ * can drift apart. The one deliberate asymmetry is `drag` over
+ * cdp-direct: the tool is out of cdp-direct's v1 scope (see the server's
+ * `cdp/support.ts`), so the server wires a `performDrag` that always
+ * fails with the same unsupported-transport error the standalone
+ * `browser.drag` returns on a `cdp:` tab.
  */
 
 /** Structured success/failure outcome shared by every perform* function
@@ -124,21 +132,56 @@ export interface WaitForStepResult {
   reason?: string;
 }
 
+/** Mirrors the standalone `browser.drag` tool's params exactly (minus
+ * `tab_id`): each endpoint is a CSS selector OR a viewport coordinate
+ * pair, plus the same interpolation/hold options. Endpoint validation
+ * (missing both forms, offscreen points) lives in `performDrag` itself,
+ * so a flow drag step fails with the exact same error strings the
+ * standalone tool returns. */
+export interface DragStepParams {
+  from_selector?: string;
+  from_x?: number;
+  from_y?: number;
+  to_selector?: string;
+  to_x?: number;
+  to_y?: number;
+  duration_ms?: number;
+  hold_before_move_ms?: number;
+  hold_before_release_ms?: number;
+}
+
+/** Full result of one drag — the same shape the standalone tool returns.
+ * A flow step's per-step entry keeps only `drag_mode` of this (see
+ * `compactActionResult`): the endpoints and durations echo what the
+ * caller asked for, while `drag_mode` is NEW information — whether HTML5
+ * native drag (dragstart/drop) or pointer-only events fired, the signal
+ * for diagnosing a silently-failing drop. */
+export interface DragStepResult {
+  from: { x: number; y: number; selector: string | null };
+  to: { x: number; y: number; selector: string | null };
+  duration_ms_actual: number;
+  drag_mode: 'html5' | 'pointer';
+  interception_attempted: boolean;
+  intercept_received: boolean;
+  events_fired: string[];
+}
+
 export type FlowStep =
   | { find: FindStepParams }
   | { click: ClickStepParams }
   | { type: TypeStepParams }
   | { press: PressStepParams }
-  | { wait_for: WaitForStepParams };
+  | { wait_for: WaitForStepParams }
+  | { drag: DragStepParams };
 
-type StepKind = 'find' | 'click' | 'type' | 'press' | 'wait_for';
-const STEP_KINDS: readonly StepKind[] = ['find', 'click', 'type', 'press', 'wait_for'];
+type StepKind = 'find' | 'click' | 'type' | 'press' | 'wait_for' | 'drag';
+const STEP_KINDS: readonly StepKind[] = ['find', 'click', 'type', 'press', 'wait_for', 'drag'];
 
 function isStepKind(key: string): key is StepKind {
   return (STEP_KINDS as readonly string[]).includes(key);
 }
 
-/** Identify which of the 5 step kinds a raw (untrusted) step object is.
+/** Identify which of the 6 step kinds a raw (untrusted) step object is.
  * Returns `null` unless the object has EXACTLY ONE key and that key is a
  * recognized kind — extra keys (`{find: {...}, mystery: 1}`) reject, in
  * line with the MCP schema's `additionalProperties: false`. The caller
@@ -166,6 +209,13 @@ export interface FlowDeps {
   performType(params: TypeStepParams): Promise<ActionOutcome<TypeStepResult>>;
   performPress(params: PressStepParams): Promise<ActionOutcome<PressStepResult>>;
   performWaitFor(params: WaitForStepParams): Promise<ActionOutcome<WaitForStepResult>>;
+  /** The extension binds the real drag implementation; the server's
+   * cdp-direct wiring binds a stub that always returns the
+   * unsupported-transport `ok:false` (drag is out of cdp-direct's v1
+   * scope — see the server's `cdp/support.ts`), so a flow drag step on a
+   * `cdp:` tab fails fast with the exact error the standalone
+   * `browser.drag` returns there. */
+  performDrag(params: DragStepParams): Promise<ActionOutcome<DragStepResult>>;
   buildRecoverySnapshot(): Promise<unknown>;
 }
 
@@ -186,22 +236,31 @@ export interface FlowFailure {
 
 export type FlowResult = FlowSuccess | FlowFailure;
 
-/** Drop the noisy fields of a click/type/press result down to `{ ok, settle?, hit_element? }`
- * for the flow's per-step result — the agent already knows what it asked
- * for (the selector, the text length, the key); echoing that back N times
- * in a row is not worth the tokens. `settle` is kept because it carries
- * NEW information (did the page go quiet, did focus/URL drift), and so is
- * a click result's `hit_element` — where the click actually landed when
- * that differs from the resolved target (see `ClickStepResult`). */
-function compactActionResult(result: { settle?: Record<string, unknown>; hit_element?: string }): {
+/** Drop the noisy fields of a click/type/press/drag result down to
+ * `{ ok, settle?, hit_element?, drag_mode? }` for the flow's per-step
+ * result — the agent already knows what it asked for (the selector, the
+ * text length, the key, the drag endpoints); echoing that back N times in
+ * a row is not worth the tokens. `settle` is kept because it carries NEW
+ * information (did the page go quiet, did focus/URL drift), and so are a
+ * click result's `hit_element` — where the click actually landed when
+ * that differs from the resolved target (see `ClickStepResult`) — and a
+ * drag result's `drag_mode` — whether HTML5 native drag or pointer-only
+ * events fired (see `DragStepResult`). */
+function compactActionResult(result: {
+  settle?: Record<string, unknown>;
+  hit_element?: string;
+  drag_mode?: string;
+}): {
   ok: true;
   settle?: Record<string, unknown>;
   hit_element?: string;
+  drag_mode?: string;
 } {
   return {
     ok: true,
     ...(result.settle ? { settle: result.settle } : {}),
     ...(result.hit_element ? { hit_element: result.hit_element } : {}),
+    ...(result.drag_mode ? { drag_mode: result.drag_mode } : {}),
   };
 }
 
@@ -294,7 +353,7 @@ export async function runFlow(steps: readonly FlowStep[], deps: FlowDeps): Promi
         deps,
         i,
         'unknown',
-        'flow: each step must be exactly one of find | click | type | press | wait_for',
+        'flow: each step must be exactly one of find | click | type | press | wait_for | drag',
         results.length,
       );
     }
@@ -354,6 +413,26 @@ export async function runFlow(steps: readonly FlowStep[], deps: FlowDeps): Promi
       }
       lastSettleReason = undefined;
       results.push({ ok: true });
+      continue;
+    }
+
+    if (kind === 'drag') {
+      const params = stepRecord.drag as DragStepParams;
+      // No resolveTarget here ON PURPOSE: a drag names BOTH endpoints
+      // explicitly (selector or coords), so there is no single `selector`
+      // slot the implicit target could unambiguously fill — a pending
+      // implicit target survives this step untouched for a later
+      // click/type/press, exactly like it survives a wait_for.
+      const outcome = await deps.performDrag(params);
+      if (!outcome.ok) {
+        return withRecoverySnapshot(deps, i, kind, outcome.error + raceHint(), results.length);
+      }
+      // A successful drag resolved both endpoints via an in-page probe,
+      // which proves the document is reachable again after any earlier
+      // navigation — clear the race hint like find/wait_for do. (Drag has
+      // no settle phase, so there is no settle reason to carry instead.)
+      lastSettleReason = undefined;
+      results.push(compactActionResult(outcome.result));
       continue;
     }
 
