@@ -36,7 +36,7 @@ jobs:
           # We want to validate what the developer authored.
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 

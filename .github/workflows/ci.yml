@@ -38,7 +38,7 @@ jobs:
         with:
           package_json_file: package.json
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -177,7 +177,7 @@ jobs:
           package_json_file: package.json
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
@@ -244,7 +244,7 @@ jobs:
         working-directory: packages/server
         env:
           VERSION: ${{ steps.read.outputs.version }}
-          # actions/setup-node@v6 with `registry-url` set installs a
+          # actions/setup-node@v7 with `registry-url` set installs a
           # placeholder `NODE_AUTH_TOKEN: XXXXX-XXXXX-XXXXX-XXXXX` into
           # the env even when no token input is given. Recent npm
           # versions (post-11.5.1 server-side change) prioritise that
