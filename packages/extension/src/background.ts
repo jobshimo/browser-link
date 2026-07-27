@@ -63,6 +63,15 @@ import {
   parseRecordedPayload,
   toFlowStep,
 } from './recording.js';
+import {
+  CONNECT_IN_PROGRESS_ERROR,
+  createReconnectScheduler,
+  isInvoluntaryClose,
+  isReconnectStateFresh,
+  parseStoredReconnectState,
+  reconnectStorageKey,
+  tabIdFromReconnectKey,
+} from './reconnect-policy.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -310,6 +319,10 @@ interface ConnectResult {
 interface StatusResult {
   connected: boolean;
   serverTabId?: string;
+  /** Present (true) only while the auto-reconnect scheduler has a retry
+   * pending for this tab — lets the popup show "Reconnecting" instead of
+   * a flat "Not connected" that would misrepresent the in-flight retry. */
+  reconnecting?: boolean;
 }
 
 // === CDP types — only the fields we actually read ======================
@@ -1930,6 +1943,16 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 async function cleanup(tabId: number): Promise<void> {
   const state = tabStates.get(tabId);
   if (!state) return;
+  // Delete the tracking entry SYNCHRONOUSLY, before any await below: the
+  // reconnect policy's CloseContext.tracked contract promises that every
+  // extension-initiated teardown deletes state BEFORE the WS close event
+  // dispatches. ws.close() further down fires that event on a later turn,
+  // so deleting here keeps the promise — the close handler then sees an
+  // untracked socket and never auto-reconnects a teardown the extension
+  // itself initiated. The awaited steps below only need the captured
+  // `state` and raw CDP calls, never the map entry — and deleting first
+  // also makes a re-entrant cleanup a no-op instead of a double detach.
+  tabStates.delete(tabId);
   // Recording never survives a disconnect — there is no server connection
   // left to save to, and leaving captured-but-unsaved steps around after
   // the tab drops its bridge would be a surprising place for them to
@@ -1959,7 +1982,6 @@ async function cleanup(tabId: number): Promise<void> {
       // Best effort — the resource may already be detached/closed.
     }
   }
-  tabStates.delete(tabId);
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -2005,7 +2027,128 @@ async function forgetTabId(chromeTabId: number): Promise<void> {
   }
 }
 
+/* Auto-reconnect after an involuntary WS close.
+ *
+ * When a REGISTERED tab's WebSocket dies under us (unclean close — the
+ * primary MCP server crashed or restarted), the scheduler below retries
+ * `connectTab` with per-tab backoff (see RECONNECT_DELAYS_MS in
+ * reconnect-policy.ts), reusing the preserved `prevTabId:*` id so the new
+ * primary can keep the same tab_id (or emit `tab-renamed` if it can't —
+ * existing contract, nothing new on the wire). Every EXTENSION-initiated
+ * teardown (explicit disconnect, tab removal, idle park, debugger detach)
+ * runs `cleanup` BEFORE the close event dispatches, so the close handler
+ * sees an untracked socket and never schedules; a CLEAN close from the
+ * server (browser.reset) is a deliberate goodbye and never schedules
+ * either — the popup Connect button stays the fallback for both, as today.
+ *
+ * MV3 durability: each scheduled attempt is mirrored into
+ * `chrome.storage.session` (`pendingReconnect:*`, right next to the
+ * `prevTabId:*` keys). Plain timers cover the common case — the backoff
+ * span sits inside the service worker's idle grace, and every attempt
+ * touches chrome.* APIs which resets the idle clock — but if the worker is
+ * killed anyway, `resumePendingReconnects` below picks the budget back up
+ * on the next wake, and entries older than RECONNECT_STATE_TTL_MS are
+ * discarded rather than surprising the user minutes later. */
+async function storeReconnectState(tabId: number, attempt: number): Promise<void> {
+  try {
+    await chrome.storage.session.set({
+      [reconnectStorageKey(tabId)]: { attempt, updatedAt: Date.now() },
+    });
+  } catch {
+    /* non-fatal — worst case a killed service worker cannot resume this retry */
+  }
+}
+
+async function clearReconnectState(tabId: number): Promise<void> {
+  try {
+    await chrome.storage.session.remove(reconnectStorageKey(tabId));
+  } catch {
+    /* ignore */
+  }
+}
+
+const reconnectScheduler = createReconnectScheduler({
+  attempt: async (tabId) => {
+    try {
+      await chrome.tabs.get(tabId);
+    } catch {
+      // The Chrome tab itself is gone — nothing left to reconnect.
+      return 'stop';
+    }
+    const existing = tabStates.get(tabId);
+    if (existing) {
+      // A live bridge already exists (e.g. the user pressed Connect while
+      // a retry was pending) — done. A state whose socket is not OPEN yet
+      // belongs to a connect attempt still mid-flight (cleanup deletes
+      // state synchronously, so it never lingers here); keep the backoff
+      // going instead of declaring victory early.
+      return existing.ws?.readyState === WebSocket.OPEN ? 'connected' : 'retry';
+    }
+    try {
+      const result = await connectTab(tabId);
+      return result.ok ? 'connected' : 'retry';
+    } catch {
+      return 'retry';
+    }
+  },
+  onStateChange: (tabId, state) => {
+    if (state) void storeReconnectState(tabId, state.attempt);
+    else void clearReconnectState(tabId);
+  },
+});
+
+/** Resume reconnect cycles a killed service worker left behind. Runs once
+ * per worker start (top-level call below) — `chrome.storage.session`
+ * survives worker restarts but not browser restarts, which is exactly the
+ * lifetime the retry budget should have. */
+async function resumePendingReconnects(): Promise<void> {
+  let stored: Record<string, unknown>;
+  try {
+    stored = await chrome.storage.session.get(null);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const [key, value] of Object.entries(stored)) {
+    const tabId = tabIdFromReconnectKey(key);
+    if (tabId === null) continue;
+    const state = parseStoredReconnectState(value);
+    if (state && isReconnectStateFresh(state.updatedAt, now) && !tabStates.has(tabId)) {
+      reconnectScheduler.schedule(tabId, state.attempt);
+    } else {
+      void clearReconnectState(tabId);
+    }
+  }
+}
+
+void resumePendingReconnects();
+
+/** Tabs with a `connectTab` currently in flight. The `tabStates.has` check
+ * inside `doConnectTab` alone cannot prevent two concurrent connects — the
+ * state lands only after three awaited chrome.* calls — so this SYNCHRONOUS
+ * check-and-set is the real per-tab reentrancy guard. */
+const connectsInFlight = new Set<number>();
+
 async function connectTab(tabId: number): Promise<ConnectResult> {
+  if (connectsInFlight.has(tabId)) {
+    // A concurrent connect (popup Connect racing a scheduled reconnect
+    // attempt, or vice versa) — the in-flight attempt owns the tab.
+    // Answer benignly instead of letting a second attempt fail its
+    // debugger attach with a confusing error; the popup renders this
+    // exact message as the "Reconnecting" card, not an error.
+    return { ok: false, error: CONNECT_IN_PROGRESS_ERROR };
+  }
+  connectsInFlight.add(tabId);
+  try {
+    return await doConnectTab(tabId);
+  } finally {
+    connectsInFlight.delete(tabId);
+  }
+}
+
+/** Body of `connectTab` — call only through the wrapper above, which holds
+ * the per-tab in-flight lock for the full duration of the attempt. */
+async function doConnectTab(tabId: number): Promise<ConnectResult> {
   if (tabStates.has(tabId)) {
     return { ok: false, error: 'This tab is already connected' };
   }
@@ -2085,6 +2228,13 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
         // new kind into the tool.request handler.
         switch (msg.kind) {
           case 'tab.registered': {
+            // A successful registration ends any reconnect cycle for this
+            // tab. Covers the resume path re-arming a tab the user just
+            // connected manually (resumePendingReconnects's tabStates
+            // check races connectTab); when the SCHEDULER drove this very
+            // connect, its in-flight guard makes this cancel a clean,
+            // notify-once end of the cycle.
+            reconnectScheduler.cancel(tabId);
             state.serverTabId = msg.payload.tabId;
             // serverVersion is optional on the wire so older servers that
             // predate the field still parse — narrow on `typeof string`.
@@ -2142,23 +2292,48 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
       })();
     });
 
+    // A WebSocket 'error' is always followed by a 'close', so teardown
+    // lives in the close handler alone — this one only settles a
+    // pre-registration connect failure with the friendlier diagnosis (for
+    // a post-registration drop `settle` is already spent and this no-ops).
     ws.addEventListener('error', () => {
-      void cleanup(tabId).catch(() => {
-        // Best effort — already-detached state is fine.
-      });
       settle({ ok: false, error: 'WebSocket connection failed. Is the MCP server running?' });
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (ev: CloseEvent) => {
+      const current = tabStates.get(tabId);
+      if (current !== undefined && current.ws !== ws) {
+        // A newer connection already owns this tab — this close belongs to
+        // a superseded socket, and tearing state down here would kill the
+        // NEW bridge rather than the one that just died.
+        settle({ ok: false, error: 'WebSocket closed before registration' });
+        return;
+      }
+      // Decide BEFORE cleanup wipes the evidence: an unclean close of a
+      // still-tracked, registered connection means the server died under
+      // us — the one case the auto-reconnect scheduler exists for. See
+      // the reconnect section doc above storeReconnectState for why every
+      // other close (explicit disconnect, tab removal, idle park,
+      // browser.reset's clean goodbye) falls out of this predicate.
+      const involuntary = isInvoluntaryClose({
+        tracked: current?.ws === ws,
+        registered: current?.serverTabId !== undefined,
+        wasClean: ev.wasClean,
+      });
       void cleanup(tabId).catch(() => {
         // Best effort — already-detached state is fine.
       });
       settle({ ok: false, error: 'WebSocket closed before registration' });
+      if (involuntary) reconnectScheduler.schedule(tabId);
     });
   });
 }
 
 async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
+  // Explicit user intent beats any pending auto-reconnect — cancel it
+  // first so a scheduled retry cannot resurrect the bridge right after
+  // the user asked for it to go away.
+  reconnectScheduler.cancel(tabId);
   await cleanup(tabId);
   // Explicit user-driven disconnect → forget the previous tab id so the
   // next "Connect" starts from a clean slate (vs. an involuntary
@@ -2169,7 +2344,17 @@ async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
 
 function getTabStatus(tabId: number): StatusResult {
   const state = tabStates.get(tabId);
-  if (!state) return { connected: false };
+  if (!state) {
+    // Keep the popup truthful while auto-reconnect is working: "not
+    // connected, but actively retrying" rather than a flat idle state.
+    // `connectsInFlight` covers the short gap inside a live attempt
+    // before its TabState lands — without it the popup's poll could
+    // misread that gap as idle and freeze the card there.
+    if (reconnectScheduler.isPending(tabId) || connectsInFlight.has(tabId)) {
+      return { connected: false, reconnecting: true };
+    }
+    return { connected: false };
+  }
   return { connected: true, serverTabId: state.serverTabId };
 }
 
@@ -2570,6 +2755,12 @@ async function respondToDialogFromPopup(
 chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (!isRuntimeMessage(msg)) return false;
   if (msg.action === 'connect') {
+    // An explicit Connect cancels any FUTURE auto-reconnect retries for
+    // this tab. If a scheduled attempt is already mid-flight (cancel
+    // cannot abort it), connectTab's per-tab in-flight lock turns this
+    // call into a benign "already in progress" result instead of a
+    // second concurrent connect.
+    reconnectScheduler.cancel(msg.tabId);
     void connectTab(msg.tabId).then(sendResponse);
     return true;
   }
@@ -2616,6 +2807,8 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  // No tab, no reconnect — abort any pending retry cycle for it.
+  reconnectScheduler.cancel(tabId);
   void cleanup(tabId).catch(() => {
     // Best effort.
   });

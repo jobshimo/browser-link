@@ -914,6 +914,23 @@ No tokens to paste, no manifests to register, no manual step beyond
 clicking "Connect this tab" in the extension popup. `browser-link doctor`
 lists the current allowlist on your OS.
 
+One deliberate tradeoff to state plainly: since v0.23.9 the extension
+**auto-reconnects** after an involuntary drop — when a registered tab's
+socket dies uncleanly (the primary MCP server crashed or restarted), it
+retries the connection four times with backoff, over the exact same
+channel a manual "Connect this tab" click uses, just without waiting for
+a fresh human gesture. The server verifies the client's process; the
+client never authenticates the server (a legitimately restarted primary
+has no shared secret to present — that is what `tab-renamed` continuity
+exists for), so during that bounded retry window a local process that
+bound `127.0.0.1:17529` before the real server could accept the
+reconnect. That attacker needs local code execution and a won loopback
+port race — the same preconditions the "malware already inside Chrome"
+caveat above and the cdp-direct port-squatting note already accept.
+Explicit disconnects and `browser.reset` closes are deliberate goodbyes
+and never auto-reconnect; past the fourth attempt the popup's Connect
+button is the only way back.
+
 ## Where your data lives
 
 The persistent map is a single SQLite file (`map.db`) on **your

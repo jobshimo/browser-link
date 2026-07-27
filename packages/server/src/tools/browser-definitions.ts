@@ -50,6 +50,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
       gotchas: [
         'Returns only tabs the user has connected manually, plus cdp-direct tabs when that optional mode is enabled and granted (off by default — see cdp-direct docs). If the list is empty, ask the user to open the extension popup.',
+        'After a primary restart ("primary just closed" errors), the extension auto-reconnects dropped tabs with four backoff attempts (1s/2s/4s/8s delays, plus per-attempt connect time), keeping the same tab_id when the new primary can honour it (tab-renamed in browser.events otherwise) — so a briefly-empty list right after such an error deserves a short wait and one retry before asking the user to re-press Connect. An explicit disconnect or browser.reset never auto-reconnects.',
         'When an entry carries a map field, call browser.map.recall BEFORE snapshotting that tab — the persistent map already has selectors, gotchas, or flow recipes for it, and re-discovering them via a fresh snapshot/find wastes a round trip.',
         "A tab_id starting with cdp: (transport: 'cdp') works with every tool except browser.drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab in v1 — those (and a browser.flow drag step) return a clear error naming the extension transport as the fallback.",
       ],

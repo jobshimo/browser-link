@@ -13,6 +13,7 @@ import {
   normalizeFlowRecordingEnabled,
 } from './flow-recording-policy.js';
 import { describeFlowStep } from './recording.js';
+import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
 import type { FlowStep } from './flow.js';
 
 // Local mirrors of the runtime message return shapes that background.ts
@@ -53,6 +54,9 @@ interface RecordingStatusResult {
 interface StatusResult {
   connected: boolean;
   serverTabId?: string;
+  /** True while background.ts's auto-reconnect scheduler has a retry
+   * pending for this tab (involuntary WS drop, e.g. primary restart). */
+  reconnecting?: boolean;
 }
 
 interface PendingDialogInfo {
@@ -229,6 +233,43 @@ async function onIdleTtlChange(): Promise<void> {
     [IDLE_TTL_STORAGE_KEY]: minutes,
     [IDLE_TTL_UPDATED_AT_STORAGE_KEY]: Date.now(),
   });
+}
+
+/** Card label shown while background.ts's auto-reconnect scheduler is
+ * retrying a dropped tab. Doubles as the sentinel `syncReconnectCard`
+ * matches on, so the poll only ever rewrites the card into or out of THIS
+ * state and can never clobber onAction's transient "Connecting…"/
+ * "Disconnecting…" labels. */
+const RECONNECTING_LABEL = 'Reconnecting…';
+
+/**
+ * Keep the connection card truthful across reconnect transitions while the
+ * popup stays open. The 800ms poll deliberately does not re-render the
+ * whole card (that would fight onAction's transient states) — this only
+ * flips the card INTO "Reconnecting…" from the steady idle/connected
+ * states, and OUT of it once the cycle ends (Connected on success, Not
+ * connected on exhaustion). Everything else is left alone.
+ */
+function syncReconnectCard(status: StatusResult): void {
+  const showingReconnect = $('status-label').textContent === RECONNECTING_LABEL;
+  const shouldShowReconnect = !status.connected && status.reconnecting === true;
+  if (shouldShowReconnect === showingReconnect) return;
+  if (shouldShowReconnect) {
+    // Only take over the steady states — a transient onAction label means
+    // a user-driven round-trip is mid-flight and owns the card.
+    const cardState = $('card').dataset.state;
+    if (cardState !== 'idle' && cardState !== 'connected') return;
+    setStatus('connecting', RECONNECTING_LABEL);
+    setAction('Connect this tab', 'primary');
+    return;
+  }
+  if (status.connected) {
+    setStatus('connected', 'Connected', status.serverTabId);
+    setAction('Disconnect this tab', 'danger');
+  } else {
+    setStatus('idle', 'Not connected');
+    setAction('Connect this tab', 'primary');
+  }
 }
 
 function renderPendingDialog(pending: PendingDialogInfo | null): void {
@@ -449,6 +490,15 @@ async function refresh(): Promise<void> {
     setStatus('connected', 'Connected', status.serverTabId);
     setAction('Disconnect this tab', 'danger');
     await refreshPendingDialog(tab.id);
+  } else if (status.reconnecting) {
+    // Auto-reconnect is retrying after an involuntary drop (e.g. the
+    // primary restarted) — show the truthful in-between state. Connect
+    // stays available: pressing it cancels any FUTURE retries, and if an
+    // attempt is already mid-flight the background's per-tab lock answers
+    // with a benign already-in-progress result that keeps this same card.
+    setStatus('connecting', RECONNECTING_LABEL);
+    setAction('Connect this tab', 'primary');
+    renderPendingDialog(null);
   } else {
     setStatus('idle', 'Not connected');
     setAction('Connect this tab', 'primary');
@@ -496,6 +546,15 @@ async function onAction(): Promise<void> {
     });
 
     if (!result.ok) {
+      if (result.error === CONNECT_IN_PROGRESS_ERROR) {
+        // Lost the per-tab race against an attempt already mid-flight —
+        // benign: that attempt is doing exactly what the click asked for.
+        // Show the reconnect card; the 800ms poll flips it to Connected
+        // (or Not connected) once the in-flight attempt lands.
+        setStatus('connecting', RECONNECTING_LABEL);
+        setAction('Connect this tab', 'primary');
+        return;
+      }
       setStatus('error', result.error ?? 'Unknown error');
       setAction('Retry', 'primary');
       return;
@@ -580,6 +639,7 @@ setInterval(() => {
     if (!tab?.id) return;
     await refreshPendingDialog(tab.id);
     const status = await send<StatusResult>({ action: 'status', tabId: tab.id });
+    syncReconnectCard(status);
     await refreshRecordingUi(tab.id, status.connected);
   })();
 }, 800);
