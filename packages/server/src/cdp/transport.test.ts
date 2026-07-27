@@ -25,6 +25,10 @@ let connectionCount = 0;
 
 type Handler = (params: unknown) => unknown;
 
+/** Sentinel a handler can return to make the fake target swallow the
+ * command without ever answering — exercises per-command timeouts. */
+const NO_REPLY = Symbol('no-reply');
+
 /** Default Target.getTargetInfo answer — a real page target, so
  * getConnection's connect-time re-validation passes. Tests that need a
  * different target type (e.g. to assert the rejection path) wire their own
@@ -49,6 +53,7 @@ function startFakeTarget(
           : msg.method === 'Target.getTargetInfo'
             ? DEFAULT_PAGE_TARGET_INFO
             : {};
+        if (result === NO_REPLY) return;
         ws.send(JSON.stringify({ id: msg.id, result }));
       });
       // Stash the ws so tests can push events (e.g. Page.loadEventFired)
@@ -175,6 +180,19 @@ describe('callCdpTool — tool dispatch', () => {
     grantAccess(port);
     const result = await callCdpTool(`cdp:${targetId}`, 'evaluate', { expression: '1+1' });
     expect(result).toBe('echo:1+1');
+  });
+
+  test('evaluate threads the dispatcher budget into the Runtime.evaluate per-command timeout', async () => {
+    // The fake target swallows Runtime.evaluate, so only the per-command
+    // timeout can settle the call — a reject naming the CALLER's budget
+    // (not 15000ms) proves the 4th argument replaced client.ts's default.
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => NO_REPLY,
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'evaluate', { expression: 'longLoop()' }, 150),
+    ).rejects.toThrow('cdp-direct: command "Runtime.evaluate" timed out after 150ms');
   });
 
   test('evaluate rejects with the exception message on a thrown expression', async () => {

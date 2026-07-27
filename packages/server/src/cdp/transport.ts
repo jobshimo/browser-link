@@ -220,13 +220,21 @@ interface CdpEvaluateResult<T> {
   exceptionDetails?: { text?: string; exception?: { description?: string } };
 }
 
-async function evaluateInTab<T = unknown>(client: CdpClient, expression: string): Promise<T> {
-  const res = await client.send<CdpEvaluateResult<T>>('Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-    userGesture: true,
-  });
+async function evaluateInTab<T = unknown>(
+  client: CdpClient,
+  expression: string,
+  timeoutMs?: number,
+): Promise<T> {
+  const res = await client.send<CdpEvaluateResult<T>>(
+    'Runtime.evaluate',
+    {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      userGesture: true,
+    },
+    timeoutMs,
+  );
   if (res.exceptionDetails) {
     const ex = res.exceptionDetails;
     throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
@@ -578,15 +586,18 @@ async function getTargetInfo(client: CdpClient): Promise<{ title: string; url: s
  * was already validated <=60s upstream. Wrapping the whole call in a second
  * timer would only add a redundant, harder-to-reason-about failure mode (an
  * outer reject while an inner CDP command is still in flight and will settle
- * on its own bound). The parameter is kept in the signature for shape-parity
- * with `callBrowserTool` and so a future transport change that DOES introduce
- * an unbounded step can start honouring it without a signature churn.
+ * on its own bound). The one consumer is `evaluate`, whose single
+ * `Runtime.evaluate` command runs caller-supplied JS for a caller-controlled
+ * duration — there the budget IS that command's own per-command timeout
+ * (replacing the 15s default, still no outer race), so `browser.evaluate`'s
+ * `timeout_ms` reaches cdp-direct tabs too. Kept in the signature for
+ * shape-parity with `callBrowserTool` for every other tool.
  */
 export async function callCdpTool(
   tabId: string,
   tool: string,
   params: unknown,
-  _timeoutMs?: number,
+  timeoutMs?: number,
 ): Promise<unknown> {
   const gate = checkCdpDirectGate();
   if (!gate.ok) throw new Error(gate.error);
@@ -677,7 +688,7 @@ export async function callCdpTool(
 
     case 'evaluate': {
       const expression = typeof p.expression === 'string' ? p.expression : '';
-      return evaluateInTab(client, expression);
+      return evaluateInTab(client, expression, timeoutMs);
     }
 
     case 'wait_for': {

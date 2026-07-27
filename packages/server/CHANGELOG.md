@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.23.6](https://github.com/jobshimo/browser-link/compare/v0.23.5...v0.23.6) (2026-07-27)
+
+### Features
+
+- **bridge:** `browser.evaluate` gains an optional `timeout_ms` parameter (default 15000 — unchanged when omitted — floor 15000, hard cap 60000), fixing the field-reported ceiling where a long in-page loop (e.g. walking N content slides in one evaluate) always died with `evaluate timed out after 15000ms` and had to be wastefully split across multiple calls. The real ceiling was never in the page or the extension — the extension's `Runtime.evaluate` via `chrome.debugger.sendCommand` waits indefinitely — but the server-side bridge response timeout (`DEFAULT_TIMEOUT_MS` in `server.ts`), so the dispatcher now forwards a caller-provided budget through the existing `runAction`/`routeToolCall` timeout seam and nothing new travels on the wire to the extension. Semantics are widen-only: values at or below the shared 15s action floor behave exactly like the default, values above 60s clamp to the same "the bridge does not park a single tool call longer than this" ceiling `browser.wait_for_tab` and `browser.flow` already use, and a missing/invalid value reproduces the pre-parameter call shape byte-for-byte. On cdp-direct tabs the budget becomes the `Runtime.evaluate` command's own per-command timeout (replacing `client.ts`'s 15s default — still no outer race, per `callCdpTool`'s documented design), so the parameter works identically on both transports. Known, documented limit (tool `gotchas`): a bridge timeout only drops the response — the expression itself keeps running in the page; there is no cancellation path.
+
 ## [0.23.5](https://github.com/jobshimo/browser-link/compare/v0.23.4...v0.23.5) (2026-07-12)
 
 ### Internal

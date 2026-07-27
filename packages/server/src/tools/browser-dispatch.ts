@@ -234,6 +234,27 @@ function actionTimeoutWithSettle(settleTimeoutMs: unknown): number {
   return Math.max(ACTION_TIMEOUT_FLOOR_MS, clamped + 5_000);
 }
 
+/** Hard ceiling on `browser.evaluate`'s optional `timeout_ms` — the same
+ * "the bridge does not park any single tool call longer than this" ceiling
+ * `browser.wait_for_tab` and `browser.flow` already use (see
+ * MAX_FLOW_TIMEOUT_MS). */
+const MAX_EVALUATE_TIMEOUT_MS = 60_000;
+
+/**
+ * Bridge budget for `browser.evaluate`. Unlike wait_for (whose in-page poll
+ * loop enforces its own cap), an evaluate has NO in-page bound — the bridge
+ * response timeout is the only ceiling — so the caller's `timeout_ms` IS the
+ * budget, clamped between the shared action floor (values below 15s behave
+ * exactly like the default, keeping the param widen-only) and the 60s
+ * single-call parking ceiling. Unset/invalid input returns undefined so the
+ * call shape — and thus the bridge/cdp default — stays byte-identical to
+ * before the parameter existed.
+ */
+function evaluateTimeoutMs(requested: unknown): number | undefined {
+  if (typeof requested !== 'number' || !Number.isFinite(requested)) return undefined;
+  return Math.max(ACTION_TIMEOUT_FLOOR_MS, Math.min(requested, MAX_EVALUATE_TIMEOUT_MS));
+}
+
 // === browser.flow ========================================================
 
 /** Hard cap on steps per flow — mirrors `maxItems: 20` on the MCP schema
@@ -921,8 +942,15 @@ export async function handleBrowserTool(
       );
     }
     case 'browser.evaluate': {
-      const { expression } = args as { expression: string };
-      return runAction('evaluate', requireTabId(args), { expression }, deps, caller);
+      const { expression, timeout_ms } = args as { expression: string; timeout_ms?: number };
+      return runAction(
+        'evaluate',
+        requireTabId(args),
+        { expression },
+        deps,
+        caller,
+        evaluateTimeoutMs(timeout_ms),
+      );
     }
     case 'browser.events':
       return handleEvents(args, deps);

@@ -1704,6 +1704,116 @@ describe('browser.flow schema shape', () => {
   });
 });
 
+describe('browser.evaluate dispatch', () => {
+  test('forwards the expression with NO timeout arg when timeout_ms is omitted — bridge default unchanged', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: '1+1' },
+      deps,
+      TEST_CALLER,
+    );
+    // Exactly three args — the bridge's own default (15s) applies, the
+    // byte-identical pre-timeout_ms call shape.
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: '1+1' });
+  });
+
+  test('timeout_ms above the floor is forwarded as the bridge budget', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: 'walkSlides()', timeout_ms: 30_000 },
+      deps,
+      TEST_CALLER,
+    );
+    // The timeout is a bridge-side budget only — the wire params stay
+    // { expression }, nothing new travels to the extension.
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'evaluate',
+      { expression: 'walkSlides()' },
+      30_000,
+    );
+  });
+
+  test('timeout_ms clamps to the 60s parking ceiling', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: 'x', timeout_ms: 999_999 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'evaluate',
+      { expression: 'x' },
+      60_000,
+    );
+  });
+
+  test('timeout_ms below the 15s action floor behaves like the default (widen-only)', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: 'x', timeout_ms: 500 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'evaluate',
+      { expression: 'x' },
+      15_000,
+    );
+  });
+
+  test('a non-finite timeout_ms falls back to the omitted-arg call shape', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: 'x', timeout_ms: Number.NaN },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: 'x' });
+  });
+
+  test('timeout_ms reaches callCdpTool for a cdp: tab', async () => {
+    const callCdpTool = vi.fn(async () => 42);
+    const deps = makeDeps({ cdpGate: () => ({ ok: true as const }), callCdpTool });
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'cdp:ABC', expression: '6*7', timeout_ms: 45_000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callCdpTool).toHaveBeenCalledWith('cdp:ABC', 'evaluate', { expression: '6*7' }, 45_000);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('browser.evaluate schema shape', () => {
+  const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.evaluate');
+
+  test('timeout_ms is an optional number — tab_id and expression stay the only required properties', () => {
+    expect(def).toBeDefined();
+    const schema = def!.inputSchema as {
+      required: string[];
+      additionalProperties: boolean;
+      properties: Record<string, { type?: string }>;
+    };
+    expect(schema.required).toEqual(['tab_id', 'expression']);
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.timeout_ms?.type).toBe('number');
+  });
+
+  test('documents the default and the cap where an agent reading the schema sees them', () => {
+    expect(def!.description).toContain('15000');
+    expect(def!.description).toContain('60000');
+  });
+});
+
 describe('cdp-direct routing', () => {
   const OK_GATE = { ok: true as const };
   const FAIL_GATE = {

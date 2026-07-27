@@ -949,12 +949,17 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.evaluate',
     description:
-      'Run a JavaScript expression in the page context and return its result. Use an IIFE with return if you need multi-step logic.',
+      'Run a JavaScript expression in the page context and return its result. Use an IIFE with return if you need multi-step logic. The bridge waits up to `timeout_ms` (default 15000, capped at 60000) for the result — raise it for long-running in-page work instead of splitting one loop across several calls.',
     inputSchema: {
       type: 'object',
       properties: {
         tab_id: { type: 'string' },
         expression: { type: 'string' },
+        timeout_ms: {
+          type: 'number',
+          description:
+            'Max time in ms the bridge waits for the result. Default 15000; values below that floor behave like the default, values above 60000 clamp to 60000 — the bridge does not park a single tool call longer than that.',
+        },
       },
       required: ['tab_id', 'expression'],
       additionalProperties: false,
@@ -964,7 +969,10 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       when_to_use: [
         'When snapshot/click/type are not expressive enough — pulling a computed value, reading a JS variable, or invoking page APIs.',
       ],
-      gotchas: ['Wrap multi-step logic in an IIFE that returns the value you want.'],
+      gotchas: [
+        'Wrap multi-step logic in an IIFE that returns the value you want.',
+        'An evaluate that has not returned after timeout_ms (default 15000, cap 60000) fails with a timeout error, but the expression itself keeps running in the page — only the response is dropped. For in-page work that legitimately needs more than 15s (e.g. walking many slides in one loop), raise timeout_ms instead of splitting the loop.',
+      ],
     },
   },
   {
