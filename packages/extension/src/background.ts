@@ -926,7 +926,7 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 
 /** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
 type ClickResolveResult =
-  | { ok: true; x: number; y: number; tag: string }
+  | { ok: true; x: number; y: number; tag: string; hit_element?: string }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
   | { ok: false; reason: 'occluded'; blocker: string };
@@ -1057,6 +1057,7 @@ async function performClick(
     });
     const settleResult = await runSettle(tabId, settle);
     const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
+    if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
     return { ok: true, result };
   } catch (err) {

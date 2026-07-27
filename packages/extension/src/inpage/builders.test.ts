@@ -69,7 +69,7 @@ interface SnapshotResult {
 }
 
 type ClickResolveResult =
-  | { ok: true; x: number; y: number; tag: string }
+  | { ok: true; x: number; y: number; tag: string; hit_element?: string }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
   | { ok: false; reason: 'occluded'; blocker: string };
@@ -222,6 +222,29 @@ describe('buildFindJs — near-miss suggestions on not-found', () => {
   });
 });
 
+describe('buildFindJs — pointer-events gate on candidates', () => {
+  test('skips a pointer-events:none twin and matches the real clickable element uniquely (no multiple-matches)', () => {
+    // Same visible text on an invisible a11y-layer button AND the real
+    // control — without the gate this would be a multiple-matches miss.
+    const acc = document.createElement('button');
+    acc.textContent = 'Continue';
+    acc.style.pointerEvents = 'none';
+    document.body.appendChild(acc);
+    makeVisible(acc);
+
+    const real = document.createElement('button');
+    real.id = 'continue-btn';
+    real.textContent = 'Continue';
+    document.body.appendChild(real);
+    makeVisible(real);
+
+    const found = evalExpr<FindResult>(buildFindJs({ text: 'Continue' }));
+    expect(found.matched).toBe(true);
+    if (!found.matched) return;
+    expect(document.querySelector(found.selector)).toBe(real);
+  });
+});
+
 describe('buildSnapshotJs — deep scan', () => {
   test('lists interactive elements from the top document and a shadow root, marks framed entries', () => {
     const topButton = document.createElement('button');
@@ -331,6 +354,45 @@ describe('buildSnapshotJs — deep scan', () => {
   });
 });
 
+describe('buildSnapshotJs — pointer-events gate on the interactive list', () => {
+  interface SnapshotWithHeadings extends SnapshotResult {
+    headings?: { level: string; text: string }[];
+  }
+
+  test('excludes a pointer-events:none element from interactive but keeps heading text (labels are not lost)', () => {
+    const acc = document.createElement('button');
+    acc.textContent = 'A11y layer button';
+    acc.style.pointerEvents = 'none';
+    document.body.appendChild(acc);
+    makeVisible(acc);
+
+    const heading = document.createElement('h2');
+    heading.textContent = 'Slide title';
+    heading.style.pointerEvents = 'none';
+    document.body.appendChild(heading);
+    makeVisible(heading);
+
+    const snapshot = evalExpr<SnapshotWithHeadings>(buildSnapshotJs({}));
+    expect(snapshot.interactive.map((e) => e.text)).not.toContain('A11y layer button');
+    // Headings keep plain isVisible — non-interactive text is not lost.
+    expect(snapshot.headings?.map((h) => h.text)).toContain('Slide title');
+  });
+
+  test('includes a pointer-events:auto element inside a none wrapper (per-element check, not a subtree prune)', () => {
+    const wrapper = document.createElement('div');
+    wrapper.style.pointerEvents = 'none';
+    document.body.appendChild(wrapper);
+    const btn = document.createElement('button');
+    btn.textContent = 'Re-enabled child';
+    btn.style.pointerEvents = 'auto';
+    wrapper.appendChild(btn);
+    makeVisible(btn);
+
+    const snapshot = evalExpr<SnapshotResult>(buildSnapshotJs({}));
+    expect(snapshot.interactive.map((e) => e.text)).toContain('Re-enabled child');
+  });
+});
+
 describe('buildClickResolveJs — occlusion guard', () => {
   test('blocks the click and describes the covering element when force is false', () => {
     const target = document.createElement('button');
@@ -349,7 +411,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     expect(resolved.blocker).toContain('modal-backdrop');
   });
 
-  test('force:true skips the occlusion check', () => {
+  test('force:true skips the block but still reports the covering element as hit_element', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
@@ -362,6 +424,45 @@ describe('buildClickResolveJs — occlusion guard', () => {
       buildClickResolveJs({ selector: '#save-btn', force: true }),
     );
     expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      // Force skips the BLOCK, not the truth-telling — a forced click
+      // dispatched onto an unrelated element must not look like success.
+      expect(resolved.hit_element).toBe('div.modal-backdrop');
+    }
+  });
+
+  test('retargets a pointer-events:none target: ok with hit_element naming the real recipient, not an occlusion error', () => {
+    const acc = document.createElement('div');
+    acc.id = 'acc-1';
+    acc.style.pointerEvents = 'none';
+    document.body.appendChild(acc);
+    const hitTarget = document.createElement('div');
+    hitTarget.id = 'hit-layer';
+    document.body.appendChild(hitTarget);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => hitTarget;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#acc-1', force: false }),
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.hit_element).toBe('div#hit-layer');
+    }
+  });
+
+  test('omits hit_element when the hit-test lands on the target itself', () => {
+    const target = document.createElement('button');
+    target.id = 'save-btn';
+    document.body.appendChild(target);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => target;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#save-btn', force: false }),
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.hit_element).toBeUndefined();
+    }
   });
 
   test('not-found when the selector matches nothing anywhere in the deep search scope', () => {

@@ -88,6 +88,25 @@ describe('runFlow — happy path', () => {
     if (!result.ok) throw new Error('expected success');
     expect(result.results).toEqual([{ ok: true, settle: { settled: true, duration_ms: 5 } }]);
   });
+
+  test('hit_element on a click result survives compaction, omitted when absent', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            result: { clicked: '#x', tag: 'button', hit_element: 'div.overlay' },
+          }) satisfies ActionOutcome<ClickStepResult>,
+      ),
+    });
+    const result = await runFlow(
+      [{ click: { selector: '#x' } }, { press: { key: 'Enter' } }],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([{ ok: true, hit_element: 'div.overlay' }, { ok: true }]);
+  });
 });
 
 describe('runFlow — implicit target threading', () => {

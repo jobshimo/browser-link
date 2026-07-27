@@ -37,6 +37,11 @@ import { DOM_HELPERS_JS } from './dom-helpers.js';
  * optional `frame` field with the innermost hosting iframe's selector, and
  * entries whose generated selector could not be made unique across the deep
  * search scope carry `ambiguous: true` (see `genSelectorInfo`).
+ *
+ * Interactive entries are gated by `isClickTarget`, not bare `isVisible`:
+ * a computed `pointer-events: none` element can never receive a real click
+ * (see the helper's comment in `dom-helpers.ts`). Headings and the text
+ * dump keep plain `isVisible`, so such elements still contribute text.
  */
 export interface SnapshotOpts {
   within_selector?: string;
@@ -105,7 +110,9 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   const sel = 'a[href], button, input, select, textarea, [role=button], [role=link], [role=checkbox], [role=tab], [role=menuitem], [contenteditable=true]';
   const interactive = [];
   deepQueryAll(sel, root).forEach((el) => {
-    if (!isVisible(el)) return;
+    // isClickTarget, not isVisible: a pointer-events:none element can
+    // never receive a real click. Headings/text keep plain isVisible.
+    if (!isClickTarget(el)) return;
     if (inExcludedLandmark(el)) return;
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute('role') || tag;
@@ -161,7 +168,9 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
- * scans a broad set of interactive + clickable elements.
+ * scans a broad set of interactive + clickable elements. Candidates are
+ * gated by `isClickTarget` — a pointer-events:none element is never a
+ * match; it can still surface as a near-miss hint (plain `isVisible`).
  *
  * The scan pierces open Shadow DOM roots and same-origin iframes via
  * `deepQueryAll`. `coords` are mapped to TOP-LEVEL viewport coordinates
@@ -220,7 +229,9 @@ export function buildFindJs(opts: FindOpts): string {
   const all = deepQueryAll(selectorSet);
   const matches = [];
   for (const el of all) {
-    if (!isVisible(el)) continue;
+    // isClickTarget, not isVisible: find returns CLICK TARGETS. Near-miss
+    // ranking below keeps plain isVisible — hints, never click targets.
+    if (!isClickTarget(el)) continue;
     const text = accessibleText(el).trim();
     if (text.length === 0) continue;
     const lower = text.toLowerCase();
@@ -340,10 +351,18 @@ export function buildFindJs(opts: FindOpts): string {
  * view, computes the TOP-LEVEL viewport click point, and — unless `force`
  * is set — hit-tests that point before returning it, so a covering overlay
  * is caught before dispatching CDP mouse events. Returns:
- *   { ok: true, x, y, tag }
+ *   { ok: true, x, y, tag, hit_element? }
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
  *   { ok: false, reason: 'occluded', blocker }
+ *
+ * `hit_element` is present ONLY when the dispatched click will land on a
+ * DIFFERENT element than the resolved target (neither the target nor a
+ * descendant): a pointer-events:none target whose real hit-target sibling
+ * takes the click (allowed, not 'occluded' — see checkOcclusion), an
+ * ancestor wrapper, or a `force` click landing on whatever covers the
+ * point — the hit-test runs under `force` too, which skips the BLOCK,
+ * not the truth-telling.
  *
  * The `invalid-selector` check runs BEFORE `deepQueryFirst` — a malformed
  * CSS selector throws the identical `SyntaxError` from every root's own
@@ -377,13 +396,14 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
   const center = viewportCenterOf(el);
   const tag = el.tagName.toLowerCase();
-  if (!opts.force) {
-    const occlusion = checkOcclusion(el, center.localX, center.localY);
-    if (!occlusion.allowed) {
-      return { ok: false, reason: 'occluded', blocker: occlusion.blocker };
-    }
+  const occlusion = checkOcclusion(el, center.localX, center.localY);
+  if (!occlusion.allowed && !opts.force) {
+    return { ok: false, reason: 'occluded', blocker: occlusion.blocker };
   }
-  return { ok: true, x: center.x, y: center.y, tag };
+  const result = { ok: true, x: center.x, y: center.y, tag };
+  const hit = occlusion.allowed ? occlusion.hit : occlusion.blocker;
+  if (hit) result.hit_element = hit;
+  return result;
 })()
 `;
 }

@@ -83,6 +83,13 @@ export interface ClickStepParams {
 export interface ClickStepResult {
   clicked: string;
   tag: string;
+  /** Descriptor of the element that actually receives the dispatched
+   * click, present ONLY when it differs from the resolved target: a
+   * pointer-events:none target whose real hit-target sibling takes the
+   * click, an ancestor wrapper, or a `force:true` click landing on
+   * whatever covers the point (see `buildClickResolveJs`). Omitted when
+   * the click lands on the target itself. */
+  hit_element?: string;
   settle?: Record<string, unknown>;
 }
 
@@ -190,16 +197,23 @@ export interface FlowFailure {
 
 export type FlowResult = FlowSuccess | FlowFailure;
 
-/** Drop the noisy fields of a click/type/press result down to `{ ok, settle? }`
+/** Drop the noisy fields of a click/type/press result down to `{ ok, settle?, hit_element? }`
  * for the flow's per-step result — the agent already knows what it asked
  * for (the selector, the text length, the key); echoing that back N times
  * in a row is not worth the tokens. `settle` is kept because it carries
- * NEW information (did the page go quiet, did focus/URL drift). */
-function compactActionResult(result: { settle?: Record<string, unknown> }): {
+ * NEW information (did the page go quiet, did focus/URL drift), and so is
+ * a click result's `hit_element` — where the click actually landed when
+ * that differs from the resolved target (see `ClickStepResult`). */
+function compactActionResult(result: { settle?: Record<string, unknown>; hit_element?: string }): {
   ok: true;
   settle?: Record<string, unknown>;
+  hit_element?: string;
 } {
-  return result.settle ? { ok: true, settle: result.settle } : { ok: true };
+  return {
+    ok: true,
+    ...(result.settle ? { settle: result.settle } : {}),
+    ...(result.hit_element ? { hit_element: result.hit_element } : {}),
+  };
 }
 
 async function withRecoverySnapshot(

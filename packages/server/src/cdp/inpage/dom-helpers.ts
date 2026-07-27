@@ -32,6 +32,22 @@ export const DOM_HELPERS_JS = `
     if (el.offsetParent === null && style.position !== 'fixed') return false;
     return true;
   }
+  function isClickTarget(el) {
+    // A computed pointer-events:none element can never be the browser's
+    // hit-test result — frameworks with an invisible accessibility layer
+    // (e.g. Articulate Storyline's #acc-* elements) stack such elements
+    // over the real hit-target sibling, so advertising one produces
+    // clicks that report success but land elsewhere. Per-element computed
+    // check, NOT a subtree prune: a descendant can re-enable itself with
+    // pointer-events: auto and IS a valid target. Only the interactive
+    // collections use this gate — headings/text keep plain isVisible.
+    if (!isVisible(el)) return false;
+    try {
+      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      if (view.getComputedStyle(el).pointerEvents === 'none') return false;
+    } catch (_) {}
+    return true;
+  }
   function shortText(el) {
     const t = (el.innerText || el.textContent || '').trim();
     return t.length > 120 ? t.slice(0, 120) + '...' : t;

@@ -25,7 +25,7 @@ interface DeepQueryGlobals {
     target: Element,
     localX: number,
     localY: number,
-  ) => { allowed: true } | { allowed: false; blocker: string };
+  ) => { allowed: true; hit?: string } | { allowed: false; blocker: string };
 }
 
 function loadDeepQuery(): DeepQueryGlobals {
@@ -338,7 +338,7 @@ describe('checkOcclusion', () => {
     expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
   });
 
-  test('allowed when the hit-tested element is an ancestor overlay containing the target', () => {
+  test('allowed when the hit-tested element is an ancestor overlay containing the target, surfacing it as the true recipient', () => {
     const { checkOcclusion } = loadDeepQuery();
     const wrapper = document.createElement('div');
     const target = document.createElement('button');
@@ -346,7 +346,10 @@ describe('checkOcclusion', () => {
     document.body.appendChild(wrapper);
     withElementFromPoint(document, wrapper);
 
-    expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
+    // The click will target the ancestor, never the element itself (events
+    // bubble upward, not down) — allowed as before, but `hit` names the
+    // real recipient so click results can report it.
+    expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true, hit: 'div' });
   });
 
   test('blocked when an unrelated overlay covers the target, with a covering-element descriptor', () => {
@@ -371,6 +374,42 @@ describe('checkOcclusion', () => {
     const target = document.createElement('button');
     document.body.appendChild(target);
     withElementFromPoint(document, null);
+
+    expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
+  });
+
+  test('ALLOWED with hit: a pointer-events:none target whose sibling takes the hit is retargeted, not blocked', () => {
+    // The Articulate Storyline shape: an invisible a11y element stacked
+    // over the visual control, whose real hit-target is a SIBLING — what
+    // a real user click at this exact point activates, not a blocker.
+    const { checkOcclusion } = loadDeepQuery();
+    const target = document.createElement('div');
+    target.id = 'acc-42';
+    target.style.pointerEvents = 'none';
+    document.body.appendChild(target);
+    const hitTarget = document.createElement('div');
+    hitTarget.id = 'hit-target';
+    hitTarget.className = 'slide-object';
+    document.body.appendChild(hitTarget);
+    withElementFromPoint(document, hitTarget);
+
+    expect(checkOcclusion(target, 5, 5)).toEqual({
+      allowed: true,
+      hit: 'div#hit-target.slide-object',
+    });
+  });
+
+  test('a descendant hit on a pointer-events:none target stays a plain allowed (no hit field)', () => {
+    // The click bubbles through the target — the descendant branch must
+    // win over the pointer-events retarget branch.
+    const { checkOcclusion } = loadDeepQuery();
+    const target = document.createElement('div');
+    target.style.pointerEvents = 'none';
+    document.body.appendChild(target);
+    const child = document.createElement('button');
+    child.style.pointerEvents = 'auto';
+    target.appendChild(child);
+    withElementFromPoint(document, child);
 
     expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
   });

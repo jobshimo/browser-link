@@ -15,6 +15,7 @@ interface DomHelperGlobals {
   genSelector: (el: Element) => string;
   genSelectorInfo: (el: Element) => { selector: string; ambiguous: boolean };
   frameSelectorFor: (el: Element) => string | null;
+  isClickTarget: (el: Element) => boolean;
   deepQueryAll: (selector: string, start?: Document | Element) => Element[];
   deepQueryFirst: (selector: string, start?: Document | Element) => Element | null;
 }
@@ -23,6 +24,13 @@ function loadHelpers(): DomHelperGlobals {
   globalEval(DEEP_QUERY_JS);
   globalEval(DOM_HELPERS_JS);
   return globalThis as unknown as DomHelperGlobals;
+}
+
+/** jsdom never computes layout, so `offsetParent` is always null — the
+ * `isVisible()` heuristic would report every element hidden. Stub the getter
+ * per-element, mirroring how a real browser reports a rendered element. */
+function makeVisible(el: Element): void {
+  Object.defineProperty(el, 'offsetParent', { value: document.body, configurable: true });
 }
 
 beforeEach(() => {
@@ -123,6 +131,42 @@ describe('genSelector — round-trip invariant (find/snapshot selector must reso
     expect(frameSelector).not.toBeNull();
     // The frame selector must itself resolve back to the iframe element.
     expect(deepQueryFirst(frameSelector!)).toBe(iframe);
+  });
+});
+
+describe('isClickTarget — pointer-events awareness', () => {
+  test('a visible element with computed pointer-events:none is NOT a click target', () => {
+    const { isClickTarget } = loadHelpers();
+    const acc = document.createElement('div');
+    acc.style.pointerEvents = 'none';
+    document.body.appendChild(acc);
+    makeVisible(acc);
+
+    expect(isClickTarget(acc)).toBe(false);
+  });
+
+  test('a pointer-events:auto descendant inside a none parent IS a click target (per-element check, not a subtree prune)', () => {
+    const { isClickTarget } = loadHelpers();
+    const wrapper = document.createElement('div');
+    wrapper.style.pointerEvents = 'none';
+    document.body.appendChild(wrapper);
+    makeVisible(wrapper);
+    const child = document.createElement('button');
+    child.style.pointerEvents = 'auto';
+    wrapper.appendChild(child);
+    makeVisible(child);
+
+    expect(isClickTarget(child)).toBe(true);
+    expect(isClickTarget(wrapper)).toBe(false);
+  });
+
+  test('a hidden element is not a click target regardless of pointer-events', () => {
+    const { isClickTarget } = loadHelpers();
+    const btn = document.createElement('button');
+    document.body.appendChild(btn);
+    // Not marked visible — offsetParent stays null, the isVisible gate wins.
+
+    expect(isClickTarget(btn)).toBe(false);
   });
 });
 

@@ -285,6 +285,17 @@ export const DEEP_QUERY_JS = `
     return node;
   }
 
+  function computedPointerEvents(el) {
+    // Read through the element's own window (cross-document
+    // getComputedStyle is unreliable); any failure fails open (not 'none').
+    try {
+      var view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      return view.getComputedStyle(el).pointerEvents;
+    } catch (_) {
+      return '';
+    }
+  }
+
   function checkOcclusion(target, localX, localY) {
     // Hit-test starting from the element's OWN root (its closest shadow
     // root, or the document that owns it when not in shadow DOM) using
@@ -299,8 +310,23 @@ export const DEEP_QUERY_JS = `
       // Fail open rather than block a click we cannot actually verify.
       return { allowed: true };
     }
-    if (hit === target || composedContains(target, hit) || composedContains(hit, target)) {
+    if (hit === target || composedContains(target, hit)) {
       return { allowed: true };
+    }
+    if (composedContains(hit, target)) {
+      // ANCESTOR hit: the click targets the ancestor and never reaches
+      // the element itself (events bubble upward, not down). Allowed as
+      // before, but surfaced so click results can report hit_element.
+      return { allowed: true, hit: describeElement(hit) };
+    }
+    if (computedPointerEvents(target) === 'none') {
+      // A pointer-events:none target can never be the hit-test result — a
+      // real user click at this exact point reaches hit instead, by the
+      // page's own design (invisible a11y layer over the visual control's
+      // hit-target sibling, e.g. Articulate Storyline). The hit is not a
+      // blocker to dismiss; it IS what a real click activates, so allow
+      // the dispatch and report the true recipient.
+      return { allowed: true, hit: describeElement(hit) };
     }
     return { allowed: false, blocker: describeElement(hit) };
   }

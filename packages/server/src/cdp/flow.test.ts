@@ -48,6 +48,23 @@ describe('runFlow', () => {
     expect(deps.performClick).toHaveBeenCalledWith(expect.objectContaining({ selector: '#found' }));
   });
 
+  test('a click step surfaces hit_element when the click result carries it', async () => {
+    const deps = fakeDeps({
+      performClick: vi.fn(async () => ({
+        ok: true,
+        result: { clicked: '#x', tag: 'button', hit_element: 'div.overlay' },
+      })),
+    });
+    const result = await runFlow(
+      [{ click: { selector: '#x' } }, { press: { key: 'Enter' } }],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.results).toEqual([{ ok: true, hit_element: 'div.overlay' }, { ok: true }]);
+    }
+  });
+
   test('fails fast: a failing step stops the flow and returns a recovery snapshot', async () => {
     const deps = fakeDeps({
       performClick: vi.fn(async () => ({ ok: false, error: 'Element not found: #x' })),
