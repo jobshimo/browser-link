@@ -2373,3 +2373,48 @@ describe('browser.flow dry_run', () => {
     expect(sent.dry_run).toBeUndefined();
   });
 });
+
+describe('browser.flow repeat — the iteration ceilings the docs promise', () => {
+  // These lock the exact numbers published in the README table, DECISIONS
+  // §13 and the agent-instructions BULK WORK section. v0.25.0 shipped a
+  // claim of "~200 iterations per call" that was wrong by 4x; documented
+  // arithmetic must be executable so it cannot drift again.
+  const body = (settleZero: boolean) => ({
+    click: { selector: '#row', ...(settleZero ? { settle_ms: 0 } : {}) },
+  });
+  const repeatStep = (max: number, settleZero: boolean, throttled: boolean) => [
+    {
+      repeat: {
+        steps: [body(settleZero)],
+        max_iterations: max,
+        ...(throttled ? { while_found: '.row', delay_ms: 250 } : {}),
+      },
+    },
+  ];
+
+  test.each([
+    ['1 click, default settle', 23, 24, false, false],
+    ['1 click, settle_ms:0', 116, 117, true, false],
+    ['1 click, settle_ms:0 + while_found + delay 250', 46, 47, true, true],
+  ])('%s → %i fits, %i is rejected', async (_label, fits, rejected, settleZero, throttled) => {
+    const okDeps = makeDeps();
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: repeatStep(fits, settleZero, throttled) },
+      okDeps,
+      TEST_CALLER,
+    );
+    expect(okDeps.callBrowserTool).toHaveBeenCalled();
+
+    const badDeps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: repeatStep(rejected, settleZero, throttled) },
+        badDeps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/exceeds the 60s ceiling/);
+    expect(badDeps.callBrowserTool).not.toHaveBeenCalled();
+  });
+});

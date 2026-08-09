@@ -151,7 +151,9 @@ Full. Pure grammar; the drift test enforces both transports.
 
 `max_iterations` is **mandatory**, so the worst-case duration stays statically computable and the existing `MAX_FLOW_TIMEOUT_MS = 60_000` rejection still bounds every flow. A repeat cannot outrun the current ceiling. Cancellation (slice 4) is what later _raises_ that ceiling; it is not a prerequisite for this slice.
 
-The payoff at the current ceiling is already large: a 60s budget with a 250ms delay and a one-click body is ~200 iterations per call. The field report's 956-deletion task would have gone from ~25 round trips to ~5 — with trusted input throughout.
+The payoff at the current ceiling is real but bounded, and it is worth stating precisely rather than optimistically. The budget is `2000 + max_iterations x (inner steps + delay_ms + a 500ms while_found probe) <= 60000`, and a click step costs 2500ms with default settle or 500ms with `settle_ms: 0`. So a throttled drain loop — one click, `settle_ms: 0`, `while_found`, `delay_ms: 250` — fits **46 iterations per call** (measured: 46 accepted, 47 rejected at 61s). Unthrottled with settle off it is ~116; with default settle it is ~23.
+
+That means `repeat` is **not** primarily a throughput win over an `evaluate` loop — the field report's 956 deletions would take ~21 calls, not ~5. It is a SAFETY win: every click is trusted CDP input, occlusion-guarded, recorded per iteration, and the whole thing is bounded and rejectable up front. The throughput ceiling is exactly what slice 6 lifts by removing `MAX_FLOW_TIMEOUT_MS`.
 
 ### Contract
 

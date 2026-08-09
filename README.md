@@ -381,8 +381,7 @@ X, pause, repeat until the list drains._ Before it, the only way to do
 that was a loop inside `browser.evaluate` — which is exactly where every
 guarantee is lost, since `el.click()` is `isTrusted:false` and there is
 no occlusion guard, no recovery snapshot and no record of what happened.
-A `repeat` keeps all of it, for hundreds of iterations, in **one round
-trip**.
+A `repeat` keeps all of it, in **one round trip**.
 
 It is bounded by construction, and that is deliberate:
 
@@ -396,6 +395,23 @@ delay_ms + a while_found probe)`, and a repeat that projects over the
   would let one repeat smuggle in an arbitrarily long body.
 - **Each iteration starts with a fresh implicit target**, and none
   escapes in either direction. Put the `find` inside the body.
+
+**How many iterations actually fit.** The budget is
+`2000 + max_iterations × (inner steps + delay_ms + a 500 ms while_found
+probe) ≤ 60 000`, where a click costs 2 500 ms with default settle or
+500 ms with `settle_ms: 0`:
+
+| Body                                                      | Per iteration | Max iterations |
+| --------------------------------------------------------- | ------------- | -------------- |
+| 1 click, default settle                                   | 2 500 ms      | **23**         |
+| 1 click, `settle_ms: 0`                                   | 500 ms        | **116**        |
+| 1 click, `settle_ms: 0` + `while_found` + `delay_ms: 250` | 1 250 ms      | **46**         |
+
+Those are measured, not estimated. So `repeat` is **not** primarily a
+throughput win over an `evaluate` loop — draining a 956-row list still
+takes ~21 calls. It is a _safety_ win: trusted input, occlusion guard, a
+per-iteration record, and a flow that is bounded and rejectable before
+it starts. Lifting the 60-second ceiling is separate work.
 
 `while_found` is the early stop: before each iteration the loop checks
 whether that selector still matches something **visible**, and stops the
