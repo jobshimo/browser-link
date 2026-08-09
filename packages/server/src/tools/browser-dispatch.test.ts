@@ -1209,7 +1209,7 @@ describe('browser.flow dispatch', () => {
     expect(deps.callBrowserTool).toHaveBeenCalledWith(
       'tab_1',
       'flow',
-      { steps },
+      { steps, flow_id: expect.any(String) },
       expect.any(Number),
     );
   });
@@ -1272,7 +1272,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps },
+        { steps, flow_id: expect.any(String) },
         expect.any(Number),
       );
     });
@@ -1361,7 +1361,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps },
+        { steps, flow_id: expect.any(String) },
         expect.any(Number),
       );
     });
@@ -1373,7 +1373,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps },
+        { steps, flow_id: expect.any(String) },
         expect.any(Number),
       );
     });
@@ -1385,7 +1385,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps },
+        { steps, flow_id: expect.any(String) },
         expect.any(Number),
       );
     });
@@ -1483,7 +1483,7 @@ describe('browser.flow dispatch', () => {
         expect(deps.callBrowserTool).toHaveBeenCalledWith(
           'tab_1',
           'flow',
-          { steps },
+          { steps, flow_id: expect.any(String) },
           expect.any(Number),
         );
       }
@@ -1501,7 +1501,7 @@ describe('browser.flow dispatch', () => {
         expect(deps.callBrowserTool).toHaveBeenCalledWith(
           'tab_1',
           'flow',
-          { steps },
+          { steps, flow_id: expect.any(String) },
           expect.any(Number),
         );
       }
@@ -2416,5 +2416,118 @@ describe('browser.flow repeat — the iteration ceilings the docs promise', () =
       ),
     ).rejects.toThrow(/exceeds the 60s ceiling/);
     expect(badDeps.callBrowserTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('browser.flow identity (flow_id)', () => {
+  /** Deps whose flow call answers with a given result, so the dispatcher's
+   * own decoration of that result is observable. */
+  function makeFlowDeps(result: unknown): BrowserToolDeps {
+    const deps = makeDeps();
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mockResolvedValue(result);
+    return deps;
+  }
+
+  test('mints an opaque id and forwards it to the transport with the steps', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+      deps,
+      TEST_CALLER,
+    );
+    const params = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(typeof params.flow_id).toBe('string');
+    expect(params.flow_id.length).toBeGreaterThan(0);
+  });
+
+  test('returns the same id on the flow result', async () => {
+    const deps = makeFlowDeps({ ok: true, steps_completed: 1, results: [{ ok: true }] });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; ok: boolean };
+    const sent = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2];
+
+    expect(result.flow_id).toBe(sent.flow_id);
+    // Everything else about the success shape is untouched.
+    expect(result).toMatchObject({ ok: true, steps_completed: 1 });
+  });
+
+  test('includes the id in the fail-fast error payload too', async () => {
+    // The failure payload is exactly when an agent needs to know WHICH run
+    // it is looking at.
+    const deps = makeFlowDeps({
+      ok: false,
+      failed_step: 1,
+      step_kind: 'click',
+      error: 'Element not found: #go',
+      steps_completed: 1,
+      recovery_snapshot: null,
+    });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }, { click: { selector: '#go' } }] },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; ok: boolean; failed_step: number };
+
+    expect(result.ok).toBe(false);
+    expect(result.failed_step).toBe(1);
+    expect(typeof result.flow_id).toBe('string');
+  });
+
+  test('includes the id on a cancelled flow', async () => {
+    const deps = makeFlowDeps({
+      ok: true,
+      stopped_by: 'cancelled',
+      steps_completed: 1,
+      results: [{ ok: true }],
+    });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'a' } }, { press: { key: 'b' } }] },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; stopped_by: string };
+
+    expect(result.stopped_by).toBe('cancelled');
+    expect(typeof result.flow_id).toBe('string');
+  });
+
+  test('every call gets its own id', async () => {
+    const deps = makeDeps();
+    const args = { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] };
+    await handleBrowserTool('browser.flow', args, deps, TEST_CALLER);
+    await handleBrowserTool('browser.flow', args, deps, TEST_CALLER);
+    const calls = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls;
+
+    expect(calls[0][2].flow_id).not.toBe(calls[1][2].flow_id);
+  });
+
+  test('a dry run is identified too — the id is per CALL, not per dispatch', async () => {
+    const deps = makeFlowDeps({ ok: true, steps_completed: 0, results: [], dry_run: true });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }], dry_run: true },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; dry_run: boolean };
+
+    expect(result.dry_run).toBe(true);
+    expect(typeof result.flow_id).toBe('string');
+  });
+
+  test('a non-object transport result passes through untouched rather than being wrapped', async () => {
+    const deps = makeFlowDeps('unexpected');
+    const result = await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }] },
+      deps,
+      TEST_CALLER,
+    );
+    expect(result).toBe('unexpected');
   });
 });

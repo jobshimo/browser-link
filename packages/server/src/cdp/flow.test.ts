@@ -154,3 +154,59 @@ describe('runFlow', () => {
     }
   });
 });
+
+describe('runFlow — cancellation (verbatim copy)', () => {
+  test('stops dispatching and returns ok:true with the results so far', async () => {
+    let observations = 0;
+    const deps = fakeDeps({
+      shouldCancel: () => {
+        observations += 1;
+        return observations > 1;
+      },
+    });
+    const result = await runFlow([{ press: { key: 'a' } }, { press: { key: 'b' } }], deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    expect(result.steps_completed).toBe(1);
+    expect(deps.performPress).toHaveBeenCalledTimes(1);
+  });
+
+  test('a repeat stops at an iteration boundary and reports what it completed', async () => {
+    let observations = 0;
+    const deps = fakeDeps({
+      shouldCancel: () => {
+        observations += 1;
+        return observations > 3;
+      },
+    });
+    const result = await runFlow(
+      [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 20 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    expect(result.results[0]).toMatchObject({
+      stopped_by: 'cancelled',
+      iterations_completed: 1,
+    });
+  });
+
+  test('a wait_for cut short by the flag is a cancellation, not a timeout failure', async () => {
+    const deps = fakeDeps({
+      performWaitFor: vi.fn(async () => ({
+        ok: true as const,
+        result: { matched: false, elapsed_ms: 90, checks: 1, reason: 'cancelled' },
+      })),
+    });
+    const result = await runFlow([{ wait_for: { selector: '.done' } }], deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    expect(deps.buildRecoverySnapshot).not.toHaveBeenCalled();
+  });
+});

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
-import { saveGrant } from './grant.js';
+import { clearGrant, saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR } from './gate.js';
 import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
 
@@ -363,5 +363,60 @@ describe('callCdpTool — connection cache lifecycle', () => {
     // the next call dials fresh instead of reusing a stale cache entry.
     await callCdpTool(`cdp:${targetId}`, 'ping', {});
     expect(connectionCount).toBe(2);
+  });
+});
+
+/*
+ * The cdp-direct kill switch. There is no extension here and therefore no
+ * popup Stop button, so `browser-link cdp revoke` is the ONLY lever the
+ * user has — and before flow cancellation existed, revoking mid-flow did
+ * nothing to the flow already running. These tests pin the new behaviour:
+ * the flow's per-step gate re-check stops it within one step, cleanly,
+ * keeping the steps that already ran.
+ */
+describe('callCdpTool — flow stops when the cdp-direct grant is revoked mid-flow', () => {
+  test('revoking between steps ends the flow with stopped_by: cancelled and partial results', async () => {
+    let dispatched = 0;
+    const { port, targetId } = await startFakeTarget({
+      'Input.dispatchKeyEvent': () => {
+        dispatched += 1;
+        // The user runs `browser-link cdp revoke` while step 1 is in
+        // flight. Nothing interrupts the command already sent; the flow
+        // must decline to dispatch the NEXT one.
+        if (dispatched === 1) clearGrant();
+        return {};
+      },
+    });
+    grantAccess(port);
+
+    const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      // settle_ms: 0 keeps each step to a single Input.* dispatch, so the
+      // count below is unambiguous.
+      steps: [
+        { press: { key: 'a', settle_ms: 0 } },
+        { press: { key: 'b', settle_ms: 0 } },
+        { press: { key: 'c', settle_ms: 0 } },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true, stopped_by: 'cancelled', steps_completed: 1 });
+    // A key press is several CDP events (keyDown/char/keyUp) — the point is
+    // that steps 2 and 3 contributed none of them.
+    const afterFirstStep = dispatched;
+    expect(afterFirstStep).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatched).toBe(afterFirstStep);
+  });
+
+  test('a live grant leaves the flow completely unaffected', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+
+    const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ press: { key: 'a', settle_ms: 0 } }, { press: { key: 'b', settle_ms: 0 } }],
+    });
+
+    expect(result).toMatchObject({ ok: true, steps_completed: 2 });
+    expect(Object.hasOwn(result as object, 'stopped_by')).toBe(false);
   });
 });

@@ -27,11 +27,22 @@ import {
   type DragStepParams,
   type DragStepResult,
   type FindStepResult,
+  type FlowDeps,
+  type FlowResult,
   type FlowStep,
   type PressStepResult,
   type TypeStepResult,
   type WaitForStepResult,
 } from './flow.js';
+import {
+  appendFlowHistory,
+  createFlowRegistry,
+  flowHistoryKey,
+  parseFlowHistory,
+  toHistoryEntry,
+  type FlowHistoryEntry,
+  type RunningFlowView,
+} from './flow-registry.js';
 import {
   DEFAULT_IDLE_TTL_MINUTES,
   IDLE_TTL_STORAGE_KEY,
@@ -428,7 +439,12 @@ type RuntimeMessage =
   | { action: 'startRecording'; tabId: number }
   | { action: 'stopRecording'; tabId: number }
   | { action: 'discardRecording'; tabId: number }
-  | { action: 'saveRecording'; tabId: number; name: string; description?: string };
+  | { action: 'saveRecording'; tabId: number; name: string; description?: string }
+  | { action: 'flowsStatus'; tabId: number }
+  // No tabId: a flow_id already names exactly one flow on exactly one tab,
+  // and the popup must be able to stop a flow running on a tab it is not
+  // currently showing.
+  | { action: 'cancelFlow'; flowId: string };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
@@ -437,6 +453,7 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (m.action === 'saveRecording') {
     return typeof m.tabId === 'number' && typeof m.name === 'string';
   }
+  if (m.action === 'cancelFlow') return typeof m.flowId === 'string';
   if (typeof m.tabId !== 'number') return false;
   return (
     m.action === 'connect' ||
@@ -447,11 +464,53 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
     m.action === 'recordingStatus' ||
     m.action === 'startRecording' ||
     m.action === 'stopRecording' ||
-    m.action === 'discardRecording'
+    m.action === 'discardRecording' ||
+    m.action === 'flowsStatus'
   );
 }
 
 const tabStates = new Map<number, TabState>();
+
+/**
+ * Every `browser.flow` currently running in this service worker, across
+ * every connected tab. This is the whole basis of the kill switch: the
+ * runner polls `cancelled` off an entry here before each step, so stopping
+ * a flow means flipping one boolean and letting the loop decline to
+ * dispatch step N+1 — never interrupting an in-flight CDP command.
+ *
+ * Lives in the service worker's memory ON PURPOSE. If Chrome terminates
+ * the worker mid-flow the flow dies with it, the entry goes with it, and
+ * the popup shows nothing running — which is the truth. A registry that
+ * survived the worker would have to describe flows that no longer exist.
+ */
+const flowRegistry = createFlowRegistry();
+
+/** Fallback id for a `browser.flow` that arrived without one (a server
+ * older than this extension). `crypto.randomUUID` is available in the MV3
+ * service worker; the `flow_` prefix keeps a locally-minted id visually
+ * distinguishable from a server-minted one in the popup. */
+function newFlowId(): string {
+  return `flow_${crypto.randomUUID()}`;
+}
+
+/** Answer the popup's Flows panel: everything running (across ALL tabs —
+ * the Stop button has to reach a flow on a tab the user is not looking at)
+ * plus the completed history of the ONE tab the popup is showing. */
+async function getFlowsStatus(
+  tabId: number,
+): Promise<{ running: RunningFlowView[]; history: FlowHistoryEntry[] }> {
+  const running = flowRegistry.listRunning(Date.now());
+  let history: FlowHistoryEntry[] = [];
+  try {
+    const key = flowHistoryKey(tabId);
+    const data = await chrome.storage.session.get(key);
+    history = parseFlowHistory(data[key]);
+  } catch {
+    // Session storage unavailable — show the running half rather than
+    // failing the whole panel.
+  }
+  return { running, history };
+}
 
 /** Per-tab `chrome.tabs.onUpdated` listener installed while that tab is
  * recording, so `handleRecordingNavigation` fires on every navigation and
@@ -1172,6 +1231,14 @@ async function performWaitFor(
     timeout_ms?: number;
     poll_interval_ms?: number;
   },
+  /** Cancellation flag of the flow this wait belongs to, when it is a flow
+   * step (see `handleFlow`). Checked on EVERY poll tick, which is what
+   * makes the advertised worst-case cancellation latency of one step true
+   * for a step that can legitimately park for 30 seconds — without it,
+   * pressing Stop during a long `wait_for` would do nothing visible until
+   * the wait timed out on its own. Absent for the standalone
+   * `browser.wait_for` tool, which has no flow to be cancelled with. */
+  shouldCancel?: () => boolean,
 ): Promise<ActionOutcome<WaitForStepResult>> {
   try {
     const waitSelector = params.selector;
@@ -1237,7 +1304,12 @@ async function performWaitFor(
     const startedAt = Date.now();
     let checks = 0;
     let matched = false;
+    let cancelled = false;
     while (check) {
+      if (shouldCancel?.() === true) {
+        cancelled = true;
+        break;
+      }
       checks++;
       if (await check()) {
         matched = true;
@@ -1248,9 +1320,19 @@ async function performWaitFor(
     }
     const elapsedMs = Date.now() - startedAt;
 
+    // 'cancelled' is deliberately distinct from 'timeout': the step
+    // executor turns a timeout into a flow FAILURE (with a recovery
+    // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
+    // Reporting a stopped wait as a timeout would invent a diagnosis for a
+    // condition that was never given its budget.
     const result: WaitForStepResult = matched
       ? { matched: true, elapsed_ms: elapsedMs, checks }
-      : { matched: false, elapsed_ms: elapsedMs, checks, reason: 'timeout' };
+      : {
+          matched: false,
+          elapsed_ms: elapsedMs,
+          checks,
+          reason: cancelled ? 'cancelled' : 'timeout',
+        };
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1675,29 +1757,116 @@ async function handleFlow(
   const rawSteps = Array.isArray(p.steps)
     ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
     : [];
-  const flowResult = await runFlow(
-    rawSteps as FlowStep[],
-    {
-      performFind: (params) => performFind(tabId, params),
-      performClick: (params) => performClick(tabId, params),
-      performType: (params) => performType(tabId, params),
-      performPress: (params) => performPress(tabId, params),
-      performWaitFor: (params) => performWaitFor(tabId, state, params),
-      performDrag: (params) => performDrag(tabId, params),
-      buildRecoverySnapshot: () =>
-        evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
-    },
-    // Strict `=== true`: any other wire value (missing, "true", 1) runs
-    // the flow FOR REAL. A dry run that silently became a real run would
-    // be the worst possible failure of this flag, so only the exact
-    // boolean opts into it.
-    { dryRun: p.dry_run === true },
-  );
-  // The wire-level response is ok:true whenever the flow RAN (even a
-  // failed step is a legitimate business outcome, same pattern as
-  // wait_for's matched:false) — flowResult itself carries the
-  // ok:true/false the agent reads.
-  return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
+  // Strict `=== true`: any other wire value (missing, "true", 1) runs
+  // the flow FOR REAL. A dry run that silently became a real run would
+  // be the worst possible failure of this flag, so only the exact
+  // boolean opts into it.
+  const dryRun = p.dry_run === true;
+  // The server mints the id (see `browser-dispatch.ts`) so the agent gets
+  // it back even when the extension never answers. The local fallback
+  // covers a server too old to send one: the popup's Stop button must work
+  // regardless of which half was upgraded first.
+  const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : newFlowId();
+
+  // A dry run dispatches nothing and finishes in milliseconds, so it is
+  // deliberately NOT registered: there is nothing to stop, and listing it
+  // would push real runs out of a 20-entry history with entries that never
+  // touched the page.
+  if (dryRun) {
+    const projection = await runFlow(rawSteps as FlowStep[], buildFlowDeps(tabId, state), {
+      dryRun: true,
+    });
+    return { kind: 'tool.response', id: msg.id, ok: true, result: projection };
+  }
+
+  flowRegistry.register({ flowId, tabId, steps: rawSteps.length });
+  // Best effort and deliberately not awaited: the title is only there so
+  // the popup can tell two concurrent flows apart, and no flow should pay
+  // a round trip to chrome.tabs before its first step.
+  void chrome.tabs
+    .get(tabId)
+    .then((tab) => {
+      const entry = flowRegistry.get(flowId);
+      if (entry && typeof tab.title === 'string') entry.title = tab.title;
+    })
+    .catch(() => {
+      // Tab gone or title unavailable — the panel falls back to the id.
+    });
+
+  const shouldCancel = (): boolean => flowRegistry.get(flowId)?.cancelled === true;
+  let flowResult: FlowResult | null = null;
+  try {
+    flowResult = await runFlow(rawSteps as FlowStep[], {
+      ...buildFlowDeps(tabId, state, shouldCancel),
+      shouldCancel,
+      onProgress: (progress) => {
+        const entry = flowRegistry.get(flowId);
+        if (entry) entry.progress = progress;
+      },
+    });
+    // The wire-level response is ok:true whenever the flow RAN (even a
+    // failed step, and even a cancellation, is a legitimate business
+    // outcome — same pattern as wait_for's matched:false) — flowResult
+    // itself carries the ok:true/false and stopped_by the agent reads.
+    return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
+  } finally {
+    // In `finally` so a throw (detached debugger, closed tab) still retires
+    // the registry entry — a phantom "running" flow in the popup would be
+    // worse than no panel at all, since it offers a Stop button that can
+    // never do anything.
+    recordFinishedFlow(flowId, flowResult);
+  }
+}
+
+/** The perform* bindings `runFlow` needs, in one place so the real run and
+ * the dry-run projection cannot drift apart. `shouldCancel` is threaded
+ * into `performWaitFor` alone: it is the only perform* with a loop of its
+ * own to break out of. */
+function buildFlowDeps(
+  tabId: number,
+  state: TabState,
+  shouldCancel?: () => boolean,
+): Omit<FlowDeps, 'shouldCancel' | 'onProgress'> {
+  return {
+    performFind: (params) => performFind(tabId, params),
+    performClick: (params) => performClick(tabId, params),
+    performType: (params) => performType(tabId, params),
+    performPress: (params) => performPress(tabId, params),
+    performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
+    performDrag: (params) => performDrag(tabId, params),
+    buildRecoverySnapshot: () =>
+      evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+  };
+}
+
+/** Serializes history writes. Appending is a read-modify-write over an
+ * async store, so two flows on the same tab finishing microseconds apart
+ * would otherwise both read the same list and the second `set` would drop
+ * the first's entry. One global chain (rather than one per tab) is enough:
+ * these writes happen once per finished flow, never in a hot path. */
+let flowHistoryWrites: Promise<void> = Promise.resolve();
+
+/** Retire a finished flow: drop it from the in-flight registry and prepend
+ * its outcome to the tab's session-scoped history. Never throws — a
+ * storage failure must not turn a completed flow into a failed tool call. */
+function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
+  const entry = flowRegistry.finish(flowId);
+  if (!entry) return;
+  const historyEntry = toHistoryEntry(entry, result, Date.now());
+  const key = flowHistoryKey(entry.tabId);
+  flowHistoryWrites = flowHistoryWrites
+    .then(async () => {
+      const data = await chrome.storage.session.get(key);
+      await chrome.storage.session.set({
+        [key]: appendFlowHistory(parseFlowHistory(data[key]), historyEntry),
+      });
+    })
+    .catch(() => {
+      // Best effort, and the chain must survive: the history is an
+      // operator convenience that dies with the browser session anyway, so
+      // one lost entry is not worth surfacing — but swallowing here is
+      // also what keeps a single failure from poisoning every later write.
+    });
 }
 
 async function handleDrag(
@@ -1961,6 +2130,12 @@ async function cleanup(tabId: number): Promise<void> {
   // `state` and raw CDP calls, never the map entry — and deleting first
   // also makes a re-entrant cleanup a no-op instead of a double detach.
   tabStates.delete(tabId);
+  // A flow cannot outlive its bridge: the debugger is about to detach, so
+  // every remaining step would fail one by one anyway. Cancelling instead
+  // makes the flow stop AT ONCE and report what it completed — and, just
+  // as importantly, keeps the popup from offering a Stop button for a flow
+  // whose tab is already being torn down.
+  flowRegistry.cancelForTab(tabId);
   // Recording never survives a disconnect — there is no server connection
   // left to save to, and leaving captured-but-unsaved steps around after
   // the tab drops its bridge would be a surprising place for them to
@@ -2288,6 +2463,20 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             state.lastActivityAt = Date.now();
             const response = await handleTool(state, msg);
             if (ws.readyState === WebSocket.OPEN) send(ws, response);
+            return;
+          }
+          case 'tool.cancel': {
+            // Deliberately answered with SILENCE: the cancelled flow is
+            // still parked in its own tool.request and replies there,
+            // cleanly, with stopped_by:'cancelled' and its partial
+            // results. An unknown or already-finished flow_id is a no-op —
+            // the caller wanted the flow not running, and it is not.
+            //
+            // Counts as activity: an agent reaching for the kill switch is
+            // very much using this tab, and letting the idle sweeper close
+            // the bridge underneath it would be perverse.
+            state.lastActivityAt = Date.now();
+            flowRegistry.cancel(msg.flow_id);
             return;
           }
           default: {
@@ -2809,6 +2998,18 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     void saveRecording(msg.tabId, msg.name, msg.description).then(sendResponse);
     return true;
   }
+  if (msg.action === 'flowsStatus') {
+    void getFlowsStatus(msg.tabId).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'cancelFlow') {
+    // Synchronous and unconditional: one boolean flip, then the runner
+    // stops at its next check. `cancelled` reports whether THIS call is
+    // what stopped it, so the popup can distinguish "stopping…" from an
+    // id that had already finished — never an error either way.
+    sendResponse({ cancelled: flowRegistry.cancel(msg.flowId) });
+    return false;
+  }
   // 'status'
   sendResponse(getTabStatus(msg.tabId));
   return false;
@@ -2822,6 +3023,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
   // The Chrome tab is gone — drop any cached browser-link id for it.
   void forgetTabId(tabId);
+  // …and its flow history. Chrome reuses tab ids within a session, so a
+  // stale key would eventually show one tab's flows under another's.
+  void chrome.storage.session.remove(flowHistoryKey(tabId)).catch(() => {
+    // Best effort — session storage dies with the browser anyway.
+  });
 });
 
 /* Auto-connect tabs spawned by a connected tab.

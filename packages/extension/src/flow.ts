@@ -18,6 +18,18 @@
  * target — so nothing leaks across an iteration or across the repeat
  * boundary in either direction.
  *
+ * Cancellation is cooperative and lives entirely in this loop: the caller
+ * injects `deps.shouldCancel`, and the runner checks it before dispatching
+ * anything — at the top of every top-level step, at the top of every
+ * repeat iteration, and before every inner step of a repeat body. That is
+ * what makes the advertised worst-case latency ONE STEP real rather than
+ * aspirational, and it is why cancelling means "do not dispatch step N+1"
+ * instead of "interrupt whatever is in flight" (an in-flight CDP command
+ * cannot be un-sent). A cancelled flow is a SUCCESS carrying
+ * `stopped_by: 'cancelled'` and every result it collected — the actions
+ * really happened, so reporting them as an error, or dropping them, would
+ * both be lies.
+ *
  * Deliberately decoupled from any specific transport: every side effect
  * goes through the `FlowDeps` the caller injects. The concrete wiring —
  * `background.ts` in the extension, `cdp/transport.ts` on the server —
@@ -138,6 +150,11 @@ export interface WaitForStepResult {
   matched: boolean;
   elapsed_ms: number;
   checks: number;
+  /** `'timeout'` on a genuine non-match. `'cancelled'` when the poll loop
+   * was cut short by the flow's cancellation flag — a DIFFERENT outcome
+   * that the step executor must not report as a timeout failure, since the
+   * condition was never given its full budget. Both perform* implementations
+   * (`background.ts`, `cdp/transport.ts`) set this. */
   reason?: string;
 }
 
@@ -235,11 +252,20 @@ export interface RepeatStepResult {
   iterations_completed: number;
   /** `condition` — `while_found` stopped matching. `max_iterations` — the
    * bound was reached with the condition still true (or with no condition
-   * at all). A failing inner step does not produce a result at all: it
-   * fails the whole flow, like every other step. */
-  stopped_by: 'condition' | 'max_iterations';
-  /** Per-iteration list of the inner steps' compacted results. */
+   * at all). `cancelled` — `deps.shouldCancel()` went true and the loop
+   * stopped dispatching. A failing inner step does not produce a result at
+   * all: it fails the whole flow, like every other step. */
+  stopped_by: 'condition' | 'max_iterations' | 'cancelled';
+  /** Per-iteration list of the inner steps' compacted results. Holds
+   * COMPLETE iterations only, so `iterations_completed` never counts an
+   * iteration that stopped half-way. */
   iterations: unknown[][];
+  /** Present ONLY when a cancellation landed part-way through an
+   * iteration: the inner-step results of that INCOMPLETE iteration. Those
+   * steps really ran, so they are never discarded — they are just kept out
+   * of `iterations` / `iterations_completed` so those two keep meaning
+   * exactly "iterations that finished". */
+  partial_iteration?: unknown[];
 }
 
 export type FlowStep =
@@ -306,6 +332,46 @@ export interface FlowDeps {
    * `browser.drag` returns there. */
   performDrag(params: DragStepParams): Promise<ActionOutcome<DragStepResult>>;
   buildRecoverySnapshot(): Promise<unknown>;
+  /** Cooperative cancellation. Polled — never awaited — immediately before
+   * each dispatch point (see the module doc comment for the exact three).
+   * Returning `true` ends the flow cleanly with `stopped_by: 'cancelled'`.
+   *
+   * Optional so every existing caller and test keeps working unchanged: an
+   * absent `shouldCancel` means "this flow cannot be cancelled", which is
+   * exactly the pre-cancellation behaviour.
+   *
+   * MUST be cheap and synchronous — it runs once per step. The extension
+   * reads a boolean off its in-flight registry entry; the cdp-direct
+   * transport re-checks the cdp-direct gate, which is what makes
+   * `browser-link cdp revoke` a real kill switch on that path. */
+  shouldCancel?(): boolean;
+  /** Progress sink, called immediately BEFORE each step is dispatched (and
+   * before each repeat iteration), so a consumer polling it always sees
+   * the step that is currently running rather than the last one that
+   * finished. Optional, and never awaited — a throwing or slow consumer
+   * must not be able to affect the flow, so implementations do the
+   * cheapest possible thing (the extension assigns one object onto its
+   * registry entry).
+   *
+   * This is what the popup's "step 3/7" / "iteration 12/50" line reads. It
+   * lives here rather than being derived outside because only the runner
+   * knows which step it is about to dispatch. */
+  onProgress?(progress: FlowProgress): void;
+}
+
+/** Where a running flow is, right now. Indices are 1-BASED for display —
+ * this shape exists to be rendered ("step 3/7"), not to index an array. */
+export interface FlowProgress {
+  /** 1-based index of the top-level step about to be dispatched. */
+  step: number;
+  /** Total number of top-level steps in this flow. */
+  steps: number;
+  /** 1-based index of the repeat iteration about to run. Present only
+   * while a `repeat` step is executing. */
+  iteration?: number;
+  /** The running repeat's `max_iterations` — the upper bound, which is the
+   * only total a repeat has (a `while_found` repeat may stop earlier). */
+  iterations?: number;
 }
 
 export interface FlowSuccess {
@@ -316,6 +382,12 @@ export interface FlowSuccess {
    * and `steps_completed` is therefore 0. Omitted on a real run, so an
    * existing consumer sees a byte-identical success shape. */
   dry_run?: true;
+  /** Present ONLY when `deps.shouldCancel()` ended the run. A cancelled
+   * flow is deliberately `ok: true`: every step in `results` really
+   * executed, and the ONE thing the caller must not be told is that the
+   * partial work did not happen. Omitted on an uncancelled run, so an
+   * existing consumer sees a byte-identical success shape. */
+  stopped_by?: 'cancelled';
 }
 
 export interface FlowFailure {
@@ -421,7 +493,28 @@ interface LeafState {
  * CALLER turns into a `FlowFailure`. Keeping the recovery snapshot and the
  * step index out of here is what lets the exact same executor be driven
  * from the top-level sequence and from inside a `repeat` body. */
-type LeafOutcome = { ok: true; entry: unknown } | { ok: false; error: string };
+type LeafOutcome =
+  | {
+      ok: true;
+      entry: unknown;
+      /** Set only by `executeRepeatStep`, when the repeat stopped because
+       * `deps.shouldCancel()` went true. The entry is still a complete,
+       * truthful `RepeatStepResult` — this flag is how the ENCLOSING loop
+       * learns to stop too instead of moving on to the next step. */
+      cancelled?: true;
+    }
+  | {
+      ok: false;
+      error: string;
+      /** Set when the step did not complete because the flow was
+       * cancelled MID-STEP — today only a `wait_for` whose poll loop
+       * honoured the cancel flag. There is no result entry (the step
+       * genuinely did not finish), but the enclosing loop must report the
+       * flow as `cancelled` rather than as a step FAILURE: a wait that was
+       * stopped early never got its budget, so calling it a timeout would
+       * be a fabricated diagnosis. */
+      cancelled?: true;
+    };
 
 /** Execute ONE non-repeat step against `state`, which it mutates. */
 async function executeLeafStep(
@@ -461,6 +554,9 @@ async function executeLeafStep(
     const outcome = await deps.performWaitFor(params);
     if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
     if (!outcome.result.matched) {
+      if (outcome.result.reason === 'cancelled') {
+        return { ok: false, error: 'wait_for: cancelled', cancelled: true };
+      }
       // No race hint here: a wait_for step IS the recommended remedy for
       // a navigation race — a plain timeout is a genuine non-match.
       return {
@@ -663,14 +759,28 @@ function normalizeRepeat(
 async function whileFoundStillMatches(
   selector: string,
   deps: FlowDeps,
-): Promise<{ ok: true; matched: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; matched: boolean; cancelled?: true } | { ok: false; error: string }> {
   const outcome = await deps.performWaitFor({ selector, condition: 'visible', timeout_ms: 0 });
   if (!outcome.ok) return { ok: false, error: outcome.error };
+  // A cancellation that lands DURING the probe comes back as a non-match.
+  // Distinguishing it matters: reporting `stopped_by: 'condition'` would
+  // claim the page had drained when in fact the human hit Stop.
+  if (!outcome.result.matched && outcome.result.reason === 'cancelled') {
+    return { ok: true, matched: false, cancelled: true };
+  }
   return { ok: true, matched: outcome.result.matched };
 }
 
-/** Run one `repeat` step to completion. */
-async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutcome> {
+/** Run one `repeat` step to completion.
+ *
+ * `position` is the enclosing step's place in the top-level sequence,
+ * carried in only so the per-iteration `onProgress` calls can report
+ * "step 2/5 · iteration 12/50" instead of losing the outer coordinate. */
+async function executeRepeatStep(
+  raw: unknown,
+  deps: FlowDeps,
+  position: { step: number; steps: number },
+): Promise<LeafOutcome> {
   const normalized = normalizeRepeat(raw);
   if (!normalized.ok) return normalized;
   const { steps: innerSteps, maxIterations, whileFound, delayMs } = normalized.value;
@@ -691,12 +801,27 @@ async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutc
 
   const iterations: unknown[][] = [];
   let stoppedBy: RepeatStepResult['stopped_by'] = 'max_iterations';
+  /** Inner results of an iteration that a cancellation cut short. Kept
+   * separate from `iterations` — see `RepeatStepResult.partial_iteration`. */
+  let partialIteration: unknown[] | undefined;
 
   for (let iter = 0; iter < maxIterations; iter++) {
+    // Checked BEFORE the while_found probe, so a cancelled repeat does not
+    // even spend a round trip discovering whether it should have run again.
+    if (deps.shouldCancel?.() === true) {
+      stoppedBy = 'cancelled';
+      break;
+    }
+    deps.onProgress?.({ ...position, iteration: iter + 1, iterations: maxIterations });
+
     if (whileFound !== undefined) {
       const probe = await whileFoundStillMatches(whileFound, deps);
       if (!probe.ok) {
         return { ok: false, error: `repeat: while_found probe failed — ${probe.error}` };
+      }
+      if (probe.cancelled === true) {
+        stoppedBy = 'cancelled';
+        break;
       }
       if (!probe.matched) {
         stoppedBy = 'condition';
@@ -710,6 +835,15 @@ async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutc
     const entries: unknown[] = [];
 
     for (let j = 0; j < innerSteps.length; j++) {
+      // Re-checked per INNER step, not just per iteration: one iteration
+      // can hold a 30s wait_for or a 30s sleep, so an iteration-only check
+      // would quietly turn the advertised "worst case one step" bound into
+      // "worst case one whole iteration".
+      if (deps.shouldCancel?.() === true) {
+        stoppedBy = 'cancelled';
+        partialIteration = entries;
+        break;
+      }
       const innerRaw: unknown = innerSteps[j];
       // Re-derived per iteration rather than trusted from normalizeRepeat:
       // same defense-in-depth every other step shape gets.
@@ -727,6 +861,14 @@ async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutc
         deps,
       );
       if (!outcome.ok) {
+        // A step cut short mid-flight by the cancel flag is not a failure
+        // of that step — stop the loop the same way an iteration-boundary
+        // cancellation does, keeping whatever this iteration completed.
+        if (outcome.cancelled === true) {
+          stoppedBy = 'cancelled';
+          partialIteration = entries;
+          break;
+        }
         return {
           ok: false,
           error: `repeat: iteration ${iter}, step ${j} (${innerKind}) failed — ${outcome.error}`,
@@ -734,6 +876,7 @@ async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutc
       }
       entries.push(outcome.entry);
     }
+    if (stoppedBy === 'cancelled') break;
 
     iterations.push(entries);
 
@@ -748,8 +891,13 @@ async function executeRepeatStep(raw: unknown, deps: FlowDeps): Promise<LeafOutc
     iterations_completed: iterations.length,
     stopped_by: stoppedBy,
     iterations,
+    // Only when a cancellation actually interrupted an iteration mid-way;
+    // an empty array would still be noise, so it is omitted too.
+    ...(partialIteration !== undefined && partialIteration.length > 0
+      ? { partial_iteration: partialIteration }
+      : {}),
   };
-  return { ok: true, entry };
+  return { ok: true, entry, ...(stoppedBy === 'cancelled' ? { cancelled: true as const } : {}) };
 }
 
 /** Total step count INCLUDING a repeat's inner steps. A 20-step ceiling
@@ -847,7 +995,12 @@ async function planFlow(steps: readonly FlowStep[], deps: FlowDeps): Promise<Flo
  * and a malformed entry must fail the flow cleanly rather than throw.
  *
  * With `options.dryRun`, the flow is validated and projected instead:
- * nothing is dispatched, and each entry describes what WOULD run.
+ * nothing is dispatched, and each entry describes what WOULD run. A dry
+ * run ignores `deps.shouldCancel` — there is nothing to stop.
+ *
+ * With `deps.shouldCancel`, the run can be stopped between steps. It then
+ * resolves as a SUCCESS carrying `stopped_by: 'cancelled'` and the results
+ * of everything that already ran.
  */
 export async function runFlow(
   steps: readonly FlowStep[],
@@ -874,6 +1027,15 @@ export async function runFlow(
   const state: LeafState = { implicitTarget: undefined, lastSettleReason: undefined };
 
   for (let i = 0; i < steps.length; i++) {
+    // Cancellation check #1 of 3 (the others are per repeat iteration and
+    // per inner repeat step). Deliberately BEFORE the step-shape check, so
+    // a cancelled flow stops rather than failing on a malformed step it
+    // was never going to dispatch anyway.
+    if (deps.shouldCancel?.() === true) {
+      return { ok: true, stopped_by: 'cancelled', steps_completed: results.length, results };
+    }
+    deps.onProgress?.({ step: i + 1, steps: steps.length });
+
     const raw: unknown = steps[i];
     const kind = stepKind(raw);
     if (!kind) {
@@ -888,7 +1050,10 @@ export async function runFlow(
     const stepRecord = raw as Record<StepKind, unknown>;
 
     if (kind === 'repeat') {
-      const outcome = await executeRepeatStep(stepRecord.repeat, deps);
+      const outcome = await executeRepeatStep(stepRecord.repeat, deps, {
+        step: i + 1,
+        steps: steps.length,
+      });
       if (!outcome.ok) {
         return withRecoverySnapshot(deps, i, kind, outcome.error, results.length);
       }
@@ -898,11 +1063,23 @@ export async function runFlow(
       state.implicitTarget = undefined;
       state.lastSettleReason = undefined;
       results.push(outcome.entry);
+      // A repeat that stopped because of a cancellation ends the whole
+      // flow — its entry is already in `results`, so the iterations it DID
+      // complete are reported rather than thrown away.
+      if (outcome.cancelled === true) {
+        return { ok: true, stopped_by: 'cancelled', steps_completed: results.length, results };
+      }
       continue;
     }
 
     const outcome = await executeLeafStep(kind, stepRecord, state, deps);
     if (!outcome.ok) {
+      // Cut short mid-step by the cancel flag (a `wait_for` poll loop that
+      // honoured it): a cancellation, not a step failure — and therefore
+      // no recovery snapshot, since nothing went wrong with the page.
+      if (outcome.cancelled === true) {
+        return { ok: true, stopped_by: 'cancelled', steps_completed: results.length, results };
+      }
       return withRecoverySnapshot(deps, i, kind, outcome.error, results.length);
     }
     results.push(outcome.entry);

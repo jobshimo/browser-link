@@ -25,6 +25,7 @@ function handleReset(
  * handler + IPC server) are responsible for supplying it.
  */
 
+import { randomUUID } from 'node:crypto';
 import { requireTabId } from './responses.js';
 import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
 import type { MapHint } from '../map/queries.js';
@@ -265,10 +266,17 @@ const MAX_FLOW_STEPS = 20;
 /** Same ceiling `browser.wait_for_tab` uses for its own timeout budget —
  * the bridge does not park any single tool call longer than this. A flow
  * whose TRUTHFUL worst-case budget exceeds this ceiling is REJECTED up
- * front (see `validateFlowSteps`), never silently capped: the bridge has
- * no cancel path to the extension, so a bridge timeout below the real
- * worst case would drop the response of a flow that is still executing —
- * and an agent retry could then duplicate the actions. */
+ * front (see `validateFlowSteps`), never silently capped: a bridge timeout
+ * below the real worst case would drop the response of a flow that is
+ * still executing — and an agent retry could then duplicate the actions.
+ *
+ * A cancel path to the extension DOES now exist (`tool.cancel`, plus the
+ * popup's Stop button), but it is human- and agent-driven, not automatic:
+ * nothing cancels a flow just because the bridge stopped waiting for it.
+ * The up-front rejection therefore stays exactly as it was. Retiring this
+ * ceiling belongs to the detached-execution slice, which is where a flow
+ * legitimately outlives the call that started it — see
+ * `docs/specs/flow-supervised-execution.md`. */
 const MAX_FLOW_TIMEOUT_MS = 60_000;
 /** Once-per-flow overhead: the WS round trip to the extension plus the
  * recovery snapshot evaluated on the failure path. */
@@ -633,6 +641,43 @@ export function validateFlowSteps(
 /** Worst case for one click/type/press step: its settle ceiling (unless
  * the step explicitly disables settle with `settle_ms: 0`) plus the
  * per-step slack. */
+/**
+ * Mint the id that identifies ONE `browser.flow` call for its whole life:
+ * carried to the transport in the request params, echoed back on the
+ * result, and the handle the popup's Stop button (and, later,
+ * `browser.flow_cancel`) uses to name what to stop.
+ *
+ * Server-minted rather than transport-minted so the agent gets the same
+ * id shape whether the tab is reached through the extension or through
+ * cdp-direct — and gets it even when the flow never answers.
+ *
+ * Opaque by contract: nothing may parse it. `randomUUID` (rather than a
+ * counter) so ids stay unguessable and never collide across a restart,
+ * which matters the moment an id is a capability to STOP something.
+ */
+function newFlowId(): string {
+  return `flow_${randomUUID()}`;
+}
+
+/**
+ * Stamp `flow_id` onto whatever the transport returned.
+ *
+ * Applied to BOTH shapes on purpose. A successful flow obviously needs the
+ * id; a fail-fast failure needs it just as much, because that payload is
+ * exactly when an agent wants to know which run it is looking at — and
+ * because a flow can now also come back `ok: true, stopped_by:
+ * 'cancelled'`, which is neither a plain success nor an error.
+ *
+ * Non-object results (there are none today, but the transport boundary is
+ * `unknown`) pass through untouched rather than being wrapped: inventing a
+ * container would break every existing consumer to decorate a shape that
+ * cannot carry the field anyway.
+ */
+function withFlowId(result: unknown, flowId: string): unknown {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
+  return { ...(result as Record<string, unknown>), flow_id: flowId };
+}
+
 function flowActionBudgetMs(body: Record<string, unknown>): number {
   const settleDisabled = body.settle_ms === 0;
   return (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) + FLOW_STEP_SLACK_MS;
@@ -1123,20 +1168,22 @@ export async function handleBrowserTool(
       // that silently became a real run is the worst failure this flag
       // could have, so only the exact boolean opts into it.
       const dryRun = dry_run === true;
+      const flowId = newFlowId();
       // budgetMs is the flow's truthful worst case and validateFlowSteps
       // already rejected anything above MAX_FLOW_TIMEOUT_MS, so the
       // enforced timeout is never below the modeled need — only the shared
       // action floor can raise it. A dry run dispatches nothing and only
       // probes `while_found`, so it gets the plain action floor instead of
       // a budget modelling work it will never do.
-      return runAction(
+      const result = await runAction(
         'flow',
         requireTabId(args),
-        { steps: validated.steps, ...(dryRun ? { dry_run: true } : {}) },
+        { steps: validated.steps, flow_id: flowId, ...(dryRun ? { dry_run: true } : {}) },
         deps,
         caller,
         dryRun ? ACTION_TIMEOUT_FLOOR_MS : Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
       );
+      return withFlowId(result, flowId);
     }
     case 'browser.evaluate': {
       const { expression, timeout_ms } = args as { expression: string; timeout_ms?: number };

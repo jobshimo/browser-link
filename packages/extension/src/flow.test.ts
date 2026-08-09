@@ -989,3 +989,223 @@ describe('runFlow — dry_run', () => {
     expect(deps.performPress).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('runFlow — cancellation', () => {
+  /** A cancel flag that flips itself to true after N observations, which is
+   * how a real cancel behaves: the flag is polled once per step and goes
+   * true at some point the flow does not control. */
+  function cancelAfter(observations: number): () => boolean {
+    let seen = 0;
+    return () => {
+      seen += 1;
+      return seen > observations;
+    };
+  }
+
+  test('stops dispatching mid-flow and returns ok:true with the results so far', async () => {
+    const deps = makeDeps({ shouldCancel: cancelAfter(2) });
+    const result = await runFlow(
+      [
+        { press: { key: 'a' } },
+        { press: { key: 'b' } },
+        { press: { key: 'c' } },
+        { press: { key: 'd' } },
+      ],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    // Two steps were allowed through; the flag went true before the third.
+    expect(result.steps_completed).toBe(2);
+    expect(result.results).toHaveLength(2);
+    expect(deps.performPress).toHaveBeenCalledTimes(2);
+  });
+
+  test('no action is dispatched after the cancel flag is observed', async () => {
+    const deps = makeDeps({ shouldCancel: () => true });
+    const result = await runFlow(
+      [{ find: { text: 'Delete' } }, { click: {} }, { type: { text: 'x' } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    expect(result.steps_completed).toBe(0);
+    // The whole promise of the kill switch: nothing reached the page.
+    expect(deps.performFind).not.toHaveBeenCalled();
+    expect(deps.performClick).not.toHaveBeenCalled();
+    expect(deps.performType).not.toHaveBeenCalled();
+    // …and no recovery snapshot either: a cancellation is not a failure.
+    expect(deps.buildRecoverySnapshot).not.toHaveBeenCalled();
+  });
+
+  test('an uncancelled flow is byte-identical to the pre-cancellation shape', async () => {
+    const deps = makeDeps({ shouldCancel: () => false });
+    const result = await runFlow([{ press: { key: 'a' } }], deps);
+    expect(result).toEqual({ ok: true, steps_completed: 1, results: [{ ok: true }] });
+    expect(Object.hasOwn(result, 'stopped_by')).toBe(false);
+  });
+
+  test('stops a repeat at an iteration boundary and reports iterations_completed', async () => {
+    const deps = makeDeps({ shouldCancel: cancelAfter(3) });
+    const result = await runFlow(
+      [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 50 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    // The repeat's own entry survives — partial work is never discarded.
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      iterations_completed: 1,
+      stopped_by: 'cancelled',
+    });
+    expect(deps.performPress).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the results of an iteration cut short mid-way, apart from the completed ones', async () => {
+    // Observations: 1 top-level step, 2 iteration top, 3 inner step 0,
+    // 4 inner step 1 -> the flag lands between the two inner steps.
+    const deps = makeDeps({ shouldCancel: cancelAfter(3) });
+    const result = await runFlow(
+      [
+        {
+          repeat: {
+            steps: [{ press: { key: 'a' } }, { press: { key: 'b' } }],
+            max_iterations: 10,
+          },
+        },
+      ],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    const entry = result.results[0] as {
+      iterations_completed: number;
+      stopped_by: string;
+      iterations: unknown[][];
+      partial_iteration?: unknown[];
+    };
+    expect(entry.stopped_by).toBe('cancelled');
+    // Zero COMPLETE iterations…
+    expect(entry.iterations_completed).toBe(0);
+    expect(entry.iterations).toEqual([]);
+    // …but the one step that really ran is still reported.
+    expect(entry.partial_iteration).toEqual([{ ok: true }]);
+    expect(deps.performPress).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cancelled while_found probe reports cancelled, not condition', async () => {
+    // The probe (a performWaitFor with timeout_ms: 0) comes back
+    // matched:false with reason 'cancelled' — which must NOT be read as
+    // "the list finally drained".
+    const deps = makeDeps({
+      shouldCancel: () => false,
+      performWaitFor: vi.fn(async () => ({
+        ok: true,
+        result: { matched: false, elapsed_ms: 0, checks: 1, reason: 'cancelled' },
+      })) as FlowDeps['performWaitFor'],
+    });
+    const result = await runFlow(
+      [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 10, while_found: '.row' } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    expect(result.results[0]).toMatchObject({ stopped_by: 'cancelled', iterations_completed: 0 });
+  });
+
+  test('a wait_for cut short by the cancel flag is a cancellation, not a timeout failure', async () => {
+    const deps = makeDeps({
+      shouldCancel: () => false,
+      performWaitFor: vi.fn(async () => ({
+        ok: true,
+        // What a poll loop returns when the flag flipped mid-wait: it never
+        // reached its 30s deadline, so calling this a timeout would be a
+        // fabricated diagnosis.
+        result: { matched: false, elapsed_ms: 120, checks: 2, reason: 'cancelled' },
+      })) as FlowDeps['performWaitFor'],
+    });
+    const result = await runFlow(
+      [{ press: { key: 'a' } }, { wait_for: { selector: '.done', timeout_ms: 30_000 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.stopped_by).toBe('cancelled');
+    // The press completed and is reported; the wait_for did not complete
+    // and therefore has no entry.
+    expect(result.steps_completed).toBe(1);
+    expect(deps.buildRecoverySnapshot).not.toHaveBeenCalled();
+  });
+
+  test('a genuine wait_for timeout is still a failure, not a cancellation', async () => {
+    const deps = makeDeps({
+      shouldCancel: () => false,
+      performWaitFor: vi.fn(async () => ({
+        ok: true,
+        result: { matched: false, elapsed_ms: 5_000, checks: 50, reason: 'timeout' },
+      })) as FlowDeps['performWaitFor'],
+    });
+    const result = await runFlow([{ wait_for: { selector: '.done' } }], deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toContain('condition not met within timeout');
+  });
+
+  test('a dry run ignores shouldCancel — there is nothing to stop', async () => {
+    const deps = makeDeps({ shouldCancel: () => true });
+    const result = await runFlow([{ click: { selector: '#a' } }], deps, { dryRun: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.dry_run).toBe(true);
+    expect(result.stopped_by).toBeUndefined();
+  });
+});
+
+describe('runFlow — progress reporting', () => {
+  test('reports the step about to run, 1-based, before dispatching it', async () => {
+    const seen: unknown[] = [];
+    const deps = makeDeps({ onProgress: (p) => seen.push({ ...p }) });
+    await runFlow([{ press: { key: 'a' } }, { press: { key: 'b' } }], deps);
+    expect(seen).toEqual([
+      { step: 1, steps: 2 },
+      { step: 2, steps: 2 },
+    ]);
+  });
+
+  test('reports the iteration inside a repeat, keeping the outer step coordinate', async () => {
+    const seen: unknown[] = [];
+    const deps = makeDeps({ onProgress: (p) => seen.push({ ...p }) });
+    await runFlow(
+      [
+        { press: { key: 'a' } },
+        { repeat: { steps: [{ press: { key: 'b' } }], max_iterations: 2 } },
+      ],
+      deps,
+    );
+    expect(seen).toEqual([
+      { step: 1, steps: 2 },
+      { step: 2, steps: 2 },
+      { step: 2, steps: 2, iteration: 1, iterations: 2 },
+      { step: 2, steps: 2, iteration: 2, iterations: 2 },
+    ]);
+  });
+
+  test('a flow with no onProgress dep runs exactly as before', async () => {
+    const deps = makeDeps();
+    const result = await runFlow([{ press: { key: 'a' } }], deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.steps_completed).toBe(1);
+  });
+});

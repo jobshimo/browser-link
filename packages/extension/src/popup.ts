@@ -13,6 +13,14 @@ import {
   normalizeFlowRecordingEnabled,
 } from './flow-recording-policy.js';
 import { describeFlowStep } from './recording.js';
+import {
+  describeFlowHistoryEntry,
+  describeFlowProgress,
+  flowTabLabel,
+  formatFlowDuration,
+  type FlowHistoryEntry,
+  type RunningFlowView,
+} from './flow-registry.js';
 import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
 import type { FlowStep } from './flow.js';
 
@@ -74,6 +82,13 @@ interface VersionCheckResult {
   extension: string;
   server: string | null;
   aligned: boolean | null;
+}
+
+/** background.ts's answer to `{ action: 'flowsStatus' }`. `running` spans
+ * every tab; `history` belongs to the tab that asked. */
+interface FlowsStatusResult {
+  running: RunningFlowView[];
+  history: FlowHistoryEntry[];
 }
 
 // 'connecting' is a transient client-side state while a connect/disconnect
@@ -460,6 +475,119 @@ async function onDiscardRecording(): Promise<void> {
   await refreshRecordingUi(tab.id, true);
 }
 
+/**
+ * Flows panel — the human kill switch.
+ *
+ * Running rows are UPDATED IN PLACE rather than re-rendered from scratch
+ * on every 800ms tick, unlike the recording review list. That is not
+ * polish: the row owns a Stop button, and swapping the element out between
+ * a mousedown and a mouseup silently eats the click. A kill switch that
+ * loses a press once in a while is not a kill switch.
+ */
+function ensureRunningRow(list: HTMLElement, flowId: string): HTMLElement {
+  for (const child of Array.from(list.children)) {
+    if (child instanceof HTMLElement && child.dataset.flowId === flowId) return child;
+  }
+  const row = document.createElement('li');
+  row.dataset.flowId = flowId;
+
+  const dot = document.createElement('span');
+  dot.className = 'flow-dot';
+  dot.setAttribute('aria-hidden', 'true');
+
+  const text = document.createElement('div');
+  text.className = 'flow-text';
+  const name = document.createElement('div');
+  name.className = 'flow-name';
+  const detail = document.createElement('div');
+  detail.className = 'flow-detail';
+  text.append(name, detail);
+
+  const stop = document.createElement('button');
+  stop.className = 'danger flow-stop';
+  stop.dataset.flowId = flowId;
+  stop.textContent = 'Stop';
+
+  row.append(dot, text, stop);
+  list.appendChild(row);
+  return row;
+}
+
+function renderRunningFlows(views: RunningFlowView[]): void {
+  const list = $('flows-running');
+  const live = new Set<string>();
+  for (const view of views) {
+    live.add(view.flowId);
+    const row = ensureRunningRow(list, view.flowId);
+    const name = row.querySelector('.flow-name');
+    const detail = row.querySelector('.flow-detail');
+    const stop = row.querySelector('button');
+    if (name) name.textContent = flowTabLabel(view);
+    if (detail) {
+      detail.textContent = `${describeFlowProgress(view)} · ${formatFlowDuration(view.elapsedMs)}`;
+    }
+    if (stop instanceof HTMLButtonElement) {
+      // One click, no confirmation — but the button does not vanish
+      // either: cancellation is cooperative and lands within one step, so
+      // "Stopping…" is the truthful state for that gap.
+      stop.textContent = view.cancelling ? 'Stopping…' : 'Stop';
+      stop.disabled = view.cancelling;
+    }
+  }
+  for (const child of Array.from(list.children)) {
+    if (child instanceof HTMLElement && !live.has(child.dataset.flowId ?? '')) child.remove();
+  }
+  $('flows-running-title').hidden = views.length === 0;
+}
+
+function renderFlowHistory(entries: FlowHistoryEntry[]): void {
+  const list = $('flows-history');
+  // Rebuilt wholesale: history rows are inert text with nothing to click,
+  // so there is no interaction to protect the way a running row has.
+  list.innerHTML = '';
+  for (const entry of entries) {
+    const row = document.createElement('li');
+
+    const outcome = document.createElement('span');
+    outcome.className = 'flow-outcome';
+    outcome.dataset.outcome = entry.outcome;
+    outcome.textContent = entry.outcome;
+
+    const text = document.createElement('div');
+    text.className = 'flow-text';
+    const detail = document.createElement('div');
+    detail.className = 'flow-detail';
+    detail.textContent = describeFlowHistoryEntry(entry);
+    text.appendChild(detail);
+
+    row.append(outcome, text);
+    list.appendChild(row);
+  }
+  $('flows-history-title').hidden = entries.length === 0;
+}
+
+function renderFlowsPanel(status: FlowsStatusResult): void {
+  renderRunningFlows(status.running);
+  renderFlowHistory(status.history);
+  // Nothing running and nothing remembered — the panel is not "empty", it
+  // is irrelevant, so it takes up no space at all.
+  $('flows-panel').hidden = status.running.length === 0 && status.history.length === 0;
+}
+
+async function refreshFlowsPanel(tabId: number): Promise<void> {
+  const status = await send<FlowsStatusResult>({ action: 'flowsStatus', tabId });
+  renderFlowsPanel(status);
+}
+
+async function stopFlow(flowId: string): Promise<void> {
+  await send<{ cancelled: boolean }>({ action: 'cancelFlow', flowId });
+  // Repaint immediately so the press is acknowledged now rather than at
+  // the next poll tick — the flow itself stops at its next step check.
+  const tab = await getCurrentTab();
+  if (!tab?.id) return;
+  await refreshFlowsPanel(tab.id);
+}
+
 async function refresh(): Promise<void> {
   // Always refresh the version banner — it has no dependency on the active
   // tab, only on whether ANY tab has registered with the server.
@@ -475,6 +603,7 @@ async function refresh(): Promise<void> {
     renderPendingDialog(null);
     $('recording-row').hidden = true;
     $('recording-review').hidden = true;
+    $('flows-panel').hidden = true;
     return;
   }
 
@@ -505,6 +634,10 @@ async function refresh(): Promise<void> {
     renderPendingDialog(null);
   }
   await refreshRecordingUi(tab.id, status.connected);
+  // Independent of connection state on purpose: a tab that just
+  // disconnected still has a history worth showing, and a flow that was
+  // running when the bridge dropped should be seen finishing.
+  await refreshFlowsPanel(tab.id);
 }
 
 async function respondToDialog(accept: boolean): Promise<void> {
@@ -624,6 +757,25 @@ $('recording-discard').addEventListener('click', () => {
   });
 });
 
+// Delegated so the handler survives every re-render of the running list —
+// rows come and go on each poll tick, this listener does not.
+$('flows-running').addEventListener('click', (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  const button = target.closest('button[data-flow-id]');
+  if (!(button instanceof HTMLButtonElement)) return;
+  const flowId = button.dataset.flowId;
+  if (flowId === undefined) return;
+  // Optimistic local echo: the round trip is sub-millisecond, but the
+  // button must never look ignored.
+  button.textContent = 'Stopping…';
+  button.disabled = true;
+  stopFlow(flowId).catch(() => {
+    // Best effort — the next poll tick re-syncs the row with whatever the
+    // registry actually holds.
+  });
+});
+
 // Poll for pending dialogs, version drift, the idle-ttl setting, AND the
 // flow-recording setting/status while the popup is open. Cheap (one round
 // trip per concern, fast paths return null/aligned/unchanged) and only
@@ -641,6 +793,13 @@ setInterval(() => {
     const status = await send<StatusResult>({ action: 'status', tabId: tab.id });
     syncReconnectCard(status);
     await refreshRecordingUi(tab.id, status.connected);
+    // This tick is what makes the Flows panel live: elapsed time ticks up,
+    // "step 3/7" advances, a finished flow moves from Running to Recent —
+    // all while the popup stays open. It is also what makes the panel
+    // correct when the popup is opened AFTER a flow started: the panel is
+    // rendered from the registry's current state, never from an event the
+    // popup had to be present to receive.
+    await refreshFlowsPanel(tab.id);
   })();
 }, 800);
 

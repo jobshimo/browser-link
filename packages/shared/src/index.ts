@@ -47,6 +47,33 @@ export type ToolResponseMessage =
   | { kind: 'tool.response'; id: string; ok: false; error: string };
 
 /**
+ * Ask the extension to stop a running `browser.flow` by its `flow_id` (the
+ * opaque id the server mints per flow call and returns in the flow result).
+ *
+ * NOT correlated to a `tool.request` id on purpose: the flow being
+ * cancelled is still parked in its own `tool.request`, and this frame has
+ * to overtake it on the same socket. The cancelled flow answers through
+ * its ORIGINAL `tool.response`, cleanly, with `stopped_by: 'cancelled'`
+ * and whatever it managed to complete — so there is nothing for a second
+ * correlated reply to carry.
+ *
+ * Cancelling an unknown or already-finished `flow_id` is a deliberate
+ * no-op, not an error: the popup, an agent and the flow's own completion
+ * race by nature, and "it already stopped" is the outcome the caller
+ * wanted either way.
+ *
+ * Today the live sender is the extension's own popup (which cancels
+ * in-process through `chrome.runtime.onMessage`, never over this socket);
+ * this frame is what lets a SERVER-side caller — `browser.flow_cancel`,
+ * the next slice of `docs/specs/flow-supervised-execution.md` — reach the
+ * same registry without another protocol change.
+ */
+export interface ToolCancelMessage {
+  kind: 'tool.cancel';
+  flow_id: string;
+}
+
+/**
  * Server-pushed settings. Two independent settings share this one message
  * kind — the idle-disconnect TTL and the opt-in flow-recording toggle —
  * each editable from the extension's own popup too, so both need a
@@ -136,7 +163,11 @@ export type FlowRecordedResultMessage =
 export type ExtensionToServer =
   TabRegisterMessage | ToolResponseMessage | BridgeEventMessage | FlowRecordedMessage;
 export type ServerToExtension =
-  TabRegisteredMessage | ToolRequestMessage | SettingsUpdateMessage | FlowRecordedResultMessage;
+  | TabRegisteredMessage
+  | ToolRequestMessage
+  | ToolCancelMessage
+  | SettingsUpdateMessage
+  | FlowRecordedResultMessage;
 
 export interface PingResult {
   title: string;

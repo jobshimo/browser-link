@@ -34,6 +34,13 @@ export default tseslint.config(
       'packages/extension/copy-assets.mjs',
       // ESLint config itself
       'eslint.config.mjs',
+      // Agent worktrees. Each one holds a full checkout of this repo,
+      // tsconfig files and all — which makes typescript-eslint see several
+      // candidate project roots and refuse to parse ANY file ("multiple
+      // candidate TSConfigRootDirs are present"). They are scratch copies,
+      // never source; ignoring them is what keeps `pnpm run lint` working
+      // whether or not one happens to exist.
+      '.taskboard/**',
     ],
   },
 
@@ -106,6 +113,13 @@ export default tseslint.config(
         ecmaVersion: 'latest',
         sourceType: 'module',
         // No `project` / `projectService` here — parse without type info.
+        // `tsconfigRootDir` is still required: without it the parser has to
+        // INFER a root, and a stray nested checkout (an agent worktree, a
+        // vendored copy) turns that inference into a hard parse error on
+        // every test file. Pinning it to this config's own directory makes
+        // the root a fact rather than a guess — same value the type-aware
+        // source block above pins.
+        tsconfigRootDir: import.meta.dirname,
       },
       // NodeJS namespace types (e.g. NodeJS.ErrnoException, NodeJS.Timeout)
       // are valid in this codebase but `no-undef` can't see them without

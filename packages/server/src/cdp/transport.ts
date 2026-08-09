@@ -480,6 +480,13 @@ async function performWaitFor(
     timeout_ms?: number;
     poll_interval_ms?: number;
   },
+  /** Cancellation flag of the flow this wait belongs to, when it is a flow
+   * step (see the `flow` case below). Checked on EVERY poll tick, which is
+   * what makes the advertised worst-case cancellation latency of one step
+   * true for a step that can legitimately park for 30 seconds. Absent for
+   * the standalone `browser.wait_for` tool, which has no flow to be
+   * cancelled with. */
+  shouldCancel?: () => boolean,
 ): Promise<ActionOutcome<WaitForStepResult>> {
   // cdp-direct never enables the Network domain (console/network are out of
   // v1 scope — see CDP_TOOL_SUPPORT), so a network_url wait has nothing to
@@ -537,7 +544,12 @@ async function performWaitFor(
     const startedAt = Date.now();
     let checks = 0;
     let matched = false;
+    let cancelled = false;
     while (check) {
+      if (shouldCancel?.() === true) {
+        cancelled = true;
+        break;
+      }
       checks++;
       if (await check()) {
         matched = true;
@@ -547,9 +559,19 @@ async function performWaitFor(
       await sleep(pollIntervalMs);
     }
     const elapsedMs = Date.now() - startedAt;
+    // 'cancelled' is deliberately distinct from 'timeout': the step
+    // executor turns a timeout into a flow FAILURE (with a recovery
+    // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
+    // Reporting a stopped wait as a timeout would invent a diagnosis for a
+    // condition that was never given its budget.
     const result: WaitForStepResult = matched
       ? { matched: true, elapsed_ms: elapsedMs, checks }
-      : { matched: false, elapsed_ms: elapsedMs, checks, reason: 'timeout' };
+      : {
+          matched: false,
+          elapsed_ms: elapsedMs,
+          checks,
+          reason: cancelled ? 'cancelled' : 'timeout',
+        };
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -709,6 +731,22 @@ export async function callCdpTool(
       const rawSteps = Array.isArray(p.steps)
         ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
         : [];
+      // THE cdp-direct kill switch. There is no extension here and
+      // therefore no popup Stop button, so the user's only lever is
+      // `browser-link cdp revoke` — and until this slice, revoking
+      // mid-flow did nothing to the flow already running: it was
+      // grandfathered until it finished. Re-checking the gate per step
+      // turns revoke into a real stop with a worst-case latency of one
+      // step, and the flow returns cleanly with `stopped_by: 'cancelled'`
+      // and everything it completed.
+      //
+      // Cheap enough to run per step: `checkCdpDirectGate` reads two small
+      // local files, and the flow budget caps a run at 60s, which bounds
+      // the number of checks to the low hundreds. Deliberately NOT cached —
+      // the gate's own contract is that a revoked grant is visible to the
+      // very next check, and a cache here would be exactly the staleness
+      // window a kill switch must not have.
+      const shouldCancel = (): boolean => !checkCdpDirectGate().ok;
       return runFlow(
         rawSteps as FlowStep[],
         {
@@ -716,7 +754,8 @@ export async function callCdpTool(
           performClick: (cp) => performClick(client, cp),
           performType: (tp) => performType(client, tp),
           performPress: (pp) => performPress(client, pp),
-          performWaitFor: (wp) => performWaitFor(client, wp),
+          performWaitFor: (wp) => performWaitFor(client, wp, shouldCancel),
+          shouldCancel,
           // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it
           // to false), so a flow drag step fails fast at this step with the
           // exact error the standalone browser.drag returns on a cdp: tab —

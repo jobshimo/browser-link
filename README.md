@@ -77,6 +77,9 @@ tab", not for unattended consumer automation.
   (selectors and flows only, structure never content).
 - 🔒 **How it stays private** — WebSocket bridge is loopback-only
   (`127.0.0.1:17529`) and kernel-attested per connection.
+- 🛑 **How you stop it** — the extension popup lists every running
+  `browser.flow` with a one-click **Stop**, across every connected tab.
+  See [the Flows panel](#the-flows-panel).
 
 ## Quick start
 
@@ -104,6 +107,37 @@ the four-step setup:
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
    The popup and its copy are English-only.
+
+#### The Flows panel
+
+The same popup is where you watch — and stop — what the agent is doing.
+While any `browser.flow` is running, a **Flows** section appears:
+
+- **Running flows** — one row per in-flight flow, across **every**
+  connected tab (a runaway flow is rarely on the tab you happen to be
+  looking at): the tab's title, how long it has been going, where it is
+  (`step 3/7`, or `step 2/5 · iteration 12/50` inside a `repeat`), and a
+  **Stop** button. One click, no confirmation. The row reads
+  `Stopping…` for the moment it takes the runner to reach its next step
+  check.
+- **Recent flows** — the last 20 finished flows **of the tab you are
+  looking at**: outcome (`completed` / `cancelled` / `failed`), how long
+  it took, how many steps or iterations it got through, and which step
+  failed when one did.
+
+Both are hidden entirely when there is nothing running and nothing
+remembered, so an idle popup looks exactly as it did before.
+
+History lives in `chrome.storage.session` and **dies with the browser
+session by design** — this is an operator view, not an audit log. Entries
+store UI structure and outcomes only: counts, durations, a step index and
+a step kind. Never page text, never a selector, never anything you typed.
+Failure messages in particular are dropped rather than trimmed, because a
+real `find` failure quotes the page back at you.
+
+<!-- screenshot placeholder: the popup's Flows panel — one running flow
+     with its Stop button, and two entries under Recent flows.
+     TODO: capture at 320px width and add as docs/images/popup-flows.png -->
 
 ```
 ╭─ browser-link — setup ────────────────────────────────────────────╮
@@ -317,12 +351,13 @@ iframes, nested arbitrarily.
 
 ### Behavior worth knowing before you rely on it
 
-| Behavior                         | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shadow DOM / iframe piercing** | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
-| **Occlusion guard**              | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
-| **`near_misses`**                | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
-| **`browser.flow` recipes**       | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
+| Behavior                          | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shadow DOM / iframe piercing**  | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
+| **Occlusion guard**               | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
+| **`near_misses`**                 | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
+| **`browser.flow` recipes**        | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
+| **A cancelled flow is `ok:true`** | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
 
 #### `settle_ms` — settle proves QUIET, not EFFECT
 
@@ -435,6 +470,39 @@ worst possible failure of this flag.
 > It answers _"would this start, and what is my ceiling?"_ — **not** _"how
 > many elements match?"_. Reporting a live match count would need a new
 > deep-query primitive; that is a deliberate follow-up, not an oversight.
+
+#### Stopping a running flow — the kill switch
+
+Every `browser.flow` call is assigned an opaque `flow_id`, returned on the
+result (success, failure and cancellation alike). While a flow runs, the
+extension popup lists it under **Flows** with a one-click **Stop** — no
+confirmation, no second step. See [the Flows panel](#the-flows-panel) for
+what the panel shows.
+
+Three things are worth knowing before you rely on it:
+
+- **A cancelled flow is a success, not an error.** It comes back as
+  `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }`
+  with everything it managed to do. Partial work is never discarded —
+  after a bulk run that was stopped half-way, "what did it already do?"
+  is the only question that matters, and an error payload could not
+  answer it. A `repeat` that was stopped reports its own
+  `stopped_by: "cancelled"` and the `iterations_completed` it finished;
+  if the stop landed part-way through an iteration, that iteration's
+  steps are reported separately as `partial_iteration` rather than
+  counted as complete.
+- **Worst-case latency is one step.** Cancelling means the runner declines
+  to dispatch step N+1 — it does not interrupt a CDP command already in
+  flight, because nothing can. The flag is checked before every top-level
+  step, before every repeat iteration, and before every step inside a
+  repeat body, and `wait_for`'s poll loop checks it on every tick, so
+  stopping during a 30-second wait returns within one poll interval
+  rather than at the timeout. The honest edge: a `sleep` step and a
+  repeat's `delay_ms` pause are each one step, and each runs to
+  completion (up to 30 s) before the next check.
+- **Stopping something that already stopped is a no-op**, not an error.
+  The popup, the agent and the flow's own completion race by nature, and
+  every one of those races ends with the flow not running.
 
 **Persistent UI map** — local-only memory across sessions:
 
@@ -896,14 +964,19 @@ cdp-direct requires an active grant. Ask the user to run: browser-link cdp allow
 Two residual caveats worth stating plainly, in the same spirit as the
 [security model](#security-model)'s "malware already inside Chrome" caveat:
 
-- **Revoke does not interrupt a `browser.flow` already in progress.** The
-  gate is checked at the START of every tool call, including a flow; a flow
-  that has already begun runs its remaining steps to completion even if you
-  revoke mid-flow. The exposure is bounded to that one flow's worst-case
-  budget (**≤ 60 s** by the flow step-budget cap) — after it returns, the
-  next tool call sees the revoked grant and is refused. Every other tool
-  call re-checks the gate fresh, so revoke takes effect immediately for
-  everything except an in-flight flow.
+- **No popup, therefore no Stop button — `cdp revoke` is the kill switch.**
+  cdp-direct has no extension, so the [Flows panel](#the-flows-panel) and
+  its one-click Stop do not exist on this transport. The asymmetry is by
+  design, and `browser-link cdp revoke` is the lever that replaces it:
+  since v0.26.0 a running `browser.flow` re-checks the grant before every
+  step, so revoking mid-flow **stops it within one step** and the flow
+  returns cleanly with `stopped_by: "cancelled"` plus everything it
+  completed. (Before v0.26.0 an in-flight flow was grandfathered until it
+  finished — bounded by the 60-second flow budget, but not stoppable.)
+  Every other tool call re-checks the gate fresh, as it always did. Note
+  the same one-step caveat as everywhere else: a step already dispatched
+  finishes, and a `sleep` or a repeat's `delay_ms` runs to completion (up
+  to 30 s) before the next check.
 - **Port squatting.** browser-link verifies the debug endpoint is really
   Chrome (its `/json/version` `Browser` string must contain `"Chrome"`)
   before trusting anything on it — but a local process that manages to bind
@@ -934,7 +1007,7 @@ browser-link cdp allow --minutes never    # never expires — reduces the securi
 # 4. Check state at any time.
 browser-link cdp status                   # enabled?, port, grant remaining, endpoint reachable?
 
-# 5. Revoke whenever you want the door shut again.
+# 5. Revoke whenever you want the door shut again — this also stops a flow already running.
 browser-link cdp revoke
 ```
 
@@ -1003,6 +1076,22 @@ Concretely this means:
 No tokens to paste, no manifests to register, no manual step beyond
 clicking "Connect this tab" in the extension popup. `browser-link doctor`
 lists the current allowlist on your OS.
+
+**The Stop button is part of this model, not a convenience.** The human is
+the only actor guaranteed to be present while an agent drives your
+browser, so they must be able to end it — and `browser.flow` can now run a
+bounded `repeat` over hundreds of irreversible actions in a single call.
+The popup's [Flows panel](#the-flows-panel) lists every running flow across
+every connected tab with a one-click **Stop**, and stopping is real rather
+than cosmetic: the bridge owns the loop, so cancelling means the runner
+never dispatches the next step. Worst case, one step still lands. Nothing
+an agent can do removes that button, and no agent can grant itself an
+exemption from it — the registry lives in the extension, on the human's
+side of the bridge. The one place this guarantee does **not** reach is
+[cdp-direct mode](#cdp-direct-mode-no-extension), which has no extension
+and therefore no popup; there the equivalent lever is
+`browser-link cdp revoke`, which now also stops a flow already in
+progress.
 
 One deliberate tradeoff to state plainly: since v0.23.9 the extension
 **auto-reconnects** after an involuntary drop — when a registered tab's
