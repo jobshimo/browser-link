@@ -93,6 +93,34 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('mutation_count');
   });
 
+  test('LONG-RUNNING WORK section carries the safety-critical relaunch check', () => {
+    const out = block();
+    expect(out).toContain('### LONG-RUNNING WORK');
+    // The finding that matters most: a bridge timeout drops the response
+    // but the page keeps executing, so a "failed" evaluate that gets
+    // relaunched double-executes irreversible actions.
+    expect(out).toContain('KEEPS RUNNING');
+    expect(out).toContain('BEFORE relaunching');
+    // The worker guard is what makes a relaunch safe when it does happen.
+    expect(out).toContain('window.__job?.running');
+    expect(out).toContain('The guard on `running` is mandatory');
+    // Waiting on the worker must not be hand-rolled polling.
+    expect(out).toContain('window.__job?.finished === true');
+    // No manifest exists anywhere in the bridge — the agent has to build it.
+    expect(out).toContain('window.__job.manifest.push(id)');
+  });
+
+  test('READING DATA section teaches the two silent wrong-answer traps', () => {
+    const out = block();
+    expect(out).toContain('### READING DATA');
+    // Detached-document text extraction.
+    expect(out).toContain('DOMParser');
+    expect(out).toContain('`undefined` on a document with no layout');
+    // Paginated counters as a completion signal.
+    expect(out).toContain('authoritative total elsewhere');
+    expect(out).toContain('empty-state string');
+  });
+
   test('block is fenced with versioned BEGIN + END markers', () => {
     const out = block();
     expect(out).toContain(beginMarker());
