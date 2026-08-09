@@ -11,7 +11,7 @@ import type { Language } from './welcome.js';
  */
 const NPM_NAME_REGEX = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 
-function assertSafeNpmName(name: string): string {
+export function assertSafeNpmName(name: string): string {
   if (!NPM_NAME_REGEX.test(name)) {
     throw new Error(
       `Refusing to query registry: package name "${name}" does not match the npm grammar.`,
