@@ -37,10 +37,21 @@ import {
 import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
 import { buildKeyEventSequence, modifiersToBitmask, resolveKey } from './keymap.js';
 import {
+  cancelDetachedFlow,
+  detachedFlowForTab,
+  detachedFlowStatus,
+  finishDetachedFlow,
+  registerDetachedFlow,
+  reportDetachedProgress,
+  shouldStopDetachedFlow,
+} from './detached-flows.js';
+import {
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
   type FindStepResult,
+  type FlowDeps,
+  type FlowResult,
   type FlowStep,
   type PressStepResult,
   type TypeStepResult,
@@ -578,6 +589,32 @@ async function performWaitFor(
   }
 }
 
+/** The perform* bindings `runFlow` needs over one CDP connection, in one
+ * place so the foreground run, the dry-run projection and the detached run
+ * cannot drift apart — the same role `buildFlowDeps` plays in the
+ * extension's `background.ts`. */
+function buildCdpFlowDeps(
+  client: CdpClient,
+  shouldCancel: () => boolean,
+): Omit<FlowDeps, 'onProgress'> {
+  return {
+    performFind: (fp) => performFind(client, fp),
+    performClick: (cp) => performClick(client, cp),
+    performType: (tp) => performType(client, tp),
+    performPress: (pp) => performPress(client, pp),
+    performWaitFor: (wp) => performWaitFor(client, wp, shouldCancel),
+    shouldCancel,
+    // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
+    // false), so a flow drag step fails fast at this step with the exact
+    // error the standalone browser.drag returns on a cdp: tab — naming the
+    // extension transport as the fallback.
+    performDrag: () =>
+      Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
+    buildRecoverySnapshot: () =>
+      evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+  };
+}
+
 // === Tool dispatch ==========================================================
 
 interface TargetInfoResult {
@@ -731,9 +768,17 @@ export async function callCdpTool(
       const rawSteps = Array.isArray(p.steps)
         ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
         : [];
+      // Strict `=== true` on both flags: any other value runs the flow FOR
+      // REAL and in the foreground. A dry run that silently became a real
+      // run, or a foreground run that silently detached, would each be the
+      // worst possible failure of their flag.
+      const dryRun = p.dry_run === true;
+      const detach = p.dry_run !== true && p.detach === true;
+      const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : '';
+
       // THE cdp-direct kill switch. There is no extension here and
       // therefore no popup Stop button, so the user's only lever is
-      // `browser-link cdp revoke` — and until this slice, revoking
+      // `browser-link cdp revoke` — and until slice 4, revoking
       // mid-flow did nothing to the flow already running: it was
       // grandfathered until it finished. Re-checking the gate per step
       // turns revoke into a real stop with a worst-case latency of one
@@ -746,30 +791,73 @@ export async function callCdpTool(
       // the gate's own contract is that a revoked grant is visible to the
       // very next check, and a cache here would be exactly the staleness
       // window a kill switch must not have.
-      const shouldCancel = (): boolean => !checkCdpDirectGate().ok;
-      return runFlow(
-        rawSteps as FlowStep[],
-        {
-          performFind: (fp) => performFind(client, fp),
-          performClick: (cp) => performClick(client, cp),
-          performType: (tp) => performType(client, tp),
-          performPress: (pp) => performPress(client, pp),
-          performWaitFor: (wp) => performWaitFor(client, wp, shouldCancel),
-          shouldCancel,
-          // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it
-          // to false), so a flow drag step fails fast at this step with the
-          // exact error the standalone browser.drag returns on a cdp: tab —
-          // naming the extension transport as the fallback.
-          performDrag: () =>
-            Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
-          buildRecoverySnapshot: () =>
-            evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
-        },
-        // Strict `=== true`: any other value runs the flow FOR REAL. A dry
-        // run that silently became a real run would be the worst possible
-        // failure of this flag, so only the exact boolean opts into it.
-        { dryRun: p.dry_run === true },
-      );
+      //
+      // A DETACHED flow additionally answers to `browser.flow_cancel` and
+      // to its own 30-minute ceiling, both of which live in the
+      // detached-flow registry — so on that path the two questions are
+      // OR-ed rather than one replacing the other. Revoking the grant
+      // still stops a detached flow, which matters: it is the only lever a
+      // human at a terminal has here.
+      const gateAllows = (): boolean => checkCdpDirectGate().ok;
+      if (!detach) {
+        const shouldCancel = (): boolean => !gateAllows();
+        return runFlow(rawSteps as FlowStep[], buildCdpFlowDeps(client, shouldCancel), { dryRun });
+      }
+
+      // ONE detached flow per tab — same rule, same reason, same error
+      // shape as the extension path (see `handleFlow` in background.ts).
+      const already = detachedFlowForTab(tabId);
+      if (already) {
+        throw new Error(
+          `flow: a detached flow is already running on this tab (${already.flowId}). ` +
+            `Wait for it, or stop it with browser.flow_cancel, before detaching another.`,
+        );
+      }
+      const flow = registerDetachedFlow({ flowId, tabId, steps: rawSteps.length });
+      const shouldCancel = (): boolean =>
+        shouldStopDetachedFlow(flow.flowId, Date.now()) || !gateAllows();
+      // Deliberately floating: this IS detach. The result below goes back
+      // now, the loop keeps running, and the agent's turn is free.
+      void (async () => {
+        let result: FlowResult | null = null;
+        try {
+          result = await runFlow(rawSteps as FlowStep[], {
+            ...buildCdpFlowDeps(client, shouldCancel),
+            onProgress: (progress) => {
+              reportDetachedProgress(flow.flowId, progress);
+            },
+          });
+        } catch {
+          // A throw (dead CDP socket, closed tab) is a `failed` outcome,
+          // recorded below from a null result. There is no caller left to
+          // rethrow to.
+        } finally {
+          finishDetachedFlow(flow.flowId, result);
+        }
+      })();
+      return {
+        detached: true,
+        started_at: flow.startedAt,
+        steps: rawSteps.length,
+        expires_at: flow.expiresAt,
+      };
+    }
+
+    case 'flow_status': {
+      const flowId = typeof p.flow_id === 'string' ? p.flow_id : '';
+      if (flowId.length === 0) throw new Error('flow_status: flow_id required');
+      return detachedFlowStatus(flowId);
+    }
+
+    case 'flow_cancel': {
+      const flowId = typeof p.flow_id === 'string' ? p.flow_id : '';
+      if (flowId.length === 0) throw new Error('flow_cancel: flow_id required');
+      // In-process, so the flag flips synchronously and there is no wire
+      // frame to send — the extension path's one asymmetry. The status
+      // read that follows is the same one `browser.flow_cancel` returns on
+      // either transport, so the two look identical to the agent.
+      cancelDetachedFlow(flowId);
+      return detachedFlowStatus(flowId);
     }
 
     default:

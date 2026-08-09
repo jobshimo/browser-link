@@ -62,11 +62,15 @@ export type ToolResponseMessage =
  * race by nature, and "it already stopped" is the outcome the caller
  * wanted either way.
  *
- * Today the live sender is the extension's own popup (which cancels
- * in-process through `chrome.runtime.onMessage`, never over this socket);
- * this frame is what lets a SERVER-side caller — `browser.flow_cancel`,
- * the next slice of `docs/specs/flow-supervised-execution.md` — reach the
- * same registry without another protocol change.
+ * Two live senders, and only one of them uses this frame. The extension's
+ * own popup cancels in-process through `chrome.runtime.onMessage`, never
+ * over this socket. `browser.flow_cancel` (v0.27.0) is the SERVER-side
+ * one, and the reason this message shipped a release early: it reaches the
+ * same in-flight registry with no protocol change, and the reply an agent
+ * gets comes from the `flow_status` call the dispatcher makes straight
+ * after — which is also how it reports the up-to-one-step gap honestly
+ * (`cancelling: true`) instead of claiming a stop it cannot have observed
+ * yet.
  */
 export interface ToolCancelMessage {
   kind: 'tool.cancel';

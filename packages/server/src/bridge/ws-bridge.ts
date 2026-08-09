@@ -432,6 +432,34 @@ export function handleFlowRecordedMessage(
   }
 }
 
+/**
+ * Send a `tool.cancel` frame to one tab — the server-side half of the kill
+ * switch, behind `browser.flow_cancel`.
+ *
+ * Fire-and-forget BY DESIGN, and the one place in this module that is.
+ * There is nothing to correlate a reply to: the flow being cancelled is
+ * still parked in its own `tool.request` and answers there, cleanly, with
+ * `stopped_by: 'cancelled'` and its partial results — or, when it was
+ * detached, has no open call to answer through at all. Cancellation is
+ * cooperative with a worst case of one step, so a synchronous "cancelled:
+ * true" here would be a claim this function cannot make; `flow_cancel`
+ * reads the real state back with a `flow_status` call instead.
+ *
+ * Returns whether the frame went out. `false` means the tab is not
+ * connected — the caller surfaces the standard not-connected error from
+ * the status call that follows, rather than two competing diagnoses.
+ */
+export function sendToolCancel(
+  tabs: Map<string, TabSession>,
+  tabId: string,
+  flowId: string,
+): boolean {
+  const session = tabs.get(tabId);
+  if (!session || session.ws.readyState !== WebSocket.OPEN) return false;
+  send(session.ws, { kind: 'tool.cancel', flow_id: flowId });
+  return true;
+}
+
 /** Build the callback that sends a tool.request frame to a specific tab and
  * resolves with the matching tool.response (or rejects on timeout). Kept here
  * because it touches the same `tabs` / `pendingRequests` maps the bridge

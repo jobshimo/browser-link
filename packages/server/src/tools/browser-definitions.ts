@@ -1025,7 +1025,12 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         dry_run: {
           type: 'boolean',
           description:
-            'Validate and PROJECT the flow without dispatching a single input event, navigation or pause. Returns { ok:true, dry_run:true, steps_completed:0, results } where a repeat entry reports max_iterations, inner_steps, delay_ms, while_found and would_start (whether the condition matches RIGHT NOW). Use this before any irreversible bulk run.',
+            'Validate and PROJECT the flow without dispatching a single input event, navigation or pause. Returns { ok:true, dry_run:true, steps_completed:0, results, budget_ms, requires_detach } where a repeat entry reports max_iterations, inner_steps, delay_ms, while_found and would_start (whether the condition matches RIGHT NOW). A dry run is judged against the DETACHED 30-minute ceiling, never the 60s one, so any flow you could legally run either way can be projected — `requires_detach:true` means the real run needs `detach: true`. Use this before any irreversible bulk run.',
+        },
+        detach: {
+          type: 'boolean',
+          description:
+            'Run the flow in the BACKGROUND and return immediately with { flow_id, detached:true, started_at, steps, expires_at } instead of the result. Frees the 60s worst-case budget ceiling (the detached ceiling is 30 minutes) and frees your turn. At most ONE detached flow per tab. Poll browser.flow_status(flow_id) for progress and the action manifest; stop it with browser.flow_cancel. The human can stop it from the extension popup at any time. Do NOT detach unless the work genuinely exceeds 60s: a foreground flow returns its results directly, which is simpler and cheaper.',
         },
       },
       required: ['tab_id', 'steps'],
@@ -1059,9 +1064,68 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'On an irreversible bulk run, call once with `dry_run: true` first. It dispatches NOTHING and reports, per repeat, `max_iterations` / `inner_steps` / `delay_ms` / `while_found` / `would_start`. It does not report how many elements currently match — it answers "would this start, and what is my ceiling", not "how many are there".',
         "Max 20 steps per flow, and a repeat's inner steps count toward that same 20. For longer sequences, split into multiple browser.flow calls.",
         'A flow can be STOPPED by the human mid-run, from the extension popup\'s Flows panel (on a cdp: tab, by `browser-link cdp revoke`). It then returns `ok:true` with `stopped_by:"cancelled"`, `steps_completed` and the results of what already ran — a repeat reports its own `stopped_by:"cancelled"` plus `iterations_completed`, and a `partial_iteration` when the stop landed mid-iteration. NEVER relaunch a cancelled flow: it is not a transient failure, it is a person deciding to stop you, and re-running it would repeat irreversible actions they just interrupted. Report what completed and ask.',
+        '`detach: true` returns `{ flow_id, detached:true, started_at, steps, expires_at }` INSTEAD of the result — the flow keeps acting between your turns, so poll browser.flow_status(flow_id) for progress and, once it ends, for the action manifest. Only one detached flow per tab: a second attempt is rejected naming the one already running. A detached flow self-cancels at 30 minutes with `stopped_by:"expired"`, and if Chrome terminates the extension service worker under it, it comes back `failed` / `worker-terminated` and is NEVER resumed — check flow_status before relaunching anything.',
       ],
       example:
         'browser.flow({ tab_id: "tab_1", steps: [{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }] })',
+    },
+  },
+  {
+    name: 'browser.flow_status',
+    description:
+      'Progress, outcome and ACTION MANIFEST of one browser.flow run, by its flow_id. Returns { flow_id, tab_id, state, detached, started_at, ended_at?, steps, steps_completed, iterations_completed?, stopped_by?, error?, manifest? }. `state` is one of running | completed | cancelled | failed | expired | unknown. While a flow is RUNNING you get live progress (steps_completed, iterations_completed) but no manifest — the runner is still holding the results; once it ends, `manifest` is exactly the `results` array a foreground flow would have returned, which is how you answer "which N things did that actually do?" after a detached run. `cancelling:true` means a stop was requested and the runner has not reached its next check yet (up to one step). `unknown` is not an error: it means this bridge has no record of that id — a foreground flow that already returned, a detached flow evicted after 10 newer ones, or an id from before the extension service worker restarted. `manifest_truncated:true` means the manifest existed but is not retrievable (over the storage ceiling, or lost with a terminated service worker). The tab_id only routes the request: any connected tab can answer for any flow_id, so a finished flow whose own tab has since closed is still readable through another one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        flow_id: {
+          type: 'string',
+          description: 'The opaque id browser.flow returned for the run you are asking about.',
+        },
+      },
+      required: ['tab_id', 'flow_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Poll a flow by id: live progress while it runs, outcome and action manifest after.',
+      when_to_use: [
+        'After browser.flow({ detach: true }) — this is the ONLY way to see how the detached run is doing and what it ended up doing.',
+        'To answer "what exactly did that bulk run touch?" — the manifest is the per-step, per-iteration record the run produced.',
+        'Before relaunching anything after a timeout or a disconnect: a flow you think died may still be running, and a detached one that really died reports failed / worker-terminated rather than leaving you guessing.',
+      ],
+      gotchas: [
+        'No manifest while state is "running" — poll for progress, read the manifest once it ends.',
+        'Poll at a human pace (every few seconds at most). Each poll is a full round trip and, for you, a full inference; a detached flow that needs 10 minutes does not need 200 status checks.',
+        'state:"unknown" is a valid answer, not a failure. Foreground flows are not retained after they return, and only the 10 most recent detached runs keep their manifest.',
+      ],
+      example: 'browser.flow_status({ tab_id: "tab_1", flow_id: "flow_9f2c…" })',
+    },
+  },
+  {
+    name: 'browser.flow_cancel',
+    description:
+      'Stop a running browser.flow by its flow_id. Cancellation is cooperative and lands within ONE STEP: the runner declines to dispatch the next step rather than interrupting one in flight (an in-flight CDP command cannot be un-sent). Returns the same payload browser.flow_status returns, plus cancel_requested:true — so immediately after the call you will typically see state:"running" with cancelling:true, and a poll a moment later shows state:"cancelled". The flow keeps everything it already did: a cancelled flow is a SUCCESS carrying partial results, never a failure, and its manifest stays readable through browser.flow_status. Cancelling an unknown or already-finished flow_id is a clean no-op (state:"unknown" or the terminal state it already reached), never an error.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        flow_id: { type: 'string', description: 'The flow to stop.' },
+      },
+      required: ['tab_id', 'flow_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Stop a running flow by id, keeping whatever it already completed.',
+      when_to_use: [
+        'A detached flow is doing the wrong thing, or the user changed their mind mid-run.',
+        'You are about to start different work on a tab that still has a detached flow on it — the one-per-tab rule will reject the new one until this finishes or is stopped.',
+      ],
+      gotchas: [
+        'Up to one step of latency by design. Read the state back with browser.flow_status instead of assuming the flow is already stopped.',
+        'Partial work is real work. The steps that already ran are not undone — check the manifest and tell the user what actually happened before doing anything else.',
+        'The human has the same lever from the extension popup, and does not need you for it.',
+      ],
+      example: 'browser.flow_cancel({ tab_id: "tab_1", flow_id: "flow_9f2c…" })',
     },
   },
   {
@@ -1096,7 +1160,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.events',
     description:
-      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap), tab-claimed / tab-released / tab-claim-rejected (multi-agent tab ownership changes — see browser.claim_tab), dialog-opening / dialog-closed (a native alert/confirm/prompt/beforeunload started or finished blocking a tab — see browser.dialog_respond), tab-created (a new tab opened from an existing one, e.g. target="_blank" or window.open — see browser.wait_for_tab), flow-recorded (a demonstrated flow was saved to the persistent map — see browser.map.recall). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work, or just to notice a newly-recorded flow without polling. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
+      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap), tab-claimed / tab-released / tab-claim-rejected (multi-agent tab ownership changes — see browser.claim_tab), dialog-opening / dialog-closed (a native alert/confirm/prompt/beforeunload started or finished blocking a tab — see browser.dialog_respond), tab-created (a new tab opened from an existing one, e.g. target="_blank" or window.open — see browser.wait_for_tab), flow-recorded (a demonstrated flow was saved to the persistent map — see browser.map.recall), flow-finished (a DETACHED browser.flow ended — one summary entry per flow with its outcome and counts, never one per iteration; read the action manifest itself with browser.flow_status). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work, to notice a newly-recorded flow without polling, or to notice that a detached flow you launched has ended. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
     inputSchema: {
       type: 'object',
       properties: {

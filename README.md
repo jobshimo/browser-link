@@ -119,11 +119,17 @@ While any `browser.flow` is running, a **Flows** section appears:
   (`step 3/7`, or `step 2/5 · iteration 12/50` inside a `repeat`), and a
   **Stop** button. One click, no confirmation. The row reads
   `Stopping…` for the moment it takes the runner to reach its next step
-  check.
+  check. A [detached](#detached-execution--flow_status--flow_cancel) flow
+  is labelled `detached ·` and gets an amber dot instead of a green one:
+  it is the one row that will keep going with no agent attached, so it is
+  the one row that most needs the button next to it.
 - **Recent flows** — the last 20 finished flows **of the tab you are
-  looking at**: outcome (`completed` / `cancelled` / `failed`), how long
-  it took, how many steps or iterations it got through, and which step
-  failed when one did.
+  looking at**: outcome (`completed` / `cancelled` / `failed` /
+  `expired`), how long it took, how many steps or iterations it got
+  through, and which step failed when one did. A detached run that hit
+  its 30-minute ceiling reads `expired`; one Chrome killed the service
+  worker under reads `failed · extension worker was terminated — not
+resumed`.
 
 Both are hidden entirely when there is nothing running and nothing
 remembered, so an idle popup looks exactly as it did before.
@@ -294,51 +300,59 @@ state of your own setup instead of guessing.
 
 ## What the agent can do
 
-The MCP server registers two families of tools — 25 bridge tools that
-drive the connected tab (13 read, 12 action) and 6 persistent-map tools
-(2 read, 4 write). All 31 are individually toggle-able — see
+The MCP server registers two families of tools — 27 bridge tools that
+drive the connected tab (14 read, 13 action) and 6 persistent-map tools
+(2 read, 4 write). All 33 are individually toggle-able — see
 [Per-tool permissions](#per-tool-permissions).
 
 **Browser bridge — read-only** (no claim required, observation only):
 
-| Tool                        | Purpose                                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)             |
-| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                          |
-| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                               |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes     |
-| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity   |
-| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot    |
-| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing            |
-| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                |
-| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                |
-| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                              |
-| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                      |
-| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                        |
-| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected); paged with `since_id` |
+| Tool                        | Purpose                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                     |
+| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                  |
+| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                       |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                             |
+| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                           |
+| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                            |
+| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                    |
+| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                        |
+| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                        |
+| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                      |
+| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                              |
+| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                |
+| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                            |
+| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id` |
 
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
 
-| Tool                     | Purpose                                                                                                                                     |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                   |
-| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                                                    |
-| `browser.type`           | Focus an input and type text via the native value setter                                                                                    |
-| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss                                        |
-| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                        |
-| `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip; fail-fast, max 20 steps, `dry_run` available |
-| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                                                    |
-| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                                                     |
-| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                                                    |
-| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                                                        |
-| `browser.release_tab`    | Release a tab claim the calling agent holds                                                                                                 |
-| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                                                 |
+| Tool                     | Purpose                                                                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                                |
+| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                                                                 |
+| `browser.type`           | Focus an input and type text via the native value setter                                                                                                 |
+| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss                                                     |
+| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                                     |
+| `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip; fail-fast, max 20 steps, `dry_run` and `detach` available |
+| `browser.flow_cancel`    | Stop a running flow by `flow_id`; lands within one step and keeps the partial results [^cancel-claim]                                                    |
+| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                                                                 |
+| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                                                                  |
+| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                                                                 |
+| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                                                                     |
+| `browser.release_tab`    | Release a tab claim the calling agent holds                                                                                                              |
+| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                                                              |
 
 [^dialog-claim]:
     `dialog_respond` deliberately bypasses the claim guard — a dialog
     freezes the tab's JS thread, and unblocking it should not require
     holding the claim. First responder wins.
+
+[^cancel-claim]:
+    `flow_cancel` bypasses the claim guard for the same reason, and it
+    matters more here: it is a kill switch. Requiring ownership to STOP a
+    runaway loop would mean the one agent that can see the problem is the
+    one agent that cannot fix it.
 
 [^reset-global]:
     `reset` is global — it takes no `tab_id` and touches no claim; it
@@ -351,13 +365,15 @@ iframes, nested arbitrarily.
 
 ### Behavior worth knowing before you rely on it
 
-| Behavior                          | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shadow DOM / iframe piercing**  | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
-| **Occlusion guard**               | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
-| **`near_misses`**                 | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
-| **`browser.flow` recipes**        | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
-| **A cancelled flow is `ok:true`** | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
+| Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shadow DOM / iframe piercing**   | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
+| **Occlusion guard**                | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
+| **`near_misses`**                  | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
+| **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
+| **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
+| **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                          |
+| **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                              |
 
 #### `settle_ms` — settle proves QUIET, not EFFECT
 
@@ -446,7 +462,8 @@ Those are measured, not estimated. So `repeat` is **not** primarily a
 throughput win over an `evaluate` loop — draining a 956-row list still
 takes ~21 calls. It is a _safety_ win: trusted input, occlusion guard, a
 per-iteration record, and a flow that is bounded and rejectable before
-it starts. Lifting the 60-second ceiling is separate work.
+it starts. To lift the 60-second ceiling — and do the whole thing in one
+call — see [Detached execution](#detached-execution--flow_status--flow_cancel).
 
 `while_found` is the early stop: before each iteration the loop checks
 whether that selector still matches something **visible**, and stops the
@@ -461,11 +478,20 @@ that reads as a phantom last item.
 without dispatching a single input event, navigation or pause. Each
 repeat entry reports `max_iterations`, `inner_steps`, `delay_ms`,
 `while_found` and `would_start` — whether the condition matches right
-now.
+now. The response also carries `budget_ms` (the flow's computed worst
+case) and `requires_detach`.
 
 Only the exact boolean `true` opts in. Any other value runs the flow for
 real, because a dry run that silently became a real run would be the
 worst possible failure of this flag.
+
+**A dry run is never rejected for being too long.** It is judged against
+the 30-minute detached ceiling, not the 60-second synchronous one, so any
+flow you could legally run either way can be projected first. Before
+v0.27.0 an oversized flow was rejected _before_ it was projected, which
+made the one question `dry_run` exists to answer unanswerable for exactly
+the runs where it matters most; `requires_detach: true` now tells you
+which mode the real run needs instead.
 
 > It answers _"would this start, and what is my ceiling?"_ — **not** _"how
 > many elements match?"_. Reporting a live match count would need a new
@@ -503,6 +529,114 @@ Three things are worth knowing before you rely on it:
 - **Stopping something that already stopped is a no-op**, not an error.
   The popup, the agent and the flow's own completion race by nature, and
   every one of those races ends with the flow not running.
+
+#### Detached execution — `flow_status` / `flow_cancel`
+
+`browser.flow({ steps, detach: true })` returns **immediately** with
+`{ flow_id, detached: true, started_at, steps, expires_at }` and keeps
+running in the background. It is the only thing in browser-link that
+keeps acting with no agent attached — read
+[Security model](#security-model) before you reach for it.
+
+Everything a foreground flow guarantees still holds: trusted CDP input,
+the occlusion guard, per-iteration records, fail-fast with a recovery
+snapshot, the popup Stop button. What changes is who waits.
+
+| Aspect       | Foreground flow                           | `detach: true`                                                      |
+| ------------ | ----------------------------------------- | ------------------------------------------------------------------- |
+| Returns      | The full result                           | An ack with the `flow_id`                                           |
+| Time ceiling | 60 s worst-case budget, rejected up front | 30 min, still rejected up front if the computed budget exceeds it   |
+| Concurrency  | Unlimited                                 | **One per tab** — a second is rejected naming the running `flow_id` |
+| Results      | In the response                           | `browser.flow_status(flow_id).manifest`, once it ends               |
+| Stop         | Popup, or another agent's `flow_cancel`   | Same                                                                |
+
+The lifecycle:
+
+```
+flow({ steps, dry_run: true })   → project it (mandatory before anything irreversible)
+flow({ steps, detach: true })    → { flow_id, detached: true }
+flow_status({ tab_id, flow_id }) → poll: live progress, then the manifest
+flow_cancel({ tab_id, flow_id }) → stop it; lands within one step
+```
+
+`flow_status` returns
+`{ flow_id, tab_id, state, detached, started_at, ended_at?, steps, steps_completed, iterations_completed?, stopped_by?, error?, manifest? }`
+where `state` is `running` | `completed` | `cancelled` | `failed` |
+`expired` | `unknown`.
+
+- **The manifest is the point.** It is exactly the `results` array a
+  foreground flow returns — per step, and per iteration inside a
+  `repeat`. After a bulk run, _"which 956 things did you delete?"_ is a
+  question the bridge can finally answer. It appears only once the flow
+  ends: while it runs, the runner is still holding the results, and
+  promising a manifest mid-run would promise a shorter truth than the
+  real one.
+- **`expired`.** A detached flow self-cancels at 30 minutes with
+  `stopped_by: "expired"`. Distinct from `cancelled` on purpose: "I ran
+  out of time" and "a person stopped me" call for different responses.
+- **`failed` / `worker-terminated`.** Chrome can kill the extension's MV3
+  service worker at any time, and a flow dies with it. browser-link
+  detects this on the next worker start, marks the flow `failed` with
+  `stopped_by: "worker-terminated"`, and **never resumes it**. See
+  [No auto-resume](#no-auto-resume-after-a-worker-restart).
+- **`unknown` is not an error.** It means this bridge has no record of
+  that id — a foreground flow that already returned, a detached run
+  evicted after 10 newer ones, or an id from before a worker restart.
+  Same philosophy as cancelling an unknown id being a no-op.
+- **`tab_id` only routes the call.** The registry is bridge-wide, so any
+  connected tab can answer for any `flow_id` — a finished flow whose own
+  tab has since closed is still readable through another one.
+- **Poll at a human pace.** Each `flow_status` call is a full round trip
+  and, for an agent, a full inference. A ten-minute run does not need two
+  hundred status checks.
+- **One summary event per flow.** When a detached flow ends, exactly one
+  `flow-finished` entry lands in `browser.events` with counts, duration
+  and outcome — never one per iteration, which would blow the 200-entry
+  log and evict everything else. The manifest itself is not in the event;
+  it is addressed by `flow_id`.
+
+##### No auto-resume after a worker restart
+
+The extension is an MV3 service worker: Chrome terminates it when it
+looks idle, and a detached flow's loop lives in that worker's memory. A
+launch record in `chrome.storage.session` is what makes the difference
+between a lie and a fact — on the next worker start, any record still
+marked `running` is by definition orphaned, so it is rewritten as
+`failed` / `worker-terminated`, written to the popup's Recent flows, and
+announced on `browser.events`. That record is a precondition, not a side
+effect: if it cannot be stored, `browser.flow({ detach: true })` fails and
+nothing is executed.
+
+It is **never resumed**, and that is deliberate. A detached flow exists to
+do irreversible bulk work; resuming one whose real progress died with the
+worker would double-act on some unknowable prefix of it. A loud failure
+is the only honest option — and a flow that _looks_ `running` while
+nothing is executing it is worse than either.
+
+The partial manifest of a killed run is genuinely gone: it lived in the
+runner's closure, and there is no per-step write that could have saved it
+(one would mean hundreds of storage writes per run to keep a counter
+warm). `manifest_truncated: true` says so rather than presenting an empty
+array as "nothing happened". Re-derive what is left from the page before
+relaunching anything.
+
+##### Where a detached flow's state lives
+
+| State                   | Where                           | Lifetime                               |
+| ----------------------- | ------------------------------- | -------------------------------------- |
+| The running loop        | Extension service-worker memory | Until it ends, or the worker is killed |
+| Launch + outcome record | `chrome.storage.session`        | The browser session                    |
+| Action manifest         | Same record, up to 128 KB       | The browser session; last 10 runs      |
+| Summary event           | Server `BridgeEventLog`         | The server process, last 200 events    |
+
+The manifest is the one place browser-link stores page-derived data
+outside the persistent map: it holds resolved selectors and step results,
+because that is what makes it useful. It is never shown in the popup
+(whose Recent flows stay counts-and-outcomes only, same privacy contract
+as always), it is only ever returned to an agent that can already read
+the page, and it dies with the browser session. A manifest over 128 KB is
+dropped with `manifest_truncated: true` rather than silently shortened —
+a truncated array would read as "that is everything that happened".
 
 **Persistent UI map** — local-only memory across sessions:
 
@@ -793,9 +927,9 @@ in the begin marker lets future releases detect outdated blocks
 
 ### Per-tool permissions
 
-`browser-link` exposes **31 MCP tools** — 25 bridge tools that drive the
-connected Chrome tab (13 read, 12 action) and 6 to read/write the
-persistent UI map (2 read, 4 write). **All 31 are individually
+`browser-link` exposes **33 MCP tools** — 27 bridge tools that drive the
+connected Chrome tab (14 read, 13 action) and 6 to read/write the
+persistent UI map (2 read, 4 write). **All 33 are individually
 toggle-able**, so you can narrow the surface per machine:
 
 - **In the menu** → `Permissions`. Toggle individual tools with **Space**
@@ -804,7 +938,7 @@ toggle-able**, so you can narrow the surface per machine:
 - **From the shell**:
 
 ```bash
-browser-link tools                              # current state of all 31 tools
+browser-link tools                              # current state of all 33 tools
 browser-link tools disable browser.evaluate     # block JS execution
 browser-link tools disable browser.reset        # block destructive soft-reset
 browser-link tools disable browser.set_permission   # block permission grants
@@ -814,12 +948,12 @@ browser-link tools enable browser.click         # turn one back on
 
 Presets, in plain English:
 
-| Preset     | What it disables                                                                                                                                                                                                                                                                                                                                                |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `all`      | Nothing — every tool enabled (default).                                                                                                                                                                                                                                                                                                                         |
-| `readonly` | The 12 non-read bridge tools (`navigate` / `click` / `type` / `press` / `drag` / `flow` / `evaluate` / `dialog_respond` / `set_permission` / `claim_tab` / `release_tab` / `reset`) and the 4 map-write tools (`save` / `record_use` / `forget` / `rename_app`). Leaves the 13 read bridge tools and the 2 map-read tools (`recall` / `apps`) — 15 tools total. |
-| `no-eval`  | Just `browser.evaluate`. Everything else stays on — useful for "agent can drive but cannot run arbitrary JS".                                                                                                                                                                                                                                                   |
-| `no-map`   | All 6 persistent-map tools. Bridge tools stay on.                                                                                                                                                                                                                                                                                                               |
+| Preset     | What it disables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `all`      | Nothing — every tool enabled (default).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `readonly` | The 13 non-read bridge tools (`navigate` / `click` / `type` / `press` / `drag` / `flow` / `flow_cancel` / `evaluate` / `dialog_respond` / `set_permission` / `claim_tab` / `release_tab` / `reset`) and the 4 map-write tools (`save` / `record_use` / `forget` / `rename_app`). Leaves the 14 read bridge tools and the 2 map-read tools (`recall` / `apps`) — 16 tools total. Note `flow_status` stays ON: watching what a flow is doing is observation, and an operator locked out of it could not see a runaway they are not allowed to start. |
+| `no-eval`  | Just `browser.evaluate`. Everything else stays on — useful for "agent can drive but cannot run arbitrary JS".                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `no-map`   | All 6 persistent-map tools. Bridge tools stay on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 The deny list lives in `config.json` next to the map DB. Changes are
 **live**: the server re-reads the file on every `tools/list` and
@@ -858,7 +992,7 @@ the proxy hot-swaps and traffic resumes.
 **Traceability — `browser.events`**: every primary keeps an in-memory
 ring buffer of bridge events (`primary-elected`, `tab-registered`,
 `tab-disconnected`, `tab-renamed`, `tab-claimed`, `tab-released`,
-`tab-claim-rejected`). When a tool call fails with "Tab not connected:
+`tab-claim-rejected`, `flow-recorded`, `flow-finished`). When a tool call fails with "Tab not connected:
 tab_X" the error message itself tells the agent to call
 `browser.events`, where a `tab-renamed` entry maps the old id to the
 new one — the agent recovers on its own. The Chrome extension
@@ -1035,13 +1169,27 @@ history, canvas capture wiring, native permission grants, the popup's
 dialog channel, or `window.open` tab-creation events) are explicitly out of
 v1 scope and return a clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                          | NOT supported in v1 (use the extension instead)                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag` |
+| Supported in v1                                                                                                                                                         | NOT supported in v1 (use the extension instead)                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel` | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag` |
 
 \* `wait_for`'s `network_url` mode also falls back to "use the extension"
 — cdp-direct does not buffer network requests, so there is nothing to poll
 against. `selector` and `expression` modes are fully supported.
+
+**Detached execution has full parity here, with one asymmetry.** The
+cdp-direct runner is in-process, so `detach` / `flow_status` /
+`flow_cancel` behave identically — same one-per-tab rule, same 30-minute
+`expired` ceiling, same manifest, same single `flow-finished` event in
+`browser.events`. What does not exist is the popup's Stop button (there is
+no extension), so a human's only lever is `browser-link cdp revoke`, which
+stops a detached flow within one step exactly as it stops a foreground
+one. The MV3 worker-termination story has no equivalent either, and does
+not need one: the runner lives in the browser-link process, so if that
+process dies the flow dies with it and there is no state left to be wrong
+about. The flip side is that detached-flow state here is per-process — a
+server restart loses the manifests, where the extension's survive in
+`chrome.storage.session` for the browser session.
 
 Claims apply to `cdp:` tab_ids through the same registry extension tabs
 use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add
@@ -1092,6 +1240,35 @@ side of the bridge. The one place this guarantee does **not** reach is
 and therefore no popup; there the equivalent lever is
 `browser-link cdp revoke`, which now also stops a flow already in
 progress.
+
+**A detached flow is the only thing in browser-link that keeps acting
+with no agent attached.** Every other capability here is scoped to a tool
+call an agent is waiting on: when the agent's turn ends, nothing is left
+running. `browser.flow({ detach: true })` breaks that, deliberately and
+narrowly — it is what makes a 900-item drain expressible with trusted
+input and a recovery snapshot instead of as a raw `evaluate` loop with
+neither. Say it plainly rather than bury it: after such a call, your
+browser can be clicking on your behalf while no model is in the loop.
+
+Four bounds hold it in:
+
+- **A human can always stop it.** The popup's Stop button reaches a
+  detached flow exactly as it reaches a foreground one, and stopping is
+  the same one-step guarantee.
+- **It always ends.** A statically computed worst-case budget is still
+  mandatory (which is why `repeat.max_iterations` is still required, and
+  why an over-ceiling flow is still rejected before anything is
+  dispatched), and an absolute 30-minute wall-clock ceiling stops
+  anything that outlives it as `expired`.
+- **One per tab.** Two loops clicking through the same page have no use
+  case and every failure mode.
+- **It never resumes itself.** If Chrome kills the service worker
+  mid-run, the flow is marked `failed` / `worker-terminated` and stays
+  that way. Resuming would double-act on irreversible work.
+
+Nothing about it is on by default: `detach: true` is an explicit
+per-call flag, `browser.flow` is individually disable-able, and the tab
+had to be connected by hand in the first place.
 
 One deliberate tradeoff to state plainly: since v0.23.9 the extension
 **auto-reconnects** after an involuntary drop — when a registered tab's

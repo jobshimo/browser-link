@@ -563,6 +563,21 @@
         color: var(--error-fg);
         background: var(--error-soft);
       }
+      /* A detached flow that ran out its 30-minute ceiling. Shares the
+       * idle hue with `cancelled` — both are "it stopped short", not "it
+       * broke" — and the chip's own text is what tells them apart. */
+      .flow-outcome[data-outcome='expired'] {
+        color: var(--idle-fg);
+        background: var(--idle-soft);
+      }
+
+      /* A running DETACHED flow gets the warning hue rather than the
+       * connected one: it is the only thing in browser-link that keeps
+       * acting with no agent attached, and the row offering the Stop
+       * button should look like the row that needs one. */
+      .flow-dot[data-detached='true'] {
+        background: var(--idle-fg);
+      }
 
       .flows-history {
         max-height: 132px;

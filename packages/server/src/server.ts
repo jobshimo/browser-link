@@ -16,11 +16,13 @@ import { TabClaimRegistry, type AgentCaller } from './tools/tab-claims.js';
 import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
+import { setCdpFlowEventSink } from './cdp/detached-flows.js';
 import {
   WS_HOST,
   WS_PORT,
   isAddrInUse,
   pushSettingsToAllTabs,
+  sendToolCancel,
   sendToolRequest,
   startWsBridge,
   type PendingRequest,
@@ -146,9 +148,18 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   const pruneTimer = setInterval(() => tabClaims.pruneStale(), 60_000);
   pruneTimer.unref();
 
+  // A detached flow on a cdp: tab has no extension to push a
+  // `bridge.event` frame, so its one-per-flow summary is added here
+  // directly. Same event kind, same payload shape, same "exactly one per
+  // flow, never one per iteration" rule as the extension path.
+  setCdpFlowEventSink((data) => events.add('flow-finished', data));
+
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
+    cancelFlow: (tabId, flowId) => {
+      sendToolCancel(tabs, tabId, flowId);
+    },
     recentEvents: (opts) => events.recent(opts),
     subscribeEvents: (fn, options) => events.subscribe(fn, options),
     tabClaims,

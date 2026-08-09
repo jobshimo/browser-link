@@ -13,6 +13,12 @@ const SUPPORTED = [
   'evaluate',
   'wait_for',
   'flow',
+  // Full parity for the flow lifecycle: the cdp-direct runner is
+  // in-process, so status and cancel are if anything simpler there than
+  // over the extension bridge. The popup kill switch is the one thing
+  // with no cdp-direct equivalent (`browser-link cdp revoke` instead).
+  'flow_status',
+  'flow_cancel',
 ];
 
 const UNSUPPORTED = [

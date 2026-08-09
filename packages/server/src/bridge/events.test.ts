@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { BridgeEventLog } from './events.js';
+import { BridgeEventLog, isExtensionEventKind } from './events.js';
 
 describe('BridgeEventLog', () => {
   test('assigns monotonic ids starting at 1', () => {
@@ -115,5 +115,58 @@ describe('BridgeEventLog', () => {
     unsubBad();
     unsubGood();
     expect(seen).toEqual([1]);
+  });
+});
+
+/*
+ * The audit half of detached execution. `flow-finished` is the ONE event a
+ * detached flow emits, and the reason it is one rather than one per
+ * iteration is right here: the buffer holds 200 entries, so a single
+ * 200-iteration run emitting per-iteration events would silently evict
+ * every other event in the log — turning the thing meant to make bulk work
+ * auditable into the thing that destroys the audit trail.
+ */
+describe('flow-finished — the one-per-flow audit event', () => {
+  test('the extension may push it (unlike the server-owned kinds)', () => {
+    expect(isExtensionEventKind('flow-finished')).toBe(true);
+    // Still closed against everything a renderer must not be able to
+    // fabricate.
+    expect(isExtensionEventKind('flow-recorded')).toBe(false);
+    expect(isExtensionEventKind('primary-elected')).toBe(false);
+    expect(isExtensionEventKind('tab-registered')).toBe(false);
+  });
+
+  test('a 200-iteration detached flow evicts nothing — it is ONE entry', () => {
+    const log = new BridgeEventLog();
+    for (let i = 0; i < 20; i++) log.add('tab-registered', { tabId: `tab_${i}` });
+
+    log.add('flow-finished', {
+      flow_id: 'flow_bulk',
+      state: 'completed',
+      detached: true,
+      steps: 1,
+      steps_completed: 1,
+      iterations_completed: 200,
+      duration_ms: 240_000,
+    });
+
+    expect(log.size()).toBe(21);
+    // Every unrelated entry is still readable, ids intact.
+    const all = log.recent({ limit: 200 });
+    expect(all).toHaveLength(21);
+    expect(all[0].kind).toBe('tab-registered');
+    expect(all[0].id).toBe(1);
+    expect(all[20].kind).toBe('flow-finished');
+  });
+
+  test('for contrast: one event per iteration WOULD wipe the log', () => {
+    // Not a behaviour we ship — a guard on the reasoning, so a future
+    // "richer progress events" idea meets this test before it meets a user.
+    const log = new BridgeEventLog();
+    log.add('tab-registered', { tabId: 'tab_1' });
+    for (let i = 0; i < 200; i++) log.add('flow-finished', { iteration: i });
+
+    expect(log.size()).toBe(200);
+    expect(log.recent({ limit: 200 }).some((e) => e.kind === 'tab-registered')).toBe(false);
   });
 });

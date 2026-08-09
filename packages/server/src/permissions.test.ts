@@ -22,10 +22,30 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 31 tools currently exposed', () => {
+  test('covers exactly the 33 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(31);
+    expect(TOOL_CATALOGUE.length).toBe(33);
+  });
+
+  test('includes browser.flow_status as a read tool and browser.flow_cancel as an action', () => {
+    // The two halves of the flow lifecycle sit in different categories on
+    // purpose, and the split has teeth: the `readonly` preset must leave
+    // an operator able to SEE what a detached flow is doing while denying
+    // the ability to start or stop one.
+    const status = TOOL_CATALOGUE.find((t) => t.name === 'browser.flow_status');
+    expect(status).toBeDefined();
+    expect(status?.family).toBe('bridge');
+    expect(status?.category).toBe('read');
+
+    const cancel = TOOL_CATALOGUE.find((t) => t.name === 'browser.flow_cancel');
+    expect(cancel).toBeDefined();
+    expect(cancel?.family).toBe('bridge');
+    expect(cancel?.category).toBe('action');
+
+    const readonly = getPreset('readonly').disabled;
+    expect(readonly).not.toContain('browser.flow_status');
+    expect(readonly).toContain('browser.flow_cancel');
   });
 
   test('includes browser.press as an action tool', () => {

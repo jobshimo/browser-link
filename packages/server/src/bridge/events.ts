@@ -22,7 +22,8 @@ export type BridgeEventKind =
   | 'dialog-opening'
   | 'dialog-closed'
   | 'tab-created'
-  | 'flow-recorded';
+  | 'flow-recorded'
+  | 'flow-finished';
 
 /** Kinds the extension is permitted to push via `bridge.event`. Lifecycle
  * events (primary-elected, tab-registered, etc.) are produced server-side
@@ -31,11 +32,21 @@ export type BridgeEventKind =
  * message (validated + persisted by `ws-bridge.ts`'s
  * `handleFlowRecordedMessage`), never a raw `bridge.event`, so a recipe
  * cannot be announced to `browser.events` without having actually passed
- * `validateFlowSteps` and landed in the map. */
+ * `validateFlowSteps` and landed in the map.
+ *
+ * `flow-finished` IS extension-pushable, and belongs on this list rather
+ * than beside `flow-recorded`: it asserts only what the extension itself
+ * just did (it ran the flow), not something that had to pass server-side
+ * validation and land in a database. It is emitted exactly ONCE per
+ * detached flow — never per iteration, which with `MAX_EVENTS = 200` would
+ * let a single 200-iteration run silently evict every other event in the
+ * log. On cdp-direct the same event is added server-side by
+ * `cdp/detached-flows.ts`, since there is no extension there to push it. */
 const EXTENSION_EVENT_KINDS: ReadonlySet<BridgeEventKind> = new Set([
   'dialog-opening',
   'dialog-closed',
   'tab-created',
+  'flow-finished',
 ]);
 
 export function isExtensionEventKind(kind: string): kind is BridgeEventKind {

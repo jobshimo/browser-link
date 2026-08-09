@@ -130,6 +130,18 @@ export interface BrowserToolDeps {
    * build without cdp-direct wired up keep compiling — those simply never
    * see a `cdp:` tab_id in the first place. */
   callCdpTool?(tabId: string, tool: string, params: unknown, timeoutMs?: number): Promise<unknown>;
+  /** Optional out-of-band cancel channel to the extension — sends the
+   * `tool.cancel` frame that `browser.flow_cancel` is built on (see
+   * `ws-bridge.ts`'s `sendToolCancel`). It is a SEPARATE dep rather than
+   * another `callBrowserTool` because it is not a request/response pair:
+   * the flow being cancelled is still parked in its own `tool.request` and
+   * answers there, so this frame has to overtake it on the same socket
+   * with nothing to correlate against. Absent in test fixtures and in any
+   * build without the WS bridge wired, in which case `browser.flow_cancel`
+   * on an extension tab reports that plainly instead of silently doing
+   * nothing. cdp-direct tabs never reach it — that runner is in-process
+   * and flips its own flag. */
+  cancelFlow?(tabId: string, flowId: string): void;
   /** Optional cdp-direct permission gate — the live `cdp-direct.enabled` +
    * grant check from `cdp/gate.ts`. Checked on EVERY call that addresses a
    * `cdp:` tab, not cached, so a setting flip or grant expiry mid-session is
@@ -162,6 +174,8 @@ const BROWSER_TOOL_NAMES = [
   'browser.press',
   'browser.drag',
   'browser.flow',
+  'browser.flow_status',
+  'browser.flow_cancel',
   'browser.evaluate',
   'browser.events',
   'browser.reset',
@@ -270,14 +284,30 @@ const MAX_FLOW_STEPS = 20;
  * below the real worst case would drop the response of a flow that is
  * still executing — and an agent retry could then duplicate the actions.
  *
- * A cancel path to the extension DOES now exist (`tool.cancel`, plus the
- * popup's Stop button), but it is human- and agent-driven, not automatic:
- * nothing cancels a flow just because the bridge stopped waiting for it.
- * The up-front rejection therefore stays exactly as it was. Retiring this
- * ceiling belongs to the detached-execution slice, which is where a flow
- * legitimately outlives the call that started it — see
- * `docs/specs/flow-supervised-execution.md`. */
+ * A cancel path to the extension DOES exist (`tool.cancel`, the popup's
+ * Stop button, `browser.flow_cancel`), but it is human- and agent-driven,
+ * not automatic: nothing cancels a flow just because the bridge stopped
+ * waiting for it. So for a SYNCHRONOUS flow the up-front rejection stays
+ * exactly as it was.
+ *
+ * What changed with detached execution is the SCOPE of this ceiling, not
+ * the ceiling itself. It bounds how long the bridge parks ONE tool call —
+ * a turn-economics rule, now that a real lifecycle exists. A `detach: true`
+ * flow parks nothing, so the rule does not apply to it; it is bounded by
+ * `MAX_DETACHED_FLOW_TIMEOUT_MS` instead. See `DECISIONS.md` §13. */
 const MAX_FLOW_TIMEOUT_MS = 60_000;
+/** Ceiling on a DETACHED flow's statically-computed worst-case budget, and
+ * the wall-clock deadline the runner self-cancels at (`stopped_by:
+ * 'expired'`). Mirrors `MAX_DETACHED_FLOW_MS` in the extension's
+ * `flow-registry.ts` and `cdp/detached-flows.ts`; kept in sync manually
+ * since the three packages share no module for it.
+ *
+ * A detached flow keeps its truthful budget and keeps `max_iterations`
+ * mandatory — dropping either would make the worst case unknowable, and
+ * "unknowable" is precisely what must not be true of a loop that keeps
+ * clicking with no agent attached. All that changes is what the budget is
+ * checked against. */
+const MAX_DETACHED_FLOW_TIMEOUT_MS = 30 * 60_000;
 /** Once-per-flow overhead: the WS round trip to the extension plus the
  * recovery snapshot evaluated on the failure path. */
 const FLOW_BASE_OVERHEAD_MS = 2_000;
@@ -386,7 +416,7 @@ export type FlowValidationResult =
  */
 export function validateFlowSteps(
   input: unknown,
-  opts: { allowRepeat?: boolean } = {},
+  opts: { allowRepeat?: boolean; maxBudgetMs?: number } = {},
 ): FlowValidationResult {
   // A `repeat` body is validated by recursing with this off, which is
   // what enforces "no nesting". Recursing also gets the inner steps the
@@ -394,6 +424,12 @@ export function validateFlowSteps(
   // `hasTarget`, which is precisely right: an implicit target never
   // crosses the repeat boundary in either direction.
   const allowRepeat = opts.allowRepeat !== false;
+  // The ceiling the computed budget is judged against. Defaults to the
+  // synchronous one, so every existing caller (`browser.map.save`'s flow
+  // recipes, `flow.recorded`) keeps the exact rules it had. A detached
+  // flow raises it — the budget model, the mandatory `max_iterations` and
+  // the up-front rejection are all unchanged, only the number moves.
+  const maxBudgetMs = opts.maxBudgetMs ?? MAX_FLOW_TIMEOUT_MS;
   if (!Array.isArray(input) || input.length === 0) {
     return { ok: false, error: 'steps must be a non-empty array' };
   }
@@ -563,7 +599,7 @@ export function validateFlowSteps(
           error: `step ${i}: repeat.delay_ms must be an integer between 0 and ${FLOW_REPEAT_MAX_DELAY_MS}`,
         };
       }
-      const inner = validateFlowSteps(bodyRecord.steps, { allowRepeat: false });
+      const inner = validateFlowSteps(bodyRecord.steps, { allowRepeat: false, maxBudgetMs });
       if (!inner.ok) return { ok: false, error: `step ${i}: repeat.steps → ${inner.error}` };
       totalSteps += inner.steps.length;
       // The inner budget carries FLOW_BASE_OVERHEAD_MS, a once-per-flow
@@ -627,12 +663,21 @@ export function validateFlowSteps(
       error: `at most ${MAX_FLOW_STEPS} steps allowed (a repeat's inner steps count too), got ${totalSteps}`,
     };
   }
-  if (budgetMs > MAX_FLOW_TIMEOUT_MS) {
+  if (budgetMs > maxBudgetMs) {
+    // The remedy line differs by ceiling on purpose. Under the synchronous
+    // 60s cap the honest advice now includes `detach: true` — telling
+    // someone to "split the flow" when a one-line flag would run the whole
+    // thing would be withholding the actual answer. Over the detached
+    // ceiling there is no flag left to suggest.
+    const remedy =
+      maxBudgetMs === MAX_FLOW_TIMEOUT_MS
+        ? 'run it with detach: true (its own budget, up to 30 minutes), reduce wait_for timeout_ms or sleep.ms values, or split the flow'
+        : 'reduce max_iterations, shorten the body, or split the flow';
     return {
       ok: false,
       error:
         `flow worst-case budget ${Math.ceil(budgetMs / 1000)}s exceeds the ` +
-        `${MAX_FLOW_TIMEOUT_MS / 1000}s ceiling — reduce wait_for timeout_ms or sleep.ms values, or split the flow`,
+        `${Math.round(maxBudgetMs / 1000)}s ceiling — ${remedy}`,
     };
   }
   return { ok: true, steps, budgetMs };
@@ -674,8 +719,38 @@ function newFlowId(): string {
  * cannot carry the field anyway.
  */
 function withFlowId(result: unknown, flowId: string): unknown {
+  return withExtras(result, { flow_id: flowId });
+}
+
+/** Stamp the addressed `tab_id` onto a transport result. The transports do
+ * not know it — the extension only ever sees Chrome tab ids, and the
+ * cdp-direct runner keys on `cdp:<targetId>` — but `flow_status`'s
+ * contract promises it, and a status payload you cannot trace back to a
+ * tab is a status payload you cannot act on. */
+function withTabId(result: unknown, tabId: string): unknown {
+  return withExtras(result, { tab_id: tabId });
+}
+
+/** Merge server-known fields into a transport result. Non-object results
+ * (there are none today, but the transport boundary is `unknown`) pass
+ * through untouched rather than being wrapped: inventing a container would
+ * break every existing consumer to decorate a shape that cannot carry the
+ * fields anyway. */
+function withExtras(result: unknown, extras: Record<string, unknown>): unknown {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
-  return { ...(result as Record<string, unknown>), flow_id: flowId };
+  return { ...(result as Record<string, unknown>), ...extras };
+}
+
+/** Narrow the `flow_id` argument the two lifecycle tools require. Named
+ * per-tool so the error says which call was malformed — these two are
+ * usually reached from a polling loop, where an unattributed error is
+ * markedly harder to place. */
+function requireFlowId(args: unknown, tool: string): string {
+  const { flow_id } = (args ?? {}) as { flow_id?: unknown };
+  if (typeof flow_id !== 'string' || flow_id.length === 0) {
+    throw new Error(`${tool}: flow_id required`);
+  }
+  return flow_id;
 }
 
 function flowActionBudgetMs(body: Record<string, unknown>): number {
@@ -1161,29 +1236,101 @@ export async function handleBrowserTool(
       );
     }
     case 'browser.flow': {
-      const { steps, dry_run } = (args ?? {}) as { steps?: unknown; dry_run?: unknown };
-      const validated = validateFlowSteps(steps);
-      if (!validated.ok) throw new Error(`browser.flow: ${validated.error}`);
-      // Strict `=== true`: anything else runs the flow FOR REAL. A dry run
-      // that silently became a real run is the worst failure this flag
-      // could have, so only the exact boolean opts into it.
+      const { steps, dry_run, detach } = (args ?? {}) as {
+        steps?: unknown;
+        dry_run?: unknown;
+        detach?: unknown;
+      };
+      // Strict `=== true` on both: anything else runs the flow FOR REAL,
+      // in the foreground. A dry run that silently became a real run, or a
+      // foreground run that silently detached, are the worst failures
+      // these flags could have, so only the exact boolean opts in.
       const dryRun = dry_run === true;
+      const detached = !dryRun && detach === true;
+      // A DRY RUN is validated against the DETACHED ceiling regardless of
+      // whether `detach` was passed. The alternative — which is what
+      // shipped in v0.25.0 — makes an oversized flow impossible to project
+      // at all: the rejection fires before anything is dispatched, so
+      // "would this even start, and how many times?" becomes unanswerable
+      // for exactly the flows where the answer matters most. A dry run
+      // dispatches nothing, so there is no run to be too long; the
+      // projection reports `requires_detach` and the caller learns which
+      // mode it needs instead of being told to split a flow it could have
+      // detached.
+      const validated = validateFlowSteps(steps, {
+        ...(dryRun || detached ? { maxBudgetMs: MAX_DETACHED_FLOW_TIMEOUT_MS } : {}),
+      });
+      if (!validated.ok) throw new Error(`browser.flow: ${validated.error}`);
       const flowId = newFlowId();
       // budgetMs is the flow's truthful worst case and validateFlowSteps
-      // already rejected anything above MAX_FLOW_TIMEOUT_MS, so the
+      // already rejected anything above the applicable ceiling, so the
       // enforced timeout is never below the modeled need — only the shared
       // action floor can raise it. A dry run dispatches nothing and only
-      // probes `while_found`, so it gets the plain action floor instead of
-      // a budget modelling work it will never do.
+      // probes `while_found`, and a detached launch returns as soon as the
+      // transport has registered the flow, so both get the plain action
+      // floor instead of a budget modelling work the CALL will never wait
+      // for.
       const result = await runAction(
         'flow',
         requireTabId(args),
-        { steps: validated.steps, flow_id: flowId, ...(dryRun ? { dry_run: true } : {}) },
+        {
+          steps: validated.steps,
+          flow_id: flowId,
+          ...(dryRun ? { dry_run: true } : {}),
+          ...(detached ? { detach: true } : {}),
+        },
         deps,
         caller,
-        dryRun ? ACTION_TIMEOUT_FLOOR_MS : Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
+        dryRun || detached
+          ? ACTION_TIMEOUT_FLOOR_MS
+          : Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
       );
-      return withFlowId(result, flowId);
+      // A projection is only useful if it says which mode the flow needs —
+      // see the dry-run comment above.
+      const decorated = dryRun
+        ? withExtras(result, {
+            budget_ms: validated.budgetMs,
+            requires_detach: validated.budgetMs > MAX_FLOW_TIMEOUT_MS,
+          })
+        : result;
+      return withFlowId(decorated, flowId);
+    }
+    case 'browser.flow_status': {
+      const tabId = requireTabId(args);
+      const flowId = requireFlowId(args, 'browser.flow_status');
+      // A read tool, same bucket as find/snapshot: no claim enforcement.
+      // Observing what a flow did must never depend on owning the tab —
+      // in multi-agent mode the agent that needs to see a runaway is
+      // routinely not the one that started it.
+      const status = await routeToolCall('flow_status', tabId, { flow_id: flowId }, deps);
+      return withTabId(withFlowId(status, flowId), tabId);
+    }
+    case 'browser.flow_cancel': {
+      const tabId = requireTabId(args);
+      const flowId = requireFlowId(args, 'browser.flow_cancel');
+      // Deliberately NOT behind `runAction`'s claim guard, for the same
+      // reason `browser.dialog_respond` is not: this is a kill switch.
+      // Making the ability to STOP a runaway loop conditional on holding
+      // the tab claim would mean the one agent that can see the problem is
+      // the one agent that cannot fix it.
+      if (isCdpTabId(tabId)) {
+        // In-process runner: one call both flips the flag and reads the
+        // resulting state back.
+        const status = await routeToolCall('flow_cancel', tabId, { flow_id: flowId }, deps);
+        return withExtras(withTabId(withFlowId(status, flowId), tabId), { cancel_requested: true });
+      }
+      if (!deps.cancelFlow) {
+        throw new Error('browser.flow_cancel: the extension bridge is not wired in this build.');
+      }
+      // The out-of-band `tool.cancel` frame overtakes the flow's own parked
+      // `tool.request` on the same socket — that is the whole point of it
+      // not being a request/response pair. Then read the state back: WS
+      // ordering guarantees the extension processed the cancel first, so
+      // the status below already reflects it (`cancelling: true` while the
+      // runner walks to its next check, then a terminal state).
+      deps.cancelFlow(tabId, flowId);
+      const status = await routeToolCall('flow_status', tabId, { flow_id: flowId }, deps);
+      return withExtras(withTabId(withFlowId(status, flowId), tabId), { cancel_requested: true });
     }
     case 'browser.evaluate': {
       const { expression, timeout_ms } = args as { expression: string; timeout_ms?: number };

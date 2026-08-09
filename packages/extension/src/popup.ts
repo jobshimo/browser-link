@@ -521,8 +521,13 @@ function renderRunningFlows(views: RunningFlowView[]): void {
     const row = ensureRunningRow(list, view.flowId);
     const name = row.querySelector('.flow-name');
     const detail = row.querySelector('.flow-detail');
+    const dot = row.querySelector('.flow-dot');
     const stop = row.querySelector('button');
     if (name) name.textContent = flowTabLabel(view);
+    // Set every tick rather than at row creation: a row is updated in
+    // place for its whole life (see ensureRunningRow), so anything left
+    // unset here would never be corrected.
+    if (dot instanceof HTMLElement) dot.dataset.detached = view.detached ? 'true' : 'false';
     if (detail) {
       detail.textContent = `${describeFlowProgress(view)} · ${formatFlowDuration(view.elapsedMs)}`;
     }

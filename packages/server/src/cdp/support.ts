@@ -37,6 +37,8 @@ export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
   ['evaluate', true],
   ['wait_for', true],
   ['flow', true],
+  ['flow_status', true],
+  ['flow_cancel', true],
   ['drag', false],
   ['console', false],
   ['network', false],

@@ -97,6 +97,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     category: 'read',
     summary: 'Wait for a new tab opened by an action of the agent',
   },
+  {
+    name: 'browser.flow_status',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Progress, outcome and action manifest of a flow by id',
+  },
 
   // Browser bridge — actions
   {
@@ -134,6 +140,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     family: 'bridge',
     category: 'action',
     summary: 'Run a find/click/type/press/wait_for/drag step sequence in one round trip',
+  },
+  {
+    name: 'browser.flow_cancel',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Stop a running flow by id',
   },
   {
     name: 'browser.dialog_respond',

@@ -9,6 +9,7 @@ import {
   buildRegisterSettingsUpdate,
   handleFlowRecordedMessage,
   pushSettingsToAllTabs,
+  sendToolCancel,
   type TabSession,
 } from './ws-bridge.js';
 import { BridgeEventLog, isExtensionEventKind } from './events.js';
@@ -328,5 +329,51 @@ describe('handleFlowRecordedMessage', () => {
 describe('flow-recorded is not spoofable via the extension bridge.event channel', () => {
   test('isExtensionEventKind rejects flow-recorded — only handleFlowRecordedMessage can produce it', () => {
     expect(isExtensionEventKind('flow-recorded')).toBe(false);
+  });
+});
+
+/*
+ * The server side of the kill switch. Until now `tool.cancel` had exactly
+ * one sender — the extension's own popup, in-process — and this frame
+ * existed on the wire with nothing on the server able to emit it.
+ * `browser.flow_cancel` is the first, and this is the function it is
+ * built on.
+ */
+describe('sendToolCancel', () => {
+  test('sends a tool.cancel frame naming the flow, and nothing else', () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const b = fakeSession('tab_2', WebSocket.OPEN);
+    const tabs = new Map([
+      ['tab_1', a.session],
+      ['tab_2', b.session],
+    ]);
+
+    expect(sendToolCancel(tabs, 'tab_1', 'flow_abc')).toBe(true);
+
+    expect(a.sent).toHaveLength(1);
+    expect(JSON.parse(a.sent[0])).toEqual({ kind: 'tool.cancel', flow_id: 'flow_abc' });
+    // Cancellation is addressed to ONE tab; a broadcast would stop flows
+    // nobody asked about.
+    expect(b.sent).toEqual([]);
+  });
+
+  test('an unconnected or closing tab reports false instead of throwing', () => {
+    const closed = fakeSession('tab_2', WebSocket.CLOSED);
+    const tabs = new Map([['tab_2', closed.session]]);
+
+    expect(sendToolCancel(tabs, 'tab_1', 'flow_abc')).toBe(false);
+    expect(sendToolCancel(tabs, 'tab_2', 'flow_abc')).toBe(false);
+    expect(closed.sent).toEqual([]);
+  });
+
+  test('is fire-and-forget — no pending request is registered for it', () => {
+    // The cancelled flow answers through its ORIGINAL tool.request, so
+    // there is nothing for a correlated reply to carry. Anything that
+    // parked a promise here would leak one per cancel.
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    const returned: unknown = sendToolCancel(tabs, 'tab_1', 'flow_abc');
+    expect(returned).toBe(true);
+    expect(returned).not.toBeInstanceOf(Promise);
   });
 });

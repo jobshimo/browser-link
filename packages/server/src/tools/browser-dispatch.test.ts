@@ -33,6 +33,8 @@ describe('isBrowserTool', () => {
       'browser.press',
       'browser.drag',
       'browser.flow',
+      'browser.flow_status',
+      'browser.flow_cancel',
       'browser.evaluate',
       'browser.console',
       'browser.network',
@@ -1673,7 +1675,7 @@ describe('browser.flow dispatch', () => {
       await expect(
         handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
       ).rejects.toThrow(
-        /worst-case budget 612s exceeds the 60s ceiling — reduce wait_for timeout_ms or sleep\.ms values, or split the flow/,
+        /worst-case budget 612s exceeds the 60s ceiling — run it with detach: true \(its own budget, up to 30 minutes\), reduce wait_for timeout_ms or sleep\.ms values, or split the flow/,
       );
       expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
@@ -2529,5 +2531,369 @@ describe('browser.flow identity (flow_id)', () => {
       TEST_CALLER,
     );
     expect(result).toBe('unexpected');
+  });
+});
+
+describe('detached execution + the flow lifecycle tools', () => {
+  /** A dispatcher whose transport echoes whatever the extension would
+   * answer for the ONE call this test makes. */
+  function makeFlowDeps(
+    result: unknown,
+    overrides: Partial<BrowserToolDeps> = {},
+  ): BrowserToolDeps {
+    const deps = makeDeps(overrides);
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mockResolvedValue(result);
+    return deps;
+  }
+
+  const DETACH_ACK = { detached: true, started_at: 1_000, steps: 2, expires_at: 1_801_000 };
+
+  test('detach returns the ack immediately, stamped with the flow_id', async () => {
+    const deps = makeFlowDeps(DETACH_ACK);
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }], detach: true },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; detached: boolean };
+
+    expect(result.detached).toBe(true);
+    expect(result.flow_id).toMatch(/^flow_/);
+    // The whole point: nothing waits for the run, so the call is budgeted
+    // at the plain action floor rather than at the flow's worst case.
+    const [, , params, timeoutMs] = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, string, Record<string, unknown>, number];
+    expect(params.detach).toBe(true);
+    expect(params.flow_id).toBe(result.flow_id);
+    expect(timeoutMs).toBe(15_000);
+  });
+
+  test('detach is opt-in by the exact boolean — anything else runs in the foreground', async () => {
+    for (const detach of ['true', 1, {}, null]) {
+      const deps = makeFlowDeps({ ok: true, steps_completed: 1, results: [] });
+      await handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }], detach },
+        deps,
+        TEST_CALLER,
+      );
+      const params = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<
+        string,
+        unknown
+      >;
+      expect(params.detach).toBeUndefined();
+    }
+  });
+
+  test('a flow over the 60s ceiling is accepted with detach and still rejected without it', async () => {
+    // 2_000 + 20 * 30_500 = 612_000ms — ten minutes, comfortably inside the
+    // detached ceiling and ten times over the synchronous one.
+    const steps = Array.from({ length: 20 }, () => ({
+      wait_for: { selector: '#x', timeout_ms: 30_000 },
+    }));
+
+    const rejecting = makeDeps();
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, rejecting, TEST_CALLER),
+    ).rejects.toThrow(/exceeds the 60s ceiling/);
+    expect(rejecting.callBrowserTool).not.toHaveBeenCalled();
+
+    const detaching = makeFlowDeps(DETACH_ACK);
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps, detach: true },
+      detaching,
+      TEST_CALLER,
+    );
+    expect(detaching.callBrowserTool).toHaveBeenCalledTimes(1);
+  });
+
+  test('the detached ceiling is a real ceiling, not an absence of one', async () => {
+    // A repeat whose worst case runs past 30 minutes is rejected up front
+    // exactly as an over-60s foreground flow is: `max_iterations` stays
+    // mandatory precisely so this stays computable.
+    const steps = [
+      {
+        repeat: {
+          steps: [{ wait_for: { selector: '#x', timeout_ms: 30_000 } }],
+          max_iterations: 100,
+        },
+      },
+    ];
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps, detach: true },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/exceeds the 1800s ceiling — reduce max_iterations/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('dry_run projects a flow that could only run detached, and says so', async () => {
+    // The v0.25.0 behaviour rejected this before projecting anything, which
+    // made the one question dry_run exists to answer unanswerable for
+    // exactly the runs where it matters most.
+    const steps = Array.from({ length: 20 }, () => ({
+      wait_for: { selector: '#x', timeout_ms: 30_000 },
+    }));
+    const deps = makeFlowDeps({ ok: true, steps_completed: 0, results: [], dry_run: true });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps, dry_run: true },
+      deps,
+      TEST_CALLER,
+    )) as { dry_run: boolean; budget_ms: number; requires_detach: boolean };
+
+    expect(result.dry_run).toBe(true);
+    expect(result.budget_ms).toBe(612_000);
+    expect(result.requires_detach).toBe(true);
+    // Still a dry run: the transport is told to project, never to detach.
+    const params = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<
+      string,
+      unknown
+    >;
+    expect(params.dry_run).toBe(true);
+    expect(params.detach).toBeUndefined();
+  });
+
+  test('a flow that fits the 60s cap reports requires_detach:false', async () => {
+    const deps = makeFlowDeps({ ok: true, steps_completed: 0, results: [], dry_run: true });
+    const result = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }], dry_run: true },
+      deps,
+      TEST_CALLER,
+    )) as { requires_detach: boolean };
+    expect(result.requires_detach).toBe(false);
+  });
+
+  test('dry_run wins over detach — projecting is never a background run', async () => {
+    const deps = makeFlowDeps({ ok: true, steps_completed: 0, results: [], dry_run: true });
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'Enter' } }], dry_run: true, detach: true },
+      deps,
+      TEST_CALLER,
+    );
+    const params = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<
+      string,
+      unknown
+    >;
+    expect(params.dry_run).toBe(true);
+    expect(params.detach).toBeUndefined();
+  });
+
+  test('flow_status forwards the id and comes back stamped with flow_id + tab_id', async () => {
+    const deps = makeFlowDeps({
+      flow_id: 'flow_abc',
+      state: 'completed',
+      detached: true,
+      steps_completed: 3,
+      manifest: [{ ok: true }, { ok: true }, { ok: true }],
+    });
+    const result = (await handleBrowserTool(
+      'browser.flow_status',
+      { tab_id: 'tab_1', flow_id: 'flow_abc' },
+      deps,
+      TEST_CALLER,
+    )) as { flow_id: string; tab_id: string; state: string; manifest: unknown[] };
+
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'flow_status', {
+      flow_id: 'flow_abc',
+    });
+    expect(result.tab_id).toBe('tab_1');
+    expect(result.flow_id).toBe('flow_abc');
+    expect(result.state).toBe('completed');
+    expect(result.manifest).toHaveLength(3);
+  });
+
+  test('flow_status is a READ — it never touches the claim registry', async () => {
+    const claims = new TabClaimRegistry();
+    claims.claim('tab_1', { agent_id: 'someone-else', pid: 1, binary: 'node' });
+    const deps = makeFlowDeps(
+      { flow_id: 'flow_abc', state: 'running', detached: true },
+      { tabClaims: claims },
+    );
+    await expect(
+      handleBrowserTool(
+        'browser.flow_status',
+        { tab_id: 'tab_1', flow_id: 'flow_abc' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  test('flow_cancel sends the out-of-band cancel frame, then reads the state back', async () => {
+    const cancelFlow = vi.fn();
+    const deps = makeFlowDeps(
+      { flow_id: 'flow_abc', state: 'running', detached: true, cancelling: true },
+      { cancelFlow },
+    );
+    const result = (await handleBrowserTool(
+      'browser.flow_cancel',
+      { tab_id: 'tab_1', flow_id: 'flow_abc' },
+      deps,
+      TEST_CALLER,
+    )) as { cancel_requested: boolean; state: string; cancelling: boolean; tab_id: string };
+
+    expect(cancelFlow).toHaveBeenCalledWith('tab_1', 'flow_abc');
+    // The frame is NOT a tool.request — the only call on that channel is
+    // the status read that follows it.
+    expect(deps.callBrowserTool).toHaveBeenCalledTimes(1);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'flow_status', {
+      flow_id: 'flow_abc',
+    });
+    expect(result.cancel_requested).toBe(true);
+    expect(result.cancelling).toBe(true);
+    expect(result.tab_id).toBe('tab_1');
+  });
+
+  test('flow_cancel is NOT claim-guarded — a kill switch cannot need ownership', async () => {
+    const claims = new TabClaimRegistry();
+    claims.claim('tab_1', { agent_id: 'someone-else', pid: 1, binary: 'node' });
+    const cancelFlow = vi.fn();
+    const deps = makeFlowDeps(
+      { flow_id: 'flow_abc', state: 'cancelled', detached: true },
+      { tabClaims: claims, cancelFlow },
+    );
+    await expect(
+      handleBrowserTool(
+        'browser.flow_cancel',
+        { tab_id: 'tab_1', flow_id: 'flow_abc' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).resolves.toMatchObject({ state: 'cancelled', cancel_requested: true });
+    expect(cancelFlow).toHaveBeenCalled();
+  });
+
+  test('cancelling an unknown id is a clean no-op reported as unknown, never an error', async () => {
+    const cancelFlow = vi.fn();
+    const deps = makeFlowDeps(
+      { flow_id: 'flow_nope', state: 'unknown', detached: false },
+      { cancelFlow },
+    );
+    await expect(
+      handleBrowserTool(
+        'browser.flow_cancel',
+        { tab_id: 'tab_1', flow_id: 'flow_nope' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).resolves.toMatchObject({ state: 'unknown', cancel_requested: true });
+  });
+
+  test('flow_cancel says so plainly when no cancel channel is wired', async () => {
+    const deps = makeFlowDeps({ state: 'running' });
+    await expect(
+      handleBrowserTool(
+        'browser.flow_cancel',
+        { tab_id: 'tab_1', flow_id: 'flow_abc' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/extension bridge is not wired/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('both tools require a flow_id, named per tool', async () => {
+    const deps = makeDeps({ cancelFlow: vi.fn() });
+    await expect(
+      handleBrowserTool('browser.flow_status', { tab_id: 'tab_1' }, deps, TEST_CALLER),
+    ).rejects.toThrow('browser.flow_status: flow_id required');
+    await expect(
+      handleBrowserTool('browser.flow_cancel', { tab_id: 'tab_1', flow_id: '' }, deps, TEST_CALLER),
+    ).rejects.toThrow('browser.flow_cancel: flow_id required');
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('on a cdp: tab, flow_cancel goes over the in-process route with no cancel frame', async () => {
+    const cancelFlow = vi.fn();
+    const callCdpTool = vi.fn().mockResolvedValue({ flow_id: 'flow_abc', state: 'cancelled' });
+    const deps = makeDeps({
+      cancelFlow,
+      callCdpTool,
+      cdpGate: () => ({ ok: true }),
+    });
+    const result = (await handleBrowserTool(
+      'browser.flow_cancel',
+      { tab_id: 'cdp:TARGET-1', flow_id: 'flow_abc' },
+      deps,
+      TEST_CALLER,
+    )) as { state: string; cancel_requested: boolean; tab_id: string };
+
+    expect(callCdpTool).toHaveBeenCalledWith('cdp:TARGET-1', 'flow_cancel', {
+      flow_id: 'flow_abc',
+    });
+    expect(cancelFlow).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      state: 'cancelled',
+      cancel_requested: true,
+      tab_id: 'cdp:TARGET-1',
+    });
+  });
+
+  test('both tools are in v1 cdp-direct scope', async () => {
+    const callCdpTool = vi.fn().mockResolvedValue({ state: 'running' });
+    const deps = makeDeps({ callCdpTool, cdpGate: () => ({ ok: true }) });
+    await expect(
+      handleBrowserTool(
+        'browser.flow_status',
+        { tab_id: 'cdp:TARGET-1', flow_id: 'flow_abc' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).resolves.toBeDefined();
+    expect(callCdpTool).toHaveBeenCalledWith('cdp:TARGET-1', 'flow_status', {
+      flow_id: 'flow_abc',
+    });
+  });
+
+  test('the cdp-direct gate still guards both — a revoked grant is not a lifecycle bypass', async () => {
+    const deps = makeDeps({
+      callCdpTool: vi.fn(),
+      cdpGate: () => ({ ok: false, error: 'cdp-direct is disabled' }),
+      cancelFlow: vi.fn(),
+    });
+    for (const tool of ['browser.flow_status', 'browser.flow_cancel']) {
+      await expect(
+        handleBrowserTool(tool, { tab_id: 'cdp:T', flow_id: 'flow_abc' }, deps, TEST_CALLER),
+      ).rejects.toThrow('cdp-direct is disabled');
+    }
+    expect(deps.callCdpTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('flow lifecycle schema shapes', () => {
+  test('flow_status and flow_cancel both require tab_id + flow_id and take nothing else', () => {
+    for (const name of ['browser.flow_status', 'browser.flow_cancel']) {
+      const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === name);
+      expect(def, `${name} must be declared`).toBeDefined();
+      const schema = def!.inputSchema as {
+        required: string[];
+        additionalProperties: boolean;
+        properties: Record<string, unknown>;
+      };
+      expect(schema.required).toEqual(['tab_id', 'flow_id']);
+      expect(schema.additionalProperties).toBe(false);
+      expect(Object.keys(schema.properties).sort()).toEqual(['flow_id', 'tab_id']);
+    }
+  });
+
+  test('browser.flow declares detach as a boolean alongside dry_run', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.flow');
+    const schema = def!.inputSchema as {
+      properties: Record<string, { type?: string; description?: string }>;
+    };
+    expect(schema.properties.detach?.type).toBe('boolean');
+    // The one-per-tab rule and the polling handoff are the two things an
+    // agent must know before it reaches for this flag; both belong where
+    // it reads the schema, not only in the prose.
+    expect(schema.properties.detach?.description).toMatch(/ONE detached flow per tab/);
+    expect(schema.properties.detach?.description).toMatch(/browser\.flow_status/);
   });
 });
