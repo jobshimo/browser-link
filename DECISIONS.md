@@ -189,6 +189,44 @@ Si el lookup falla o el peer no está en la allowlist, el upgrade se rechaza con
 
 ---
 
+## 13. `browser.flow` como unidad de trabajo duradero y supervisado
+
+**Estado:** decidida (2026-08-09) — implementación por fases, spec en `docs/specs/flow-supervised-execution.md`
+
+**Contexto.** Todas las garantías que da browser-link —input CDP confiable, guard de oclusión, pointer-events, piercing de shadow DOM, checks de visibilidad y ARIA, selectores estables, settle detection, recovery snapshot— están acotadas a **un solo tool call**. `browser.flow` extendió esa zona segura a 20 steps y 60 segundos. Pasado ese techo, el único camino disponible es `browser.evaluate` crudo, que no tiene ninguna de esas garantías: `el.click()` es `isTrusted:false`, no hay check de oclusión, no hay recovery snapshot y no queda registro de nada.
+
+El resultado es que la curva de valor está invertida: cuanto más grande e irreversible es la tarea, menos protecciones tiene. El field report de 2026-08-08 (956 borrados irreversibles en Cardmarket) corrió con estrictamente menos garantías que un solo `browser.click`.
+
+Además hay una circularidad: `MAX_FLOW_TIMEOUT_MS = 60_000` existe **porque** no hay lifecycle (ni cancelación ni status) — así está documentado en `browser-dispatch.ts:265-271`. Sin lifecycle hay que capear; el cap empuja el trabajo largo a `evaluate`; y ahí pierde todo. El cap no es una decisión de performance, es una consecuencia.
+
+Se evaluó y se **descartó** la alternativa que proponía el field report (`job_cancel` / `job_status` sobre un worker en `window.__job`): cancelar un loop de promesas que vive en la página es cooperativo por naturaleza —solo puede levantar una bandera que el worker elija chequear, y no interrumpe un `await` colgado—, así que es un `browser.evaluate` disfrazado de tool y cae en el mismo error que ya rechazamos en los ítems 2, 3 y 5 del ROADMAP. Peor: un worker en la página solo produce eventos sintéticos, con lo cual pierde justamente lo que el bridge existe para dar.
+
+**Decisión.** El loop lo corre el bridge, no la página. `browser.flow` pasa a ser la unidad de trabajo duradero y supervisado, en seis fases:
+
+1. Añadidos de seguridad al bloque de agent-instructions (independiente, va primero).
+2. Step `sleep` — pausa fija, que `settle_ms` no puede cubrir.
+3. Constructo `repeat` acotado (`max_iterations` obligatorio) + `dry_run`.
+4. Identidad de flow (`flow_id`) + cancelación real.
+5. Panel de flows en el popup: corriendo, historial y stop de un click.
+6. Ejecución `detach` + `flow_status` / `flow_cancel` + manifiesto de acciones.
+
+Dos restricciones deliberadas: `repeat` **no anida** y `max_iterations` es obligatorio, para que el presupuesto de peor caso siga siendo computable estáticamente y el rechazo por `MAX_FLOW_TIMEOUT_MS` siga funcionando sin cambios.
+
+El orden no es arbitrario: el panel con el botón Stop (5) va **antes** de la ejecución detached (6). El kill switch tiene que existir antes que la capacidad que lo necesita.
+
+**Consecuencias.**
+
+- Cancelar es real y no cosmético: el runner controla el dispatch, así que cancelar es no despachar el step N+1, con latencia de peor caso un step. El seam ya está: los dos `runFlow` (`packages/extension/src/flow.ts:324` y `packages/server/src/cdp/flow.ts:335`) son orquestadores puros sobre un `FlowDeps` inyectado, y `cdp/drift.test.ts` ya los mantiene sincronizados. El costo del programa es plomería, no cirugía del loop.
+- El manifiesto de auditoría sale gratis: `runFlow` ya acumula `results[]` vía `compactActionResult`, y `BridgeEventMessage` ya es el canal out-of-band hacia `BridgeEventLog`. El problema de "¿qué borraste?" nunca fue de auditoría — era consecuencia de que el loop vivía en la página, donde el bridge no ve nada. Se emite **un** evento resumen por flow, nunca uno por iteración, porque `MAX_EVENTS = 200` se reventaría en una sola corrida de 200 iteraciones y desalojaría silenciosamente todo lo demás.
+- Ya con la fase 3, bajo el techo actual de 60s, un body de un click con delay de 250ms da ~200 iteraciones por llamada. La tarea del field report habría pasado de ~25 round trips a ~5, con input confiable todo el tiempo.
+- Cuando llegue la fase 6 hay que volver acá y revisar `MAX_FLOW_TIMEOUT_MS`: la restricción que codifica deja de valer.
+- `repeat` convierte el trabajo masivo irreversible en capacidad de primera clase. Por eso `dry_run` va en el mismo PR que `repeat`, no después.
+- Un flow detached es lo único en browser-link que sigue actuando sin ningún agente conectado. Eso va documentado explícitamente en el modelo de seguridad del README.
+- Paridad cdp-direct: las fases 2, 3, 4 y 6 sí (el runner in-process lo hace más fácil incluso). El popup no existe en cdp-direct, así que ahí el único kill switch es `browser-link cdp revoke`. La asimetría queda documentada.
+- Queda abierto y hay que resolverlo **antes** de implementar la fase 6: el service worker MV3 puede morirse a mitad de un flow detached. Nunca puede quedar en estado fantasma "corriendo" ni auto-resumir un loop de acciones irreversibles. La opción conservadora recomendada es persistir en `chrome.storage.session` y, al reiniciar, marcar `failed` / `worker-terminated` sin reanudar.
+
+---
+
 ## Pendientes (a abordar cuando toque)
 
 - **Captura de network:** alcance exacto. ¿Capturamos bodies completos siempre, o solo metadata + body on-demand? Sensibilidad de datos (tokens, PII) a tener en cuenta.

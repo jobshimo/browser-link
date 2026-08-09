@@ -969,6 +969,8 @@ browser-link/
 ├── .github/
 │   ├── dependabot.yml       # grouped weekly dependency updates + self-heal workflow
 │   └── workflows/           # ci.yml, codeql.yml, version-gate.yml, dependabot-version-bump.yml
+├── docs/
+│   └── specs/               # accepted multi-PR programs: contracts, acceptance, slice order
 ├── packages/
 │   ├── server/      # MCP server + CLI binary published as @jobshimo/browser-link
 │   ├── extension/   # Manifest V3 Chrome extension, bundled into the npm tarball
@@ -980,6 +982,7 @@ browser-link/
 │   └── lib/versions.mjs     # shared version utilities (VERSIONED_FILES, semver helpers)
 ├── LICENSE
 ├── README.md        # this file
+├── ROADMAP.md       # queued work, in priority order — pain / idea / cost / files
 └── DECISIONS.md     # living architecture / design-decision log
 ```
 

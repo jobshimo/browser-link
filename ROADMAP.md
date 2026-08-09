@@ -13,7 +13,24 @@ Check items off as they ship; when an item is done, leave it ticked here and lin
 
 ## Queued (in priority order)
 
-_All five items below were evaluated against the live playground before being committed to. Items 2, 3, and 5 turned out to be single-line `browser.evaluate` patterns the agent didn't know — not real bridge gaps. They are resolved in v0.13.0 by teaching the patterns in the agent-instructions block instead of adding tools. Kept here for context in case future evidence flips the decision._
+### Program: `flow` as the unit of durable, supervised work
+
+_Full spec: **`docs/specs/flow-supervised-execution.md`**. Architecture decision: **`DECISIONS.md` §13**. Origin: the bulk-actions field report (2026-08-08, v0.23.12 — 956 irreversible deletions, ~25 round trips, ~15 of them pure polling)._
+
+**The shared pain.** Every guarantee browser-link provides is scoped to a single tool call. `flow` extended the guaranteed zone to 20 steps / 60s; past that the only path is raw `browser.evaluate`, which has none of them — `el.click()` is `isTrusted:false`, no occlusion check, no recovery snapshot, no record. The value curve is inverted: the bigger and more irreversible the task, the fewer protections it runs under. `MAX_FLOW_TIMEOUT_MS` is not a performance decision — it exists _because_ there is no cancel/status path, and that cap is what pushes long work into `evaluate` in the first place.
+
+Six slices, one PR each. Each PR updates the README in the same PR — never deferred.
+
+- [ ] **6. Agent-instructions safety additions** — cost **S**, no deps, ship first and alone. A timed-out `evaluate` keeps running; relaunching it duplicates irreversible work. Adds the `running`-guard pattern, "check before relaunching", `wait_for`-over-polling, the `DOMParser`/`innerText` trap, and "paginated counters lie". _Files:_ `packages/server/src/agent-instructions/content.ts`.
+- [ ] **7. `sleep` step in `browser.flow`** — cost **S**, no deps. `settle_ms` is a quiet-period wait, not a fixed pause, so throttling between actions is not expressible today. _Files:_ `browser-definitions.ts`, `browser-dispatch.ts`, both `flow.ts` copies, `cdp/drift.test.ts`.
+- [ ] **8. Bounded `repeat` construct + `dry_run`** — cost **M**, needs 7. `{ repeat: { steps, max_iterations, while_found?, delay_ms? } }`. No nesting; `max_iterations` mandatory so the worst-case budget stays statically computable and the existing 60s rejection keeps working — safe to ship before cancellation exists. `while_found` retires the "lying counters" observation at the root. Even under today's cap this is ~200 iterations per call: the field report's task drops from ~25 round trips to ~5. `dry_run` ships in the same PR, not later. _Files:_ as above, plus `flow.test.ts` (both copies).
+- [ ] **9. Flow identity + cancellation** — cost **M**, needs nothing technically. `flow_id` on every flow, `deps.shouldCancel()` checked per step and per repeat iteration, new `tool.cancel` wire message. A cancelled flow returns `ok: true` with `stopped_by: 'cancelled'` and partial results — never discards what already happened. Worst-case latency one step, so `wait_for`'s poll loop must honour the flag too. _Files:_ `packages/shared/src/index.ts`, `ws-bridge.ts`, `browser-dispatch.ts`, `background.ts`, both `flow.ts` copies.
+- [ ] **10. Extension popup: running flows, history, one-click stop** — cost **M**, needs 9. Running flows with live progress and a Stop button; last 20 completed per tab in `chrome.storage.session`. UI structure and outcomes only, never page content — same rule as the persistent map. Ships **before** slice 11 on purpose: the kill switch exists before the capability that needs it. No cdp-direct equivalent (no popup); there the kill switch is `browser-link cdp revoke`. _Files:_ `popup.html`, `popup.ts`, `background.ts`.
+- [ ] **11. Detached execution + `flow_status` / `flow_cancel` + action manifest** — cost **L**, needs 9 and 10. `flow({detach:true})` escapes `MAX_FLOW_TIMEOUT_MS` under its own budget plus a 30-minute absolute ceiling; one detached flow per tab. The manifest falls out free — `runFlow` already accumulates `results[]`, and `BridgeEventMessage` is already the out-of-band channel into `BridgeEventLog`. Exactly one summary event per flow, never one per iteration (`MAX_EVENTS = 200` would evict everything else). **Open question to settle before starting:** MV3 service-worker termination mid-flow must fail loudly and never auto-resume. _Files:_ `shared/src/index.ts`, `permissions.ts`, `browser-definitions.ts`, `browser-dispatch.ts`, `bridge/events.ts`, `background.ts`, `popup.ts`.
+
+---
+
+_Items 1–5 below were evaluated against the live playground before being committed to. Items 2, 3, and 5 turned out to be single-line `browser.evaluate` patterns the agent didn't know — not real bridge gaps. They are resolved in v0.13.0 by teaching the patterns in the agent-instructions block instead of adding tools. Kept here for context in case future evidence flips the decision._
 
 ### [x] 1. `browser.find({ text, role? })` — find an element by visible text — PR #72 (v0.13.0)
 
