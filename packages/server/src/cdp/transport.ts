@@ -794,10 +794,9 @@ export async function callCdpTool(
       //
       // A DETACHED flow additionally answers to `browser.flow_cancel` and
       // to its own 30-minute ceiling, both of which live in the
-      // detached-flow registry — so on that path the two questions are
-      // OR-ed rather than one replacing the other. Revoking the grant
-      // still stops a detached flow, which matters: it is the only lever a
-      // human at a terminal has here.
+      // detached-flow registry — so on that path both questions are asked.
+      // Revoking the grant still stops a detached flow, which matters: it
+      // is the only lever a human at a terminal has here.
       const gateAllows = (): boolean => checkCdpDirectGate().ok;
       if (!detach) {
         const shouldCancel = (): boolean => !gateAllows();
@@ -814,8 +813,17 @@ export async function callCdpTool(
         );
       }
       const flow = registerDetachedFlow({ flowId, tabId, steps: rawSteps.length });
-      const shouldCancel = (): boolean =>
-        shouldStopDetachedFlow(flow.flowId, Date.now()) || !gateAllows();
+      // The gate branch cancels THROUGH the registry rather than short-
+      // circuiting past it: `stopped_by: 'grant-revoked'` is the only thing
+      // that tells the agent a human pulled the grant, as opposed to
+      // `browser.flow_cancel` or the ceiling. Same reason the ceiling flips
+      // its own reason inside `shouldStopDetachedFlow`.
+      const shouldCancel = (): boolean => {
+        if (shouldStopDetachedFlow(flow.flowId, Date.now())) return true;
+        if (gateAllows()) return false;
+        cancelDetachedFlow(flow.flowId, 'grant-revoked');
+        return true;
+      };
       // Deliberately floating: this IS detach. The result below goes back
       // now, the loop keeps running, and the agent's turn is free.
       void (async () => {

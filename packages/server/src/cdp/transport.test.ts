@@ -735,8 +735,13 @@ describe('callCdpTool — detached execution', () => {
     expect(state).toBe('cancelled');
     const status = (await callCdpTool(tabId, 'flow_status', { flow_id: 'flow_revoked' })) as {
       steps_completed: number;
+      stopped_by?: string;
     };
     expect(status.steps_completed).toBe(1);
+    // And it says WHICH lever stopped it: a revoked grant is not the same
+    // fact as `browser.flow_cancel`, and an agent that cannot tell them
+    // apart will retry into a gate that is still shut.
+    expect(status.stopped_by).toBe('grant-revoked');
   });
 
   test('a dry run is never detached, whatever the flags say', async () => {

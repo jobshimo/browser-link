@@ -127,9 +127,9 @@ While any `browser.flow` is running, a **Flows** section appears:
   looking at**: outcome (`completed` / `cancelled` / `failed` /
   `expired`), how long it took, how many steps or iterations it got
   through, and which step failed when one did. A detached run that hit
-  its 30-minute ceiling reads `expired`; one Chrome killed the service
-  worker under reads `failed · extension worker was terminated — not
-resumed`.
+  its 30-minute ceiling reads `expired`; one that Chrome killed the
+  service worker under reads
+  `failed · extension worker was terminated — not resumed`.
 
 Both are hidden entirely when there is nothing running and nothing
 remembered, so an idle popup looks exactly as it did before.
@@ -605,7 +605,11 @@ marked `running` is by definition orphaned, so it is rewritten as
 `failed` / `worker-terminated`, written to the popup's Recent flows, and
 announced on `browser.events`. That record is a precondition, not a side
 effect: if it cannot be stored, `browser.flow({ detach: true })` fails and
-nothing is executed.
+nothing is executed. When storage refuses it for space, browser-link drops
+every already-finished record first — across **all** tabs, including
+manifests no agent has read yet — and retries once: that is a deliberate
+trade, because an unread manifest can still be re-derived from the page
+while a missing launch record makes a killed worker undetectable.
 
 It is **never resumed**, and that is deliberate. A detached flow exists to
 do irreversible bulk work; resuming one whose real progress died with the
@@ -1180,11 +1184,15 @@ against. `selector` and `expression` modes are fully supported.
 **Detached execution has full parity here, with one asymmetry.** The
 cdp-direct runner is in-process, so `detach` / `flow_status` /
 `flow_cancel` behave identically — same one-per-tab rule, same 30-minute
-`expired` ceiling, same manifest, same single `flow-finished` event in
-`browser.events`. What does not exist is the popup's Stop button (there is
-no extension), so a human's only lever is `browser-link cdp revoke`, which
-stops a detached flow within one step exactly as it stops a foreground
-one. The MV3 worker-termination story has no equivalent either, and does
+`expired` ceiling, the same manifest under the same 128 KB ceiling (over
+it, the same `manifest_truncated: true` rather than a shortened array),
+same single `flow-finished` event in `browser.events`. What does not exist
+is the popup's Stop button (there is no extension), so a human's only
+lever is `browser-link cdp revoke`, which stops a detached flow within one
+step exactly as it stops a foreground one and reports
+`stopped_by: "grant-revoked"` — a stop an agent must not treat as a
+transient failure to retry, since the gate it would retry into is shut.
+The MV3 worker-termination story has no equivalent either, and does
 not need one: the runner lives in the browser-link process, so if that
 process dies the flow dies with it and there is no state left to be wrong
 about. The flip side is that detached-flow state here is per-process — a

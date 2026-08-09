@@ -35,6 +35,15 @@ export const MAX_DETACHED_FLOW_MS = 30 * 60_000;
  * access pattern is "the agent that launched it reads the manifest once". */
 export const MAX_DETACHED_FLOW_RECORDS = 10;
 
+/** Byte ceiling on ONE finished flow's manifest. Mirrors
+ * `MAX_DETACHED_MANIFEST_BYTES` in the extension's `flow-registry.ts`: over
+ * there the pressure is a session-storage quota, here it is process memory
+ * times `MAX_DETACHED_FLOW_RECORDS`, but the agent-visible answer has to be
+ * the same one on both transports. Over the ceiling the manifest is dropped
+ * and `manifest_truncated` says so, rather than a silently short array the
+ * agent would read as "that's all that happened". */
+export const MAX_DETACHED_MANIFEST_BYTES = 128_000;
+
 export type FlowStopReason = 'cancelled' | 'expired' | 'grant-revoked';
 export type FlowState = 'running' | 'completed' | 'cancelled' | 'failed' | 'expired' | 'unknown';
 
@@ -55,6 +64,11 @@ export interface FlowStatusPayload {
   cancelling?: true;
   expires_at?: number;
   manifest?: unknown[];
+  /** The manifest existed but is not retrievable — over the byte ceiling.
+   * The extension sets it for a worker-terminated run too; there is no
+   * such run here, but the key must exist so the two transports report the
+   * same shape. */
+  manifest_truncated?: true;
 }
 
 interface RunningFlow {
@@ -82,7 +96,10 @@ interface FinishedFlow {
   iterationsCompleted?: number;
   stopReason?: FlowStopReason;
   error?: string;
-  manifest: unknown[];
+  /** Absent when the manifest was over `MAX_DETACHED_MANIFEST_BYTES`, in
+   * which case `manifestTruncated` is set. */
+  manifest?: unknown[];
+  manifestTruncated?: true;
 }
 
 const running = new Map<string, RunningFlow>();
@@ -182,6 +199,22 @@ function countIterations(results: readonly unknown[]): number | undefined {
   return total;
 }
 
+/** UTF-8 byte size of a value serialized as JSON, or `Infinity` when it
+ * cannot be serialized at all (a cycle, a BigInt). Unserializable counts as
+ * over the ceiling: a manifest nothing can encode is a manifest nothing can
+ * hand back. Same measurement the extension's `measureJsonBytes` makes, so
+ * the same payload crosses the same threshold on both transports. */
+function measureJsonBytes(value: unknown): number {
+  try {
+    const json = JSON.stringify(value);
+    return typeof json === 'string'
+      ? new TextEncoder().encode(json).length
+      : Number.POSITIVE_INFINITY;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
 /**
  * Retire a finished detached flow: move it to the finished map (manifest
  * included, addressable by id), enforce the record cap, and emit the ONE
@@ -224,6 +257,12 @@ export function finishDetachedFlow(
         : 'completed';
   }
 
+  // Measured on the manifest alone, exactly as the extension measures it:
+  // the rest of the record is a handful of numbers and an error string, and
+  // charging them against the ceiling would make the cutoff depend on how
+  // long a failure message happened to be.
+  const oversized = measureJsonBytes(manifest) > MAX_DETACHED_MANIFEST_BYTES;
+
   finished.set(flowId, {
     flowId,
     tabId: flow.tabId,
@@ -237,7 +276,7 @@ export function finishDetachedFlow(
       ? {}
       : { stopReason: flow.stopReason }),
     ...(error === undefined ? {} : { error }),
-    manifest,
+    ...(oversized ? { manifestTruncated: true as const } : { manifest }),
   });
   evictOldFinishedFlows();
 
@@ -253,7 +292,7 @@ export function finishDetachedFlow(
     ...(flow.stopReason === undefined || state === 'completed'
       ? {}
       : { stopped_by: flow.stopReason }),
-    manifest_available: true,
+    manifest_available: !oversized,
   });
 }
 
@@ -301,7 +340,8 @@ export function detachedFlowStatus(flowId: string): FlowStatusPayload {
         : { iterations_completed: done.iterationsCompleted }),
       ...(done.stopReason === undefined ? {} : { stopped_by: done.stopReason }),
       ...(done.error === undefined ? {} : { error: done.error }),
-      manifest: done.manifest,
+      ...(done.manifest === undefined ? {} : { manifest: done.manifest }),
+      ...(done.manifestTruncated === true ? { manifest_truncated: true as const } : {}),
     };
   }
   return { flow_id: flowId, state: 'unknown', detached: false };

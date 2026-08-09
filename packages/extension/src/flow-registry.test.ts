@@ -3,6 +3,7 @@ import {
   MAX_DETACHED_FLOW_RECORDS,
   MAX_DETACHED_MANIFEST_BYTES,
   MAX_FLOW_HISTORY_PER_TAB,
+  MAX_MINIMAL_RECORD_ERROR_CHARS,
   appendFlowHistory,
   createFlowRegistry,
   describeFlowHistoryEntry,
@@ -847,6 +848,26 @@ describe('detached flows — the persisted record', () => {
     expect(record.stepsCompleted).toBe(1);
   });
 
+  test('the ceiling counts UTF-8 BYTES — a CJK manifest costs three per code unit', () => {
+    // Under the ceiling measured as `.length`, over it once encoded. The
+    // quota this cap protects counts bytes, so measuring code units would
+    // wave through a record three times too large — a rejected write, and
+    // the outcome lost with it.
+    const text = '観'.repeat(60_000);
+    expect(JSON.stringify([text]).length).toBeLessThan(MAX_DETACHED_MANIFEST_BYTES);
+    expect(new TextEncoder().encode(JSON.stringify([text])).length).toBeGreaterThan(
+      MAX_DETACHED_MANIFEST_BYTES,
+    );
+
+    const record = finishedDetachedFlowRecord(
+      entryFor({ detached: true }),
+      { ok: true, steps_completed: 1, results: [text] },
+      3_000,
+    );
+    expect(record.manifestTruncated).toBe(true);
+    expect(record.manifest).toBeUndefined();
+  });
+
   test('iterations are summed onto the record the same way the history sums them', () => {
     const record = finishedDetachedFlowRecord(
       entryFor({ detached: true }),
@@ -1015,6 +1036,48 @@ describe('detached flows — service-worker termination', () => {
     expect(minimal).toMatchObject({ state: 'cancelled', stoppedBy: 'cancelled' });
     // And it round-trips through the parser the real write goes over.
     expect(parseDetachedFlowRecord(JSON.parse(JSON.stringify(minimal)))).toEqual(minimal);
+  });
+
+  test('the fallback record bounds the error too — it is the last unbounded field', () => {
+    // Page-derived free text with no ceiling of its own. Once the full
+    // write has already been refused, an error long enough to be the reason
+    // would sink the retry as well, and the outcome with it.
+    const full = finishedDetachedFlowRecord(
+      entryFor({ detached: true }),
+      {
+        ok: false,
+        failed_step: 0,
+        step_kind: 'find',
+        error: `find: multiple-matches — ${'x'.repeat(200_000)}`,
+        steps_completed: 0,
+        recovery_snapshot: null,
+      },
+      3_000,
+    );
+
+    const minimal = minimalDetachedFlowRecord(full);
+    expect(minimal.error).toHaveLength(MAX_MINIMAL_RECORD_ERROR_CHARS + 1);
+    expect(minimal.error?.endsWith('…')).toBe(true);
+    // The head of the message — the part that names what went wrong — is
+    // what survives.
+    expect(minimal.error).toContain('multiple-matches');
+    expect(minimal.state).toBe('failed');
+  });
+
+  test('an error already under the bound is left exactly as it was', () => {
+    const full = finishedDetachedFlowRecord(
+      entryFor({ detached: true }),
+      {
+        ok: false,
+        failed_step: 0,
+        step_kind: 'click',
+        error: 'Element not found: #delete',
+        steps_completed: 0,
+        recovery_snapshot: null,
+      },
+      3_000,
+    );
+    expect(minimalDetachedFlowRecord(full).error).toBe('Element not found: #delete');
   });
 });
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   MAX_DETACHED_FLOW_MS,
   MAX_DETACHED_FLOW_RECORDS,
+  MAX_DETACHED_MANIFEST_BYTES,
   cancelDetachedFlow,
   detachedFlowForTab,
   detachedFlowStatus,
@@ -104,6 +105,24 @@ describe('progress, cancellation and the ceiling', () => {
     });
   });
 
+  test('a revoked grant reads as its own stop reason, not as a plain cancel', () => {
+    // The runner reports `cancelled` for every stop it knows about, so the
+    // registry is the only place that can tell an agent WHICH lever moved.
+    registerDetachedFlow({ flowId: 'f1', tabId: 'cdp:T1', steps: 2 });
+    expect(cancelDetachedFlow('f1', 'grant-revoked')).toBe(true);
+    finishDetachedFlow('f1', {
+      ok: true,
+      stopped_by: 'cancelled',
+      steps_completed: 1,
+      results: [{ ok: true }],
+    });
+    expect(detachedFlowStatus('f1')).toMatchObject({
+      state: 'cancelled',
+      stopped_by: 'grant-revoked',
+      steps_completed: 1,
+    });
+  });
+
   test('a forgotten id is told to stop rather than allowed to run on', () => {
     expect(shouldStopDetachedFlow('never-registered', 0)).toBe(true);
   });
@@ -176,6 +195,44 @@ describe('outcomes and the manifest', () => {
       results: [{ iterations_completed: 187, stopped_by: 'condition', iterations: [] }],
     });
     expect(detachedFlowStatus('f1')).toMatchObject({ iterations_completed: 187 });
+  });
+
+  test('a manifest over the byte ceiling is dropped LOUDLY, never silently shortened', () => {
+    // Same failure mode the extension guards against: a short array reads
+    // as "that is everything that happened".
+    const huge = Array.from({ length: 5_000 }, (_, i) => ({ selector: `#row-${i}`, ok: true }));
+    expect(new TextEncoder().encode(JSON.stringify(huge)).length).toBeGreaterThan(
+      MAX_DETACHED_MANIFEST_BYTES,
+    );
+    registerDetachedFlow({ flowId: 'f1', tabId: 'cdp:T1', steps: 1 });
+    finishDetachedFlow('f1', { ok: true, steps_completed: 1, results: huge });
+
+    const status = detachedFlowStatus('f1');
+    expect(status.manifest_truncated).toBe(true);
+    expect(status.manifest).toBeUndefined();
+    // Everything countable still survives — that is the point of dropping
+    // only the manifest.
+    expect(status).toMatchObject({ state: 'completed', steps_completed: 1 });
+  });
+
+  test('the ceiling counts UTF-8 bytes, not UTF-16 code units', () => {
+    // Just under the ceiling by `.length`, over it once encoded: three
+    // bytes per CJK code unit. Measuring the wrong unit here is what would
+    // let a manifest three times the cap through.
+    const text = '観'.repeat(60_000);
+    expect(JSON.stringify([text]).length).toBeLessThan(MAX_DETACHED_MANIFEST_BYTES);
+    registerDetachedFlow({ flowId: 'f1', tabId: 'cdp:T1', steps: 1 });
+    finishDetachedFlow('f1', { ok: true, steps_completed: 1, results: [text] });
+    expect(detachedFlowStatus('f1').manifest_truncated).toBe(true);
+  });
+
+  test('a dropped manifest is announced as unavailable in the summary event', () => {
+    const sink = vi.fn();
+    setCdpFlowEventSink(sink);
+    const huge = Array.from({ length: 5_000 }, (_, i) => ({ selector: `#row-${i}`, ok: true }));
+    registerDetachedFlow({ flowId: 'f1', tabId: 'cdp:T1', steps: 1 });
+    finishDetachedFlow('f1', { ok: true, steps_completed: 1, results: huge });
+    expect(sink.mock.calls[0][0]).toMatchObject({ manifest_available: false });
   });
 
   test('only the newest runs keep their manifest — older ones age out', () => {

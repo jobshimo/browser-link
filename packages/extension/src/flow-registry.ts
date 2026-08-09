@@ -695,14 +695,21 @@ export function finishedDetachedFlowRecord(
   };
 }
 
-/** Serialized size of a value, or `Infinity` when it cannot be serialized
- * at all (a cycle, a BigInt). Unserializable is treated as over the
- * ceiling: the alternative is letting `chrome.storage.session.set` throw
- * and losing the entire record. */
+/** UTF-8 byte size of a value serialized as JSON, or `Infinity` when it
+ * cannot be serialized at all (a cycle, a BigInt). Unserializable is
+ * treated as over the ceiling: the alternative is letting
+ * `chrome.storage.session.set` throw and losing the entire record.
+ *
+ * Encoded rather than measured by `.length`: a string's length counts
+ * UTF-16 code units, while the quota counts bytes. A manifest of CJK or
+ * emoji page text costs up to three or four bytes per code unit, so
+ * `.length` would let a record two to four times over the ceiling through
+ * — precisely the quota rejection this cap exists to avoid. */
 function measureJsonBytes(value: unknown): number {
   try {
     const json = JSON.stringify(value);
-    return typeof json === 'string' ? json.length : Number.POSITIVE_INFINITY;
+    if (typeof json !== 'string') return Number.POSITIVE_INFINITY;
+    return new TextEncoder().encode(json).length;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
@@ -745,14 +752,35 @@ export function terminatedDetachedFlowRecord(
   };
 }
 
+/** Character ceiling on the error string of a MINIMAL record. The normal
+ * terminal record keeps the failure message whole — it is the answer to
+ * "why did it stop". This bound applies only where the full write already
+ * came back refused, and a flow error is page-derived free text with no
+ * upper bound of its own (a `find: multiple-matches` over a huge table
+ * quotes every candidate), so it is the one remaining field that could
+ * still be what breaches the quota. */
+export const MAX_MINIMAL_RECORD_ERROR_CHARS = 1_024;
+
 /** The same terminal record without its manifest — what gets written when
  * storage refuses the full one. The manifest is the only part large enough
- * to be refused; state, `stoppedBy`, the counters and the error are a few
- * hundred bytes. Losing the manifest is a documented outcome; losing the
- * write is not: the stale `running` record becomes `worker-terminated`. */
+ * to be refused under normal conditions; state, `stoppedBy` and the
+ * counters are a few hundred bytes. Losing the manifest is a documented
+ * outcome; losing the write is not: the stale `running` record becomes
+ * `worker-terminated`. The error is trimmed to
+ * `MAX_MINIMAL_RECORD_ERROR_CHARS` with a visible ellipsis, so a
+ * pathological message cannot be what sinks the retry too. */
 export function minimalDetachedFlowRecord(record: DetachedFlowRecord): DetachedFlowRecord {
   const { manifest: _dropped, ...rest } = record;
-  return { ...rest, manifestTruncated: true };
+  return {
+    ...rest,
+    ...(rest.error === undefined ? {} : { error: truncateError(rest.error) }),
+    manifestTruncated: true,
+  };
+}
+
+function truncateError(error: string): string {
+  if (error.length <= MAX_MINIMAL_RECORD_ERROR_CHARS) return error;
+  return `${error.slice(0, MAX_MINIMAL_RECORD_ERROR_CHARS)}…`;
 }
 
 /** The history entry for a flow the service worker was killed under. The

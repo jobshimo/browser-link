@@ -2094,7 +2094,14 @@ function writeDetachedFlowRecord(record: DetachedFlowRecord): Promise<boolean> {
 
 /** Free session-storage quota by dropping every terminal record not still
  * owing its summary event. Only after a rejected write: at that point old
- * manifests are worth less than the launch record of a flow about to act. */
+ * manifests are worth less than the launch record of a flow about to act.
+ *
+ * The sweep is deliberately GLOBAL, not scoped to the launching tab: it can
+ * discard a finished flow's manifest that another tab's agent had not read
+ * yet. That is the accepted trade. The alternative is refusing the launch,
+ * which leaves a flow about to do irreversible work with no record proving
+ * it started — and an unread manifest is recoverable by looking at the
+ * page, while a missing launch record makes a killed worker undetectable. */
 function pruneDetachedFlowRecords(): Promise<boolean> {
   return queueTrackedFlowStorageWrite(async () => {
     const stale = (await readAllDetachedFlowRecords()).filter(
@@ -2184,6 +2191,15 @@ async function recoverDetachedFlows(): Promise<void> {
   }
 }
 
+/** Flows whose summary event is being flushed right now. `eventPending` is
+ * only cleared by a write queued AFTER the event goes out, so two fast
+ * reconnects of the same tab can both read the same still-pending record
+ * and publish its event twice — an audit trail that double-counts a flow is
+ * as wrong as one that drops it. Membership holds from the send until the
+ * clearing write settles; a write that failed leaves the flag set, and the
+ * next flush legitimately retries. */
+const flushingFlowEvents = new Set<string>();
+
 /** Flush the summary events of any detached flow that ended while this
  * tab's socket was down — including every flow the worker was killed
  * under, whose event could not possibly have been sent at the time (no
@@ -2195,9 +2211,18 @@ async function flushPendingFlowEvents(tabId: number): Promise<void> {
   await flowStorageWrites;
   for (const record of await readAllDetachedFlowRecords()) {
     if (record.tabId !== tabId || record.eventPending !== true) continue;
-    if (!publishFlowFinished(tabId, record)) return;
+    if (flushingFlowEvents.has(record.flowId)) continue;
+    flushingFlowEvents.add(record.flowId);
+    if (!publishFlowFinished(tabId, record)) {
+      flushingFlowEvents.delete(record.flowId);
+      return;
+    }
     const { eventPending: _sent, ...flushed } = record;
-    void writeDetachedFlowRecord(flushed);
+    void writeDetachedFlowRecord(flushed).then((stored) => {
+      // A refused clearing write must keep the flag: storage still says
+      // eventPending, so releasing it here would republish a sent event.
+      if (stored) flushingFlowEvents.delete(record.flowId);
+    });
   }
 }
 
