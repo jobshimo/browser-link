@@ -709,21 +709,28 @@ export async function callCdpTool(
       const rawSteps = Array.isArray(p.steps)
         ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
         : [];
-      return runFlow(rawSteps as FlowStep[], {
-        performFind: (fp) => performFind(client, fp),
-        performClick: (cp) => performClick(client, cp),
-        performType: (tp) => performType(client, tp),
-        performPress: (pp) => performPress(client, pp),
-        performWaitFor: (wp) => performWaitFor(client, wp),
-        // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it
-        // to false), so a flow drag step fails fast at this step with the
-        // exact error the standalone browser.drag returns on a cdp: tab —
-        // naming the extension transport as the fallback.
-        performDrag: () =>
-          Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
-        buildRecoverySnapshot: () =>
-          evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
-      });
+      return runFlow(
+        rawSteps as FlowStep[],
+        {
+          performFind: (fp) => performFind(client, fp),
+          performClick: (cp) => performClick(client, cp),
+          performType: (tp) => performType(client, tp),
+          performPress: (pp) => performPress(client, pp),
+          performWaitFor: (wp) => performWaitFor(client, wp),
+          // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it
+          // to false), so a flow drag step fails fast at this step with the
+          // exact error the standalone browser.drag returns on a cdp: tab —
+          // naming the extension transport as the fallback.
+          performDrag: () =>
+            Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
+          buildRecoverySnapshot: () =>
+            evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+        },
+        // Strict `=== true`: any other value runs the flow FOR REAL. A dry
+        // run that silently became a real run would be the worst possible
+        // failure of this flag, so only the exact boolean opts into it.
+        { dryRun: p.dry_run === true },
+      );
     }
 
     default:

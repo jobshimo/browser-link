@@ -6,6 +6,7 @@ import {
   type DragStepResult,
   type FindStepResult,
   type FlowDeps,
+  type FlowStep,
   type PressStepResult,
   type TypeStepResult,
 } from './flow.js';
@@ -690,5 +691,301 @@ describe('runFlow — sleep step', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
     expect(result.error).toContain('sleep: ms must be an integer');
+  });
+});
+
+describe('runFlow — repeat step', () => {
+  test('with no while_found, runs exactly max_iterations times', async () => {
+    const performClick = vi.fn<FlowDeps['performClick']>().mockResolvedValue({
+      ok: true,
+      result: { clicked: '#row', tag: 'button' },
+    });
+    const deps = makeDeps({ performClick });
+
+    const result = await runFlow(
+      [{ repeat: { steps: [{ click: { selector: '#row' } }], max_iterations: 3 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(performClick).toHaveBeenCalledTimes(3);
+    expect(result.results).toEqual([
+      {
+        iterations_completed: 3,
+        stopped_by: 'max_iterations',
+        iterations: [[{ ok: true }], [{ ok: true }], [{ ok: true }]],
+      },
+    ]);
+  });
+
+  test('while_found stops the loop the first time it does not match', async () => {
+    // The probe is a wait_for with timeout_ms:0 — matched twice, then not.
+    const performWaitFor = vi
+      .fn<FlowDeps['performWaitFor']>()
+      .mockResolvedValueOnce({ ok: true, result: { matched: true, elapsed_ms: 1, checks: 1 } })
+      .mockResolvedValueOnce({ ok: true, result: { matched: true, elapsed_ms: 1, checks: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        result: { matched: false, elapsed_ms: 1, checks: 1, reason: 'timeout' },
+      });
+    const performClick = vi.fn<FlowDeps['performClick']>().mockResolvedValue({
+      ok: true,
+      result: { clicked: '#row', tag: 'button' },
+    });
+    const deps = makeDeps({ performWaitFor, performClick });
+
+    const result = await runFlow(
+      [
+        {
+          repeat: {
+            steps: [{ click: { selector: '.row button' } }],
+            max_iterations: 50,
+            while_found: '.row',
+          },
+        },
+      ],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(performClick).toHaveBeenCalledTimes(2);
+    expect(result.results[0]).toMatchObject({
+      iterations_completed: 2,
+      stopped_by: 'condition',
+    });
+    // The probe must be a ONE-SHOT presence test, never a real wait.
+    expect(performWaitFor).toHaveBeenCalledWith({
+      selector: '.row',
+      condition: 'visible',
+      timeout_ms: 0,
+    });
+  });
+
+  test('max_iterations still caps a while_found that never stops matching', async () => {
+    const deps = makeDeps();
+    const result = await runFlow(
+      [
+        {
+          repeat: {
+            steps: [{ press: { key: 'Enter' } }],
+            max_iterations: 4,
+            while_found: '.row',
+          },
+        },
+      ],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results[0]).toMatchObject({
+      iterations_completed: 4,
+      stopped_by: 'max_iterations',
+    });
+  });
+
+  test('a failing inner step fails the whole flow, naming the iteration and inner index', async () => {
+    const performClick = vi
+      .fn<FlowDeps['performClick']>()
+      .mockResolvedValueOnce({ ok: true, result: { clicked: '#row', tag: 'button' } })
+      .mockResolvedValueOnce({ ok: false, error: 'Element not found: #row' });
+    const deps = makeDeps({ performClick });
+
+    const result = await runFlow(
+      [{ repeat: { steps: [{ click: { selector: '#row' } }], max_iterations: 5 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.step_kind).toBe('repeat');
+    expect(result.failed_step).toBe(0);
+    expect(result.error).toContain('repeat: iteration 1, step 0 (click) failed');
+    expect(result.error).toContain('Element not found: #row');
+    expect(result.recovery_snapshot).toEqual({ title: 'recovered', interactive: [] });
+  });
+
+  test('each iteration starts with a FRESH implicit target', async () => {
+    // find inside the body feeds the click inside the body, every time.
+    const performClick = vi.fn<FlowDeps['performClick']>().mockResolvedValue({
+      ok: true,
+      result: { clicked: '#found', tag: 'button' },
+    });
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#found' })) as FlowDeps['performFind'],
+      performClick,
+    });
+
+    const result = await runFlow(
+      [{ repeat: { steps: [{ find: { text: 'Delete' } }, { click: {} }], max_iterations: 3 } }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(performClick).toHaveBeenCalledTimes(3);
+    for (const call of performClick.mock.calls) {
+      expect(call[0]).toMatchObject({ selector: '#found' });
+    }
+  });
+
+  test('an implicit target does NOT leak out of a repeat body', async () => {
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#inner' })) as FlowDeps['performFind'],
+    });
+    const result = await runFlow(
+      [{ repeat: { steps: [{ find: { text: 'Row' } }], max_iterations: 1 } }, { click: {} }],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(1);
+    expect(result.error).toMatch(/no selector provided and no implicit target/);
+  });
+
+  test('an implicit target from BEFORE the repeat does not reach inside it', async () => {
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#outer' })) as FlowDeps['performFind'],
+    });
+    const result = await runFlow(
+      [{ find: { text: 'Outer' } }, { repeat: { steps: [{ click: {} }], max_iterations: 1 } }],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.step_kind).toBe('repeat');
+    expect(result.error).toContain('no selector provided and no implicit target');
+  });
+
+  test('rejects a nested repeat', async () => {
+    const deps = makeDeps();
+    const nested = {
+      repeat: {
+        steps: [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 2 } }],
+        max_iterations: 2,
+      },
+    } as unknown as FlowStep;
+    const result = await runFlow([nested], deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toContain('nesting is not supported');
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['missing', undefined],
+    ['zero', 0],
+    ['non-integer', 2.5],
+    ['over the 500 cap', 501],
+  ])('rejects max_iterations %s and dispatches nothing', async (_label, max) => {
+    const deps = makeDeps();
+    const step = {
+      repeat: { steps: [{ press: { key: 'a' } }], max_iterations: max },
+    } as unknown as FlowStep;
+    const result = await runFlow([step], deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toContain('repeat: max_iterations is required');
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+
+  test('delay_ms pauses between iterations', async () => {
+    const deps = makeDeps();
+    const started = Date.now();
+    const result = await runFlow(
+      [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 3, delay_ms: 25 } }],
+      deps,
+    );
+    const elapsed = Date.now() - started;
+    expect(result.ok).toBe(true);
+    // 3 iterations x 25ms; generous slack for timer coarseness.
+    expect(elapsed).toBeGreaterThanOrEqual(55);
+  });
+
+  test('counts inner steps against the 20-step ceiling', async () => {
+    const deps = makeDeps();
+    const inner = Array.from({ length: 20 }, () => ({ press: { key: 'a' } }));
+    const result = await runFlow([{ repeat: { steps: inner, max_iterations: 1 } }], deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    // 1 repeat + 20 inner = 21.
+    expect(result.error).toContain('at most 20 steps allowed, got 21');
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+});
+
+describe('runFlow — dry_run', () => {
+  test('dispatches nothing and projects each step', async () => {
+    const deps = makeDeps();
+    const result = await runFlow(
+      [
+        { click: { selector: '#a' } },
+        { repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 40, delay_ms: 250 } },
+      ],
+      deps,
+      { dryRun: true },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.dry_run).toBe(true);
+    expect(result.steps_completed).toBe(0);
+    expect(result.results).toEqual([
+      { step: 'click' },
+      {
+        step: 'repeat',
+        max_iterations: 40,
+        inner_steps: 1,
+        delay_ms: 250,
+        would_start: true,
+      },
+    ]);
+    // The whole point: not a single action was dispatched.
+    expect(deps.performClick).not.toHaveBeenCalled();
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+
+  test('reports would_start:false when while_found does not match right now', async () => {
+    const deps = makeDeps({
+      performWaitFor: vi.fn(async () => ({
+        ok: true,
+        result: { matched: false, elapsed_ms: 1, checks: 1, reason: 'timeout' },
+      })) as FlowDeps['performWaitFor'],
+    });
+    const result = await runFlow(
+      [
+        {
+          repeat: {
+            steps: [{ press: { key: 'a' } }],
+            max_iterations: 10,
+            while_found: '.row',
+          },
+        },
+      ],
+      deps,
+      { dryRun: true },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results[0]).toMatchObject({ while_found: '.row', would_start: false });
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+
+  test('a dry run still rejects an invalid repeat', async () => {
+    const deps = makeDeps();
+    const step = { repeat: { steps: [], max_iterations: 2 } } as unknown as FlowStep;
+    const result = await runFlow([step], deps, { dryRun: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toContain('repeat: steps must be a non-empty array');
+  });
+
+  test('omitting the options object runs the flow for real (default is NOT a dry run)', async () => {
+    const deps = makeDeps();
+    const result = await runFlow([{ press: { key: 'a' } }], deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.dry_run).toBeUndefined();
+    expect(deps.performPress).toHaveBeenCalledTimes(1);
   });
 });

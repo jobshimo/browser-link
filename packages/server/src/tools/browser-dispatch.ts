@@ -312,8 +312,25 @@ const FLOW_DRAG_MAX_HOLD_MS = 10_000;
  * silently got 30s would hit a rate-limited backend at twice the
  * intended rate without ever saying so. */
 const FLOW_SLEEP_MAX_MS = 30_000;
+/** Backstop on `repeat.max_iterations` — mirrors
+ * `MAX_FLOW_REPEAT_ITERATIONS` in `flow.ts` (both copies). The binding
+ * constraint in practice is the flow's own worst-case budget, which a
+ * repeat multiplies by this number and which bites long before 500
+ * iterations; this only keeps a typo from producing an absurd budget. */
+const FLOW_REPEAT_MAX_ITERATIONS = 500;
+/** Same ceiling a standalone `sleep` step may request. */
+const FLOW_REPEAT_MAX_DELAY_MS = 30_000;
 
-const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for', 'drag', 'sleep'] as const;
+const FLOW_STEP_KINDS = [
+  'find',
+  'click',
+  'type',
+  'press',
+  'wait_for',
+  'drag',
+  'sleep',
+  'repeat',
+] as const;
 type FlowStepKind = (typeof FLOW_STEP_KINDS)[number];
 
 const FLOW_WAIT_CONDITIONS = new Set(['visible', 'hidden', 'attached', 'detached']);
@@ -359,7 +376,16 @@ export type FlowValidationResult =
  * — a steps array `browser.flow` would reject must be rejected here too,
  * never a second, slightly-different copy of this logic.
  */
-export function validateFlowSteps(input: unknown): FlowValidationResult {
+export function validateFlowSteps(
+  input: unknown,
+  opts: { allowRepeat?: boolean } = {},
+): FlowValidationResult {
+  // A `repeat` body is validated by recursing with this off, which is
+  // what enforces "no nesting". Recursing also gets the inner steps the
+  // EXACT same per-kind rules and budget model for free — and restarts
+  // `hasTarget`, which is precisely right: an implicit target never
+  // crosses the repeat boundary in either direction.
+  const allowRepeat = opts.allowRepeat !== false;
   if (!Array.isArray(input) || input.length === 0) {
     return { ok: false, error: 'steps must be a non-empty array' };
   }
@@ -369,6 +395,10 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
   const steps: Record<string, unknown>[] = [];
   let hasTarget = false;
   let budgetMs = FLOW_BASE_OVERHEAD_MS;
+  /** Outer steps plus every repeat's inner steps. A ceiling that counted
+   * only the outer array would let one repeat smuggle in an arbitrarily
+   * long body. */
+  let totalSteps = 0;
   for (let i = 0; i < input.length; i++) {
     const raw: unknown = input[i];
     if (typeof raw !== 'object' || raw === null) {
@@ -379,7 +409,7 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
     if (!kind) {
       return {
         ok: false,
-        error: `step ${i}: must have exactly one of find | click | type | press | wait_for | drag | sleep`,
+        error: `step ${i}: must have exactly one of find | click | type | press | wait_for | drag | sleep | repeat`,
       };
     }
     const body = step[kind];
@@ -484,6 +514,64 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
       // whole thing keeps the budget TRUTHFUL, which is what the up-front
       // rejection depends on.
       budgetMs += bodyRecord.ms + FLOW_STEP_SLACK_MS;
+    } else if (kind === 'repeat') {
+      if (!allowRepeat) {
+        return {
+          ok: false,
+          error: `step ${i}: a repeat may not contain another repeat — nesting is not supported`,
+        };
+      }
+      // max_iterations is REQUIRED, and that is the whole point: it is
+      // what keeps the worst case statically computable, which is what
+      // the up-front MAX_FLOW_TIMEOUT_MS rejection rests on. An unbounded
+      // loop would make the budget unknowable and force the bridge to
+      // either park indefinitely or time out mid-flow.
+      const maxIterations = bodyRecord.max_iterations;
+      if (
+        typeof maxIterations !== 'number' ||
+        !Number.isInteger(maxIterations) ||
+        maxIterations < 1 ||
+        maxIterations > FLOW_REPEAT_MAX_ITERATIONS
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: repeat.max_iterations is required and must be an integer between 1 and ${FLOW_REPEAT_MAX_ITERATIONS}`,
+        };
+      }
+      const whileFound = bodyRecord.while_found;
+      if (whileFound !== undefined && (typeof whileFound !== 'string' || whileFound.length === 0)) {
+        return { ok: false, error: `step ${i}: repeat.while_found must be a non-empty string` };
+      }
+      const repeatDelay = bodyRecord.delay_ms;
+      if (
+        repeatDelay !== undefined &&
+        (typeof repeatDelay !== 'number' ||
+          !Number.isInteger(repeatDelay) ||
+          repeatDelay < 0 ||
+          repeatDelay > FLOW_REPEAT_MAX_DELAY_MS)
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: repeat.delay_ms must be an integer between 0 and ${FLOW_REPEAT_MAX_DELAY_MS}`,
+        };
+      }
+      const inner = validateFlowSteps(bodyRecord.steps, { allowRepeat: false });
+      if (!inner.ok) return { ok: false, error: `step ${i}: repeat.steps → ${inner.error}` };
+      totalSteps += inner.steps.length;
+      // The inner budget carries FLOW_BASE_OVERHEAD_MS, a once-per-flow
+      // cost that must NOT be charged per iteration — subtract it back
+      // out before multiplying. Each iteration additionally costs its
+      // inter-iteration delay, plus one round trip for the `while_found`
+      // probe when that condition is present.
+      const perIterationMs =
+        inner.budgetMs -
+        FLOW_BASE_OVERHEAD_MS +
+        (repeatDelay ?? 0) +
+        (whileFound === undefined ? 0 : FLOW_STEP_SLACK_MS);
+      budgetMs += maxIterations * perIterationMs;
+      // Deliberately does NOT set `hasTarget`: a repeat body's implicit
+      // target is scoped to its own iteration and can never satisfy a
+      // selector-less click AFTER the repeat.
     } else {
       // wait_for — mirror the standalone dispatcher's contract checks so a
       // bad step fails HERE with a clear message instead of in-page with a
@@ -523,6 +611,13 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
       budgetMs += flowWaitForBudgetMs(bodyRecord);
     }
     steps.push(step);
+    totalSteps++;
+  }
+  if (totalSteps > MAX_FLOW_STEPS) {
+    return {
+      ok: false,
+      error: `at most ${MAX_FLOW_STEPS} steps allowed (a repeat's inner steps count too), got ${totalSteps}`,
+    };
   }
   if (budgetMs > MAX_FLOW_TIMEOUT_MS) {
     return {
@@ -1021,20 +1116,26 @@ export async function handleBrowserTool(
       );
     }
     case 'browser.flow': {
-      const { steps } = (args ?? {}) as { steps?: unknown };
+      const { steps, dry_run } = (args ?? {}) as { steps?: unknown; dry_run?: unknown };
       const validated = validateFlowSteps(steps);
       if (!validated.ok) throw new Error(`browser.flow: ${validated.error}`);
+      // Strict `=== true`: anything else runs the flow FOR REAL. A dry run
+      // that silently became a real run is the worst failure this flag
+      // could have, so only the exact boolean opts into it.
+      const dryRun = dry_run === true;
       // budgetMs is the flow's truthful worst case and validateFlowSteps
       // already rejected anything above MAX_FLOW_TIMEOUT_MS, so the
       // enforced timeout is never below the modeled need — only the shared
-      // action floor can raise it.
+      // action floor can raise it. A dry run dispatches nothing and only
+      // probes `while_found`, so it gets the plain action floor instead of
+      // a budget modelling work it will never do.
       return runAction(
         'flow',
         requireTabId(args),
-        { steps: validated.steps },
+        { steps: validated.steps, ...(dryRun ? { dry_run: true } : {}) },
         deps,
         caller,
-        Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
+        dryRun ? ACTION_TIMEOUT_FLOOR_MS : Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
       );
     }
     case 'browser.evaluate': {

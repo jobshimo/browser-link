@@ -93,6 +93,18 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('mutation_count');
   });
 
+  test('BULK WORK section points at flow+repeat instead of an evaluate loop', () => {
+    const out = block();
+    expect(out).toContain('### BULK WORK');
+    expect(out).toContain('NEVER a loop inside `evaluate`');
+    // The three things that make repeat safe to reach for.
+    expect(out).toContain('max_iterations');
+    expect(out).toContain('while_found');
+    expect(out).toContain('dry_run: true');
+    // And the reason it beats the evaluate loop at all.
+    expect(out).toContain('trusted CDP input with the occlusion guard');
+  });
+
   test('LONG-RUNNING WORK section carries the safety-critical relaunch check', () => {
     const out = block();
     expect(out).toContain('### LONG-RUNNING WORK');

@@ -1855,7 +1855,7 @@ describe('browser.flow schema shape', () => {
     expect(schema.properties.steps).toBeDefined();
   });
 
-  test('steps is an array capped at 20 items, each a oneOf of the 7 step kinds', () => {
+  test('steps is an array capped at 20 items, each a oneOf of the 8 step kinds', () => {
     const stepsSchema = (
       def!.inputSchema as {
         properties: { steps: { type: string; minItems: number; maxItems: number; items: unknown } };
@@ -1865,12 +1865,13 @@ describe('browser.flow schema shape', () => {
     expect(stepsSchema.minItems).toBe(1);
     expect(stepsSchema.maxItems).toBe(20);
     const oneOf = (stepsSchema.items as { oneOf: { required: string[] }[] }).oneOf;
-    expect(oneOf).toHaveLength(7);
+    expect(oneOf).toHaveLength(8);
     expect(oneOf.map((v) => v.required[0]).sort()).toEqual([
       'click',
       'drag',
       'find',
       'press',
+      'repeat',
       'sleep',
       'type',
       'wait_for',
@@ -2206,5 +2207,169 @@ describe('cdp-direct routing', () => {
     )) as { matched: boolean; reason?: string };
     expect(result.matched).toBe(false);
     expect(result.reason).toBe('timeout');
+  });
+});
+
+describe('browser.flow repeat validation + budget', () => {
+  test('budget is max_iterations x (inner steps + delay), base overhead charged once', async () => {
+    const deps = makeDeps();
+    // inner click = settle 2_000 + slack 500 = 2_500.
+    // per iteration = 2_500 + delay 250 = 2_750.
+    // total = base 2_000 + 10 * 2_750 = 29_500.
+    const steps = [
+      {
+        repeat: {
+          steps: [{ click: { selector: '#row button' } }],
+          max_iterations: 10,
+          delay_ms: 250,
+        },
+      },
+    ];
+    await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'flow', expect.any(Object), 29_500);
+  });
+
+  test('a while_found condition adds its own probe round trip per iteration', async () => {
+    const deps = makeDeps();
+    // Same as above plus 500ms of probe slack per iteration:
+    // per iteration = 2_500 + 250 + 500 = 3_250 → 2_000 + 10 * 3_250 = 34_500.
+    const steps = [
+      {
+        repeat: {
+          steps: [{ click: { selector: '#row button' } }],
+          max_iterations: 10,
+          delay_ms: 250,
+          while_found: '.row',
+        },
+      },
+    ];
+    await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'flow', expect.any(Object), 34_500);
+  });
+
+  test('REJECTS a repeat whose projected worst case blows the 60s ceiling', async () => {
+    const deps = makeDeps();
+    // The whole safety argument for shipping repeat before cancellation:
+    // max_iterations is mandatory, so the worst case stays computable and
+    // the existing up-front rejection still bounds every flow.
+    const steps = [{ repeat: { steps: [{ click: { selector: '#row' } }], max_iterations: 100 } }];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/worst-case budget \d+s exceeds the 60s ceiling/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('REJECTS a nested repeat', async () => {
+    const deps = makeDeps();
+    const steps = [
+      {
+        repeat: {
+          steps: [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 2 } }],
+          max_iterations: 2,
+        },
+      },
+    ];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/nesting is not supported/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('inner steps count toward the same 20-step ceiling as outer ones', async () => {
+    const deps = makeDeps();
+    const steps = [
+      { press: { key: 'a', settle_ms: 0 } },
+      {
+        repeat: {
+          steps: Array.from({ length: 20 }, () => ({ press: { key: 'b', settle_ms: 0 } })),
+          max_iterations: 1,
+        },
+      },
+    ];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/at most 20 steps allowed \(a repeat's inner steps count too\), got 22/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['missing', undefined],
+    ['zero', 0],
+    ['non-integer', 2.5],
+    ['over the 500 cap', 501],
+  ])('REJECTS repeat.max_iterations %s', async (_label, max) => {
+    const deps = makeDeps();
+    const steps = [{ repeat: { steps: [{ press: { key: 'a' } }], max_iterations: max } }];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/repeat\.max_iterations is required/);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('REJECTS an out-of-range repeat.delay_ms', async () => {
+    const deps = makeDeps();
+    const steps = [
+      { repeat: { steps: [{ press: { key: 'a' } }], max_iterations: 2, delay_ms: 30_001 } },
+    ];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/repeat\.delay_ms must be an integer between 0 and 30000/);
+  });
+
+  test('inner steps get the identical per-kind rules (a bad inner sleep is caught)', async () => {
+    const deps = makeDeps();
+    const steps = [{ repeat: { steps: [{ sleep: { ms: 0 } }], max_iterations: 2 } }];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/repeat\.steps → step 0: sleep\.ms must be an integer/);
+  });
+
+  test('a repeat does not supply an implicit target to a later outer click', async () => {
+    const deps = makeDeps();
+    const steps = [
+      { repeat: { steps: [{ find: { text: 'Row' } }], max_iterations: 2 } },
+      { click: {} },
+    ];
+    await expect(
+      handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+    ).rejects.toThrow(/step 1: click has no selector and no preceding find/);
+  });
+});
+
+describe('browser.flow dry_run', () => {
+  test('forwards dry_run:true and uses the plain action floor, not the work budget', async () => {
+    const deps = makeDeps();
+    const steps = [
+      { repeat: { steps: [{ click: { selector: '#row' } }], max_iterations: 10, delay_ms: 250 } },
+    ];
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps, dry_run: true },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'flow',
+      expect.objectContaining({ dry_run: true }),
+      15_000,
+    );
+  });
+
+  test.each([
+    ['omitted', undefined],
+    ['the string "true"', 'true'],
+    ['1', 1],
+    ['false', false],
+  ])('does NOT enter dry-run mode when dry_run is %s', async (_label, value) => {
+    const deps = makeDeps();
+    const steps = [{ press: { key: 'a', settle_ms: 0 } }];
+    const args: Record<string, unknown> = { tab_id: 'tab_1', steps };
+    if (value !== undefined) args.dry_run = value;
+    await handleBrowserTool('browser.flow', args, deps, TEST_CALLER);
+    const sent = deps.callBrowserTool.mock.calls[0][2] as Record<string, unknown>;
+    // A dry run that silently became a real run would be the worst
+    // possible failure of this flag — only the exact boolean opts in.
+    expect(sent.dry_run).toBeUndefined();
   });
 });

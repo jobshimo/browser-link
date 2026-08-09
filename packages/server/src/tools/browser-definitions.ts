@@ -789,7 +789,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.flow',
     description:
-      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
+      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep/repeat) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -799,7 +799,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           minItems: 1,
           maxItems: 20,
           description:
-            'Ordered list of steps, each exactly one of find | click | type | press | wait_for | drag | sleep. Max 20 steps per flow.',
+            "Ordered list of steps, each exactly one of find | click | type | press | wait_for | drag | sleep | repeat. Max 20 steps per flow, counting a repeat's inner steps.",
           items: {
             oneOf: [
               {
@@ -967,8 +967,65 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                 required: ['sleep'],
                 additionalProperties: false,
               },
+              {
+                type: 'object',
+                properties: {
+                  repeat: {
+                    type: 'object',
+                    description:
+                      'Run a sub-sequence up to max_iterations times, optionally stopping early. max_iterations is REQUIRED — it is what keeps the flow worst case statically computable, which is what the 60s up-front rejection depends on. Repeats do NOT nest. Inner steps count against the same 20-step ceiling as outer ones, and each iteration starts with a FRESH implicit target.',
+                    properties: {
+                      steps: {
+                        type: 'array',
+                        minItems: 1,
+                        maxItems: 19,
+                        // Inner entries follow the IDENTICAL step grammar
+                        // minus `repeat`. They are typed loosely here on
+                        // purpose rather than duplicating the seven
+                        // variants above (a copy would silently drift):
+                        // `validateFlowSteps` recurses with the exact same
+                        // per-kind rules and budget model, and rejects a
+                        // nested repeat — and that server-side pass is the
+                        // authoritative one anyway, since the IPC/proxy
+                        // path in multi-agent mode never sees this schema.
+                        items: { type: 'object' },
+                        description:
+                          'Steps to repeat — same grammar as the outer list except `repeat` itself. Validated server-side with identical rules.',
+                      },
+                      max_iterations: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 500,
+                        description:
+                          'REQUIRED hard bound on iterations. The flow budget is max_iterations × (inner steps + delay), so this is usually what decides whether the flow is accepted at all.',
+                      },
+                      while_found: {
+                        type: 'string',
+                        description:
+                          'Optional CSS selector. Before each iteration the loop checks whether it still matches something VISIBLE; the first time it does not, the loop stops with stopped_by:"condition". Use this instead of parsing a page counter — counters vanish at zero and leave stale values behind.',
+                      },
+                      delay_ms: {
+                        type: 'integer',
+                        minimum: 0,
+                        maximum: 30000,
+                        description:
+                          'Optional fixed pause AFTER each iteration — the throttle for rate-limited backends. Counts fully against the flow budget, multiplied by max_iterations.',
+                      },
+                    },
+                    required: ['steps', 'max_iterations'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['repeat'],
+                additionalProperties: false,
+              },
             ],
           },
+        },
+        dry_run: {
+          type: 'boolean',
+          description:
+            'Validate and PROJECT the flow without dispatching a single input event, navigation or pause. Returns { ok:true, dry_run:true, steps_completed:0, results } where a repeat entry reports max_iterations, inner_steps, delay_ms, while_found and would_start (whether the condition matches RIGHT NOW). Use this before any irreversible bulk run.',
         },
       },
       required: ['tab_id', 'steps'],
@@ -976,13 +1033,14 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Run a declarative find/click/type/press/wait_for/drag/sleep sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
+        'Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
       when_to_use: [
         'ANY interaction that needs more than one action tool call — find a target then act on it, act then wait for a result, fill and submit a form. Each MCP round trip you avoid is a full LLM inference you do not pay for.',
         'The find → implicit-target → click/type/press pattern: `{find}` followed by an action step with no `selector` resolves against what find just found — no need to re-run browser.find and copy its selector into the next call by hand.',
         'A flow that might fail partway — the failure response already carries a focused `recovery_snapshot`, so you do not need a follow-up browser.snapshot to see what state the page is in.',
         'Repeated drag-and-drop (card-matching exercises, sortable lists, moving many cards): N drag steps in ONE flow cost one round trip instead of N standalone browser.drag calls.',
         'Throttling repeated actions against a rate-limited backend: interleave `sleep` steps. This is the ONLY way to get a fixed pause while keeping trusted CDP input — the alternative is a loop inside browser.evaluate, where every click becomes an untrusted el.click().',
+        'BULK WORK — "click every element matching X until the list drains". Use `repeat` with `while_found` and a `delay_ms`, NOT a loop inside browser.evaluate. One repeat step does hundreds of iterations in ONE round trip with trusted CDP input, the occlusion guard and a recovery snapshot intact; the evaluate loop has none of those and cannot be stopped or audited. Run it once with `dry_run: true` first.',
       ],
       gotchas: [
         'Strictly sequential, fail-fast, no branching. If step 3 needs to behave differently depending on what step 2 returned, run the steps individually instead of as one flow.',
@@ -995,7 +1053,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'A `sleep` step is NOT the same as `settle_ms`. settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so on an already-idle page it collapses to nothing — it can never throttle anything. `sleep` is a fixed pause that is always spent in full, and it counts its full ms against the flow budget. Out-of-range ms (outside 1..30000) is REJECTED, never clamped: silently halving a throttle would hit a rate-limited backend at twice the intended rate. A sleep step names no element, so it neither consumes nor sets the find implicit target.',
         'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), each sleep step its full ms, plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms or sleep.ms values, or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
         'evaluate and navigate steps are NOT supported in v1 — see the tool description for why. Navigate before the flow; evaluate after it.',
-        'Max 20 steps per flow. For longer sequences, split into multiple browser.flow calls.',
+        '`repeat` is BOUNDED by construction: `max_iterations` is required, repeats do not nest, and inner steps count against the same 20-step ceiling. That is what keeps the worst case computable — the budget is max_iterations × (inner steps + delay_ms + a while_found probe), and a repeat that projects over 60s is rejected up front like any other flow. Lower max_iterations, shorten the body, or drop delay_ms.',
+        'A repeat iteration starts with a FRESH implicit target, and none escapes: a `find` inside the body cannot feed a click after the repeat, and a `find` before the repeat cannot feed one inside it. Put the find inside the body.',
+        '`while_found` checks for a VISIBLE match before each iteration and stops the first time there is none (`stopped_by:"condition"`; otherwise `"max_iterations"`). Prefer it over reading a page counter to decide when to stop — counters routinely vanish at zero and leave a stale value that reads as a phantom last item.',
+        'On an irreversible bulk run, call once with `dry_run: true` first. It dispatches NOTHING and reports, per repeat, `max_iterations` / `inner_steps` / `delay_ms` / `while_found` / `would_start`. It does not report how many elements currently match — it answers "would this start, and what is my ceiling", not "how many are there".',
+        "Max 20 steps per flow, and a repeat's inner steps count toward that same 20. For longer sequences, split into multiple browser.flow calls.",
       ],
       example:
         'browser.flow({ tab_id: "tab_1", steps: [{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }] })',

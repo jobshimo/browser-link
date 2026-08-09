@@ -286,20 +286,20 @@ drive the connected tab (13 read, 12 action) and 6 persistent-map tools
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
 
-| Tool                     | Purpose                                                                                                         |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                       |
-| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                        |
-| `browser.type`           | Focus an input and type text via the native value setter                                                        |
-| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss            |
-| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                            |
-| `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep sequence in one round trip; fail-fast, max 20 steps |
-| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                        |
-| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                         |
-| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                        |
-| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                            |
-| `browser.release_tab`    | Release a tab claim the calling agent holds                                                                     |
-| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                     |
+| Tool                     | Purpose                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                   |
+| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                                                    |
+| `browser.type`           | Focus an input and type text via the native value setter                                                                                    |
+| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss                                        |
+| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                        |
+| `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip; fail-fast, max 20 steps, `dry_run` available |
+| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                                                    |
+| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                                                     |
+| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                                                    |
+| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                                                        |
+| `browser.release_tab`    | Release a tab claim the calling agent holds                                                                                                 |
+| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                                                 |
 
 [^dialog-claim]:
     `dialog_respond` deliberately bypasses the claim guard — a dialog
@@ -372,6 +372,54 @@ loop.
   throttle would hit a rate-limited backend at twice the intended rate
   without ever saying so.
 
+#### `repeat` — bulk work without leaving the guaranteed zone
+
+`{ repeat: { steps, max_iterations, while_found?, delay_ms? } }` runs a
+sub-sequence up to `max_iterations` times. It exists for the shape the
+bridge previously could not express at all: _click every element matching
+X, pause, repeat until the list drains._ Before it, the only way to do
+that was a loop inside `browser.evaluate` — which is exactly where every
+guarantee is lost, since `el.click()` is `isTrusted:false` and there is
+no occlusion guard, no recovery snapshot and no record of what happened.
+A `repeat` keeps all of it, for hundreds of iterations, in **one round
+trip**.
+
+It is bounded by construction, and that is deliberate:
+
+- **`max_iterations` is required.** It is what keeps the flow's worst
+  case statically computable, which is what the up-front 60-second
+  rejection rests on. The budget is `max_iterations × (inner steps +
+delay_ms + a while_found probe)`, and a repeat that projects over the
+  ceiling is rejected before anything runs.
+- **Repeats do not nest**, and inner steps count against the same 20-step
+  ceiling as outer ones — a ceiling that only counted the outer array
+  would let one repeat smuggle in an arbitrarily long body.
+- **Each iteration starts with a fresh implicit target**, and none
+  escapes in either direction. Put the `find` inside the body.
+
+`while_found` is the early stop: before each iteration the loop checks
+whether that selector still matches something **visible**, and stops the
+first time it does not (`stopped_by: "condition"`, otherwise
+`"max_iterations"`). Prefer it over reading a page counter to decide when
+you are done — counters routinely vanish at zero and leave a stale value
+that reads as a phantom last item.
+
+#### `dry_run` — check before an irreversible bulk run
+
+`browser.flow({ …, dry_run: true })` validates and **projects** the flow
+without dispatching a single input event, navigation or pause. Each
+repeat entry reports `max_iterations`, `inner_steps`, `delay_ms`,
+`while_found` and `would_start` — whether the condition matches right
+now.
+
+Only the exact boolean `true` opts in. Any other value runs the flow for
+real, because a dry run that silently became a real run would be the
+worst possible failure of this flag.
+
+> It answers _"would this start, and what is my ceiling?"_ — **not** _"how
+> many elements match?"_. Reporting a live match count would need a new
+> deep-query primitive; that is a deliberate follow-up, not an oversight.
+
 **Persistent UI map** — local-only memory across sessions:
 
 | Tool                     | Purpose                                                                                         |
@@ -419,7 +467,7 @@ Two layers, both indexed by app:
 
 **Named flow recipes** (v0.18.0) — a separate `flows` table, one row per
 named, directly **`browser.flow`-replayable** sequence, validated against
-the exact `browser.flow` step grammar (`find`/`click`/`type`/`press`/`wait_for`/`drag`/`sleep`)
+the exact `browser.flow` step grammar (`find`/`click`/`type`/`press`/`wait_for`/`drag`/`sleep`/`repeat`)
 before it is ever written. `browser.map.save({ flows: [{ name,
 description?, steps }] })` upserts on `(app, name)`; `browser.map.recall`
 returns the app's saved recipes (`name`, `description`, `steps`,

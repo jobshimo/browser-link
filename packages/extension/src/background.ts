@@ -1675,16 +1675,24 @@ async function handleFlow(
   const rawSteps = Array.isArray(p.steps)
     ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
     : [];
-  const flowResult = await runFlow(rawSteps as FlowStep[], {
-    performFind: (params) => performFind(tabId, params),
-    performClick: (params) => performClick(tabId, params),
-    performType: (params) => performType(tabId, params),
-    performPress: (params) => performPress(tabId, params),
-    performWaitFor: (params) => performWaitFor(tabId, state, params),
-    performDrag: (params) => performDrag(tabId, params),
-    buildRecoverySnapshot: () =>
-      evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
-  });
+  const flowResult = await runFlow(
+    rawSteps as FlowStep[],
+    {
+      performFind: (params) => performFind(tabId, params),
+      performClick: (params) => performClick(tabId, params),
+      performType: (params) => performType(tabId, params),
+      performPress: (params) => performPress(tabId, params),
+      performWaitFor: (params) => performWaitFor(tabId, state, params),
+      performDrag: (params) => performDrag(tabId, params),
+      buildRecoverySnapshot: () =>
+        evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+    },
+    // Strict `=== true`: any other wire value (missing, "true", 1) runs
+    // the flow FOR REAL. A dry run that silently became a real run would
+    // be the worst possible failure of this flag, so only the exact
+    // boolean opts into it.
+    { dryRun: p.dry_run === true },
+  );
   // The wire-level response is ok:true whenever the flow RAN (even a
   // failed step is a legitimate business outcome, same pattern as
   // wait_for's matched:false) — flowResult itself carries the
