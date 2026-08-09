@@ -304,8 +304,16 @@ const FLOW_WAIT_FOR_MAX_TIMEOUT_MS = 30_000;
 const FLOW_DRAG_DEFAULT_DURATION_MS = 1_500;
 const FLOW_DRAG_MAX_DURATION_MS = 60_000;
 const FLOW_DRAG_MAX_HOLD_MS = 10_000;
+/** Hard cap on one `sleep` step's `ms` — mirrors `MAX_FLOW_SLEEP_MS` in
+ * `flow.ts` (both copies), which re-checks it at execution time. Same
+ * ceiling a single wait_for step may request, so no one step can park a
+ * flow longer than the longest wait already expressible. Out-of-range is
+ * rejected, never clamped: a flow that asked to throttle by 60s and
+ * silently got 30s would hit a rate-limited backend at twice the
+ * intended rate without ever saying so. */
+const FLOW_SLEEP_MAX_MS = 30_000;
 
-const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for', 'drag'] as const;
+const FLOW_STEP_KINDS = ['find', 'click', 'type', 'press', 'wait_for', 'drag', 'sleep'] as const;
 type FlowStepKind = (typeof FLOW_STEP_KINDS)[number];
 
 const FLOW_WAIT_CONDITIONS = new Set(['visible', 'hidden', 'attached', 'detached']);
@@ -371,7 +379,7 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
     if (!kind) {
       return {
         ok: false,
-        error: `step ${i}: must have exactly one of find | click | type | press | wait_for | drag`,
+        error: `step ${i}: must have exactly one of find | click | type | press | wait_for | drag | sleep`,
       };
     }
     const body = step[kind];
@@ -455,6 +463,27 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
         return { ok: false, error: `step ${i}: drag requires to_selector or both to_x and to_y` };
       }
       budgetMs += flowDragBudgetMs(bodyRecord);
+    } else if (kind === 'sleep') {
+      // A fixed pause. Deliberately no implicit-target participation and
+      // no `hasTarget` effect: a sleep names no element at all, so a
+      // pending implicit target survives it exactly as it survives a
+      // wait_for or a drag.
+      if (
+        typeof bodyRecord.ms !== 'number' ||
+        !Number.isInteger(bodyRecord.ms) ||
+        bodyRecord.ms < 1 ||
+        bodyRecord.ms > FLOW_SLEEP_MAX_MS
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: sleep.ms must be an integer between 1 and ${FLOW_SLEEP_MAX_MS}`,
+        };
+      }
+      // The pause is spent in full, every time — unlike a wait_for, whose
+      // timeout is a ceiling it usually returns well under. Charging the
+      // whole thing keeps the budget TRUTHFUL, which is what the up-front
+      // rejection depends on.
+      budgetMs += bodyRecord.ms + FLOW_STEP_SLACK_MS;
     } else {
       // wait_for — mirror the standalone dispatcher's contract checks so a
       // bad step fails HERE with a clear message instead of in-page with a
@@ -500,7 +529,7 @@ export function validateFlowSteps(input: unknown): FlowValidationResult {
       ok: false,
       error:
         `flow worst-case budget ${Math.ceil(budgetMs / 1000)}s exceeds the ` +
-        `${MAX_FLOW_TIMEOUT_MS / 1000}s ceiling — reduce wait_for timeout_ms values or split the flow`,
+        `${MAX_FLOW_TIMEOUT_MS / 1000}s ceiling — reduce wait_for timeout_ms or sleep.ms values, or split the flow`,
     };
   }
   return { ok: true, steps, budgetMs };

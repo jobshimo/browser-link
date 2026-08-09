@@ -286,20 +286,20 @@ drive the connected tab (13 read, 12 action) and 6 persistent-map tools
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
 
-| Tool                     | Purpose                                                                                              |
-| ------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                            |
-| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)             |
-| `browser.type`           | Focus an input and type text via the native value setter                                             |
-| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss |
-| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                 |
-| `browser.flow`           | Run a declarative find/click/type/press/wait_for sequence in one round trip; fail-fast, max 20 steps |
-| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                             |
-| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]              |
-| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin             |
-| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                 |
-| `browser.release_tab`    | Release a tab claim the calling agent holds                                                          |
-| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]          |
+| Tool                     | Purpose                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                       |
+| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                        |
+| `browser.type`           | Focus an input and type text via the native value setter                                                        |
+| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss            |
+| `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                            |
+| `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep sequence in one round trip; fail-fast, max 20 steps |
+| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                        |
+| `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                         |
+| `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                        |
+| `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                            |
+| `browser.release_tab`    | Release a tab claim the calling agent holds                                                                     |
+| `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                     |
 
 [^dialog-claim]:
     `dialog_respond` deliberately bypasses the claim guard — a dialog
@@ -345,6 +345,32 @@ itself. The result carries a compact report:
   succeeded — this is a strong navigation signal, not an error.
 - **Waiting for a specific expected condition** (an element appearing, a
   request completing) is `browser.wait_for`'s job, not settle's.
+- **Throttling is not settle's job either.** Settle returns as soon as
+  the page stops mutating, so on an already-idle page it collapses to
+  nothing. For a pause that is always spent in full — pacing repeated
+  actions against a rate-limited backend — use a `sleep` step inside
+  `browser.flow` (below).
+
+#### `sleep` — the fixed pause, and why it is a flow step
+
+A `{ sleep: { ms } }` step (1–30 000 ms) pauses the flow for exactly that
+long. It exists because `settle_ms` structurally cannot serve as a
+throttle, and because the alternative was worse: before it, the only way
+to pace a repeated action was a loop inside `browser.evaluate`, where
+every click becomes an untrusted `el.click()` — losing the occlusion
+guard, pointer-events awareness and trusted CDP input that are the whole
+point of the bridge. A `sleep` keeps all of that and still paces the
+loop.
+
+- It names no element, so it neither consumes nor sets the implicit
+  target from a preceding `find` — a pending target survives it, exactly
+  as it survives a `wait_for` or a `drag`.
+- Its full `ms` counts against the flow's 60-second worst-case budget,
+  because unlike a `wait_for` timeout (a ceiling it usually returns well
+  under) a sleep is always spent in full.
+- An out-of-range `ms` is **rejected, never clamped**. Silently halving a
+  throttle would hit a rate-limited backend at twice the intended rate
+  without ever saying so.
 
 **Persistent UI map** — local-only memory across sessions:
 
@@ -393,7 +419,7 @@ Two layers, both indexed by app:
 
 **Named flow recipes** (v0.18.0) — a separate `flows` table, one row per
 named, directly **`browser.flow`-replayable** sequence, validated against
-the exact `browser.flow` step grammar (`find`/`click`/`type`/`press`/`wait_for`)
+the exact `browser.flow` step grammar (`find`/`click`/`type`/`press`/`wait_for`/`drag`/`sleep`)
 before it is ever written. `browser.map.save({ flows: [{ name,
 description?, steps }] })` upserts on `(app, name)`; `browser.map.recall`
 returns the app's saved recipes (`name`, `description`, `steps`,

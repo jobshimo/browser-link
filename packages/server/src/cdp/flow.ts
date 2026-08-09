@@ -12,13 +12,15 @@
  *
  * browser.flow step sequencing — the logic behind the composite action
  * tool. Runs a short, declarative list of find/click/type/press/wait_for/
- * drag steps strictly in order, fails fast on the first step that does
- * not succeed, and threads an "implicit target" from a `find` step into
- * the very next click/type/press step that omits its own `selector`. A
- * `drag` step stays OUT of that chain: both of its endpoints are always
- * explicit (selector or coords), so it neither consumes nor sets the
- * implicit target — a pending target survives a drag step untouched for
- * a later click/type/press, exactly like it survives a wait_for.
+ * drag/sleep steps strictly in order, fails fast on the first step that
+ * does not succeed, and threads an "implicit target" from a `find` step
+ * into the very next click/type/press step that omits its own
+ * `selector`. A `drag` step stays OUT of that chain: both of its
+ * endpoints are always explicit (selector or coords), so it neither
+ * consumes nor sets the implicit target — a pending target survives a
+ * drag step untouched for a later click/type/press, exactly like it
+ * survives a wait_for. A `sleep` step is a fixed pause and stays out of
+ * the chain for the same reason: it names no target at all.
  *
  * Deliberately decoupled from any specific transport: every side effect
  * goes through the `FlowDeps` the caller injects. The concrete wiring —
@@ -177,16 +179,44 @@ export interface DragStepResult {
   events_fired: string[];
 }
 
+/** Hard cap on one `sleep` step's `ms`. Matches the ceiling a single
+ * `wait_for` step may request, so no one step can park the flow longer
+ * than the longest wait already expressible. Out-of-range values are a
+ * validation ERROR rather than a silent clamp: a flow that asked to
+ * throttle by 60s and got 30s would hammer a backend at twice the
+ * intended rate without ever saying so. */
+export const MAX_FLOW_SLEEP_MS = 30_000;
+
+/** A fixed pause between steps. `settle_ms` cannot serve this purpose —
+ * it is a quiet-PERIOD wait that returns as soon as the page stops
+ * mutating, so it collapses to nothing on a page that is already idle.
+ * Throttling a repeated action against a rate-limited backend needs a
+ * real delay, and before this step existed the only way to get one was
+ * to drop out of the flow into `browser.evaluate` — losing trusted CDP
+ * input for every action in the loop. */
+export interface SleepStepParams {
+  ms: number;
+}
+
 export type FlowStep =
   | { find: FindStepParams }
   | { click: ClickStepParams }
   | { type: TypeStepParams }
   | { press: PressStepParams }
   | { wait_for: WaitForStepParams }
-  | { drag: DragStepParams };
+  | { drag: DragStepParams }
+  | { sleep: SleepStepParams };
 
-type StepKind = 'find' | 'click' | 'type' | 'press' | 'wait_for' | 'drag';
-const STEP_KINDS: readonly StepKind[] = ['find', 'click', 'type', 'press', 'wait_for', 'drag'];
+type StepKind = 'find' | 'click' | 'type' | 'press' | 'wait_for' | 'drag' | 'sleep';
+const STEP_KINDS: readonly StepKind[] = [
+  'find',
+  'click',
+  'type',
+  'press',
+  'wait_for',
+  'drag',
+  'sleep',
+];
 
 function isStepKind(key: string): key is StepKind {
   return (STEP_KINDS as readonly string[]).includes(key);
@@ -364,7 +394,7 @@ export async function runFlow(steps: readonly FlowStep[], deps: FlowDeps): Promi
         deps,
         i,
         'unknown',
-        'flow: each step must be exactly one of find | click | type | press | wait_for | drag',
+        'flow: each step must be exactly one of find | click | type | press | wait_for | drag | sleep',
         results.length,
       );
     }
@@ -444,6 +474,43 @@ export async function runFlow(steps: readonly FlowStep[], deps: FlowDeps): Promi
       // no settle phase, so there is no settle reason to carry instead.)
       lastSettleReason = undefined;
       results.push(compactActionResult(outcome.result));
+      continue;
+    }
+
+    if (kind === 'sleep') {
+      const params = stepRecord.sleep as SleepStepParams | undefined;
+      const ms = params?.ms;
+      // Re-validated here even though the server already checked: this
+      // module is reachable from a directly-wired caller that never went
+      // through `validateFlowSteps` (see the runFlow doc comment).
+      if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 1 || ms > MAX_FLOW_SLEEP_MS) {
+        return withRecoverySnapshot(
+          deps,
+          i,
+          kind,
+          `sleep: ms must be an integer between 1 and ${MAX_FLOW_SLEEP_MS}`,
+          results.length,
+        );
+      }
+      // The guard above already REJECTED anything outside 1..MAX, so this
+      // Math.min can never actually reduce a value — it is not a silent
+      // clamp and does not weaken the reject-don't-clamp contract. It is
+      // here so the timer's upper bound is provable from this line alone:
+      // static analysis (CodeQL `js/resource-exhaustion`) cannot follow the
+      // bound through the compound guard, and an unbounded user-controlled
+      // timer duration is a finding worth keeping impossible BY SHAPE
+      // rather than by argument.
+      const delayMs = Math.min(ms, MAX_FLOW_SLEEP_MS);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+      // Deliberately does NOT clear `lastSettleReason`: find/wait_for/drag
+      // clear it because each one probes the document and thereby PROVES
+      // it is reachable again. A sleep proves nothing — it just waits — so
+      // a pending navigation-race hint stays armed for the next failure.
+      // The implicit target likewise survives untouched, exactly as it
+      // survives a wait_for or a drag.
+      results.push({ slept_ms: ms });
       continue;
     }
 

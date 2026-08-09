@@ -595,3 +595,100 @@ describe('runFlow — navigation race hint', () => {
     expect(result.error).not.toContain('insert a wait_for step');
   });
 });
+
+describe('runFlow — sleep step', () => {
+  test('pauses for the requested time and reports it back', async () => {
+    const deps = makeDeps();
+    const started = Date.now();
+    const result = await runFlow([{ sleep: { ms: 40 } }], deps);
+    const elapsed = Date.now() - started;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([{ slept_ms: 40 }]);
+    // Timer resolution is coarse; assert the pause really happened without
+    // being brittle about the exact millisecond.
+    expect(elapsed).toBeGreaterThanOrEqual(30);
+  });
+
+  test('names no element, so it neither consumes nor sets the implicit target', async () => {
+    // find leaves '#found' pending; the sleep must not eat it, so the
+    // selector-less click AFTER the sleep still resolves against it.
+    const performClick = vi.fn<FlowDeps['performClick']>().mockResolvedValue({
+      ok: true,
+      result: { clicked: '#found', tag: 'button' },
+    });
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#found' })) as FlowDeps['performFind'],
+      performClick,
+    });
+
+    const result = await runFlow(
+      [{ find: { text: 'Delete' } }, { sleep: { ms: 1 } }, { click: {} }],
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(performClick).toHaveBeenCalledWith(expect.objectContaining({ selector: '#found' }));
+  });
+
+  test('does NOT clear a pending navigation-race hint — a sleep proves nothing', async () => {
+    // find/wait_for/drag clear the hint because each probes the document.
+    // A sleep just waits, so the hint must still fire on the next failure.
+    const performClick = vi
+      .fn<FlowDeps['performClick']>()
+      .mockResolvedValueOnce({
+        ok: true,
+        result: {
+          clicked: '#nav-link',
+          tag: 'a',
+          settle: { settled: false, reason: 'context-destroyed' },
+        },
+      })
+      .mockResolvedValueOnce({ ok: false, error: 'Element not found: #next' });
+    const deps = makeDeps({ performClick });
+
+    const result = await runFlow(
+      [
+        { click: { selector: '#nav-link' } },
+        { sleep: { ms: 1 } },
+        { click: { selector: '#next' } },
+      ],
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(2);
+    expect(result.error).toContain('context-destroyed');
+    expect(result.error).toContain('insert a wait_for step');
+  });
+
+  test.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['non-integer', 12.5],
+    ['over the 30s ceiling', 30_001],
+  ])('rejects %s ms with a recovery snapshot and dispatches nothing after it', async (_l, ms) => {
+    const deps = makeDeps();
+    const result = await runFlow([{ sleep: { ms } }, { click: { selector: '#never' } }], deps);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(0);
+    expect(result.step_kind).toBe('sleep');
+    expect(result.error).toContain('sleep: ms must be an integer between 1 and 30000');
+    expect(result.recovery_snapshot).toEqual({ title: 'recovered', interactive: [] });
+    // Fail-fast: the step after the bad sleep must never run.
+    expect(deps.performClick).not.toHaveBeenCalled();
+  });
+
+  test('rejects a sleep step with no ms at all', async () => {
+    const deps = makeDeps();
+    const result = await runFlow([{ sleep: {} as unknown as { ms: number } }], deps);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toContain('sleep: ms must be an integer');
+  });
+});

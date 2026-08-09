@@ -789,7 +789,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.flow',
     description:
-      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
+      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -799,7 +799,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           minItems: 1,
           maxItems: 20,
           description:
-            'Ordered list of steps, each exactly one of find | click | type | press | wait_for | drag. Max 20 steps per flow.',
+            'Ordered list of steps, each exactly one of find | click | type | press | wait_for | drag | sleep. Max 20 steps per flow.',
           items: {
             oneOf: [
               {
@@ -944,6 +944,29 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                 required: ['drag'],
                 additionalProperties: false,
               },
+              {
+                type: 'object',
+                properties: {
+                  sleep: {
+                    type: 'object',
+                    description:
+                      'A FIXED pause before the next step. Not the same thing as settle_ms: settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so it collapses to nothing on an already-idle page. Use sleep to throttle repeated actions against a rate-limited backend. Counts its full ms against the flow budget.',
+                    properties: {
+                      ms: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 30000,
+                        description:
+                          'Milliseconds to pause, 1..30000. Out-of-range is REJECTED, not clamped.',
+                      },
+                    },
+                    required: ['ms'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['sleep'],
+                additionalProperties: false,
+              },
             ],
           },
         },
@@ -953,12 +976,13 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Run a declarative find/click/type/press/wait_for/drag sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
+        'Run a declarative find/click/type/press/wait_for/drag/sleep sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
       when_to_use: [
         'ANY interaction that needs more than one action tool call — find a target then act on it, act then wait for a result, fill and submit a form. Each MCP round trip you avoid is a full LLM inference you do not pay for.',
         'The find → implicit-target → click/type/press pattern: `{find}` followed by an action step with no `selector` resolves against what find just found — no need to re-run browser.find and copy its selector into the next call by hand.',
         'A flow that might fail partway — the failure response already carries a focused `recovery_snapshot`, so you do not need a follow-up browser.snapshot to see what state the page is in.',
         'Repeated drag-and-drop (card-matching exercises, sortable lists, moving many cards): N drag steps in ONE flow cost one round trip instead of N standalone browser.drag calls.',
+        'Throttling repeated actions against a rate-limited backend: interleave `sleep` steps. This is the ONLY way to get a fixed pause while keeping trusted CDP input — the alternative is a loop inside browser.evaluate, where every click becomes an untrusted el.click().',
       ],
       gotchas: [
         'Strictly sequential, fail-fast, no branching. If step 3 needs to behave differently depending on what step 2 returned, run the steps individually instead of as one flow.',
@@ -968,7 +992,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'An action step that triggers a NAVIGATION should be followed by a `wait_for` step — steps run back-to-back, so the next step can otherwise race the loading document and fail with a misleading "Element not found". When that race happens, the flow error carries a hint if the navigating step\'s settle reported `context-destroyed` (the navigation signal).',
         "A `drag` step's endpoints are ALWAYS explicit (selector or viewport coords) — drag neither consumes nor sets the find implicit target, and a pending implicit target survives a drag step for a later click/type/press. Both endpoints must be visible in the viewport at once, same as standalone browser.drag.",
         'Drag steps are extension-transport only: a flow containing a drag step run on a cdp: tab fails fast at that step with the same "not supported over cdp-direct" error standalone browser.drag returns — the earlier steps HAVE already executed by then.',
-        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms values or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
+        'A `sleep` step is NOT the same as `settle_ms`. settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so on an already-idle page it collapses to nothing — it can never throttle anything. `sleep` is a fixed pause that is always spent in full, and it counts its full ms against the flow budget. Out-of-range ms (outside 1..30000) is REJECTED, never clamped: silently halving a throttle would hit a rate-limited backend at twice the intended rate. A sleep step names no element, so it neither consumes nor sets the find implicit target.',
+        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), each sleep step its full ms, plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms or sleep.ms values, or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
         'evaluate and navigate steps are NOT supported in v1 — see the tool description for why. Navigate before the flow; evaluate after it.',
         'Max 20 steps per flow. For longer sequences, split into multiple browser.flow calls.',
       ],

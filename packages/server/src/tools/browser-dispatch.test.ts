@@ -1673,8 +1673,84 @@ describe('browser.flow dispatch', () => {
       await expect(
         handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
       ).rejects.toThrow(
-        /worst-case budget 612s exceeds the 60s ceiling — reduce wait_for timeout_ms values or split the flow/,
+        /worst-case budget 612s exceeds the 60s ceiling — reduce wait_for timeout_ms or sleep\.ms values, or split the flow/,
       );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('a sleep step contributes its FULL ms to the budget, plus slack', async () => {
+      const deps = makeDeps();
+      // 2_000 + (10_000 + 500) = 12_500 → floored to the 15s action floor.
+      // Unlike a wait_for timeout (a ceiling it usually returns under), a
+      // sleep is always spent in full, so the budget charges all of it.
+      const steps = [{ sleep: { ms: 10_000 } }];
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        15_000,
+      );
+    });
+
+    test('sleep steps push a flow over the ceiling and get it rejected up front', async () => {
+      const deps = makeDeps();
+      // 2_000 + 2 * (30_000 + 500) = 63_000 > 60_000 — same arithmetic the
+      // two-30s-waits case proves, reached through sleeps instead.
+      const steps = [{ sleep: { ms: 30_000 } }, { sleep: { ms: 30_000 } }];
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(/worst-case budget 63s exceeds the 60s ceiling/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('accepts sleep.ms at the inclusive 30000 boundary', async () => {
+      const deps = makeDeps();
+      // Boundary proof lives here rather than in runFlow's suite: this path
+      // validates without actually sleeping for 30 seconds.
+      await handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ sleep: { ms: 30_000 } }] },
+        deps,
+        TEST_CALLER,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        32_500,
+      );
+    });
+
+    test.each([
+      ['zero', 0],
+      ['negative', -1],
+      ['non-integer', 12.5],
+      ['over the ceiling', 30_001],
+    ])('REJECTS sleep.ms %s before dispatching anything', async (_label, ms) => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ sleep: { ms } }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/step 0: sleep\.ms must be an integer between 1 and 30000/);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('a sleep step does not satisfy a later selector-less click', async () => {
+      const deps = makeDeps();
+      // sleep names no element, so it can never supply an implicit target.
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ sleep: { ms: 10 } }, { click: {} }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/step 1: click has no selector and no preceding find/);
       expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
 
@@ -1779,7 +1855,7 @@ describe('browser.flow schema shape', () => {
     expect(schema.properties.steps).toBeDefined();
   });
 
-  test('steps is an array capped at 20 items, each a oneOf of the 6 step kinds', () => {
+  test('steps is an array capped at 20 items, each a oneOf of the 7 step kinds', () => {
     const stepsSchema = (
       def!.inputSchema as {
         properties: { steps: { type: string; minItems: number; maxItems: number; items: unknown } };
@@ -1789,15 +1865,37 @@ describe('browser.flow schema shape', () => {
     expect(stepsSchema.minItems).toBe(1);
     expect(stepsSchema.maxItems).toBe(20);
     const oneOf = (stepsSchema.items as { oneOf: { required: string[] }[] }).oneOf;
-    expect(oneOf).toHaveLength(6);
+    expect(oneOf).toHaveLength(7);
     expect(oneOf.map((v) => v.required[0]).sort()).toEqual([
       'click',
       'drag',
       'find',
       'press',
+      'sleep',
       'type',
       'wait_for',
     ]);
+  });
+
+  test('the sleep variant declares the 1..30000 integer bound in the schema itself', () => {
+    // The bound is enforced three times over — MCP schema, validateFlowSteps,
+    // and runFlow — because the IPC/proxy path in multi-agent mode reaches
+    // the dispatcher without schema validation. This asserts the first one.
+    const oneOf = (
+      def!.inputSchema as {
+        properties: { steps: { items: { oneOf: Record<string, unknown>[] } } };
+      }
+    ).properties.steps.items.oneOf;
+    const sleepVariant = oneOf.find((v) => (v.required as string[])[0] === 'sleep');
+    expect(sleepVariant).toBeDefined();
+    const ms = (
+      sleepVariant!.properties as {
+        sleep: { properties: { ms: { type: string; minimum: number; maximum: number } } };
+      }
+    ).sleep.properties.ms;
+    expect(ms.type).toBe('integer');
+    expect(ms.minimum).toBe(1);
+    expect(ms.maximum).toBe(30000);
   });
 
   test('every step variant declares additionalProperties:false at both levels', () => {
