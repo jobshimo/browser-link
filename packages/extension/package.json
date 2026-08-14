@@ -1,0 +1,23 @@
+{
+  "name": "@browser-link/extension",
+  "version": "0.27.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc && node copy-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "generate:icons": "node scripts/generate-icons.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@browser-link/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/chrome": "^0.2.2",
+    "jsdom": "^29.1.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

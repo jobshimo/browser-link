@@ -1,0 +1,278 @@
+import type { Language } from './welcome.js';
+
+export interface AboutI18n {
+  title: string;
+  whatTitle: string;
+  what: string;
+  howTitle: string;
+  how: string;
+  bindingTitle: string;
+  binding: string;
+  bridgeToolsTitle: string;
+  bridgeTools: string;
+  mapToolsTitle: string;
+  mapTools: string;
+  privacyTitle: string;
+  privacy: string;
+  helpTitle: string;
+  help: string;
+  authorTitle: string;
+  author: string;
+}
+
+export const I18N_ABOUT: Record<Language, AboutI18n> = {
+  en: {
+    title: 'browser-link — about',
+    whatTitle: 'What is this?',
+    what: [
+      'browser-link is an MCP (Model Context Protocol) server. It lets an',
+      'MCP client (Claude Code, OpenCode, …) observe and act on the Google',
+      'Chrome tabs you explicitly enable through a companion extension.',
+      '',
+      'It is split in two pieces:',
+      '  1) This Node binary, the MCP server the client spawns over stdio.',
+      '  2) A small Chrome extension that you load manually. The extension',
+      '     stays inert on every tab until you press "Connect this tab" on',
+      '     it. You can enable as many tabs as you want, one by one. Tabs',
+      '     you do not connect remain invisible to the agent.',
+    ].join('\n'),
+    howTitle: 'How does it work?',
+    how: [
+      'The Node binary listens on 127.0.0.1:17529 (loopback only — never on',
+      'a public interface). Each tab where you press "Connect this tab"',
+      'opens its own WebSocket to that port and registers a tab_id. From',
+      'that moment on, the agent can call tools targeting that tab_id, and',
+      'the server forwards each request to the extension over the WebSocket.',
+      '',
+      'Optional: cdp-direct mode lets the server drive Chrome tabs directly',
+      'over --remote-debugging-port instead, skipping the extension — off by',
+      'default and gated behind an explicit, time-boxed grant only you can',
+      'issue (`browser-link cdp allow`). See the README\'s "cdp-direct mode"',
+      'section, or run `browser-link cdp status`.',
+    ].join('\n'),
+    bindingTitle: 'Process binding (zero-config defense)',
+    binding: [
+      'Before accepting any WebSocket handshake, the server asks the OS',
+      'kernel which process opened the incoming TCP connection. Connections',
+      'whose owner is not a known Chromium-based browser binary (Chrome,',
+      'Edge, Brave, Vivaldi, Chromium) are rejected before any application',
+      'bytes are exchanged. This closes the "any local process can talk to',
+      'the bridge" vector without asking you to copy or paste tokens.',
+      '',
+      'It does NOT defend against malware that has already injected itself',
+      'inside Chrome. That attacker already controls the browser directly',
+      'and the bridge adds no surface they did not already have.',
+    ].join('\n'),
+    bridgeToolsTitle: 'Tools the agent gets over the bridge',
+    bridgeTools: [
+      '  browser.list_tabs         list connected tabs',
+      '  browser.my_tabs           list tabs claimed by the calling agent',
+      '  browser.ping              check the bridge to a tab',
+      '  browser.snapshot          dump title, url, text and interactive elements (filterable)',
+      '  browser.find              locate an element by visible text — selector + coords',
+      '  browser.state             compact orientation snapshot — focused element, dialogs, scroll',
+      '  browser.canvas_screenshot capture a <canvas> as PNG/JPEG (Qt-WASM, WebGL, DOMless pages)',
+      '  browser.console           recent console messages (rolling 200)',
+      '  browser.network           recent network requests (rolling 200)',
+      '  browser.network_body      fetch the body of a specific request',
+      '  browser.wait_for          wait for a selector, JS expression, or network request',
+      '  browser.wait_for_tab      wait for a popup/window.open tab and auto-claim it',
+      '  browser.events            bridge lifecycle log (tab renamed/registered/claimed, …)',
+      '  browser.navigate          change the tab URL',
+      '  browser.click             click an element by CSS selector (occlusion-checked)',
+      '  browser.type              type into an input',
+      '  browser.press             press a key (trusted CDP input, not synthetic)',
+      '  browser.drag              drag an element to another element or coordinate',
+      '  browser.flow              run a find/click/type/press/wait_for/drag sequence in one call',
+      '  browser.evaluate          run JavaScript in the page context',
+      '  browser.dialog_respond    answer a pending alert/confirm/prompt',
+      '  browser.set_permission    grant/deny a browser permission for an origin',
+      '  browser.claim_tab         reserve a tab for the calling agent',
+      '  browser.release_tab       release a tab claim',
+      '  browser.reset             soft-reset the bridge (drop tabs, claims, events)',
+    ].join('\n'),
+    mapToolsTitle: 'Persistent UI map (private, on your machine)',
+    mapTools: [
+      'The server keeps a small SQLite database with what the agent has',
+      'learned about each app it operates: stable selectors, multi-step',
+      'flows, and gotchas. Three kinds of entries (selector, flow, gotcha)',
+      'indexed by app + pathname. Tools the agent uses:',
+      '',
+      '  browser.map.recall       what do we know about this app/route?',
+      '  browser.map.save         persist a selector, flow, or gotcha',
+      '  browser.map.record_use   verified / failed timestamp per entry',
+      '  browser.map.forget       delete an entry or an entire app',
+      '  browser.map.rename_app   fix a bad app_key from the first save',
+      '  browser.map.apps         list known apps',
+    ].join('\n'),
+    privacyTitle: 'Where your data lives',
+    privacy: [
+      '• The UI map is at:',
+      '    Linux    $XDG_DATA_HOME/browser-link/map.db',
+      '    macOS    ~/Library/Application Support/browser-link/map.db',
+      '    Windows  %APPDATA%/browser-link/map.db',
+      '  Override with BROWSER_LINK_DATA_DIR.',
+      '• Nothing is uploaded anywhere by this package. The bridge only',
+      '  talks loopback to your local Chrome extension.',
+      '• What you save in the map is your responsibility. Never save',
+      '  domain data (IDs, names, dates) — the map is for UI structure.',
+    ].join('\n'),
+    helpTitle: 'Get help / report issues',
+    help: [
+      '  GitHub  https://github.com/jobshimo/browser-link',
+      '  Issues  https://github.com/jobshimo/browser-link/issues',
+      '',
+      'Useful subcommands:',
+      '  browser-link doctor      diagnose what is and is not set up',
+      '  browser-link extension   show where the Chrome extension assets are',
+      '  browser-link install     register browser-link in your MCP client',
+      '  browser-link about       show this page',
+      '  browser-link help        list every subcommand',
+    ].join('\n'),
+    authorTitle: 'Author',
+    author: 'Built and maintained by Martín Miguel Bernal.',
+  },
+  es: {
+    title: 'browser-link — información',
+    whatTitle: '¿Qué es esto?',
+    what: [
+      'browser-link es un servidor MCP (Model Context Protocol). Permite',
+      'que un cliente MCP (Claude Code, OpenCode, …) observe y actúe sobre',
+      'las pestañas de Google Chrome a las que vos le des acceso explícito',
+      'mediante una extensión que acompaña al paquete.',
+      '',
+      'Tiene dos piezas:',
+      '  1) Este binario de Node, el servidor MCP que el cliente arranca',
+      '     por stdio.',
+      '  2) Una pequeña extensión de Chrome que cargás vos a mano. La',
+      '     extensión queda inerte en cada pestaña hasta que pulsás el',
+      '     botón "Connect this tab" sobre ella. Podés habilitar todas las',
+      '     pestañas que quieras, una por una. Las pestañas que no conectes',
+      '     siguen invisibles al agente.',
+    ].join('\n'),
+    howTitle: '¿Cómo funciona?',
+    how: [
+      'El binario de Node escucha en 127.0.0.1:17529 (solo loopback — nunca',
+      'en una interfaz pública). Cada pestaña donde pulsás el botón',
+      '"Connect this tab" abre su propio WebSocket contra ese puerto y se',
+      'registra con un tab_id. Desde ahí, el agente puede llamar',
+      'herramientas que apuntan a ese tab_id y el servidor reenvía cada',
+      'petición a la extensión.',
+      '',
+      'Opcional: el modo cdp-direct permite que el servidor maneje pestañas',
+      'de Chrome directamente vía --remote-debugging-port, sin pasar por la',
+      'extensión — apagado por defecto y protegido detrás de un permiso',
+      'explícito y de tiempo limitado que solo vos podés otorgar',
+      '(`browser-link cdp allow`). Ver la sección "cdp-direct mode" del',
+      'README, o correr `browser-link cdp status`.',
+    ].join('\n'),
+    bindingTitle: 'Validación por proceso (sin configuración)',
+    binding: [
+      'Antes de aceptar cualquier handshake WebSocket, el servidor le',
+      'pregunta al kernel del SO qué proceso abrió la conexión TCP entrante.',
+      'Conexiones cuyo dueño no es un binario conocido de un navegador',
+      'Chromium-based (Chrome, Edge, Brave, Vivaldi, Chromium) se rechazan',
+      'antes de intercambiar bytes de aplicación. Eso cierra el vector',
+      '"cualquier proceso local puede hablar con el puente" sin pedirte',
+      'copiar tokens.',
+      '',
+      'NO te protege contra malware que ya se inyectó dentro de Chrome.',
+      'Ese atacante ya controla el navegador directamente y el puente no',
+      'le suma superficie nueva.',
+    ].join('\n'),
+    bridgeToolsTitle: 'Herramientas que el agente expone vía el puente',
+    bridgeTools: [
+      '  browser.list_tabs         listar pestañas conectadas',
+      '  browser.my_tabs           listar pestañas reclamadas por el agente que llama',
+      '  browser.ping              comprobar el puente a una pestaña',
+      '  browser.snapshot          volcar título, url, texto y elementos interactivos (filtrable)',
+      '  browser.find              localizar un elemento por texto visible — selector + coords',
+      '  browser.state             instantánea de orientación — elemento enfocado, diálogos, scroll',
+      '  browser.canvas_screenshot capturar un <canvas> como PNG/JPEG (Qt-WASM, WebGL, sin DOM)',
+      '  browser.console           mensajes recientes de consola (200 últimos)',
+      '  browser.network           peticiones de red recientes (200 últimas)',
+      '  browser.network_body      traer el body de una petición concreta',
+      '  browser.wait_for          esperar un selector, expresión JS o petición de red',
+      '  browser.wait_for_tab      esperar una pestaña emergente (window.open) y reclamarla',
+      '  browser.events            log de eventos del puente (pestaña renombrada/registrada/…)',
+      '  browser.navigate          cambiar la URL de la pestaña',
+      '  browser.click             hacer click en un elemento por CSS selector (con chequeo de oclusión)',
+      '  browser.type              escribir en un input',
+      '  browser.press             presionar una tecla (input CDP confiable, no sintético)',
+      '  browser.drag              arrastrar un elemento hacia otro elemento o coordenada',
+      '  browser.flow              encadenar find/click/type/press/wait_for/drag en una sola llamada',
+      '  browser.evaluate          ejecutar JavaScript en el contexto de la página',
+      '  browser.dialog_respond    responder un alert/confirm/prompt pendiente',
+      '  browser.set_permission    otorgar/denegar un permiso del navegador para un origen',
+      '  browser.claim_tab         reservar una pestaña para el agente que llama',
+      '  browser.release_tab       liberar una reclamación de pestaña',
+      '  browser.reset             reiniciar el puente (soltar pestañas, reclamos, eventos)',
+    ].join('\n'),
+    mapToolsTitle: 'Mapa de UI persistente (privado, en tu máquina)',
+    mapTools: [
+      'El servidor mantiene una pequeña base SQLite con lo que el agente',
+      'va aprendiendo de cada app: selectores estables, flujos de pasos y',
+      'gotchas. Tres tipos de entradas (selector, flow, gotcha) indexadas',
+      'por app + path. Herramientas que el agente usa:',
+      '',
+      '  browser.map.recall       ¿qué sabemos de esta app/ruta?',
+      '  browser.map.save         guardar un selector, flujo o gotcha',
+      '  browser.map.record_use   marcar verified / failed por entrada',
+      '  browser.map.forget       borrar una entrada o una app entera',
+      '  browser.map.rename_app   corregir un app_key mal derivado',
+      '  browser.map.apps         listar apps conocidas',
+    ].join('\n'),
+    privacyTitle: 'Dónde vive tu información',
+    privacy: [
+      '• El mapa de UI está en:',
+      '    Linux    $XDG_DATA_HOME/browser-link/map.db',
+      '    macOS    ~/Library/Application Support/browser-link/map.db',
+      '    Windows  %APPDATA%/browser-link/map.db',
+      '  Sobreescribilo con BROWSER_LINK_DATA_DIR.',
+      '• Este paquete no sube nada a ningún lado. El puente solo habla',
+      '  loopback con la extensión local de Chrome.',
+      '• Lo que guardes en el mapa es responsabilidad tuya. No guardes',
+      '  datos de dominio (IDs, nombres, fechas) — el mapa es para',
+      '  estructura de UI, no para data.',
+    ].join('\n'),
+    helpTitle: 'Ayuda / reportar bugs',
+    help: [
+      '  GitHub  https://github.com/jobshimo/browser-link',
+      '  Issues  https://github.com/jobshimo/browser-link/issues',
+      '',
+      'Subcomandos útiles:',
+      '  browser-link doctor      diagnóstico de qué está y qué falta',
+      '  browser-link extension   ver dónde están los assets de la extensión',
+      '  browser-link install     registrar browser-link en tu cliente MCP',
+      '  browser-link about       mostrar esta página',
+      '  browser-link help        listar todos los subcomandos',
+    ].join('\n'),
+    authorTitle: 'Autor',
+    author: 'Hecho y mantenido por Martín Miguel Bernal.',
+  },
+};
+
+/** Non-interactive about — `browser-link about`. Plain output, no prompts.
+ * The interactive version lives in the Ink UI (`ui/screens.tsx`). */
+export function printAbout(language: Language = 'en'): void {
+  const t = I18N_ABOUT[language];
+  const sections: { title: string; body: string }[] = [
+    { title: t.whatTitle, body: t.what },
+    { title: t.howTitle, body: t.how },
+    { title: t.bindingTitle, body: t.binding },
+    { title: t.bridgeToolsTitle, body: t.bridgeTools },
+    { title: t.mapToolsTitle, body: t.mapTools },
+    { title: t.privacyTitle, body: t.privacy },
+    { title: t.helpTitle, body: t.help },
+    { title: t.authorTitle, body: t.author },
+  ];
+  console.log(t.title);
+  console.log('='.repeat(t.title.length));
+  console.log('');
+  for (const { title, body } of sections) {
+    console.log(title);
+    console.log('-'.repeat(title.length));
+    console.log(body);
+    console.log('');
+  }
+}

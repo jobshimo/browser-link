@@ -1,0 +1,400 @@
+import { VERSION } from '../version.js';
+
+/**
+ * The block we drop into each agent's global instructions markdown file.
+ * Wrapped in HTML-comment marker fences so:
+ *  - rendered markdown viewers hide the markers,
+ *  - the installer can detect / re-find / replace the exact span,
+ *  - other content in the same .md file is left untouched.
+ *
+ * The version inside the begin marker lets a newer browser-link tell whether
+ * an installed block is current; install() always rewrites to the running
+ * version, so reinstalling is the upgrade path.
+ */
+
+export const BEGIN_PREFIX = '<!-- browser-link:instructions:begin';
+export const END_MARKER = '<!-- browser-link:instructions:end -->';
+
+export function beginMarker(version = VERSION): string {
+  return `${BEGIN_PREFIX} v${version} -->`;
+}
+
+/** Regex that matches either an explicit version marker or a legacy one
+ * with no version. The named `version` group is set when a version is
+ * present (a plain capture group is typed as `string` by TS, which would
+ * collapse the `undefined` branch we want; the named-group form keeps
+ * `version` as `string | undefined`). */
+export const BEGIN_RE =
+  /<!--\s*browser-link:instructions:begin(?:\s+v(?<version>\d+\.\d+\.\d+))?\s*-->/;
+export const END_RE = /<!--\s*browser-link:instructions:end\s*-->/;
+
+/** Block body. Engram-style reflex protocol — imperative TRIGGER LIST that
+ * the agent treats as ALWAYS ACTIVE, not descriptive prose. Plain English
+ * by design (LLMs reason in English); the bilingual phrases inside the
+ * trigger list are DATA — what the user actually types — not instructions
+ * to the agent. */
+function body(): string {
+  return [
+    '## browser-link — reflex protocol (ALWAYS ACTIVE)',
+    '',
+    'You have `browser.*` MCP tools (the bridge exposed by `@jobshimo/browser-link`).',
+    'These tools see only Chrome tabs the user explicitly connected via the',
+    'companion extension. Never reason about state you cannot see.',
+    '',
+    '### TRIGGER LIST — call before responding when ANY apply',
+    '',
+    'User mentions any of these (English or Spanish):',
+    '- "the button doesn\'t work" / "no anda el botón" / "no funciona X"',
+    '- "broken layout" / "está roto" / "se ve mal" / "looks wrong"',
+    '- "check if X works" / "fíjate si anda X" / "¿anda X?" / "does X work?"',
+    '- "the page" / "la página" / "la web" / "the site"',
+    '- "open this in the browser" / "abrí esto en el navegador" / "navegá a"',
+    '- a UI element, web app name, URL, browser tab, layout, dialog, form',
+    '→ call `browser.list_tabs` FIRST, then `browser.map.recall` with the tab origin.',
+    '',
+    '`browser.list_tabs` entry carries a `map` field',
+    '(`{ app_key, entries, flows }`):',
+    "→ that tab's origin already has data in the persistent map — call",
+    '`browser.map.recall` BEFORE `browser.snapshot`. No `map` field means',
+    'the map has nothing for that origin yet; skip straight to snapshot.',
+    '',
+    'About to suggest a code change to UI / React / DOM:',
+    '→ `browser.snapshot` first, verify current state. Do not speculate.',
+    '',
+    'Tool call returned "Tab not connected":',
+    '→ `browser.events` to see tab-renamed entries before retrying. After a',
+    'primary restart the extension auto-reconnects dropped tabs with four',
+    'backoff attempts (1s/2s/4s/8s delays, plus per-attempt connect time;',
+    'same tab_id when possible) — wait a few seconds and retry before',
+    'asking the human to re-press Connect.',
+    '',
+    'After a non-trivial flow worked end-to-end (opened dialog, filled form,',
+    'found a setting):',
+    '→ `browser.map.save` (UI structure only — never IDs, names, dates).',
+    'Optionally attach `flows` (named, replayable step recipes) to the same',
+    'call — see the recall → adapt → flow pattern below.',
+    '',
+    '`browser.map.recall` returned saved `flows` for this app:',
+    '→ ADAPT the steps first — substitute any placeholder text (e.g.',
+    '`type text "<QUERY>"`) with the real value the user asked for — THEN',
+    'run the adapted steps via `browser.flow`. Never replay a saved flow',
+    'verbatim when it contains a placeholder.',
+    '',
+    'Several MCP clients sharing one bridge (multi-agent mode):',
+    '→ `browser.claim_tab` before operating on a tab so other agents see it',
+    'in use. `browser.release_tab` when done.',
+    '',
+    'A `list_tabs` entry has `tab_id` starting with `cdp:` (`transport: "cdp"`):',
+    '→ that tab is reached via cdp-direct, not the extension — every tool',
+    'works the same EXCEPT drag (standalone AND as a flow step)/console/',
+    'network/network_body/canvas_screenshot/dialog_respond/set_permission/',
+    'wait_for_tab (clear error naming the extension as the fallback).',
+    'cdp-direct only appears',
+    'when the user has both enabled it AND granted access — you cannot',
+    'enable or grant it yourself. A "cdp-direct is disabled" or "requires an',
+    'active grant" error means relay the suggested command to the user',
+    '(`browser-link config set cdp-direct.enabled true` or',
+    '`browser-link cdp allow`) — there is no workaround from here.',
+    '',
+    '### SELF-CHECK after each user message',
+    '',
+    '"Is the user talking about a web page, UI, or anything visible in a browser?',
+    'If yes → did I run `browser.list_tabs` yet? If no → STOP and run it now."',
+    '',
+    '### NEVER',
+    '',
+    '- Speculate about DOM state without a snapshot.',
+    '- Suggest "try clicking X" without verifying X exists in the current page.',
+    '- Save selectors you have not just successfully executed.',
+    '- Store domain data (IDs, user names, dates, etc.) in the persistent map.',
+    '- Save a flow recipe with a real value baked into a step (a real search',
+    '  query, a real name) instead of a placeholder like `<QUERY>` — flows',
+    '  store UI structure only, exactly like every other map entry.',
+    '',
+    '### TOKEN-EFFICIENT PATTERNS — prefer dedicated tools, fall back to evaluate',
+    '',
+    '`browser.evaluate` is the escape hatch. Every dedicated tool below is',
+    'cheaper in tokens AND more reliable than a hand-rolled expression.',
+    '',
+    '- Any multi-step interaction (find a target → act on it → wait → act',
+    '  again) → `browser.flow({ steps: [...] })` is now the DEFAULT, not a',
+    '  fallback. find → click → wait_for → type → press used to cost 5+',
+    '  separate MCP round trips — each one a full LLM inference — and now',
+    '  costs ONE `browser.flow` call (two if a step fails and you need a',
+    "  corrective follow-up). A `find` step's selector becomes the implicit",
+    '  target for the very next click/type/press step that omits',
+    '  `selector`. Repeated drag-and-drop (card-matching exercises, sortable',
+    '  lists) batches the same way: N `drag` steps — same params as',
+    '  browser.drag, endpoints always explicit, drag stays OUT of the',
+    '  implicit-target chain — in ONE flow instead of N browser.drag calls',
+    '  (extension tabs only; a drag step on a cdp: tab fails at that step).',
+    '  Flow is strictly sequential and fails fast — reach for individual',
+    '  click/type/press/find/wait_for/drag calls only when you need to',
+    '  branch on an intermediate result.',
+    '- Finding an element by visible text → `browser.find({ text, role? })`,',
+    '  NOT `browser.evaluate` with a `textContent` grep. `find` covers',
+    '  `<div onclick>` (which a naive `querySelectorAll("button")` MISSES',
+    '  SILENTLY), applies visibility + ARIA checks, returns a stable',
+    '  selector + viewport coords, and on multi-match returns up to 5',
+    '  candidates with snippets for disambiguation. On `not-found`, read',
+    '  `near_misses` (up to 3 ranked candidates) before giving up — and if',
+    '  `error` names a role mismatch, drop `role` or match the role the',
+    '  closest near-miss actually has.',
+    '- Quick orientation without a full snapshot → `browser.state({})`.',
+    '  Returns `{ url, title, focused?, dialogs?, scroll?, viewport }` —',
+    '  cheaper than `browser.snapshot` when you just need to know where you',
+    '  are (is a dialog open, what has focus) before deciding whether a',
+    '  full snapshot is even needed.',
+    '- `snapshot`/`find`/`click`/`type` all pierce OPEN Shadow DOM roots and',
+    '  same-origin iframes automatically — no special handling needed for',
+    '  web components or in-page iframes. CLOSED shadow roots and',
+    '  cross-origin iframes stay out of reach (no CDP workaround). If',
+    '  `click` returns "Element covered by …", something else is on top of',
+    '  the target — click or dismiss that element first, do not blindly',
+    '  retry with `force:true`. A pointer-events:none target (invisible',
+    '  a11y layer) is NOT reported as covered: the click proceeds and the',
+    '  ok result carries `hit_element` naming what actually received it —',
+    '  present on any off-target click (force:true included), omitted',
+    '  when the click hit the resolved element itself.',
+    '- A snapshot/find entry with `ambiguous: true` has a selector that',
+    '  matches structurally-identical twins in other shadow roots/iframes',
+    '  (no CSS syntax can scope to one root). It resolves first-match-wins:',
+    '  use it in the SAME turn, and NEVER `browser.map.save` it.',
+    '- Trimming snapshot size → `browser.snapshot({ within_selector, only_interactive, exclude, max_interactive })`.',
+    '  Filters are applied IN-page so the dropped material never travels back.',
+    '  Pass `exclude:["nav","footer"]` to skip repeated landmarks; pass',
+    '  `within_selector` when only one region matters.',
+    '- Reading N values → ONE `browser.evaluate` returning an object:',
+    '  `(() => ({ a: document.querySelector("#a").value, b: ... }))()`.',
+    '  Never N separate evaluates for N reads.',
+    '- Scrolling → `browser.evaluate` with `pane.scrollTop = N` or',
+    '  `el.scrollIntoView({ block: "center" })`. No dedicated tool needed.',
+    '- Special keys (Enter/Tab/Escape/arrows/shortcuts) → `browser.press`,',
+    '  NOT `browser.evaluate` with a synthetic `KeyboardEvent`. Synthetic',
+    '  `dispatchEvent` produces `isTrusted:false` events — rich editors,',
+    '  autocompletes, and non-DOM runtimes (Qt-WASM, WebGL) silently ignore',
+    '  them. `browser.press` dispatches a real CDP `Input.dispatchKeyEvent`',
+    '  sequence (`isTrusted:true`). For TYPING text → `browser.type` (native',
+    '  setter; controlled components update their state).',
+    '- After `click`/`type`/`press`, a separate `browser.wait_for` is',
+    '  usually unnecessary — all three accept `settle_ms` (default 150) and',
+    '  return a `settle` object (`{ settled, duration_ms, mutation_count,',
+    '  url_changed?, focus_moved? }`) once the page goes quiet. Settle',
+    '  proves QUIET, not EFFECT: mutations completing before the observer',
+    '  installs (right after dispatch) and async reactions starting after',
+    '  the quiet window are both invisible — `mutation_count: 0` does NOT',
+    '  mean the action did nothing. Reach for `wait_for` when you need a',
+    '  SPECIFIC condition (a particular selector, network request, or',
+    '  expression), not just "did anything change".',
+    '- Paging `browser.events` → keep `lastId = result.latest_id` in your',
+    '  working notes and pass as `since_id` next call. One variable. The',
+    '  server does not maintain per-agent cursors.',
+    '',
+    '### BULK WORK — `flow` + `repeat`, NEVER a loop inside `evaluate`',
+    '',
+    '"Click every element matching X until the list drains" is a',
+    '`browser.flow` with a `repeat` step, not an `evaluate` loop:',
+    '',
+    '```',
+    '{ repeat: { steps: [{ click: { selector: ".row .delete" } }],',
+    '            max_iterations: 200, while_found: ".row", delay_ms: 250 } }',
+    '```',
+    '',
+    '- Every click stays trusted CDP input with the occlusion guard and a',
+    '  recovery snapshot, and you get a per-iteration record. An',
+    '  `evaluate` loop has NONE of that — `el.click()` is',
+    '  `isTrusted:false`, nothing hit-tests, nothing is recorded.',
+    '- Budget reality, so you size it right the first time:',
+    '  `2000 + max_iterations * (inner + delay_ms + 500 if while_found)',
+    '  <= 60000`. A click costs 2500ms with default settle, 500ms with',
+    '  `settle_ms: 0`. So a throttled drain loop fits ~46 iterations per',
+    '  call; SET `settle_ms: 0` on the inner click or you only get ~23.',
+    '  Draining a long list means several calls — that is expected, and',
+    '  each call resumes where the last stopped while `while_found` still',
+    '  matches. The win here is safety, not fewer round trips.',
+    '- `max_iterations` is REQUIRED and repeats do NOT nest. Inner steps',
+    '  count against the same 20-step ceiling. If the projected budget',
+    '  exceeds 60s you have two options: lower `max_iterations` and run the',
+    '  flow again (each call picks up where the last left off while',
+    '  `while_found` still matches), or run it ONCE with `detach: true` —',
+    '  see below.',
+    '- Use `while_found` to decide when to stop, NOT a page counter. It',
+    '  checks for a VISIBLE match before each iteration and reports',
+    '  `stopped_by: "condition"` vs `"max_iterations"`.',
+    '- `delay_ms` throttles between iterations. Use it on anything',
+    '  server-backed.',
+    '- BEFORE an irreversible bulk run (deleting, sending, paying), call',
+    '  the same flow once with `dry_run: true`. It dispatches NOTHING and',
+    '  reports `max_iterations` / `inner_steps` / `delay_ms` /',
+    '  `while_found` / `would_start` per repeat, plus `budget_ms` and',
+    '  `requires_detach`. A dry run is never rejected for being too long —',
+    '  it is judged against the 30-minute detached ceiling, so you can',
+    '  always project first and then pick the mode.',
+    '',
+    '### WORK LONGER THAN 60s — `detach`, then poll `flow_status`',
+    '',
+    'A flow over the 60s budget does not have to become an `evaluate` loop.',
+    '`browser.flow({ steps, detach: true })` returns AT ONCE with',
+    '`{ flow_id, detached: true, expires_at }` and keeps running with every',
+    'guarantee intact — trusted input, occlusion guard, per-iteration',
+    'record, a real stop button.',
+    '',
+    'The lifecycle, in order:',
+    '',
+    '1. `flow({ steps, dry_run: true })` — project it. Non-negotiable',
+    '   before anything irreversible.',
+    '2. `flow({ steps, detach: true })` → keep the `flow_id`.',
+    '3. `flow_status({ tab_id, flow_id })` — poll AT A HUMAN PACE (every',
+    '   few seconds at most; each poll is a full inference). While',
+    '   `state: "running"` you get `steps_completed` / `iterations_completed`',
+    '   and no manifest. Once it ends you get `state` plus `manifest` — the',
+    '   same `results` array a foreground flow returns, and the ONLY answer',
+    '   to "which N things did that actually touch?".',
+    '4. `flow_cancel({ tab_id, flow_id })` to stop it. Lands within one',
+    '   step; read the state back rather than assuming.',
+    '',
+    'Rules that will bite you otherwise:',
+    '',
+    '- ONE detached flow per tab. A second is rejected naming the running',
+    '  id — poll or cancel that one first.',
+    '- `state: "cancelled"` means a PERSON stopped you (popup Stop button,',
+    '  or another agent). Never relaunch it. Report what the manifest says',
+    '  actually happened and ask.',
+    '- `state: "expired"` means it hit the 30-minute ceiling mid-run. The',
+    '  partial manifest is real work — reconcile before doing anything.',
+    '- `state: "failed"` with `stopped_by: "worker-terminated"` means Chrome',
+    '  killed the extension service worker under the flow. It is NEVER',
+    '  auto-resumed, and its manifest died with it. Re-derive what is left',
+    '  from the page before relaunching, or you will double-act.',
+    '- `state: "unknown"` means this bridge has no record of that id. Do',
+    '  not read it as "it never ran".',
+    '- Do not detach work that fits in 60s. A foreground flow hands you the',
+    '  results directly; detaching costs you a polling loop for nothing.',
+    '',
+    '### LONG-RUNNING WORK — a timed-out `evaluate` KEEPS RUNNING',
+    '',
+    'Reach for this only when `flow` + `repeat` + `detach` genuinely cannot',
+    'express the work (it needs branching, or arbitrary JS per item). It is',
+    'the escape hatch, and it is strictly worse than everything above:',
+    'untrusted `el.click()`, no occlusion check, no recovery snapshot, no',
+    'status, no cancel, no manifest.',
+    '',
+    'A bridge timeout drops the RESPONSE only. The expression itself keeps',
+    'running in the page; there is no cancellation path. A timeout reads',
+    'like failure, so the reflex is to relaunch — and on irreversible',
+    'actions (deleting, sending, paying) that starts a SECOND concurrent',
+    'loop over the same items.',
+    '',
+    '- **If an `evaluate` times out, verify whether it is still working',
+    '  BEFORE relaunching.** Read its progress global, or re-read an',
+    '  authoritative count from the page, and confirm it has actually',
+    '  stopped. This one check is the difference between a slow job and a',
+    '  double-executed irreversible one.',
+    '- Never put long work inside a single `browser.evaluate`. Launch a',
+    '  self-guarding worker that reports progress to a global, then read',
+    '  that global with short calls:',
+    '  ```js',
+    '  if (window.__job?.running) return { already: true, state: window.__job };',
+    '  window.__job = { running: true, done: 0, remaining: null,',
+    '                   manifest: [], error: null, finished: false };',
+    '  (async () => { /* work; update window.__job */ })();',
+    '  return { launched: true };',
+    '  ```',
+    '  The guard on `running` is mandatory, not decorative: without it a',
+    '  retried call after a timeout starts a second concurrent worker over',
+    '  the same irreversible actions.',
+    '- To WAIT on that worker → `browser.wait_for` with an expression',
+    '  (`window.__job?.finished === true`), NOT a chain of `evaluate` +',
+    '  `setTimeout`. Each hand-rolled poll costs a full LLM inference;',
+    '  `wait_for` parks server-side for up to 30s in ONE call.',
+    '- Accumulate what you touched into the job global as you act',
+    '  (`window.__job.manifest.push(id)`) and read it back BEFORE the tab',
+    '  navigates away. After an irreversible bulk action that manifest is',
+    '  the only possible answer to "which ones did you actually do?" —',
+    '  `browser.events` records that actions happened, never their subject.',
+    '',
+    '### READING DATA — silent traps that produce confident WRONG answers',
+    '',
+    "- Never regex over a `DOMParser` document's text. `innerText` is",
+    '  `undefined` on a document with no layout, and the `textContent`',
+    '  fallback sweeps up `<script>`, CSS and hidden nodes. Select per',
+    "  field (`row.querySelector('.price')`) and read that leaf's",
+    '  `textContent`. Sanity-check extracted figures against what',
+    '  `snapshot` shows before acting on them: this exact trap reported a',
+    '  maximum price of 28,00 when the real maximum was 8,00 — confident,',
+    '  plausible, and wrong.',
+    "- Never treat a paginated list's own counter as ground truth. Find",
+    '  the authoritative total elsewhere (a parent or summary page), and',
+    '  confirm completion by an explicit empty-state string rather than by',
+    '  a counter reaching zero — counters routinely VANISH at zero, and',
+    '  the leftover parse reads as a phantom "1 remaining" forever.',
+  ].join('\n');
+}
+
+/** Full fenced block to write into the file, including a trailing newline.
+ * The line between markers carries the managed-by stamp so a user reading
+ * the file knows it is auto-generated and how to refresh it.
+ *
+ * `eol` controls the line separator. Default is LF; pass CRLF to match a
+ * Windows-edited file's dominant line ending. The body() helper composes
+ * its own lines with `\n`; we replace them when joining so the produced
+ * block is uniformly LF or CRLF — never mixed. */
+export function block(version = VERSION, eol: '\n' | '\r\n' = '\n'): string {
+  const parts = [
+    beginMarker(version),
+    `<!-- managed-by: browser-link v${version}; do not edit between markers; run \`browser-link instructions install\` to refresh. -->`,
+    '',
+    body(),
+    '',
+    END_MARKER,
+    '',
+  ];
+  if (eol === '\n') return parts.join('\n');
+  // body() returned a multi-line string joined with \n; flip each \n to \r\n.
+  return parts.map((p) => p.replace(/\n/g, '\r\n')).join('\r\n');
+}
+
+/** Count occurrences of the BEGIN marker in `text`. The base BEGIN_RE has
+ * no `g` flag (it's used for single-span detection); this helper compiles
+ * the same pattern with `g` so duplicates can be diagnosed. */
+export function countBeginMarkers(text: string): number {
+  return (text.match(/<!--\s*browser-link:instructions:begin(?:\s+v\d+\.\d+\.\d+)?\s*-->/g) ?? [])
+    .length;
+}
+
+/** Pick the dominant line ending of `text`. CRLF wins only when it is the
+ * majority of newline sequences; otherwise LF. Used by installAt to keep
+ * Windows-edited files from acquiring a mixed-EOL block. */
+export function detectEol(text: string): '\n' | '\r\n' {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lfTotal = (text.match(/\n/g) ?? []).length;
+  const loneLf = lfTotal - crlf;
+  return crlf > loneLf && crlf > 0 ? '\r\n' : '\n';
+}
+
+/** Locate the block boundaries in the given file text. Returns null when
+ * either marker is missing. Used by detect/install/uninstall to act on the
+ * exact span the installer owns. */
+export interface BlockSpan {
+  startIndex: number;
+  endIndex: number; // index AFTER the end marker line (newline-inclusive)
+  installedVersion: string | null;
+}
+
+export function findBlockSpan(text: string): BlockSpan | null {
+  const begin = BEGIN_RE.exec(text);
+  if (!begin) return null;
+  const afterBegin = begin.index + begin[0].length;
+  const end = END_RE.exec(text.slice(afterBegin));
+  if (!end) return null;
+  const endMarkerStartAbsolute = afterBegin + end.index;
+  const endMarkerEndAbsolute = endMarkerStartAbsolute + end[0].length;
+  // Consume the trailing newline after the end marker, if any.
+  const nextChar = text[endMarkerEndAbsolute];
+  const endIndex = nextChar === '\n' ? endMarkerEndAbsolute + 1 : endMarkerEndAbsolute;
+  return {
+    startIndex: begin.index,
+    endIndex,
+    installedVersion: begin.groups?.version ?? null,
+  };
+}

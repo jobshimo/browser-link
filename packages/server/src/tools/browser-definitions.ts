@@ -1,0 +1,1209 @@
+/**
+ * MCP tool definitions for the browser-bridge family. Kept separate from
+ * the runtime dispatcher so the JSON schemas stay reviewable in one place
+ * and the dispatch logic stays small.
+ *
+ * Each entry carries a `doc` block (`ToolDoc`) with structured human-facing
+ * documentation. `buildServerInstructions()` reads those blocks to produce
+ * the SERVER_INSTRUCTIONS string the MCP host receives on `initialize`. The
+ * structured shape keeps the "when to use" copy beside the tool that owns
+ * it instead of drifting in a single monolithic string.
+ */
+
+import type { ToolDefinition } from './types.js';
+
+/**
+ * Shared `settle_ms` / `settle_timeout_ms` schema properties for
+ * click / type / press. Identical wording and semantics across all three —
+ * defined once so the descriptions cannot drift between tools.
+ */
+const SETTLE_SCHEMA_PROPERTIES = {
+  settle_ms: {
+    type: 'number',
+    minimum: 0,
+    maximum: 2000,
+    description:
+      'After dispatching the action, wait until the page goes quiet — no DOM mutations for this many consecutive ms — before returning. Folds the wait_for + snapshot round trip most flows need after an action into the action call itself. Default 150, hard ceiling 2000. Pass 0 to disable and return immediately (pre-v0.16.0 behavior). Blind spot to keep in mind: the observer installs right AFTER the action dispatches, so mutations that complete in that gap are invisible — mutation_count:0 with settled:true does NOT prove the action had no effect — and an async reaction that only starts after the quiet window is likewise missed. For a specific expected condition, browser.wait_for remains the right tool.',
+  },
+  settle_timeout_ms: {
+    type: 'number',
+    minimum: 0,
+    maximum: 10000,
+    description:
+      'Overall cap on the settle wait in ms, in case the page never goes fully quiet (polling animations, live tickers, spinners). Default 2000, hard ceiling 10000. Ignored when settle_ms is 0.',
+  },
+} as const;
+
+export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
+  {
+    name: 'browser.list_tabs',
+    description:
+      "List Chrome tabs currently reachable by browser-link. A tab is normally connected only after the user clicks Connect in the extension popup. Each entry includes tab_id, url, title, claimed_by (null when free, or { agent_id, pid, binary, label?, claimed_at, last_activity_at } when another agent owns it), claimed_by_me (true when YOU hold the claim), an optional map field ({ app_key, entries, flows }) present ONLY when the persistent UI map already has data for that tab's origin, and — only when the user has enabled AND granted cdp-direct mode (off by default, see the cdp-direct docs) — additional tab_id values starting with cdp: carrying transport: 'cdp', reached without the extension.",
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    doc: {
+      purpose:
+        'List the Chrome tabs the user has explicitly connected through the browser-link extension popup, plus any cdp-direct tabs when that optional mode is enabled and granted.',
+      when_to_use: [
+        'Before doing anything on a tab whose state you do not already own.',
+        'When the user mentions a UI bug, web page, or asks "does X work" — call this FIRST.',
+        'To see which tabs are claimed by other agents (claimed_by) and which are yours (claimed_by_me).',
+      ],
+      gotchas: [
+        'Returns only tabs the user has connected manually, plus cdp-direct tabs when that optional mode is enabled and granted (off by default — see cdp-direct docs). If the list is empty, ask the user to open the extension popup.',
+        'After a primary restart ("primary just closed" errors), the extension auto-reconnects dropped tabs with four backoff attempts (1s/2s/4s/8s delays, plus per-attempt connect time), keeping the same tab_id when the new primary can honour it (tab-renamed in browser.events otherwise) — so a briefly-empty list right after such an error deserves a short wait and one retry before asking the user to re-press Connect. An explicit disconnect or browser.reset never auto-reconnects.',
+        'When an entry carries a map field, call browser.map.recall BEFORE snapshotting that tab — the persistent map already has selectors, gotchas, or flow recipes for it, and re-discovering them via a fresh snapshot/find wastes a round trip.',
+        "A tab_id starting with cdp: (transport: 'cdp') works with every tool except browser.drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab in v1 — those (and a browser.flow drag step) return a clear error naming the extension transport as the fallback.",
+      ],
+    },
+  },
+  {
+    name: 'browser.claim_tab',
+    description:
+      'Claim a tab so other agents stop touching it. Returns ok:true with your claim, or ok:false reason:"conflict" with the existing claim. Pass an optional label (eg "claude-code") that other agents will see in browser.list_tabs. Pass ttl_minutes (default 10, max 60) — the claim auto-expires after that many minutes of inactivity. Action tools (click/type/navigate/evaluate) auto-claim free tabs, so an explicit claim_tab is only needed when you want to reserve a tab before you start, or to refresh the label/TTL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        ttl_minutes: {
+          type: 'number',
+          description: 'Inactivity timeout for the claim, in minutes. Default 10, capped at 60.',
+        },
+        label: {
+          type: 'string',
+          description:
+            'Optional self-declared display label (eg "claude-code", "opencode"). Visible to other agents in browser.list_tabs. Display only — not used for enforcement.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Reserve a tab cooperatively so other MCP clients sharing the bridge see it is in use.',
+      when_to_use: [
+        'Before a multi-step flow on a tab in multi-agent mode, so other agents see you working on it.',
+        'To refresh the inactivity TTL or update the display label on a tab you already hold.',
+      ],
+      gotchas: [
+        'Action tools (click/type/navigate/evaluate) auto-claim a free tab on first use, so explicit claim_tab is only required for early reservation.',
+        'On conflict the response includes the existing claim — do NOT spin-retry; pick a different tab or surface the conflict to the user.',
+      ],
+      example: 'browser.claim_tab({ tab_id: "tab_1", label: "claude-code", ttl_minutes: 15 })',
+    },
+  },
+  {
+    name: 'browser.release_tab',
+    description:
+      'Release a tab claim you hold. Returns ok:true on success, ok:false reason:"not-owner" if another agent holds it, or ok:false reason:"not-claimed" if the tab is free. Releasing is also automatic on agent disconnect and when the inactivity TTL elapses, so calling this explicitly is only needed for early hand-off.',
+    inputSchema: {
+      type: 'object',
+      properties: { tab_id: { type: 'string' } },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Hand a previously claimed tab back so another agent can take it.',
+      when_to_use: [
+        'After you finished working on a tab and want to hand it off before the TTL expires.',
+      ],
+      gotchas: [
+        'Claims also auto-release on agent disconnect and after the inactivity TTL (default 10 minutes) — explicit release is only for early hand-off.',
+      ],
+    },
+  },
+  {
+    name: 'browser.my_tabs',
+    description:
+      'List the tabs YOU currently hold a claim on. Returns { claims: [{ tab_id, claimed_at, last_activity_at, ttl_ms, label? }] } sorted by claimed_at. Use this to answer the user when they ask which tabs you are working on.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    doc: {
+      purpose: 'Return the tabs the current agent has claimed, with timestamps and TTL.',
+      when_to_use: [
+        'When the user asks which tab you are using ("¿qué pestaña tenés?", "which tab are you on?").',
+        'To verify which tab is yours before performing an action in multi-agent mode.',
+      ],
+    },
+  },
+  {
+    name: 'browser.ping',
+    description: 'Verify the bridge to a tab. Returns its current title and url.',
+    inputSchema: {
+      type: 'object',
+      properties: { tab_id: { type: 'string' } },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Confirm the bridge to a specific tab is healthy and read back its title/url.',
+      when_to_use: ['When you suspect a tab may have been closed or disconnected between calls.'],
+    },
+  },
+  {
+    name: 'browser.navigate',
+    description: 'Navigate the connected tab to a URL. By default waits for the load event.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        url: { type: 'string', description: 'Full URL including protocol.' },
+        wait_for_load: { type: 'boolean', default: true },
+      },
+      required: ['tab_id', 'url'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Drive a connected tab to a new URL.',
+      when_to_use: [
+        'The user asks you to open a page in the browser ("abrí esto en el navegador", "navigate to X").',
+        'You need to reach a specific route before snapshotting or interacting.',
+      ],
+      gotchas: [
+        'Defaults to wait_for_load=true so the snapshot you take next reflects the loaded page.',
+      ],
+      example: 'browser.navigate({ tab_id: "tab_1", url: "https://example.com" })',
+    },
+  },
+  {
+    name: 'browser.snapshot',
+    description:
+      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are excluded from the interactive list, though their text still contributes to headings/text; a descendant that re-enables itself with `pointer-events:auto` is still listed. The scan pierces OPEN Shadow DOM roots and same-origin iframes (nested arbitrarily) — a web component internal or an in-page iframe shows up without extra steps. An entry for an element living inside an iframe carries an extra `frame` field (the CSS selector of the innermost hosting iframe) so you know it is framed; entries in the top document or in Shadow DOM omit it. An entry whose selector could not be made unique across all roots (structurally-identical component twins) carries `ambiguous: true` — that selector resolves first-match-wins, so use it immediately and do NOT store it in the persistent map. Optional filters keep the response small: `within_selector` restricts the scan to a subtree (also deep-search-aware — it can target a subtree inside a shadow root or iframe); `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        within_selector: {
+          type: 'string',
+          description:
+            'Restrict the scan to elements within the subtree of this CSS selector. When the selector does not match, the response carries an empty interactive list and `notice` explains why.',
+        },
+        only_interactive: {
+          type: 'boolean',
+          description:
+            'When true, skip the headings list and the visible-text dump. Use when you only need the interactive elements and selectors. Default false.',
+        },
+        exclude: {
+          type: 'array',
+          items: { type: 'string', enum: ['nav', 'footer', 'header', 'aside'] },
+          description:
+            'Drop interactive elements and headings that live inside any of these landmark tags. Common case: pass `["nav"]` to skip site-wide navigation that repeats on every page.',
+        },
+        max_interactive: {
+          type: 'number',
+          description:
+            'Cap on the number of interactive entries returned. Default 120, hard ceiling 500.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Inspect what is currently on the tab — title, URL, visible text, interactive elements with selectors. Supports optional filters to trim the response.',
+      when_to_use: [
+        'Before suggesting any code change to a UI component — verify the current state, do NOT speculate.',
+        'Before clicking or typing, to find a stable selector for the target element.',
+        'When the user reports a layout or visual issue and you need to ground your reasoning in what is actually rendered.',
+        'When you only care about a region of the page, pass `within_selector` so the response stays small.',
+      ],
+      gotchas: [
+        'The snapshot is the source of truth; the persistent map is a cache, not a substitute.',
+        'Filters are applied in-page, so the dropped material never travels back — they are a token win, not a post-filter.',
+        'Empty-string fields (`placeholder`, `aria_label`, etc.) are omitted from each entry. Read by key with optional-chaining or fall back to "".',
+        'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable from any CDP-based tool — there is no workaround. Cross-origin iframes are also unreachable (same-origin policy); their content is invisible to this scan.',
+        'Two structurally-identical component instances in different roots (e.g. twin web components with byte-identical internals) cannot be told apart by any CSS selector — no syntax scopes a selector to one shadow root. Affected entries carry `ambiguous: true`; their selector resolves to the FIRST match in a deterministic traversal order. Use it right away, never cache it.',
+      ],
+      example:
+        'browser.snapshot({ tab_id: "tab_1", within_selector: "main", exclude: ["nav", "footer"] })',
+    },
+  },
+  {
+    name: 'browser.find',
+    description:
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are never returned as matches, though they can still surface as `near_misses` hints. The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, text, tag}] }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        text: {
+          type: 'string',
+          description:
+            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default.',
+        },
+        role: {
+          type: 'string',
+          enum: ['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem'],
+          description:
+            'Optional ARIA role to narrow the scan. Without role the scan covers all common interactive elements including [onclick] divs.',
+        },
+        exact: {
+          type: 'boolean',
+          description:
+            'When true, the visible text must equal the needle (case-insensitive). Default false (substring).',
+        },
+      },
+      required: ['tab_id', 'text'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Find one interactive element by its visible text and return a stable selector plus viewport coordinates.',
+      when_to_use: [
+        'When `browser.snapshot` returned no `data-testid` and the agent only knows the user-facing label of the element it wants to act on.',
+        'Before `browser.click` / `browser.type` on a page whose markup lacks stable selectors — `find` does the visibility + ARIA + role-aware lookup once and returns a selector reusable by the action tool.',
+        'When the agent would otherwise write a hand-rolled `browser.evaluate` to grep textContent — `find` encapsulates the silently-failing patterns (missing visibility checks, `<div onclick>` not matching `button`, multi-match ambiguity).',
+      ],
+      gotchas: [
+        'A `<div onclick>` IS considered clickable here — the broad selector set (`[onclick]`, `[role]`, `[tabindex]`, `[contenteditable]`) is the whole point. A naive `querySelectorAll("button")` misses these silently.',
+        'On `multiple-matches`, the response includes up to 5 candidates with their selectors and snippets so the agent can disambiguate without another round-trip. Retry with `exact:true` or a longer/unique substring.',
+        '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.snapshot.',
+        'A result with `ambiguous: true` names an element whose generated selector matches structurally-identical twins in other roots. It still works (first-match-wins, deterministic order) but must be used immediately and never saved to the persistent map.',
+        'A `not-found` with `near_misses` is a suggestion list, not a match — re-run `find` with adjusted text/role, do not act on a near-miss selector blindly. Near-miss selectors do NOT carry the `ambiguous` flag, so one that collides with structurally-identical twins in other shadow roots/iframes silently resolves first-match-wins — treat them as hints for the next `find`, never as click targets.',
+        'An `error` mentioning a role mismatch means the text exists on the page but on an element of a different role than requested — drop `role` or pick the role the closest near-miss actually has.',
+      ],
+      example: 'browser.find({ tab_id: "tab_1", text: "Save changes", role: "button" })',
+    },
+  },
+  {
+    name: 'browser.state',
+    description:
+      'Compact orientation snapshot — cheaper than a full browser.snapshot when the agent only needs to know where it is. Returns { url, title, viewport:{w,h}, focused?, dialogs?, scroll? }. `focused` is the innermost actually-focused element (descending through open Shadow DOM roots and same-origin iframes past `document.activeElement`, which by itself only reports a shadow host or an <iframe> element) as `{ selector, tag, ambiguous? }`. `dialogs` lists visible `[role=dialog]`, `[role=alertdialog]` and open `<dialog>` elements as `{ selector, role, label? }`, `label` best-effort from aria-label / aria-labelledby / the first heading inside. `scroll` is `{x,y}` and is omitted when the page is at its default (0,0) position. Every optional field is omitted when there is nothing to report.',
+    inputSchema: {
+      type: 'object',
+      properties: { tab_id: { type: 'string' } },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Cheap orientation read — url, title, focused element, open dialogs, scroll position, viewport — without the cost of a full snapshot.',
+      when_to_use: [
+        'At the start of a turn, to check where you are before deciding whether a snapshot/find/click is even needed.',
+        'After a navigation or a flow step, to confirm a dialog opened or focus landed where expected, cheaper than only_interactive:true snapshot.',
+        'When you only need "is a dialog open right now" or "what has focus" and do not need the full interactive element list.',
+      ],
+      gotchas: [
+        'This is a read tool: no tab claim, multiple agents can call it on the same tab in parallel.',
+        'focused/dialogs/scroll are omitted entirely when there is nothing to report (focus at <body>, no open dialog, scroll at (0,0)) — read them with optional-chaining.',
+        'Same deep-search limitations as browser.snapshot/find: CLOSED shadow roots and cross-origin iframes are unreachable.',
+        '`focused.ambiguous: true` follows the same rule as browser.snapshot/find — the selector resolves first-match-wins, use it immediately, never cache it.',
+      ],
+      example: 'browser.state({ tab_id: "tab_1" })',
+    },
+  },
+  {
+    name: 'browser.canvas_screenshot',
+    description:
+      'Capture a `<canvas>` element from the connected tab as a PNG/JPEG and return it base64-encoded. Designed for pages whose visible UI is rendered to a canvas — Qt for WebAssembly (Venus OS, Felgo apps), WebGL games, custom rendering, etc. — where `browser.snapshot` and `browser.find` return nothing useful because there is no DOM inside the canvas to inspect. The finder traverses nested Shadow DOM roots, so a canvas hidden behind one or more `attachShadow` boundaries (very common in Qt-WASM apps) is still reachable without passing an explicit selector. Pass `selector` only when several canvases exist and you want a specific one; otherwise the first visible canvas wins. `region` crops to a sub-rect in canvas pixels — useful when you want to focus the LLM on one area and save tokens. Returns `{ ok: true, canvas_size, canvas_pixels, region, format, image_b64, taken_at_ms }` on success; `{ ok: false, reason: "no-canvas" }` when no canvas is found.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: {
+          type: 'string',
+          description:
+            'Optional CSS selector. When omitted, the finder picks the first visible canvas in the document, descending into Shadow DOM roots. Pass it only when several canvases coexist and you want to disambiguate. The selector is matched in the LIGHT DOM first; if it does not resolve to a canvas there, the finder still falls back to the visible-canvas heuristic.',
+        },
+        region: {
+          type: 'object',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            w: { type: 'number' },
+            h: { type: 'number' },
+          },
+          required: ['x', 'y', 'w', 'h'],
+          additionalProperties: false,
+          description:
+            'Optional crop rectangle in canvas pixels (NOT CSS pixels — canvas pixels are `canvas.width` x `canvas.height`, which may differ from the rendered CSS size on HiDPI). Coordinates outside the canvas are clamped. Default: the full canvas.',
+        },
+        format: {
+          type: 'string',
+          enum: ['png', 'jpeg'],
+          description:
+            'Output format. PNG (default) is lossless and larger; JPEG is smaller but lossy and drops the alpha channel. Pick PNG for fidelity, JPEG when you need to ship many screenshots cheaply.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Capture a canvas element as PNG/JPEG so the agent can SEE pages where the visible UI is rendered to a canvas (Qt-WASM, WebGL, custom rendering) and no DOM exists inside.',
+      when_to_use: [
+        'When `browser.snapshot` returns an empty `interactive` list and the page clearly has a UI on screen — that mismatch almost always means the UI is rendered into a `<canvas>`.',
+        'When the user mentions Victron VRM Remote Console, Venus OS, Felgo apps, WebGL games, or any "the UI is one big rectangle" page.',
+        'Before deciding whether the agent can act on a canvas page. Reading is free with this tool; clicking on a canvas needs CDP-level input dispatch and is not yet exposed.',
+      ],
+      gotchas: [
+        'Qt-WASM and similar runtimes consume only "real" browser input (events with `isTrusted: true`). `browser.click` / `browser.type` / synthetic `dispatchEvent` from `browser.evaluate` will not interact with the canvas content. This tool is READ-ONLY by design.',
+        'For pure WebGL canvases compiled without `preserveDrawingBuffer: true`, `toDataURL` may return a blank image — the framebuffer is cleared between frames. Qt-WASM enables preservation, so VRM Remote Console / Venus OS work. If you get a blank capture on a known-rendered canvas, that is the cause.',
+        'Coordinates in `region` are in CANVAS pixels, not CSS pixels. On HiDPI displays these differ — `canvas_size` returns CSS dimensions, `canvas_pixels` returns the backing store size, divide accordingly.',
+        'The canvas content can mutate between calls without any DOM signal (Qt repaints, animation frames, internal scrolling). Take a fresh screenshot before each decision; do not reuse a screenshot across many turns.',
+      ],
+      example:
+        'browser.canvas_screenshot({ tab_id: "tab_1" })  // first visible canvas, full size, PNG',
+    },
+  },
+  {
+    name: 'browser.console',
+    description:
+      'Return recent console messages (log, info, warn, error) from the connected tab since it was attached. Rolling buffer (last 200).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        level: { type: 'string', enum: ['log', 'info', 'warn', 'error', 'debug'] },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Read recent console messages from the tab — log, info, warn, error, debug.',
+      when_to_use: [
+        'When the user says "the button does not work" or "something is broken" — check console errors first.',
+        'After an action to see what the page logged in response.',
+      ],
+      gotchas: [
+        'Rolling buffer of 200 entries — older logs are dropped. Snapshot console output early in a long session.',
+      ],
+    },
+  },
+  {
+    name: 'browser.network',
+    description:
+      'Return recent network requests from the connected tab (rolling buffer, last 200). Includes request_id, method, url, status, mime, size, timing. Use browser.network_body to fetch the body of a specific request.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        url_filter: { type: 'string', description: 'Optional substring to filter request URLs.' },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'List recent network requests with status, mime, size and timing.',
+      when_to_use: [
+        'When the user reports a failed API call, slow request, or a 4xx/5xx response in the page.',
+        'To verify whether a request fired after a click or form submission.',
+      ],
+      gotchas: [
+        'Rolling buffer of 200 entries — pair with url_filter to narrow the result.',
+        'Use browser.network_body with the request_id to fetch a specific response body.',
+      ],
+    },
+  },
+  {
+    name: 'browser.network_body',
+    description:
+      'Fetch the response body of a single network request by request_id (from browser.network).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        request_id: { type: 'string' },
+      },
+      required: ['tab_id', 'request_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Fetch the response body for one request_id returned by browser.network.',
+      when_to_use: [
+        'After identifying a suspicious request in browser.network, to see what the server returned.',
+      ],
+    },
+  },
+  {
+    name: 'browser.wait_for',
+    description:
+      'Wait for a condition to become true on the page before continuing. Pick exactly ONE target: (a) `selector` plus an optional `condition` of visible|hidden|attached|detached (default visible), (b) `expression` — any JS that should become truthy, or (c) `network_url` — a substring that a completed network request URL must contain. Returns { matched, elapsed_ms, checks, reason? }. `matched: false` is NOT an error — the caller decides whether to proceed or branch. Polls every `poll_interval_ms` (default 100, range 50–1000) until `timeout_ms` (default 5000, capped at 30000). This is a read tool and does not require a claim — multiple agents can wait on the same tab in parallel.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: {
+          type: 'string',
+          description:
+            'CSS selector. Use with condition. Mutually exclusive with expression and network_url.',
+        },
+        condition: {
+          type: 'string',
+          enum: ['visible', 'hidden', 'attached', 'detached'],
+          description:
+            'For selector mode. visible = exists + non-zero box + opacity > 0; hidden = inverse; attached = exists in DOM; detached = does not exist. Default visible.',
+        },
+        expression: {
+          type: 'string',
+          description:
+            'JavaScript expression evaluated each poll. wait_for stops as soon as Boolean(expression) is true. Mutually exclusive with selector and network_url.',
+        },
+        network_url: {
+          type: 'string',
+          description:
+            'Case-insensitive substring matched against the URL of completed network requests in the rolling buffer. wait_for stops when at least one matching request has finished. Mutually exclusive with selector and expression.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description:
+            'Max time to wait in ms. Default 5000, capped at 30000. Past the cap, split the flow — the bridge does not park requests longer than that.',
+        },
+        poll_interval_ms: {
+          type: 'number',
+          description: 'Time between checks in ms. Default 100, clamped to [50, 1000].',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Block until a selector matches a condition, a JS expression is truthy, or a network request URL completes.',
+      when_to_use: [
+        'After clicking a button that triggers an async load — wait for the spinner to disappear or the result element to appear.',
+        'Before snapshot/click on a SPA route that mounts content after navigation.',
+        'When you depend on a backend response — wait for the network request URL to land before reading the DOM.',
+      ],
+      gotchas: [
+        'matched: false is not an error. Read it and decide — many flows have a plan B when the condition does not happen.',
+        'expression mode runs arbitrary JS via Runtime.evaluate. Subject to the same disabled-list as browser.evaluate would be if you want to gate it.',
+        'network_url matches against the rolling buffer of recent requests (last 200). If the request happened before wait_for started, it still counts as matched — wait_for has no concept of "fresh" requests.',
+      ],
+      example:
+        'browser.wait_for({ tab_id: "tab_1", selector: "[data-testid=loaded]", condition: "visible", timeout_ms: 3000 })',
+    },
+  },
+  {
+    name: 'browser.wait_for_tab',
+    description:
+      'Wait for a new tab opened by a previous action on a connected tab. The extension auto-emits `tab-created` events to the bridge stream whenever a tab connected to browser-link spawns a new one (via window.open, target=_blank, etc.). This tool polls that stream until it sees a matching `tab-created` event whose `opened_from` equals the `opened_from` you passed (the tab_id of the action originator). On match, browser-link automatically claims the new tab under YOUR agent_id — the waiting call IS the explicit intent — and returns its tab_id ready to use. Optional `url_substring` narrows the match (case-insensitive). Returns `{ matched, tab_id?, url?, elapsed_ms, checks, claimed?, claim_conflict?, reason? }`. `matched: false` is NOT an error — the action may have failed to open a tab, or the tab opened too slowly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        opened_from: {
+          type: 'string',
+          description:
+            'The browser-link tab_id whose action is expected to spawn the new tab. Get this from your current tab before clicking the link / button that triggers the new tab.',
+        },
+        url_substring: {
+          type: 'string',
+          description:
+            'Optional case-insensitive substring the new tab URL must contain. Useful when several tabs could spawn and you want a specific one.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: 'Max wait in ms. Default 10000, capped at 60000.',
+        },
+      },
+      required: ['opened_from'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Block until a new tab spawned by an action on a connected tab appears in the bridge, then auto-claim it under the calling agent.',
+      when_to_use: [
+        'Right after clicking a link with target="_blank" or a button known to call window.open.',
+        'Before reading the content of a popup-style auth tab you triggered.',
+      ],
+      gotchas: [
+        'Only matches tabs whose opener is a tab already connected to browser-link. A bare window.open without an opener relation will not match.',
+        'Auto-claim is part of the contract — if another agent races and claims first, you get matched:true with claimed:false and a claim_conflict description. Decide if you want to retry or surface to the user.',
+        'matched:false often means the underlying action did not open a tab. Inspect browser.events for diagnostic context.',
+        'If the action you are waiting for is a click on a button whose onClick calls window.open(), do NOT use browser.click — Chrome treats CDP `Input.dispatchMouseEvent` as a non-user-gesture for popups and the window silently never opens. Use browser.evaluate({ expression: "document.querySelector(\'<selector>\').click()" }) instead; that path goes through Runtime.evaluate with userGesture:true and Chrome accepts it.',
+      ],
+      example:
+        'browser.wait_for_tab({ opened_from: "tab_1", url_substring: "/oauth/", timeout_ms: 8000 })',
+    },
+  },
+  {
+    name: 'browser.dialog_respond',
+    description:
+      'Respond to a pending native JavaScript dialog (alert / confirm / prompt / beforeunload) on a connected tab. browser-link does NOT auto-dismiss dialogs — when a dialog opens, the page JS thread freezes and the bridge emits a `dialog-opening` event in browser.events with `{ tab_id, type, message, default_prompt }`. The agent reads that, decides what to answer based on the page flow, and calls this tool. `accept:true` is the "OK" path (submit for prompt, continue for beforeunload); `accept:false` is "Cancel". `prompt_text` is only used for `prompt` type — ignored otherwise. After the response, the page JS thread resumes and a `dialog-closed` event lands on the stream.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        accept: {
+          type: 'boolean',
+          description:
+            'true = OK / continue (in prompt: submit prompt_text). false = Cancel / dismiss.',
+        },
+        prompt_text: {
+          type: 'string',
+          description:
+            'Text to submit when the dialog is a prompt and accept=true. Ignored for alert/confirm/beforeunload.',
+        },
+      },
+      required: ['tab_id', 'accept'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Answer a native alert/confirm/prompt that is currently blocking a connected tab. Reads from the dialog-opening event in browser.events for context.',
+      when_to_use: [
+        'After browser.events reports a dialog-opening entry and the tab JS is paused waiting for an answer.',
+        'When a click you just dispatched is expected to surface a confirm() (delete confirmation, payment confirm).',
+      ],
+      gotchas: [
+        'Native dialogs are NOT in the DOM — you cannot dismiss them with browser.click. This is the only way to answer them.',
+        'While a dialog is open, browser.evaluate / browser.snapshot / browser.wait_for (expression mode) hang on the tab. Respond first, then resume.',
+        'For beforeunload, accept:true allows navigation, accept:false stays on the page.',
+      ],
+      example: 'browser.dialog_respond({ tab_id: "tab_1", accept: true, prompt_text: "Hello" })',
+    },
+  },
+  {
+    name: 'browser.set_permission',
+    description:
+      'Grant or deny a browser permission for a given origin BEFORE the page asks for it. Backed by `chrome.contentSettings` (the surface exposed to MV3 extensions — `Browser.setPermission` would need a browser-level CDP target that `chrome.debugger` does not give us). Subsequent page calls to navigator.geolocation / Notification.requestPermission / navigator.mediaDevices.getUserMedia / etc. then return the chosen state without surfacing a native prompt. Scope is per-ORIGIN (URL pattern `<origin>/*`), persistent until you call again or the user clears settings.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: {
+          type: 'string',
+          description:
+            'A connected tab — used to route the call through its debugger session. The permission itself is applied per ORIGIN, not per tab.',
+        },
+        origin: {
+          type: 'string',
+          description:
+            'Full origin (eg https://example.com or http://127.0.0.1:7373) the permission applies to. Must match exactly what the page reports as its origin.',
+        },
+        name: {
+          type: 'string',
+          enum: [
+            'geolocation',
+            'notifications',
+            'camera',
+            'microphone',
+            'clipboardReadWrite',
+            'clipboardSanitizedWrite',
+            'sensors',
+          ],
+          description:
+            'Permission name. These are the names `chrome.contentSettings` exposes in MV3. Other CDP permission names (midi, paymentHandler, windowManagement, etc.) are NOT supported by this surface — calling with one of those returns ok:false with a descriptive error.',
+        },
+        state: {
+          type: 'string',
+          enum: ['granted', 'denied', 'prompt'],
+          description:
+            'granted (chrome.contentSettings allow) = page gets the resource silently. denied (block) = page receives a denial silently. prompt (ask) = restore default Chrome behaviour, the page will see the native prompt.',
+        },
+      },
+      required: ['tab_id', 'origin', 'name', 'state'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Pre-set a browser permission for an origin so the page API responds silently — no native prompt surfaces.',
+      when_to_use: [
+        'Before clicking a button known to request geolocation / notifications / camera / etc. — pre-grant or pre-deny so the flow does not stall on a prompt the agent cannot click.',
+        'When you intentionally want a page to think permission was denied (eg. testing the no-permission code path).',
+      ],
+      gotchas: [
+        'Permissions are per-ORIGIN, NOT per-tab. Setting `granted` for https://x.com affects every tab the user opens on that origin until you reset (state: "prompt").',
+        'MV3 limitation: only the names in the enum are supported. Anything else (midi, paymentHandler, windowManagement, etc.) returns ok:false because chrome.contentSettings does not expose them.',
+        'Both `clipboardReadWrite` and `clipboardSanitizedWrite` map to the single `clipboard` content setting — there is no finer-grained read-vs-write distinction in this surface.',
+        'Reset to default with state:"prompt" when you are done if the user expects Chrome to ask again next time.',
+      ],
+      example:
+        'browser.set_permission({ tab_id: "tab_1", origin: "https://maps.example.com", name: "geolocation", state: "granted" })',
+    },
+  },
+  {
+    name: 'browser.click',
+    description:
+      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. A target whose computed `pointer-events` is `none` (an invisible accessibility layer over the real control) is NOT treated as covered: the click proceeds at the same point — that is what a real user click does — and the result carries `hit_element` naming the element that actually receives it. `hit_element` (same compact descriptor format as occlusion blockers) is present on ANY click whose dispatched event lands on a different element than the resolved selector — retargeted pointer-events case, an ancestor wrapper, or a `force:true` click landing on whatever covers the point — and omitted when the click hits the resolved element itself. Optionally waits for the page to settle after the click — see `settle_ms`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: { type: 'string' },
+        force: {
+          type: 'boolean',
+          default: false,
+          description:
+            'Skip the occlusion guard and dispatch the click even if another element currently covers the click point. Escape hatch for cases where the "covering" element is intentional (e.g. a transparent hit-target layer) or the guard produces a false positive. Default false.',
+        },
+        ...SETTLE_SCHEMA_PROPERTIES,
+      },
+      required: ['tab_id', 'selector'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Click an element identified by a CSS selector.',
+      when_to_use: [
+        'After browser.snapshot returned a selector for the element the user asked you to interact with.',
+      ],
+      gotchas: [
+        'Never click a selector you have not just verified via browser.snapshot or browser.map.recall — speculating wastes a turn.',
+        'Auto-claims the tab on first use in multi-agent mode.',
+        'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
+        'A `hit_element` in an ok:true result is the truth about where the click landed. For a pointer-events:none target this is expected (the page routes clicks to that element by design); for a force:true click it may reveal the click went to an overlay, not your target — check it before assuming the action worked.',
+        'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
+        'The result carries a compact `settle` object (`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason? }`) unless `settle_ms:0`. `settled:false` means the page never went quiet within `settle_timeout_ms` — not necessarily an error, some pages never stop mutating (tickers, spinners). When the settle wait itself could not run to completion, `settled:false` comes with `reason`: "context-destroyed" (the action navigated the page, destroying the observer\'s execution context — the action still succeeded, and this is itself a strong navigation signal) or "settle-error" (any other settle-side failure). With settle on, a separate browser.wait_for right after a click is usually unnecessary.',
+        'The error message distinguishes a malformed selector ("Invalid selector …") from a well-formed selector that matches nothing ("Element not found …") — a syntax error means fix the selector string itself, not retry against a fresher snapshot.',
+      ],
+    },
+  },
+  {
+    name: 'browser.type',
+    description:
+      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click. Optionally waits for the page to settle after typing — see `settle_ms`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: { type: 'string' },
+        text: { type: 'string' },
+        clear: { type: 'boolean', default: false },
+        ...SETTLE_SCHEMA_PROPERTIES,
+      },
+      required: ['tab_id', 'selector', 'text'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Focus an input element by selector and type text into it.',
+      when_to_use: [
+        'After browser.snapshot returned a selector for the input the user wants filled.',
+      ],
+      gotchas: [
+        'Pass clear:true when you need to replace the current value instead of appending to it.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
+        'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
+        'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+        'Same error distinction as browser.click: "Invalid selector …" (malformed CSS) vs "Element not found …" (well-formed, no match).',
+      ],
+    },
+  },
+  {
+    name: 'browser.press',
+    description:
+      'Press a single key, optionally with modifiers, using a TRUSTED CDP `Input.dispatchKeyEvent` sequence (`isTrusted: true`) — not a synthetic `KeyboardEvent` dispatched via `browser.evaluate`, which many rich text editors, autocompletes, and non-DOM runtimes (Qt-WASM, WebGL — see browser.canvas_screenshot) silently ignore. `key` accepts a human name (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`), case-insensitive, or a single printable character, case-sensitive (`"a"` vs `"A"`, `"@"`). `modifiers` combines with the key for shortcuts (`Ctrl+A` = `{ key: "a", modifiers: ["Control"] }`). Pass `selector` to focus an element first (same deep Shadow DOM / iframe search as click/type/find); omit it to send the key to whatever currently has focus. Optionally waits for the page to settle after the key press — see `settle_ms`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        key: {
+          type: 'string',
+          description:
+            'Human key name ("Enter", "Escape", "Tab", "Backspace", "Delete", "ArrowUp"/"ArrowDown"/"ArrowLeft"/"ArrowRight", "Home", "End", "PageUp", "PageDown", "Space" — case-insensitive) or a single printable character (case-sensitive, e.g. "a", "A", "@").',
+        },
+        modifiers: {
+          type: 'array',
+          items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] },
+          description:
+            'Modifier keys held during the press. Combine for shortcuts, e.g. ["Control"] + key:"a" for Ctrl+A, or ["Meta"] + key:"s" for Cmd+S on macOS.',
+        },
+        selector: {
+          type: 'string',
+          description:
+            'Optional. Focus this element (resolved via the same deep Shadow DOM / iframe search as browser.click) before dispatching the key. Omit to send the key to the currently focused element.',
+        },
+        ...SETTLE_SCHEMA_PROPERTIES,
+      },
+      required: ['tab_id', 'key'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Dispatch one trusted keyboard key press (optionally with modifiers) — Enter/Escape/Tab/arrows/shortcuts/a single character.',
+      when_to_use: [
+        'Submitting a form or confirming an autocomplete suggestion with Enter, dismissing a dialog with Escape, moving focus with Tab, navigating a list/menu with arrow keys.',
+        'A keyboard shortcut the page listens for (Ctrl+A select-all, Cmd+S save, Ctrl+Z undo) — pass modifiers plus the base key.',
+        'A rich text editor, autocomplete widget, or non-DOM runtime (Qt-WASM, WebGL) that discards synthetic input dispatched via browser.evaluate and needs a REAL, isTrusted:true keystroke.',
+      ],
+      gotchas: [
+        'For typing normal text into an input, use browser.type instead — it goes through the native value setter and is far cheaper per character than one browser.press call per keystroke.',
+        'For anything not covered by the named keys or a single character, browser.evaluate is the escape hatch — but note it produces isTrusted:false events, which some pages ignore.',
+        'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',
+        'CLOSED shadow roots and cross-origin iframes are unreachable for the optional `selector`, same as browser.click.',
+        'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+      ],
+      example: 'browser.press({ tab_id: "tab_1", key: "Enter" })',
+    },
+  },
+  {
+    name: 'browser.drag',
+    description:
+      'Drag an element from a source to a destination. Provide each end as either a CSS selector OR a viewport coordinate pair (x,y). A selector endpoint is resolved through the same deep search snapshot/find/click/type use — it reaches into open Shadow DOM roots and same-origin iframes, with coordinates mapped to the top-level viewport. The drag is interpolated over duration_ms (default 1500) so you can watch the cursor traverse the path — this also helps activation-by-distance constraints in pointer-based libraries. Auto-detects HTML5 native drag (element.draggable, <img>, <a href>) vs pointer-based drag (dnd-kit and similar). For HTML5 it uses Input.setInterceptDrags + Input.dragIntercepted + Input.dispatchDragEvent. For pointer-based it interpolates Input.dispatchMouseEvent only. setInterceptDrags is always cleared in finally. Both source and destination must be visible in the viewport simultaneously — drag does NOT scroll between them. Returns { from, to, duration_ms_actual, drag_mode: "html5"|"pointer", events_fired }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        from_selector: {
+          type: 'string',
+          description: 'CSS selector of the source element. Mutually exclusive with from_x/from_y.',
+        },
+        from_x: {
+          type: 'number',
+          description:
+            'Viewport x of the source point. Use with from_y when there is no stable selector (canvas, map, etc).',
+        },
+        from_y: { type: 'number', description: 'Viewport y of the source point.' },
+        to_selector: {
+          type: 'string',
+          description:
+            'CSS selector of the destination element. Mutually exclusive with to_x/to_y.',
+        },
+        to_x: { type: 'number', description: 'Viewport x of the destination point.' },
+        to_y: { type: 'number', description: 'Viewport y of the destination point.' },
+        duration_ms: {
+          type: 'number',
+          description:
+            'Total movement duration in ms. Default 1500. Lower values reduce visual feedback and may miss activation thresholds in some pointer libs.',
+        },
+        hold_before_move_ms: {
+          type: 'number',
+          description:
+            'Time to stay pressed at the source before starting the move. Default 0. Useful for handlers that require a press-and-hold gesture.',
+        },
+        hold_before_release_ms: {
+          type: 'number',
+          description:
+            'Time to stay at the destination before releasing. Default 0. Useful when the drop target validates asynchronously.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Drag an element to another element or to a coordinate, with a visible interpolated path.',
+      when_to_use: [
+        'Reordering a sortable list, moving cards between columns, dropping items onto targets.',
+        'Painting on a canvas by dragging a swatch, or any other coordinate-based drop.',
+        'When click+type cannot express the interaction — drag is its own gesture.',
+      ],
+      gotchas: [
+        'Both endpoints must be visible in the viewport at the same time — the tool does not scroll between them. If one is offscreen, scroll first (via evaluate) or pass viewport coords.',
+        'Default duration is 1500ms so a human watching can follow the cursor. Drop it lower only when you are sure no library has a movement-based activation constraint.',
+        'drag_mode in the response tells you whether HTML5 native drag (dragstart/drop) or pointer-only events fired — use it to diagnose silently-failing drops.',
+        'A selector endpoint reaches into OPEN Shadow DOM roots and same-origin iframes, same limits as snapshot/find/click/type: CLOSED shadow roots and cross-origin iframes stay unreachable.',
+        'SEVERAL drags in a row (card-matching exercises, reordering many items)? Batch them as `drag` steps in ONE browser.flow call — same params per step, one round trip instead of one browser.drag call per drag.',
+      ],
+      example:
+        'browser.drag({ tab_id: "tab_1", from_selector: "[data-testid=card-1]", to_selector: "[data-testid=column-done]" })',
+    },
+  },
+  {
+    name: 'browser.flow',
+    description:
+      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep/repeat) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. Every response also carries `flow_id`, the opaque id of this run. A flow can additionally come back `{ ok: true, stopped_by: "cancelled", steps_completed, results }`: the HUMAN stopped it from the extension popup (or, on a cdp: tab, revoked the cdp-direct grant). That is a success carrying the partial work that really happened — do NOT relaunch it, and do NOT treat it as a transient failure to retry; report what completed and ask the user what they want instead. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        steps: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          description:
+            "Ordered list of steps, each exactly one of find | click | type | press | wait_for | drag | sleep | repeat. Max 20 steps per flow, counting a repeat's inner steps.",
+          items: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  find: {
+                    type: 'object',
+                    properties: {
+                      text: {
+                        type: 'string',
+                        description: 'Visible text to match — same semantics as browser.find.',
+                      },
+                      role: {
+                        type: 'string',
+                        enum: ['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem'],
+                      },
+                    },
+                    required: ['text'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['find'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  click: {
+                    type: 'object',
+                    properties: {
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target from a preceding find step.',
+                      },
+                      force: { type: 'boolean' },
+                      settle_ms: { type: 'number' },
+                    },
+                    additionalProperties: false,
+                  },
+                },
+                required: ['click'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: {
+                    type: 'object',
+                    properties: {
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target, or to type into whatever currently has focus.',
+                      },
+                      text: { type: 'string' },
+                      clear: { type: 'boolean' },
+                      settle_ms: { type: 'number' },
+                    },
+                    required: ['text'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['type'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  press: {
+                    type: 'object',
+                    properties: {
+                      key: { type: 'string' },
+                      modifiers: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] },
+                      },
+                      selector: {
+                        type: 'string',
+                        description:
+                          'Optional — omit to use the implicit target, or to send the key to whatever currently has focus.',
+                      },
+                      settle_ms: { type: 'number' },
+                    },
+                    required: ['key'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['press'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  wait_for: {
+                    type: 'object',
+                    properties: {
+                      selector: { type: 'string' },
+                      condition: {
+                        type: 'string',
+                        enum: ['visible', 'hidden', 'attached', 'detached'],
+                      },
+                      expression: { type: 'string' },
+                      network_url: { type: 'string' },
+                      timeout_ms: { type: 'number' },
+                      poll_interval_ms: { type: 'number' },
+                    },
+                    additionalProperties: false,
+                    description:
+                      'Exactly one of selector | expression | network_url is required — same contract as standalone browser.wait_for.',
+                    oneOf: [
+                      { required: ['selector'] },
+                      { required: ['expression'] },
+                      { required: ['network_url'] },
+                    ],
+                  },
+                },
+                required: ['wait_for'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  drag: {
+                    type: 'object',
+                    description:
+                      'Same endpoint contract as standalone browser.drag: provide from_selector OR both from_x/from_y, and to_selector OR both to_x/to_y. Endpoints are always explicit — a drag step never uses the implicit target from a preceding find. Extension tabs only: rejected on cdp: tabs with the same error as standalone browser.drag.',
+                    properties: {
+                      from_selector: { type: 'string' },
+                      from_x: { type: 'number' },
+                      from_y: { type: 'number' },
+                      to_selector: { type: 'string' },
+                      to_x: { type: 'number' },
+                      to_y: { type: 'number' },
+                      duration_ms: { type: 'number' },
+                      hold_before_move_ms: { type: 'number' },
+                      hold_before_release_ms: { type: 'number' },
+                    },
+                    additionalProperties: false,
+                  },
+                },
+                required: ['drag'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  sleep: {
+                    type: 'object',
+                    description:
+                      'A FIXED pause before the next step. Not the same thing as settle_ms: settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so it collapses to nothing on an already-idle page. Use sleep to throttle repeated actions against a rate-limited backend. Counts its full ms against the flow budget.',
+                    properties: {
+                      ms: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 30000,
+                        description:
+                          'Milliseconds to pause, 1..30000. Out-of-range is REJECTED, not clamped.',
+                      },
+                    },
+                    required: ['ms'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['sleep'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  repeat: {
+                    type: 'object',
+                    description:
+                      'Run a sub-sequence up to max_iterations times, optionally stopping early. max_iterations is REQUIRED — it is what keeps the flow worst case statically computable, which is what the 60s up-front rejection depends on. Repeats do NOT nest. Inner steps count against the same 20-step ceiling as outer ones, and each iteration starts with a FRESH implicit target.',
+                    properties: {
+                      steps: {
+                        type: 'array',
+                        minItems: 1,
+                        maxItems: 19,
+                        // Inner entries follow the IDENTICAL step grammar
+                        // minus `repeat`. They are typed loosely here on
+                        // purpose rather than duplicating the seven
+                        // variants above (a copy would silently drift):
+                        // `validateFlowSteps` recurses with the exact same
+                        // per-kind rules and budget model, and rejects a
+                        // nested repeat — and that server-side pass is the
+                        // authoritative one anyway, since the IPC/proxy
+                        // path in multi-agent mode never sees this schema.
+                        items: { type: 'object' },
+                        description:
+                          'Steps to repeat — same grammar as the outer list except `repeat` itself. Validated server-side with identical rules.',
+                      },
+                      max_iterations: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 500,
+                        description:
+                          'REQUIRED hard bound on iterations. The flow budget is max_iterations × (inner steps + delay), so this is usually what decides whether the flow is accepted at all.',
+                      },
+                      while_found: {
+                        type: 'string',
+                        description:
+                          'Optional CSS selector. Before each iteration the loop checks whether it still matches something VISIBLE; the first time it does not, the loop stops with stopped_by:"condition". Use this instead of parsing a page counter — counters vanish at zero and leave stale values behind.',
+                      },
+                      delay_ms: {
+                        type: 'integer',
+                        minimum: 0,
+                        maximum: 30000,
+                        description:
+                          'Optional fixed pause AFTER each iteration — the throttle for rate-limited backends. Counts fully against the flow budget, multiplied by max_iterations.',
+                      },
+                    },
+                    required: ['steps', 'max_iterations'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['repeat'],
+                additionalProperties: false,
+              },
+            ],
+          },
+        },
+        dry_run: {
+          type: 'boolean',
+          description:
+            'Validate and PROJECT the flow without dispatching a single input event, navigation or pause. Returns { ok:true, dry_run:true, steps_completed:0, results, budget_ms, requires_detach } where a repeat entry reports max_iterations, inner_steps, delay_ms, while_found and would_start (whether the condition matches RIGHT NOW). A dry run is judged against the DETACHED 30-minute ceiling, never the 60s one, so any flow you could legally run either way can be projected — `requires_detach:true` means the real run needs `detach: true`. Use this before any irreversible bulk run.',
+        },
+        detach: {
+          type: 'boolean',
+          description:
+            'Run the flow in the BACKGROUND and return immediately with { flow_id, detached:true, started_at, steps, expires_at } instead of the result. Frees the 60s worst-case budget ceiling (the detached ceiling is 30 minutes) and frees your turn. At most ONE detached flow per tab. Poll browser.flow_status(flow_id) for progress and the action manifest; stop it with browser.flow_cancel. The human can stop it from the extension popup at any time. Do NOT detach unless the work genuinely exceeds 60s: a foreground flow returns its results directly, which is simpler and cheaper.',
+        },
+      },
+      required: ['tab_id', 'steps'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip — the DEFAULT way to drive any multi-step UI interaction.',
+      when_to_use: [
+        'ANY interaction that needs more than one action tool call — find a target then act on it, act then wait for a result, fill and submit a form. Each MCP round trip you avoid is a full LLM inference you do not pay for.',
+        'The find → implicit-target → click/type/press pattern: `{find}` followed by an action step with no `selector` resolves against what find just found — no need to re-run browser.find and copy its selector into the next call by hand.',
+        'A flow that might fail partway — the failure response already carries a focused `recovery_snapshot`, so you do not need a follow-up browser.snapshot to see what state the page is in.',
+        'Repeated drag-and-drop (card-matching exercises, sortable lists, moving many cards): N drag steps in ONE flow cost one round trip instead of N standalone browser.drag calls.',
+        'Throttling repeated actions against a rate-limited backend: interleave `sleep` steps. This is the ONLY way to get a fixed pause while keeping trusted CDP input — the alternative is a loop inside browser.evaluate, where every click becomes an untrusted el.click().',
+        'BULK WORK — "click every element matching X until the list drains". Use `repeat` with `while_found` and a `delay_ms`, NOT a loop inside browser.evaluate. One repeat step does hundreds of iterations in ONE round trip with trusted CDP input, the occlusion guard and a recovery snapshot intact; the evaluate loop has none of those and cannot be stopped or audited. Run it once with `dry_run: true` first.',
+      ],
+      gotchas: [
+        'Strictly sequential, fail-fast, no branching. If step 3 needs to behave differently depending on what step 2 returned, run the steps individually instead of as one flow.',
+        'The implicit target is single-use: it is available to the very next click/type/press step that omits `selector`, then it is gone — a LATER step still needs its own `selector` or a fresh `find`.',
+        'Only `click` requires a resolved target; `type` and `press` fall back to whatever currently has focus when neither an explicit nor an implicit selector is available, exactly like standalone browser.press.',
+        'A `find` step that resolves with `ambiguous:true` (see browser.find) fails the flow — a selector that could match the wrong structurally-identical twin is never used silently inside a flow.',
+        'An action step that triggers a NAVIGATION should be followed by a `wait_for` step — steps run back-to-back, so the next step can otherwise race the loading document and fail with a misleading "Element not found". When that race happens, the flow error carries a hint if the navigating step\'s settle reported `context-destroyed` (the navigation signal).',
+        "A `drag` step's endpoints are ALWAYS explicit (selector or viewport coords) — drag neither consumes nor sets the find implicit target, and a pending implicit target survives a drag step for a later click/type/press. Both endpoints must be visible in the viewport at once, same as standalone browser.drag.",
+        'Drag steps are extension-transport only: a flow containing a drag step run on a cdp: tab fails fast at that step with the same "not supported over cdp-direct" error standalone browser.drag returns — the earlier steps HAVE already executed by then.',
+        'A `sleep` step is NOT the same as `settle_ms`. settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so on an already-idle page it collapses to nothing — it can never throttle anything. `sleep` is a fixed pause that is always spent in full, and it counts its full ms against the flow budget. Out-of-range ms (outside 1..30000) is REJECTED, never clamped: silently halving a throttle would hit a rate-limited backend at twice the intended rate. A sleep step names no element, so it neither consumes nor sets the find implicit target.',
+        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), each sleep step its full ms, plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms or sleep.ms values, or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
+        'evaluate and navigate steps are NOT supported in v1 — see the tool description for why. Navigate before the flow; evaluate after it.',
+        '`repeat` is BOUNDED by construction: `max_iterations` is required, repeats do not nest, and inner steps count against the same 20-step ceiling. That is what keeps the worst case computable — the budget is max_iterations × (inner steps + delay_ms + a while_found probe), and a repeat that projects over 60s is rejected up front like any other flow. Lower max_iterations, shorten the body, or drop delay_ms.',
+        'A repeat iteration starts with a FRESH implicit target, and none escapes: a `find` inside the body cannot feed a click after the repeat, and a `find` before the repeat cannot feed one inside it. Put the find inside the body.',
+        '`while_found` checks for a VISIBLE match before each iteration and stops the first time there is none (`stopped_by:"condition"`; otherwise `"max_iterations"`). Prefer it over reading a page counter to decide when to stop — counters routinely vanish at zero and leave a stale value that reads as a phantom last item.',
+        'On an irreversible bulk run, call once with `dry_run: true` first. It dispatches NOTHING and reports, per repeat, `max_iterations` / `inner_steps` / `delay_ms` / `while_found` / `would_start`. It does not report how many elements currently match — it answers "would this start, and what is my ceiling", not "how many are there".',
+        "Max 20 steps per flow, and a repeat's inner steps count toward that same 20. For longer sequences, split into multiple browser.flow calls.",
+        'A flow can be STOPPED by the human mid-run, from the extension popup\'s Flows panel (on a cdp: tab, by `browser-link cdp revoke`). It then returns `ok:true` with `stopped_by:"cancelled"`, `steps_completed` and the results of what already ran — a repeat reports its own `stopped_by:"cancelled"` plus `iterations_completed`, and a `partial_iteration` when the stop landed mid-iteration. NEVER relaunch a cancelled flow: it is not a transient failure, it is a person deciding to stop you, and re-running it would repeat irreversible actions they just interrupted. Report what completed and ask.',
+        '`detach: true` returns `{ flow_id, detached:true, started_at, steps, expires_at }` INSTEAD of the result — the flow keeps acting between your turns, so poll browser.flow_status(flow_id) for progress and, once it ends, for the action manifest. Only one detached flow per tab: a second attempt is rejected naming the one already running. A detached flow self-cancels at 30 minutes with `stopped_by:"expired"`, and if Chrome terminates the extension service worker under it, it comes back `failed` / `worker-terminated` and is NEVER resumed — check flow_status before relaunching anything.',
+      ],
+      example:
+        'browser.flow({ tab_id: "tab_1", steps: [{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }] })',
+    },
+  },
+  {
+    name: 'browser.flow_status',
+    description:
+      'Progress, outcome and ACTION MANIFEST of one browser.flow run, by its flow_id. Returns { flow_id, tab_id, state, detached, started_at, ended_at?, steps, steps_completed, iterations_completed?, stopped_by?, error?, manifest? }. `state` is one of running | completed | cancelled | failed | expired | unknown. While a flow is RUNNING you get live progress (steps_completed, iterations_completed) but no manifest — the runner is still holding the results; once it ends, `manifest` is exactly the `results` array a foreground flow would have returned, which is how you answer "which N things did that actually do?" after a detached run. `cancelling:true` means a stop was requested and the runner has not reached its next check yet (up to one step). `unknown` is not an error: it means this bridge has no record of that id — a foreground flow that already returned, a detached flow evicted after 10 newer ones, or an id from before the extension service worker restarted. `manifest_truncated:true` means the manifest existed but is not retrievable (over the storage ceiling, or lost with a terminated service worker). The tab_id only routes the request: any connected tab can answer for any flow_id, so a finished flow whose own tab has since closed is still readable through another one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        flow_id: {
+          type: 'string',
+          description: 'The opaque id browser.flow returned for the run you are asking about.',
+        },
+      },
+      required: ['tab_id', 'flow_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Poll a flow by id: live progress while it runs, outcome and action manifest after.',
+      when_to_use: [
+        'After browser.flow({ detach: true }) — this is the ONLY way to see how the detached run is doing and what it ended up doing.',
+        'To answer "what exactly did that bulk run touch?" — the manifest is the per-step, per-iteration record the run produced.',
+        'Before relaunching anything after a timeout or a disconnect: a flow you think died may still be running, and a detached one that really died reports failed / worker-terminated rather than leaving you guessing.',
+      ],
+      gotchas: [
+        'No manifest while state is "running" — poll for progress, read the manifest once it ends.',
+        'Poll at a human pace (every few seconds at most). Each poll is a full round trip and, for you, a full inference; a detached flow that needs 10 minutes does not need 200 status checks.',
+        'state:"unknown" is a valid answer, not a failure. Foreground flows are not retained after they return, and only the 10 most recent detached runs keep their manifest.',
+      ],
+      example: 'browser.flow_status({ tab_id: "tab_1", flow_id: "flow_9f2c…" })',
+    },
+  },
+  {
+    name: 'browser.flow_cancel',
+    description:
+      'Stop a running browser.flow by its flow_id. Cancellation is cooperative and lands within ONE STEP: the runner declines to dispatch the next step rather than interrupting one in flight (an in-flight CDP command cannot be un-sent). Returns the same payload browser.flow_status returns, plus cancel_requested:true — so immediately after the call you will typically see state:"running" with cancelling:true, and a poll a moment later shows state:"cancelled". The flow keeps everything it already did: a cancelled flow is a SUCCESS carrying partial results, never a failure, and its manifest stays readable through browser.flow_status. Cancelling an unknown or already-finished flow_id is a clean no-op (state:"unknown" or the terminal state it already reached), never an error.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        flow_id: { type: 'string', description: 'The flow to stop.' },
+      },
+      required: ['tab_id', 'flow_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Stop a running flow by id, keeping whatever it already completed.',
+      when_to_use: [
+        'A detached flow is doing the wrong thing, or the user changed their mind mid-run.',
+        'You are about to start different work on a tab that still has a detached flow on it — the one-per-tab rule will reject the new one until this finishes or is stopped.',
+      ],
+      gotchas: [
+        'Up to one step of latency by design. Read the state back with browser.flow_status instead of assuming the flow is already stopped.',
+        'Partial work is real work. The steps that already ran are not undone — check the manifest and tell the user what actually happened before doing anything else.',
+        'The human has the same lever from the extension popup, and does not need you for it.',
+      ],
+      example: 'browser.flow_cancel({ tab_id: "tab_1", flow_id: "flow_9f2c…" })',
+    },
+  },
+  {
+    name: 'browser.evaluate',
+    description:
+      'Run a JavaScript expression in the page context and return its result. Use an IIFE with return if you need multi-step logic. The bridge waits up to `timeout_ms` (default 15000, capped at 60000) for the result — raise it for long-running in-page work instead of splitting one loop across several calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        expression: { type: 'string' },
+        timeout_ms: {
+          type: 'number',
+          description:
+            'Max time in ms the bridge waits for the result. Default 15000; values below that floor behave like the default, values above 60000 clamp to 60000 — the bridge does not park a single tool call longer than that.',
+        },
+      },
+      required: ['tab_id', 'expression'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Execute a JavaScript expression in the page and return its value.',
+      when_to_use: [
+        'When snapshot/click/type are not expressive enough — pulling a computed value, reading a JS variable, or invoking page APIs.',
+      ],
+      gotchas: [
+        'Wrap multi-step logic in an IIFE that returns the value you want.',
+        'An evaluate that has not returned after timeout_ms (default 15000, cap 60000) fails with a timeout error, but the expression itself keeps running in the page — only the response is dropped. For in-page work that legitimately needs more than 15s (e.g. walking many slides in one loop), raise timeout_ms instead of splitting the loop.',
+      ],
+    },
+  },
+  {
+    name: 'browser.events',
+    description:
+      'Return recent bridge lifecycle events: primary-elected (a new browser-link primary started), tab-registered / tab-disconnected (Chrome tabs joined/left), tab-renamed (the same Chrome tab got a new tab_id, usually after a primary swap), tab-claimed / tab-released / tab-claim-rejected (multi-agent tab ownership changes — see browser.claim_tab), dialog-opening / dialog-closed (a native alert/confirm/prompt/beforeunload started or finished blocking a tab — see browser.dialog_respond), tab-created (a new tab opened from an existing one, e.g. target="_blank" or window.open — see browser.wait_for_tab), flow-recorded (a demonstrated flow was saved to the persistent map — see browser.map.recall), flow-finished (a DETACHED browser.flow ended — one summary entry per flow with its outcome and counts, never one per iteration; read the action manifest itself with browser.flow_status). Call this when you get "Tab not connected: …" so you can pick up the new tab_id and resume work, to notice a newly-recorded flow without polling, or to notice that a detached flow you launched has ended. Returns { events, latest_id } — pass latest_id back as since_id next time to get only new entries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since_id: {
+          type: 'number',
+          description: 'Only return events with id > since_id. Omit to get the most recent slice.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of events to return (default 20, max 200).',
+        },
+      },
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Inspect bridge lifecycle events — primary elections, tab registrations/renames, tab claims, dialogs, new tabs, and newly-recorded flows.',
+      when_to_use: [
+        'When a tool call returns "Tab not connected: …" — look for a tab-renamed entry to find the new tab_id.',
+        'To diagnose why a tab disappeared between calls.',
+        'To notice a flow-recorded entry — a recipe was just demonstrated and saved; recall it via browser.map.recall instead of re-discovering it.',
+      ],
+      gotchas: [
+        'Pass latest_id from the previous call as since_id to page through new entries efficiently.',
+      ],
+    },
+  },
+  {
+    name: 'browser.reset',
+    description:
+      'Soft-reset the bridge state. Drops every connected tab session, releases every claim, and clears the in-memory event log — but does NOT kill the MCP server itself. The user has to re-press Connect in the extension popup for each tab they want back. Use this when the bridge state looks inconsistent (stale tab_ids that browser.events does not explain, tab.click that hangs, claims you cannot release through normal means) and you are sure a clean slate is the right move.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    doc: {
+      purpose:
+        'Soft-reset the bridge: drop tab sessions + claims + event log, keep the MCP server alive.',
+      when_to_use: [
+        'Bridge state looks inconsistent (stale tab_ids, hung action tools, claims you cannot release).',
+        'You explicitly want to start the bridge state from scratch without killing the MCP server.',
+      ],
+      gotchas: [
+        'This drops every tab the user had connected — they will need to re-press Connect in the extension popup for each one.',
+        'Use sparingly. Most "tab not connected" cases resolve via browser.events showing a tab-renamed entry, not via reset.',
+      ],
+    },
+  },
+];

@@ -1,0 +1,48 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Group rules so the typical week is 1–3 PRs instead of one per dep.
+    # Major bumps deliberately drop out of every group (no `major` in
+    # update-types) so they always arrive as solo PRs for review.
+    groups:
+      types:
+        patterns:
+          - "@types/*"
+        update-types:
+          - minor
+          - patch
+      prod-dependencies:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # @types/node tracks the Node runtime, which is pinned to Node 22 in
+      # CI (.github/workflows/ci.yml). Allow patch/minor (grouped above)
+      # but never auto-propose a major — the types would drift ahead of
+      # the actual runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      gh-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

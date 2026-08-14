@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+.env
+.env.local
+*.tsbuildinfo
+.vscode/
+.idea/
+
+# Local MCP map data dir (in case BROWSER_LINK_DATA_DIR points inside the repo)
+.browser-link/
+
+# Scratch notes / personal roadmaps that don't ship with the repo
+.notes/
+
+# Local CodeGraph index (per-machine, never committed)
+.codegraph/

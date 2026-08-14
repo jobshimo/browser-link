@@ -1,0 +1,24 @@
+# Default: treat everything as text, normalize to LF in the repo.
+# Working tree stays LF on all OSes — keeps Prettier (endOfLine: lf) and the
+# Linux/Windows CI runners aligned, and silences Git's autocrlf warnings.
+* text=auto eol=lf
+
+# Windows-native scripts must keep CRLF or cmd.exe / PowerShell break.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

@@ -1,0 +1,191 @@
+/* Welcome screen strings (English / Spanish) shared by the interactive Ink
+ * Welcome view and any future non-interactive caller. No runtime logic here
+ * — every screen consumes this as a pure data module. */
+
+export type Language = 'en' | 'es';
+
+export interface WelcomeResult {
+  action: 'continue' | 'quit';
+  language: Language;
+  /** True when the user opted "Accept and don't show again" — the App
+   * persists `skipWelcome: true` in config when this is set. */
+  persisted: boolean;
+}
+
+export interface WelcomeOptions {
+  /** Initial language to render. */
+  initial?: Language;
+  /** When true, hide the "Accept and don't show again" option. Used when
+   * the user explicitly asks to see the welcome from the menu. */
+  hideDismiss?: boolean;
+}
+
+interface I18n {
+  title: string;
+  /** One-paragraph mission statement for the compact (default) view. */
+  shortAbout: string;
+  /** One-line critical warning for the compact (default) view. */
+  shortWarning: string;
+  aboutTitle: string;
+  about: string;
+  capabilitiesTitle: string;
+  capabilities: string;
+  warningTitle: string;
+  warning: string;
+  responsibility: string;
+  extensionNote: string;
+  prompt: string;
+  /** Trailing hint pointing at where the full breakdown lives. */
+  detailHint: string;
+  options: { accept: string; dismiss: string; swap: string; quit: string };
+  /** Footer keycap labels — language-stable except for the verb. */
+  footerKeys: {
+    navigate: string;
+    select: string;
+    lang: string;
+    quit: string;
+    info: string;
+    hide: string;
+  };
+}
+
+export const I18N_WELCOME: Record<Language, I18n> = {
+  en: {
+    title: 'browser-link',
+    shortAbout: [
+      'MCP bridge between your editor agent and the Chrome tabs you',
+      'explicitly enable through a companion extension.',
+    ].join('\n'),
+    shortWarning: [
+      'The agent can read and write whatever is on a connected tab —',
+      'sessions, wallets, admin panels. Only connect tabs you would let',
+      'a remote junior dev touch.',
+    ].join('\n'),
+    aboutTitle: 'What this is',
+    about: [
+      'An MCP server that opens a small WebSocket bridge between an MCP',
+      'client (Claude Code, OpenCode, GitHub Copilot CLI…) and the Google',
+      'Chrome tabs you explicitly grant access to through a custom companion',
+      'extension you load locally.',
+    ].join('\n'),
+    capabilitiesTitle: 'What the agent can do on a connected tab',
+    capabilities: [
+      '• Navigate that tab to any URL',
+      '• Read its DOM, console and network traffic',
+      '• Click and type into its elements',
+      '• Execute arbitrary JavaScript in the page context',
+      '',
+      'Tabs you do not connect remain invisible to the agent. Each one is',
+      'enabled one by one, by hand. The server also remembers what it learns',
+      'about each app across sessions in a local SQLite map (selectors,',
+      'flows, gotchas — never uploaded anywhere).',
+    ].join('\n'),
+    warningTitle: 'Read this before you continue',
+    warning: [
+      'Connecting a tab gives the agent access to whatever is on it — any',
+      'logged-in session, saved card, wallet, banking page, work console or',
+      'admin panel the browser is currently showing on that tab.',
+      '',
+      'Treat the agent like a junior dev given remote control of those tabs:',
+      'it can buy things, submit forms, change configurations, send messages,',
+      'or follow instructions it reads on the page that you did not write.',
+      '',
+      'Only connect tabs where you would be comfortable letting an automated',
+      'process act on your behalf. Disconnect a tab from the extension popup',
+      'when you are done with it.',
+    ].join('\n'),
+    responsibility:
+      'You are responsible for every action the agent performs on the tabs you explicitly enable. The extension stays inert on any tab where you have not pressed "Connect this tab" yourself.',
+    extensionNote:
+      'The Chrome extension is custom and ships inside this package. The setup menu after this screen will tell you where it lives so you can load it via chrome://extensions → Load unpacked.',
+    prompt: 'How do you want to proceed?',
+    detailHint: 'Press i for the full breakdown · also available under About.',
+    options: {
+      accept: 'I understand, continue',
+      dismiss: "Accept and don't show again",
+      // Label sits in the destination language so a monolingual user
+      // can still parse it — they recognise "Español" universally and
+      // the verb in the destination language confirms it is the switch.
+      swap: 'Cambiar a Español',
+      quit: 'Quit',
+    },
+    footerKeys: {
+      navigate: 'navigate',
+      select: 'select',
+      lang: 'lang',
+      quit: 'quit',
+      info: 'info',
+      hide: 'hide',
+    },
+  },
+  es: {
+    title: 'browser-link',
+    shortAbout: [
+      'Puente MCP entre el agente de tu editor y las pestañas de Chrome',
+      'que vos habilitás explícitamente a través de una extensión.',
+    ].join('\n'),
+    shortWarning: [
+      'El agente puede leer y escribir todo lo que esté en una pestaña',
+      'conectada — sesiones, wallets, paneles de admin. Solo conectá',
+      'pestañas que dejarías tocar a un dev junior remoto.',
+    ].join('\n'),
+    aboutTitle: 'Qué es esto',
+    about: [
+      'Un servidor MCP que abre un puente WebSocket entre un cliente MCP',
+      '(Claude Code, OpenCode, GitHub Copilot CLI…) y las pestañas de Google',
+      'Chrome a las que vos le des acceso explícito a través de una extensión',
+      'que cargás vos manualmente.',
+    ].join('\n'),
+    capabilitiesTitle: 'Qué puede hacer el agente en una pestaña conectada',
+    capabilities: [
+      '• Navegar esa pestaña a cualquier URL',
+      '• Leer su DOM, su consola y su tráfico de red',
+      '• Hacer click y escribir en sus elementos',
+      '• Ejecutar JavaScript arbitrario en el contexto de la página',
+      '',
+      'Las pestañas que NO conectes siguen invisibles para el agente. Cada',
+      'una se habilita una por una, a mano. El servidor además guarda lo que',
+      'aprende de cada app entre sesiones en un mapa SQLite local (selectores,',
+      'flujos, gotchas — nunca se sube a ningún lado).',
+    ].join('\n'),
+    warningTitle: 'Leelo antes de continuar',
+    warning: [
+      'Una pestaña conectada le da al agente acceso a todo lo que esté en',
+      'ella: sesiones iniciadas, tarjetas guardadas, wallets, banca,',
+      'consolas de trabajo, paneles de administración… lo que el navegador',
+      'esté mostrando en ese momento.',
+      '',
+      'Tratá al agente como a un dev junior con control remoto de esas',
+      'pestañas: puede comprar cosas, enviar formularios, cambiar',
+      'configuraciones, mandar mensajes, o seguir instrucciones que lea en',
+      'la página y que vos no escribiste.',
+      '',
+      'Solo conectá pestañas donde estarías cómodo dejando que un proceso',
+      'automatizado actúe en tu nombre. Desconectá la pestaña desde el popup',
+      'cuando termines de usarla.',
+    ].join('\n'),
+    responsibility:
+      'Sos responsable de cada acción que el agente haga en las pestañas que habilitás explícitamente. La extensión se mantiene inerte en cualquier pestaña donde no hayas apretado "Connect this tab" vos mismo.',
+    extensionNote:
+      'La extensión de Chrome es custom y viene incluida en este paquete. El menú que aparece después de esta pantalla te dice exactamente dónde está para que la cargues vía chrome://extensions → Cargar sin empaquetar.',
+    prompt: '¿Cómo querés seguir?',
+    detailHint: 'Apretá i para ver el detalle completo · también disponible en About.',
+    options: {
+      accept: 'Entendido, continuar',
+      dismiss: 'Aceptar y no volver a mostrar',
+      // El label vive en el idioma destino para que un user monolingüe
+      // lo lea sin esfuerzo — "English" se reconoce universalmente y el
+      // verbo en el idioma destino confirma que es el switch.
+      swap: 'Switch to English',
+      quit: 'Salir',
+    },
+    footerKeys: {
+      navigate: 'moverse',
+      select: 'elegir',
+      lang: 'idioma',
+      quit: 'salir',
+      info: 'info',
+      hide: 'ocultar',
+    },
+  },
+};

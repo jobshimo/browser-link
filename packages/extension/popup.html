@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>browser-link</title>
+    <style>
+      /* v0.9.0 popup — faithful to Claude Design's Bridge variant.
+       *
+       * Slate-blue palette (refined from the bright-cyan blues of the
+       * previous popup), cleaner SVG mark (viewBox 64, stroke 5), per-
+       * state coloured ring on the status card, capitalised "loopback
+       * only" sub-line. Visual refresh only — the popup ↔ background
+       * message protocol is unchanged. */
+      :root {
+        --brand-from: #5b8def;
+        --brand-to: #2a5fd6;
+        --brand-ring: rgba(29, 78, 216, 0.32);
+
+        --bg: #ffffff;
+        --bg-soft: #f8fafc;
+        --border: #e2e8f0;
+
+        --text: #0f172a;
+        --text-muted: #64748b;
+        --text-faint: #94a3b8;
+
+        --idle-fg: #b45309;
+        --idle-soft: #fffbeb;
+        --idle-ring: rgba(245, 158, 11, 0.18);
+
+        --connecting-fg: #1d4ed8;
+        --connecting-soft: #eff6ff;
+        --connecting-ring: rgba(29, 78, 216, 0.18);
+
+        --connected-fg: #047857;
+        --connected-soft: #ecfdf5;
+        --connected-ring: rgba(16, 185, 129, 0.18);
+
+        --error-fg: #b91c1c;
+        --error-soft: #fef2f2;
+        --error-ring: rgba(239, 68, 68, 0.18);
+
+        --shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Inter',
+          'Segoe UI',
+          system-ui,
+          sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      body {
+        width: 320px;
+        background:
+          radial-gradient(circle at top right, rgba(91, 141, 239, 0.08), transparent 55%),
+          radial-gradient(circle at top left, rgba(42, 95, 214, 0.05), transparent 50%), var(--bg);
+      }
+
+      .shell {
+        padding: 14px 14px 12px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.5) inset,
+          0 6px 14px var(--brand-ring);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #ffffff;
+      }
+
+      .mark svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .title {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+      }
+
+      .title strong {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .title span {
+        font-size: 11px;
+        color: var(--text-faint);
+        margin-top: 1px;
+      }
+
+      .card {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        box-shadow: var(--shadow);
+        transition:
+          background 0.18s ease,
+          border-color 0.18s ease;
+      }
+
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        font-size: 12.5px;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--text-faint);
+        flex-shrink: 0;
+        position: relative;
+      }
+
+      /* Per-state palette — background tints the card softly, the dot
+       * and the label match the state hue, and the connected state pulses
+       * a halo so the user spots it from across the screen. */
+      .card[data-state='idle'] {
+        background: var(--idle-soft);
+        border-color: var(--idle-ring);
+      }
+      .card[data-state='idle'] .dot {
+        background: var(--idle-fg);
+      }
+      .card[data-state='idle'] .status-label {
+        color: var(--idle-fg);
+      }
+
+      .card[data-state='connecting'] {
+        background: var(--connecting-soft);
+        border-color: var(--connecting-ring);
+      }
+      .card[data-state='connecting'] .dot {
+        background: var(--connecting-fg);
+      }
+      .card[data-state='connecting'] .status-label {
+        color: var(--connecting-fg);
+      }
+
+      .card[data-state='connected'] {
+        background: var(--connected-soft);
+        border-color: var(--connected-ring);
+      }
+      .card[data-state='connected'] .dot {
+        background: var(--connected-fg);
+        box-shadow: 0 0 0 0 var(--connected-ring);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+      .card[data-state='connected'] .status-label {
+        color: var(--connected-fg);
+      }
+
+      .card[data-state='error'],
+      .card[data-state='portCollision'] {
+        background: var(--error-soft);
+        border-color: var(--error-ring);
+      }
+      .card[data-state='error'] .dot,
+      .card[data-state='portCollision'] .dot {
+        background: var(--error-fg);
+      }
+      .card[data-state='error'] .status-label,
+      .card[data-state='portCollision'] .status-label {
+        color: var(--error-fg);
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 var(--connected-ring);
+        }
+        70% {
+          box-shadow: 0 0 0 7px transparent;
+        }
+        100% {
+          box-shadow: 0 0 0 0 transparent;
+        }
+      }
+
+      .tab-id {
+        margin-left: auto;
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 5px;
+        background: rgba(15, 23, 42, 0.06);
+        color: var(--text-muted);
+        font-weight: 500;
+        letter-spacing: 0.01em;
+      }
+
+      .url {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+        word-break: break-all;
+        line-height: 1.5;
+        max-height: 32px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      /* Explanation slot — shown for portCollision, hidden otherwise.
+       * popup.ts toggles `.explanation` content + visibility. */
+      .explanation {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        font-size: 12px;
+        color: var(--text-muted);
+        line-height: 1.45;
+      }
+      .explanation code {
+        font-family:
+          'JetBrains Mono', 'SF Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+        font-size: 11px;
+        background: rgba(15, 23, 42, 0.06);
+        padding: 0 4px;
+        border-radius: 3px;
+      }
+
+      button {
+        margin-top: 12px;
+        width: 100%;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: -0.005em;
+        transition:
+          transform 0.08s ease,
+          box-shadow 0.15s ease,
+          opacity 0.15s ease,
+          background 0.15s ease;
+      }
+
+      button:active:not(:disabled) {
+        transform: translateY(1px);
+      }
+
+      button.primary {
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
+        color: #ffffff;
+        box-shadow: 0 6px 14px var(--brand-ring);
+      }
+
+      button.primary:hover:not(:disabled) {
+        box-shadow: 0 8px 18px rgba(29, 78, 216, 0.38);
+      }
+
+      button.danger {
+        background: #ffffff;
+        color: var(--error-fg);
+        box-shadow: inset 0 0 0 1px var(--error-fg);
+      }
+
+      button.danger:hover:not(:disabled) {
+        background: var(--error-soft);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: progress;
+      }
+
+      .footer {
+        margin-top: 10px;
+        font-size: 10.5px;
+        color: var(--text-faint);
+        text-align: center;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-weight: 500;
+      }
+
+      .dialog-box {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--error-fg);
+        background: var(--error-soft);
+        border-radius: 10px;
+        box-shadow: 0 4px 10px rgba(239, 68, 68, 0.18);
+      }
+
+      .dialog-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .dialog-type {
+        background: var(--error-fg);
+        color: #ffffff;
+        font-size: 10.5px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 4px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .dialog-label {
+        font-size: 11px;
+        color: var(--error-fg);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .dialog-message {
+        font-size: 13px;
+        color: var(--text);
+        line-height: 1.4;
+        margin-bottom: 10px;
+        word-break: break-word;
+        max-height: 120px;
+        overflow-y: auto;
+      }
+
+      .dialog-prompt {
+        width: 100%;
+        padding: 8px 10px;
+        margin-bottom: 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 12.5px;
+        font-family: inherit;
+      }
+
+      .dialog-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .dialog-actions button {
+        margin-top: 0;
+      }
+
+      .version-banner {
+        margin-bottom: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--error-fg);
+        background: var(--error-soft);
+        border-radius: 10px;
+        box-shadow: 0 4px 10px rgba(239, 68, 68, 0.18);
+      }
+
+      .version-banner-title {
+        font-size: 12.5px;
+        font-weight: 700;
+        color: var(--error-fg);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+
+      .version-banner-rows {
+        font-size: 12px;
+        color: var(--text);
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+
+      .version-banner-rows code {
+        background: rgba(15, 23, 42, 0.06);
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+      }
+
+      .version-banner-hint {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 10px;
+        line-height: 1.4;
+      }
+
+      .version-banner button {
+        margin-top: 0;
+      }
+
+      /* Idle-disconnect TTL setting — a small, always-visible control
+       * (not tied to card state) that lets the user override the fixed
+       * 30-minute auto-disconnect. Sits below the primary action, in its
+       * own thin row echoing .explanation's divider treatment. */
+      .settings-row {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      .settings-row select {
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 500;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
+
+      /* Flow-recording opt-in toggle — same thin-row treatment as the
+       * idle-ttl select, just with a checkbox instead of a <select>. Off by
+       * default; the Record/Stop controls only ever appear when this is on
+       * AND the current tab is connected (see popup.ts). */
+      .settings-row input[type='checkbox'] {
+        width: 15px;
+        height: 15px;
+        cursor: pointer;
+        accent-color: var(--brand-to);
+      }
+
+      /* Flows panel — the human kill switch. Hidden entirely when there is
+       * nothing running and nothing in this tab's history, so the popup
+       * stays as small as it was for the (common) idle case. */
+      .flows-panel {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+      }
+
+      .flows-title {
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin-bottom: 6px;
+      }
+
+      .flows-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .flows-list li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0;
+        border-top: 1px solid rgba(15, 23, 42, 0.05);
+      }
+
+      .flows-list li:first-child {
+        border-top: none;
+      }
+
+      .flow-text {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .flow-name {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .flow-detail {
+        font-size: 11px;
+        color: var(--text-muted);
+        line-height: 1.4;
+      }
+
+      /* Running rows get the connected hue's pulsing dot so an active flow
+       * is visible at a glance, the same signal the status card uses. */
+      .flow-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--connected-fg);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+
+      .flows-list button.flow-stop {
+        margin-top: 0;
+        width: auto;
+        flex-shrink: 0;
+        padding: 5px 10px;
+        font-size: 11.5px;
+      }
+
+      /* History rows: one coloured chip per outcome, so cancelled and
+       * failed are distinguishable without reading. */
+      .flow-outcome {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 2px 6px;
+        border-radius: 4px;
+        flex-shrink: 0;
+      }
+      .flow-outcome[data-outcome='completed'] {
+        color: var(--connected-fg);
+        background: var(--connected-soft);
+      }
+      .flow-outcome[data-outcome='cancelled'] {
+        color: var(--idle-fg);
+        background: var(--idle-soft);
+      }
+      .flow-outcome[data-outcome='failed'] {
+        color: var(--error-fg);
+        background: var(--error-soft);
+      }
+      /* A detached flow that ran out its 30-minute ceiling. Shares the
+       * idle hue with `cancelled` — both are "it stopped short", not "it
+       * broke" — and the chip's own text is what tells them apart. */
+      .flow-outcome[data-outcome='expired'] {
+        color: var(--idle-fg);
+        background: var(--idle-soft);
+      }
+
+      /* A running DETACHED flow gets the warning hue rather than the
+       * connected one: it is the only thing in browser-link that keeps
+       * acting with no agent attached, and the row offering the Stop
+       * button should look like the row that needs one. */
+      .flow-dot[data-detached='true'] {
+        background: var(--idle-fg);
+      }
+
+      .flows-history {
+        max-height: 132px;
+        overflow-y: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="mark" aria-hidden="true">
+          <svg
+            viewBox="0 0 64 64"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="5"
+            stroke-linecap="round"
+          >
+            <path d="M22 22 L14 22 A10 10 0 0 0 14 42 L22 42" />
+            <path d="M42 22 L50 22 A10 10 0 0 1 50 42 L42 42" />
+            <line x1="20" y1="32" x2="44" y2="32" />
+          </svg>
+        </div>
+        <div class="title">
+          <strong>browser-link</strong>
+          <span>MCP bridge · per-tab manual</span>
+        </div>
+      </header>
+
+      <!-- Version mismatch banner.
+           Surfaced when the connected tab reports a `serverVersion` (sent
+           by the MCP server in the `tab.registered` payload) that differs
+           from the extension's own `chrome.runtime.getManifest().version`.
+           Typical case: user ran `npm install -g @jobshimo/browser-link`
+           but did not reload the unpacked extension yet. -->
+      <div id="version-banner" class="version-banner" hidden>
+        <div class="version-banner-title">⚠ Version mismatch</div>
+        <div class="version-banner-rows">
+          <div>
+            Extension: <code id="version-extension">—</code>
+          </div>
+          <div>
+            Server: <code id="version-server">—</code>
+          </div>
+        </div>
+        <div class="version-banner-hint">
+          Reload the extension so both halves run the same code.
+        </div>
+        <button id="version-open-extensions" class="primary">
+          Open chrome://extensions
+        </button>
+      </div>
+
+      <div id="card" class="card" data-state="idle">
+        <div class="status-row">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="status-label" class="status-label">Loading…</span>
+          <span id="tab-id" class="tab-id" hidden></span>
+        </div>
+        <div id="url" class="url"></div>
+        <div id="explanation" class="explanation" hidden></div>
+      </div>
+
+      <button id="action" class="primary" disabled>…</button>
+
+      <!-- Pending dialog escape hatch.
+           Surfaces a native alert/confirm/prompt blocking the connected
+           tab so the user can answer it manually when no agent has the
+           browser.dialog_respond tool enabled in its preset. -->
+      <div id="dialog-box" class="dialog-box" hidden>
+        <div class="dialog-title">
+          <span id="dialog-type" class="dialog-type">alert</span>
+          <span class="dialog-label">native dialog pending</span>
+        </div>
+        <div id="dialog-message" class="dialog-message"></div>
+        <input
+          id="dialog-prompt-input"
+          class="dialog-prompt"
+          type="text"
+          placeholder="Response (only used for prompt)"
+          hidden
+        />
+        <div class="dialog-actions">
+          <button id="dialog-accept" class="primary">OK / Accept</button>
+          <button id="dialog-dismiss" class="danger">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Idle-disconnect TTL. Not tied to card/connection state — visible
+           and editable whether or not a tab is currently connected.
+           Changes apply immediately, no extension reload needed (popup.ts
+           writes straight to chrome.storage.local; background.ts's sweep
+           reads the live value via chrome.storage.onChanged). -->
+      <div class="settings-row">
+        <label for="idle-ttl-select">Auto-disconnect idle tabs</label>
+        <select id="idle-ttl-select">
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">60 min</option>
+          <option value="120">120 min</option>
+          <option value="0">Never</option>
+        </select>
+      </div>
+
+      <!-- Flow-recording opt-in. Off by default — recording UI (Record /
+           Stop / step review) only renders when this is checked AND the
+           active tab is connected. Nothing is ever captured while this is
+           unchecked; see the README's "Recording flows by demonstration"
+           section for the full privacy contract. -->
+      <div class="settings-row">
+        <label for="flow-recording-toggle">Enable flow recording</label>
+        <input type="checkbox" id="flow-recording-toggle" />
+      </div>
+
+      <!-- Recording controls — hidden unless flow recording is enabled AND
+           the active tab is connected (see popup.ts's refreshRecordingUi). -->
+      <div id="recording-row" class="settings-row" hidden>
+        <span id="recording-indicator" hidden>● Recording…</span>
+        <button id="recording-action" class="primary" style="margin-top: 0; width: auto">
+          Record
+        </button>
+      </div>
+
+      <!-- Review panel — shown after Stop, before Save/Discard. -->
+      <div id="recording-review" class="explanation" hidden>
+        <div style="margin-bottom: 6px; font-weight: 600; color: var(--text)">
+          <span id="recording-step-count">0</span> step(s) captured
+        </div>
+        <ol
+          id="recording-step-list"
+          style="margin: 0 0 10px; padding-left: 18px; max-height: 120px; overflow-y: auto"
+        ></ol>
+        <input
+          id="recording-name-input"
+          class="dialog-prompt"
+          type="text"
+          placeholder="Name this flow (e.g. &quot;open task detail dialog&quot;)"
+        />
+        <div
+          id="recording-error"
+          hidden
+          style="color: var(--error-fg); font-size: 11.5px; margin-bottom: 8px"
+        ></div>
+        <div class="dialog-actions">
+          <button id="recording-save" class="primary">Save</button>
+          <button id="recording-discard" class="danger">Discard</button>
+        </div>
+      </div>
+
+      <!-- Flows panel.
+           "Running" lists every in-flight browser.flow across ALL tabs —
+           the Stop button has to reach a runaway flow on a tab the user is
+           not currently looking at. "Recent" is the last 20 finished flows
+           of THIS tab, held in chrome.storage.session (it dies with the
+           browser session by design: an operator view, not an audit log).
+           Entries carry UI structure and outcomes only — never page text,
+           selectors or typed input; see flow-registry.ts's privacy
+           contract. The whole panel stays hidden while there is nothing to
+           show. -->
+      <div id="flows-panel" class="flows-panel" hidden>
+        <div id="flows-running-title" class="flows-title" hidden>Running flows</div>
+        <ul id="flows-running" class="flows-list"></ul>
+        <div id="flows-history-title" class="flows-title" style="margin-top: 8px" hidden>
+          Recent flows
+        </div>
+        <ul id="flows-history" class="flows-list flows-history"></ul>
+      </div>
+
+      <div class="footer">manual · per-tab · loopback only</div>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

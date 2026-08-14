@@ -1,0 +1,81 @@
+name: Dependabot Version Bump
+
+# Bridges the gap between Dependabot ("I only know how to change the
+# dep") and this repo's Version Gate ("every PR to main MUST bump the
+# 5 lockstep-versioned files"). When Dependabot opens or rebases a PR,
+# this workflow pushes ONE commit to its branch that bumps the
+# versioned files to `origin/main + 1 patch`. After that, the Version
+# Gate passes on the same PR.
+#
+# Required one-time setup:
+#   1. Create a fine-grained Personal Access Token scoped to this repo
+#      only, with `Contents: Read and write` (Metadata: read is
+#      auto-included).
+#   2. Add it under Settings → Secrets and variables → DEPENDABOT
+#      (not Actions) → Repository secrets → `DEPENDABOT_BUMP_PAT`.
+#
+# The PAT MUST live under the Dependabot secrets scope because workflows
+# triggered by Dependabot PRs only see Dependabot secrets — regular
+# Actions secrets are intentionally hidden from them by GitHub for
+# supply-chain safety.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per-PR group so a fast rebase doesn't stack runs against itself.
+  group: dependabot-bump-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    name: Bump version for Dependabot PR
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Check out the PR head branch (so we can push back to it).
+          ref: ${{ github.event.pull_request.head.ref }}
+          # The default GITHUB_TOKEN cannot trigger downstream workflow
+          # runs on push — pushes by GITHUB_TOKEN are explicitly excluded
+          # from `on: pull_request` triggers. We need the Version Gate
+          # and CI workflows to re-run on this PR after the bump lands,
+          # so we authenticate with a PAT instead. The PAT-authored push
+          # is treated as a normal user push and DOES re-trigger.
+          token: ${{ secrets.DEPENDABOT_BUMP_PAT }}
+          # `dependabot-bump-version.mjs` reads `origin/main` via
+          # `git show`; full history is required.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Bump versioned files
+        run: node scripts/dependabot-bump-version.mjs
+
+      - name: Commit and push if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "  → no version drift; nothing to commit"
+            exit 0
+          fi
+          git config user.name 'dependabot[bot]'
+          git config user.email '49699333+dependabot[bot]@users.noreply.github.com'
+          # Stage ONLY the 5 lockstep-versioned files. Never -A — if the
+          # script ever writes anything else by accident, that mistake
+          # should fail the gate, not slip through.
+          git add \
+            package.json \
+            packages/server/package.json \
+            packages/extension/package.json \
+            packages/extension/manifest.json \
+            packages/shared/package.json
+          git commit -m 'chore: bump version for lockstep Version Gate'
+          git push
