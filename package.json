@@ -5,7 +5,7 @@
   "description": "Monorepo workspace root for browser-link. The published npm package is @jobshimo/browser-link in packages/server.",
   "packageManager": "pnpm@11.1.1",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.22.2"
   },
   "scripts": {
     "build": "pnpm -r run build",
