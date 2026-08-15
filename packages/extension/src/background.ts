@@ -508,6 +508,27 @@ type ActivityReply = ActivityResultMessage | ActivityPurgeResultMessage;
 
 const pendingActivityQueries = new Map<string, (result: ActivityReply) => void>();
 
+/**
+ * Hand a reply to whichever caller is waiting on it, and free the slot.
+ *
+ * `requestId` arrives off the socket, so this validates before dispatching.
+ * A `Map` lookup is already prototype-safe — unlike a plain-object lookup it
+ * returns ONLY what this module stored, so an id of `__proto__` or `toString`
+ * resolves to `undefined` rather than to a built-in method — but the explicit
+ * `typeof` check is what makes "we never call something we did not put here"
+ * a property of the code rather than a property of the reader's memory.
+ *
+ * An id that is no longer in the map is a superseded or timed-out request.
+ * Dropping it is correct: its promise already settled with a timeout, and
+ * resolving it twice would be worse than ignoring the late arrival.
+ */
+function settleActivityRequest(requestId: string, reply: ActivityReply): void {
+  const pending = pendingActivityQueries.get(requestId);
+  if (typeof pending !== 'function') return;
+  pendingActivityQueries.delete(requestId);
+  pending(reply);
+}
+
 /** How long a trail READ waits before giving up. Short: this is a local
  * SQLite read over a loopback socket. If it has not answered in two seconds
  * the bridge is wedged, and the window should say so rather than spin. */
@@ -2997,25 +3018,14 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             flowRegistry.cancel(msg.flow_id);
             return;
           }
-          case 'activity.purge.result': {
-            // Same correlation slot as a read: a purge is just a request that
-            // happens to change something, and its reply carries the fresh
-            // stats the window repaints its size readout from.
-            const pending = pendingActivityQueries.get(msg.request_id);
-            if (!pending) return;
-            pendingActivityQueries.delete(msg.request_id);
-            pending(msg);
-            return;
-          }
+          // Both activity replies settle the same way — a purge is just a
+          // request that happens to change something. Deliberately NOT counted
+          // as tab activity: the human reading the trail is not using the tab,
+          // and refreshing a panel must never be what keeps an idle bridge
+          // alive.
+          case 'activity.purge.result':
           case 'activity.result': {
-            // Hand the page to whichever Activity window asked for it and
-            // forget the slot. Deliberately NOT counted as tab activity: the
-            // human reading the trail is not using the tab, and refreshing a
-            // panel must never be what keeps an idle bridge alive.
-            const pending = pendingActivityQueries.get(msg.request_id);
-            if (!pending) return; // Superseded or timed-out query — drop it.
-            pendingActivityQueries.delete(msg.request_id);
-            pending(msg);
+            settleActivityRequest(msg.request_id, msg);
             return;
           }
           default: {
