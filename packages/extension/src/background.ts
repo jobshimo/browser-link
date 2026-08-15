@@ -1,4 +1,6 @@
 import type {
+  ActivityPurgeResultMessage,
+  ActivityResultMessage,
   ExtensionToServer,
   ServerToExtension,
   ToolRequestMessage,
@@ -458,12 +460,21 @@ type RuntimeMessage =
   // No tabId: a flow_id already names exactly one flow on exactly one tab,
   // and the popup must be able to stop a flow running on a tab it is not
   // currently showing.
-  | { action: 'cancelFlow'; flowId: string };
+  | { action: 'cancelFlow'; flowId: string }
+  // Both tabId-free for the same reason `cancelFlow` is: the Activity window
+  // shows the trail across EVERY tab and every agent, so scoping it to one
+  // would be scoping away the point of it.
+  | { action: 'openActivityWindow' }
+  | { action: 'activityQuery'; query?: Record<string, unknown> }
+  | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
   const m = msg as Record<string, unknown>;
   if (m.action === 'versionCheck') return true;
+  if (m.action === 'openActivityWindow') return true;
+  if (m.action === 'activityQuery') return true;
+  if (m.action === 'activityPurge') return true;
   if (m.action === 'saveRecording') {
     return typeof m.tabId === 'number' && typeof m.name === 'string';
   }
@@ -484,6 +495,133 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
 }
 
 const tabStates = new Map<number, TabState>();
+
+/**
+ * In-flight `activity.query` frames, keyed by request id.
+ *
+ * The Activity window can have several reads outstanding — an initial page, a
+ * tail poll, a filter change the user made while the tail was in the air — so
+ * unlike `saveRecording`'s single slot these must be correlated. A reply whose
+ * id is no longer here is a superseded or timed-out query and is dropped.
+ */
+type ActivityReply = ActivityResultMessage | ActivityPurgeResultMessage;
+
+const pendingActivityQueries = new Map<string, (result: ActivityReply) => void>();
+
+/** How long a trail READ waits before giving up. Short: this is a local
+ * SQLite read over a loopback socket. If it has not answered in two seconds
+ * the bridge is wedged, and the window should say so rather than spin. */
+const ACTIVITY_QUERY_TIMEOUT_MS = 2_000;
+
+/** A purge gets far longer. Deleting rows is quick; the VACUUM that follows
+ * rewrites the whole file, and on a trail that grew to hundreds of megabytes
+ * — precisely the case the user is purging to fix — that is not a two-second
+ * operation. Timing out early would leave the window claiming failure over
+ * work that actually succeeded. */
+const ACTIVITY_PURGE_TIMEOUT_MS = 60_000;
+
+/**
+ * One correlated round trip to the server over any connected tab's socket.
+ *
+ * The trail is server-side and global, so which tab carries the question is
+ * irrelevant — but at least one tab must be connected, because the WS is the
+ * only channel the extension has. That is why the window renders an explicit
+ * "connect a tab" state rather than an empty list: empty and unreachable are
+ * different facts and must not look the same.
+ */
+async function activityRoundTrip(
+  frame: (requestId: string) => ExtensionToServer,
+  timeoutMs: number,
+): Promise<ActivityReply> {
+  // Narrow to the socket itself rather than the state that holds it, so the
+  // send below needs no non-null assertion to prove what the find already did.
+  const socket = [...tabStates.values()]
+    .map((s) => s.ws)
+    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  if (!socket) {
+    return { kind: 'activity.result', request_id: '', ok: false, error: 'not-connected' };
+  }
+  const requestId = crypto.randomUUID();
+  return new Promise<ActivityReply>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingActivityQueries.delete(requestId);
+      resolve({ kind: 'activity.result', request_id: requestId, ok: false, error: 'timeout' });
+    }, timeoutMs);
+    pendingActivityQueries.set(requestId, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+    send(socket, frame(requestId));
+  });
+}
+
+function queryActivity(query: Record<string, unknown>): Promise<ActivityReply> {
+  return activityRoundTrip(
+    (request_id) => ({ kind: 'activity.query', request_id, query }),
+    ACTIVITY_QUERY_TIMEOUT_MS,
+  );
+}
+
+function purgeActivity(input: {
+  from?: string;
+  to?: string;
+  dryRun?: boolean;
+}): Promise<ActivityReply> {
+  return activityRoundTrip(
+    (request_id) => ({
+      kind: 'activity.purge',
+      request_id,
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
+      ...(input.dryRun === true ? { dry_run: true } : {}),
+    }),
+    // A dry run only counts — no VACUUM, so it gets the short budget.
+    input.dryRun === true ? ACTIVITY_QUERY_TIMEOUT_MS : ACTIVITY_PURGE_TIMEOUT_MS,
+  );
+}
+
+/** Chrome window geometry for the Activity panel. Wide enough for the full
+ * row — time, agent, tool, target and outcome — without wrapping, which is
+ * the entire reason this is not the 320px popup. */
+const ACTIVITY_WINDOW = { width: 1100, height: 760 } as const;
+
+/**
+ * Open the Activity window, or focus it if it is already open.
+ *
+ * Focus-if-open rather than always-create: the button is in a popup the user
+ * will press again out of habit, and stacking five identical windows is the
+ * kind of small rudeness that makes a tool feel unfinished.
+ */
+let activityWindowId: number | null = null;
+
+async function openActivityWindow(): Promise<{ ok: true; windowId: number }> {
+  if (activityWindowId !== null) {
+    try {
+      const existing = await chrome.windows.get(activityWindowId);
+      if (existing.id !== undefined) {
+        await chrome.windows.update(existing.id, { focused: true });
+        return { ok: true, windowId: existing.id };
+      }
+    } catch {
+      // Closed since we last saw it — fall through and open a fresh one.
+      activityWindowId = null;
+    }
+  }
+  // `chrome.windows.create` resolves to `undefined` when the window could not
+  // be created (the API types it optional for exactly that case). Treat it as
+  // "no window to remember" rather than assuming success.
+  const created = await chrome.windows.create({
+    url: chrome.runtime.getURL('activity.html'),
+    type: 'popup',
+    ...ACTIVITY_WINDOW,
+  });
+  activityWindowId = created?.id ?? null;
+  return { ok: true, windowId: created?.id ?? -1 };
+}
+
+chrome.windows.onRemoved.addListener((closedId) => {
+  if (closedId === activityWindowId) activityWindowId = null;
+});
 
 /**
  * Every `browser.flow` currently running in this service worker, across
@@ -2859,6 +2997,27 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             flowRegistry.cancel(msg.flow_id);
             return;
           }
+          case 'activity.purge.result': {
+            // Same correlation slot as a read: a purge is just a request that
+            // happens to change something, and its reply carries the fresh
+            // stats the window repaints its size readout from.
+            const pending = pendingActivityQueries.get(msg.request_id);
+            if (!pending) return;
+            pendingActivityQueries.delete(msg.request_id);
+            pending(msg);
+            return;
+          }
+          case 'activity.result': {
+            // Hand the page to whichever Activity window asked for it and
+            // forget the slot. Deliberately NOT counted as tab activity: the
+            // human reading the trail is not using the tab, and refreshing a
+            // panel must never be what keeps an idle bridge alive.
+            const pending = pendingActivityQueries.get(msg.request_id);
+            if (!pending) return; // Superseded or timed-out query — drop it.
+            pendingActivityQueries.delete(msg.request_id);
+            pending(msg);
+            return;
+          }
           default: {
             // Compile-time exhaustiveness check; at runtime an unknown kind
             // (newer server, older extension) is ignored defensively.
@@ -3357,6 +3516,18 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (msg.action === 'versionCheck') {
     sendResponse(getVersionCheck());
     return false;
+  }
+  if (msg.action === 'openActivityWindow') {
+    void openActivityWindow().then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'activityQuery') {
+    void queryActivity(msg.query ?? {}).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'activityPurge') {
+    void purgeActivity(msg).then(sendResponse);
+    return true;
   }
   if (msg.action === 'recordingStatus') {
     sendResponse(getRecordingStatus(msg.tabId));

@@ -45,6 +45,7 @@
 - [Use cases](#use-cases)
 - [What the agent can do](#what-the-agent-can-do)
 - [Persistent UI map](#persistent-ui-map)
+- [Activity trail](#activity-trail)
 - [Customising](#customising)
 - [cdp-direct mode (no extension)](#cdp-direct-mode-no-extension)
 - [Security model](#security-model)
@@ -307,22 +308,23 @@ drive the connected tab (14 read, 13 action) and 6 persistent-map tools
 
 **Browser bridge — read-only** (no claim required, observation only):
 
-| Tool                        | Purpose                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                     |
-| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                  |
-| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                       |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                             |
-| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                           |
-| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                            |
-| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                    |
-| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                        |
-| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                        |
-| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                      |
-| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                              |
-| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                |
-| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                            |
-| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id` |
+| Tool                        | Purpose                                                                                                                                             |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                             |
+| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                          |
+| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                               |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                                     |
+| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                                   |
+| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                    |
+| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                            |
+| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                |
+| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                |
+| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                              |
+| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                                      |
+| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                        |
+| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                    |
+| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`         |
+| `browser.activity`          | On-disk [activity trail](#activity-trail) — every action every agent dispatched, filterable by agent, tab, tool, flow or outcome; survives restarts |
 
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
@@ -906,6 +908,130 @@ placeholder to the real value the task calls for, then calls
 `browser.flow` with the adapted steps. No new MCP tool surface — recording
 only changes how a recipe gets INTO the map, not how an agent gets it out.
 
+## Activity trail
+
+Every browser tool an agent dispatches is recorded — what it did, where, on
+whose behalf, and whether it worked. The trail lives on disk, so it survives
+closing Chrome and restarting the server.
+
+Open it from the extension popup: press **Activity**.
+
+That opens a real window, not a panel inside the 320px popup — a Chrome
+action popup closes the moment it loses focus, so it physically cannot be
+watched while an agent works. This one stays open and can sit on a second
+monitor.
+
+| Column     | What it holds                                                             |
+| ---------- | ------------------------------------------------------------------------- |
+| **When**   | Relative time; hover for the exact ISO timestamp                          |
+| **Agent**  | Self-declared claim label (`claude-code`, `opencode`); hover for the pid  |
+| **Tool**   | Full tool name, with a `flow` badge when the action was a step inside one |
+| **Target** | Selector, then payload, then URL — whichever the tool actually acted on   |
+| **Result** | `ok · 88ms`, or the error message. Failed rows are tinted                 |
+
+Filter by agent, by tool, or to failures only; the search box filters what is
+already loaded, so typing is instant. **Live** keeps the newest actions
+streaming in (and pauses itself when the window is hidden). **Export** hands
+you the visible rows as NDJSON.
+
+### Size, always on screen
+
+A strip under the header shows, at all times: **how many actions** are stored,
+**how much disk** they take, **the oldest entry**, and a meter of how close the
+trail is to its 50,000-row ceiling. The meter turns amber past 80% — the point
+where the next actions start pushing the oldest ones out, and therefore the
+moment to decide between purging and exporting first.
+
+The size is the real file set on disk: `activity.db` **plus its `-wal` and
+`-shm` sidecars**. Reporting only the `.db` would understate a busy trail
+badly, because WAL mode parks recent writes in the sidecar until a checkpoint.
+
+### Purging
+
+Press **Purge…** in that strip. Pick a date range — or one of the presets
+(_older than 30 days_, _older than 7 days_, _everything_) — and the panel walks
+you through two steps:
+
+1. **Check how many.** Resolves the exact count for the range you picked:
+   _"This will permanently delete 4,812 of 12,483 actions."_
+2. **Delete permanently.** Disabled until step 1 has run, and it re-disables
+   itself the moment you change either date — so the red button can never act
+   on a count from a range you are no longer looking at. A final modal
+   confirmation names the number one more time.
+
+It is permanent. Deleted rows are not in a recycle bin and are not recoverable
+from an earlier export unless you already made one. Export first if in doubt.
+
+Purging reclaims the disk space rather than just marking rows dead: the purge
+checkpoints the WAL, `VACUUM`s, and checkpoints again. Without that sequence
+you would delete half the trail in WAL mode and watch the reported size not
+move — which reads exactly like a purge that did nothing.
+
+The same thing from the terminal:
+
+```bash
+browser-link activity stats                          # rows, size, oldest, newest
+browser-link activity clear --to 2026-07-31          # counts first, asks for --yes
+browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
+```
+
+### Reading it outside the browser
+
+The window is for watching. For archiving, grepping, or handing the trail to
+another agent, use the CLI — no browser in the loop:
+
+| Command                                                         | What it does                                                             |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `browser-link activity`                                         | Recent actions, newest first                                             |
+| `browser-link activity --failed`                                | Only what errored                                                        |
+| `browser-link activity --agent opencode --tool browser.click`   | Filter by agent, tab, tool, flow or outcome                              |
+| `browser-link activity export --out run.ndjson --format ndjson` | Whole trail to a file (`json`, `ndjson` or `csv`)                        |
+| `browser-link activity export --redact`                         | Same, with payloads, titles and URL query strings stripped               |
+| `browser-link activity stats`                                   | Rows stored, size on disk, oldest and newest entry                       |
+| `browser-link activity clear --older-than 7d`                   | Trim history. Without `--older-than`, `--yes` is required                |
+| `browser-link activity clear --from 2026-07-01 --to 2026-07-31` | Purge a date range: counts first, needs `--yes`, reclaims the disk space |
+
+Agents read it through **`browser.activity`** — useful for checking your own
+work before reporting it, or for seeing what a different agent did to a tab
+you just claimed. Pass `include_payloads: false` to get the shape of a long
+run without pulling every typed string into context.
+
+> `browser.activity` is not `browser.events`. Events are bridge **lifecycle**
+> (a tab connected, a dialog opened), 200 entries, in memory, gone when the
+> process exits. The activity trail is what agents **did**, on disk, across
+> restarts.
+
+### What is recorded, and what leaves your machine
+
+Rows carry the free text an action moved: the string `browser.type` typed, the
+expression `browser.evaluate` ran, the URL `browser.navigate` went to. That is
+deliberate — a trail that cannot tell you what an agent typed answers none of
+the questions people open it for.
+
+Two things keep that honest:
+
+- **Nothing uploads it.** The trail is a SQLite file in your data dir
+  (`activity.db`, beside `map.db`), read over loopback and never sent anywhere.
+- **Redaction happens on the way out, not on the way in.** You keep the full
+  trail; `--redact` is what you run when handing it to someone else. That way
+  the decision is made deliberately, once, at export — instead of silently at
+  record time where it cannot be undone.
+
+If you would rather not record the text at all:
+
+```bash
+browser-link config set activity.record-payloads false   # keep the shape, drop the text
+browser-link config set activity.enabled false           # record nothing
+```
+
+With `record-payloads` off, every row still says which tool ran, where, by whom
+and with what outcome — only the payload column goes.
+
+The trail keeps the most recent 50,000 actions and prunes the oldest beyond
+that. That ceiling is sized for the runs actually worth auditing: a single
+`repeat` step can dispatch hundreds of actions, so a small buffer would evict
+the morning by lunchtime.
+
 ## Customising
 
 A handful of knobs — some on by default, all reversible.
@@ -1311,6 +1437,13 @@ or need to inspect the DB out-of-the-way. The same directory holds
 `config.json` (UX preferences, per-tool permissions, and the CLI-side
 idle-disconnect TTL) and `multi-agent-token` (rotated at every primary
 startup).
+
+The [activity trail](#activity-trail) is a **separate** SQLite file in the
+same directory, `activity.db`. Separate on purpose: the map is small and
+precious — losing it means relearning every selector — while the trail is
+append-only and disposable, thousands of rows a session. Two files means
+clearing or vacuuming one never touches the other, and "back up my map" stays
+unambiguous. Delete `activity.db` at any time; nothing else depends on it.
 
 Nothing in this package phones home. The WebSocket bridge talks
 loopback only.

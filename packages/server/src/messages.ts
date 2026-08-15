@@ -167,11 +167,93 @@ export type FlowRecordedResultMessage =
   | { kind: 'flow.recorded.result'; ok: true; name: string }
   | { kind: 'flow.recorded.result'; ok: false; error: string };
 
+/** Filter for one page of the activity trail. Snake_case on the wire, mapped
+ * to the server's camelCase `ActivityQuery` at the bridge boundary. */
+export interface ActivityQueryPayload {
+  since_id?: number;
+  before_id?: number;
+  tab_id?: string;
+  agent?: string;
+  tool?: string;
+  flow_id?: string;
+  outcome?: 'ok' | 'error';
+  limit?: number;
+}
+
+/** The Activity window asking for a page of the trail. Correlated by
+ * `request_id` because the window tails on a timer while the user may also be
+ * paging: a late reply to a superseded query must be discardable rather than
+ * rendered over a newer page. */
+export interface ActivityQueryMessage {
+  kind: 'activity.query';
+  request_id: string;
+  /** Optional on the type because this arrives off a socket as JSON: a frame
+   * missing it is malformed input to defend against, not a compile error to
+   * assume away. */
+  query?: ActivityQueryPayload;
+}
+
+export type ActivityResultMessage =
+  | {
+      kind: 'activity.result';
+      request_id: string;
+      ok: true;
+      records: unknown[];
+      latest_id: number;
+      total: number;
+      agents: { agent: string; count: number }[];
+      stats: ActivityStatsPayload;
+    }
+  | { kind: 'activity.result'; request_id: string; ok: false; error: string };
+
+/** What the trail costs right now. Rides on EVERY activity reply rather than
+ * living behind its own request: the panel must always show the size, and a
+ * number you have to ask for is a number that goes stale. */
+export interface ActivityStatsPayload {
+  rows: number;
+  bytes: number;
+  oldest_at: string | null;
+  newest_at: string | null;
+  max_rows: number;
+}
+
+/** Permanently delete every row in an inclusive date window. Both ends
+ * optional; omitting both purges the whole trail. There is no undo, which is
+ * why the UI resolves a count first and says so. */
+export interface ActivityPurgeMessage {
+  kind: 'activity.purge';
+  request_id: string;
+  from?: string;
+  to?: string;
+  /** When true the server only COUNTS what the range would remove and deletes
+   * nothing — what the confirmation dialog is built on. */
+  dry_run?: boolean;
+}
+
+export type ActivityPurgeResultMessage =
+  | {
+      kind: 'activity.purge.result';
+      request_id: string;
+      ok: true;
+      /** Rows removed, or rows that WOULD be removed when dry_run was set. */
+      removed: number;
+      dry_run: boolean;
+      stats: ActivityStatsPayload;
+    }
+  | { kind: 'activity.purge.result'; request_id: string; ok: false; error: string };
+
 export type ExtensionToServer =
-  TabRegisterMessage | ToolResponseMessage | BridgeEventMessage | FlowRecordedMessage;
+  | TabRegisterMessage
+  | ToolResponseMessage
+  | BridgeEventMessage
+  | FlowRecordedMessage
+  | ActivityQueryMessage
+  | ActivityPurgeMessage;
 export type ServerToExtension =
   | TabRegisteredMessage
   | ToolRequestMessage
   | ToolCancelMessage
   | SettingsUpdateMessage
-  | FlowRecordedResultMessage;
+  | FlowRecordedResultMessage
+  | ActivityResultMessage
+  | ActivityPurgeResultMessage;

@@ -1189,6 +1189,58 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.activity',
+    description:
+      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. Reading the trail is itself recorded.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since_id: {
+          type: 'number',
+          description: 'Only return rows with id > since_id. Omit for the most recent slice.',
+        },
+        tab_id: { type: 'string', description: 'Only actions against this tab.' },
+        agent: {
+          type: 'string',
+          description:
+            'Only actions by this agent label. The `agents` field of any response lists what exists.',
+        },
+        tool: { type: 'string', description: 'Only this tool, e.g. "browser.click".' },
+        flow_id: { type: 'string', description: 'Only steps belonging to this flow.' },
+        outcome: {
+          type: 'string',
+          enum: ['ok', 'error'],
+          description: 'Filter by outcome. "error" is the fast way to find what went wrong.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum rows to return (default 200, max 500).',
+        },
+        include_payloads: {
+          type: 'boolean',
+          description:
+            'Default true. Set false to get the shape of the trail without typed text, page titles or URL query strings — much cheaper in context when summarising a long run.',
+        },
+      },
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Read the on-disk trail of every action every agent ran in the browser, with filters by agent, tab, tool, flow and outcome.',
+      when_to_use: [
+        'Before reporting what you did — check the trail rather than your memory of it.',
+        'After claiming a tab another agent was using, to see what state it left the page in.',
+        'When a long flow half-worked: filter outcome:"error" to find the exact failing step.',
+      ],
+      gotchas: [
+        'This is NOT browser.events. Events are bridge lifecycle and in-memory; this is dispatched actions and on-disk.',
+        'Pass latest_id back as since_id to page efficiently instead of re-reading the whole trail.',
+        'Recording can be turned off by the user (`activity.enabled`), in which case this returns an empty trail rather than an error — an empty result does not prove nothing happened.',
+        'The trail is local. It is never uploaded, and `browser-link activity export --redact` is what the user runs before sharing it.',
+      ],
+    },
+  },
+  {
     name: 'browser.reset',
     description:
       'Soft-reset the bridge state. Drops every connected tab session, releases every claim, and clears the in-memory event log — but does NOT kill the MCP server itself. The user has to re-press Connect in the extension popup for each tab they want back. Use this when the bridge state looks inconsistent (stale tab_ids that browser.events does not explain, tab.click that hangs, claims you cannot release through normal means) and you are sure a clean slate is the right move.',

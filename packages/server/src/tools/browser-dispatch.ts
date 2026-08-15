@@ -29,6 +29,13 @@ import { randomUUID } from 'node:crypto';
 import { requireTabId } from './responses.js';
 import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
 import type { MapHint } from '../map/queries.js';
+import type { ActivityInput } from '../activity/types.js';
+import { buildRow } from '../activity/extract.js';
+import {
+  listAgents as listActivityAgents,
+  query as queryActivity,
+  redact as redactActivity,
+} from '../activity/queries.js';
 import { isCdpTabId } from '../cdp/targets.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
@@ -149,6 +156,21 @@ export interface BrowserToolDeps {
    * cdp-direct wired up, in which case any `cdp:` tab_id is treated as
    * unreachable — there is no bypass. */
   cdpGate?(): { ok: true } | { ok: false; error: string };
+  /** Optional activity-trail sink. Called once per dispatched tool, AFTER the
+   * call settles, with the row already assembled — success and failure alike.
+   * Injected rather than imported so the dispatcher keeps no opinion about
+   * where the trail is stored (or whether one exists at all): unit tests omit
+   * it and record nothing, `server.ts` wires it to the SQLite store. Same
+   * degrade-gracefully pattern as `tabClaims` and `getMapHints`.
+   *
+   * MUST NOT THROW and MUST NOT be awaited by the caller — observing an
+   * action is never allowed to fail or delay it. */
+  recordActivity?(row: ActivityInput): void;
+  /** Mirror of the `activity.record-payloads` config flag. Only `false`
+   * disables payloads — an absent value records them, so a deployment that
+   * wires `recordActivity` without wiring this gets the full trail it clearly
+   * asked for rather than a silently gutted one. */
+  recordActivityPayloads?: boolean;
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -178,6 +200,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.flow_cancel',
   'browser.evaluate',
   'browser.events',
+  'browser.activity',
   'browser.reset',
   'browser.wait_for',
   'browser.wait_for_tab',
@@ -964,6 +987,58 @@ function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: Pub
   return { claims: deps.tabClaims.myTabs(caller).map(toPublicClaim) };
 }
 
+/**
+ * `browser.activity` — read the persistent action trail.
+ *
+ * Distinct from `browser.events`, which is a 200-entry in-memory ring of
+ * BRIDGE LIFECYCLE events (a tab connected, a dialog opened) that dies with
+ * the process. This reads what agents actually DID: every dispatched tool,
+ * on disk, across restarts, with the agent that ran it named.
+ *
+ * Reading the trail is itself recorded, like any other tool. That is
+ * deliberate — "which agent went looking at the log" is exactly the kind of
+ * thing an audit trail should not quietly omit about itself.
+ */
+function handleActivity(args: unknown): unknown {
+  const {
+    since_id,
+    tab_id,
+    agent,
+    tool,
+    flow_id,
+    outcome,
+    limit,
+    include_payloads = true,
+  } = (args ?? {}) as {
+    since_id?: number;
+    tab_id?: string;
+    agent?: string;
+    tool?: string;
+    flow_id?: string;
+    outcome?: 'ok' | 'error';
+    limit?: number;
+    include_payloads?: boolean;
+  };
+  const page = queryActivity({
+    ...(typeof since_id === 'number' ? { sinceId: since_id } : {}),
+    ...(typeof tab_id === 'string' ? { tabId: tab_id } : {}),
+    ...(typeof agent === 'string' ? { agent } : {}),
+    ...(typeof tool === 'string' ? { tool } : {}),
+    ...(typeof flow_id === 'string' ? { flowId: flow_id } : {}),
+    ...(outcome === 'ok' || outcome === 'error' ? { outcome } : {}),
+    ...(typeof limit === 'number' ? { limit } : {}),
+  });
+  return {
+    // `include_payloads: false` lets an agent pull the shape of the trail
+    // without dragging typed text and evaluate expressions into its context —
+    // useful when summarising a long run, and the cheaper response by far.
+    records: include_payloads ? page.records : page.records.map(redactActivity),
+    latest_id: page.latestId,
+    total: page.total,
+    agents: listActivityAgents(),
+  };
+}
+
 function handleEvents(
   args: unknown,
   deps: BrowserToolDeps,
@@ -985,7 +1060,7 @@ function handleEvents(
  * a fixed allowlist — a Map-of-handlers lookup looks identical at runtime
  * but is flagged because the static analyser can't prove the bound.
  */
-export async function handleBrowserTool(
+async function dispatchBrowserTool(
   name: string,
   args: unknown,
   deps: BrowserToolDeps,
@@ -1345,6 +1420,8 @@ export async function handleBrowserTool(
     }
     case 'browser.events':
       return handleEvents(args, deps);
+    case 'browser.activity':
+      return handleActivity(args);
     case 'browser.reset':
       return handleReset(deps);
     case 'browser.wait_for_tab': {
@@ -1523,5 +1600,85 @@ export async function handleBrowserTool(
       const _exhaustive: never = toolName;
       throw new Error(`Unhandled browser tool: ${String(_exhaustive)}`);
     }
+  }
+}
+
+/**
+ * Public entry point: dispatch a browser tool and record it to the activity
+ * trail.
+ *
+ * Deliberately a DECORATOR around `dispatchBrowserTool` rather than a hook
+ * threaded through its arms. The switch has thirty-odd cases and exists to do
+ * exactly one thing — route a name to a handler. Recording is a second
+ * concern with a different lifetime, and thirty call sites of the same
+ * bookkeeping is thirty chances to forget one. Wrapping means a tool added
+ * tomorrow is recorded on the day it is added, by nobody's effort.
+ *
+ * Three properties this shape guarantees, none of which a per-arm hook would:
+ *
+ *   - A THROWN call is recorded too, with `outcome: 'error'`. The failures are
+ *     the rows you want most when reconstructing what an agent did.
+ *   - Recording never changes what the caller sees. The result is returned and
+ *     the error rethrown, untouched.
+ *   - Recording can never break a call. `recordActivity` is documented as
+ *     non-throwing, and the `catch` here holds that line even if a future sink
+ *     forgets to.
+ */
+export async function handleBrowserTool(
+  name: string,
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<unknown> {
+  // No sink wired (unit tests, builds without a data dir) — straight through,
+  // zero overhead, no timing call.
+  if (!deps.recordActivity) return dispatchBrowserTool(name, args, deps, caller);
+
+  const startedAt = Date.now();
+  try {
+    const result = await dispatchBrowserTool(name, args, deps, caller);
+    writeTrail(deps, name, args, caller, Date.now() - startedAt, undefined);
+    return result;
+  } catch (error) {
+    writeTrail(deps, name, args, caller, Date.now() - startedAt, error);
+    throw error;
+  }
+}
+
+/** Assemble the row, resolve the tab's URL/title from the live tab table, and
+ * hand it to the sink. Swallows everything: see the contract above. */
+function writeTrail(
+  deps: BrowserToolDeps,
+  name: string,
+  args: unknown,
+  caller: AgentCaller,
+  durationMs: number,
+  error: unknown,
+): void {
+  try {
+    const row = buildRow({
+      tool: name,
+      args,
+      caller,
+      durationMs,
+      // `undefined` is the success signal buildRow expects; a caught `undefined`
+      // throw (legal in JS, vanishingly rare) would otherwise read as success.
+      ...(error === undefined ? {} : { error: error ?? new Error('unknown error') }),
+      recordPayloads: deps.recordActivityPayloads !== false,
+    });
+    // The tab's URL and title are the two columns that make a row readable a
+    // week later, and only the dispatcher can see the tab table. Resolved
+    // AFTER the call so a `navigate` row shows where it landed.
+    if (row.tabId !== null) {
+      const tab = deps.listTabs().find((t) => t.tab_id === row.tabId);
+      if (tab) {
+        row.url = tab.url;
+        row.title = tab.title;
+      }
+    }
+    deps.recordActivity?.(row);
+  } catch {
+    // Observation must never break the observed. A row we failed to build is
+    // a row we do not write.
   }
 }

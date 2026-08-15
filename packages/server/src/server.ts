@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
 import { getMapHints } from './map/queries.js';
+import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
 import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
@@ -154,6 +155,20 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // flow, never one per iteration" rule as the extension path.
   setCdpFlowEventSink((data) => events.add('flow-finished', data));
 
+  // Read once at wiring time, not per call: a trail that switched itself on
+  // and off mid-session would have gaps nothing explains. Both default ON —
+  // only an explicit `false` disables. A config read that throws must not stop
+  // the server booting, so it degrades to the defaults.
+  let activityEnabled = true;
+  let recordActivityPayloads = true;
+  try {
+    const cfg = loadConfig();
+    activityEnabled = cfg.activityEnabled !== false;
+    recordActivityPayloads = cfg.activityRecordPayloads !== false;
+  } catch {
+    // Defaults stand.
+  }
+
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
@@ -174,6 +189,21 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
         return new Map();
       }
     },
+    // Activity trail. Wired only when enabled, so a disabled config means the
+    // dispatcher takes its zero-overhead path (no timing call, no row build)
+    // rather than building rows it then drops on the floor.
+    //
+    // `record` already swallows its own failures; the guard here is about the
+    // config read, which happens once at wiring time and must not be able to
+    // stop a server from starting.
+    ...(activityEnabled
+      ? {
+          recordActivity: (row) => {
+            record(row);
+          },
+          recordActivityPayloads,
+        }
+      : {}),
     // cdp-direct wiring — see cdp/gate.ts, cdp/targets.ts, cdp/transport.ts.
     // Each call re-checks the live enabled+grant gate itself; there is no
     // caching here that could let a disabled/revoked setting linger.
