@@ -1,6 +1,6 @@
 {
   "name": "@jobshimo/browser-link",
-  "version": "0.28.2",
+  "version": "0.28.3",
   "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab. Per-tool permissions, multi-agent mode (multiple MCP clients sharing one bridge), persistent UI map across sessions.",
   "keywords": [
     "mcp",
@@ -56,7 +56,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.0.3",
     "env-paths": "^4.0.0",
     "ink": "^7.1.1",
     "react": "^19.2.8",
