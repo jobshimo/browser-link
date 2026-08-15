@@ -99,6 +99,32 @@ export interface BrowserLinkConfig {
    * `browser-link config set cdp-direct.grant-ttl <minutes|never>`.
    */
   cdpDirectGrantTtlMinutes?: number;
+  /**
+   * Activity trail. Default ON. When true (default), every browser tool an
+   * agent dispatches is appended to `activity.db` in the data dir, and the
+   * extension's Activity window plus `browser-link activity` can read it back.
+   *
+   * Set explicitly to false to record nothing at all. The window then shows an
+   * empty trail rather than pretending — a silently-disabled audit log is
+   * worse than no audit log.
+   */
+  activityEnabled?: boolean;
+  /**
+   * Whether trail rows carry the free text an action moved: the string typed
+   * by `browser.type`, the expression given to `browser.evaluate`, the URL of
+   * a `browser.navigate`. Default ON, because a trail that cannot tell you
+   * WHAT the agent typed answers none of the questions people open it for.
+   *
+   * Set to false to keep the shape of the trail without its contents — every
+   * row still records which tool ran, where, by whom and with what outcome.
+   *
+   * Note this is a RECORDING switch, deliberately separate from the redaction
+   * applied by `browser-link activity export --redact`: recording is about
+   * what lands on your own disk, redaction about what you hand to someone
+   * else. Turning this off cannot be undone after the fact; redacting on
+   * export can be decided every time.
+   */
+  activityRecordPayloads?: boolean;
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept

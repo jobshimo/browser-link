@@ -1,10 +1,20 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
+  ActivityPurgeMessage,
+  ActivityQueryMessage,
+  ActivityStatsPayload,
   ExtensionToServer,
   FlowRecordedPayload,
   ServerToExtension,
   SettingsUpdateMessage,
 } from '../messages.js';
+import {
+  countInRange as countActivityInRange,
+  listAgents as listActivityAgents,
+  purgeRange as purgeActivityRange,
+  query as queryActivity,
+  stats as activityStats,
+} from '../activity/queries.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcess } from '../auth/process-identity.js';
 import { VERSION } from '../version.js';
@@ -256,6 +266,29 @@ export function startWsBridge(
           send(ws, result);
           return;
         }
+
+        if (msg.kind === 'activity.purge') {
+          // The one DESTRUCTIVE frame the extension can send, and irreversible.
+          // The window resolves a count with `dry_run` first and puts that
+          // number in front of the user before this ever arrives for real.
+          send(ws, handleActivityPurgeMessage(msg));
+          return;
+        }
+
+        if (msg.kind === 'activity.query') {
+          // Read-only and deliberately NOT scoped to `assignedTabId`, unlike
+          // `flow.recorded` above. The Activity window's whole job is showing
+          // what happened across every tab and every agent, and it reaches the
+          // bridge through whichever tab's socket happens to be open. A
+          // per-connection scope here would silently hide most of the trail.
+          //
+          // The connection is already authenticated (browser allowlist + peer
+          // process identity at handshake), and the trail never leaves the
+          // machine, so "any authenticated extension connection may read the
+          // local trail" is the intended boundary.
+          send(ws, handleActivityQueryMessage(msg));
+          return;
+        }
       });
 
       ws.on('close', () => {
@@ -449,6 +482,92 @@ export function handleFlowRecordedMessage(
  * connected — the caller surfaces the standard not-connected error from
  * the status call that follows, rather than two competing diagnoses.
  */
+/**
+ * Answer one `activity.query` frame.
+ *
+ * Exported so it is unit-testable directly, same as
+ * `handleFlowRecordedMessage`. Never throws: a trail read that fails comes
+ * back as `ok: false` with a message the window can render, because a broken
+ * audit panel must not take the bridge connection down with it.
+ */
+export function handleActivityQueryMessage(msg: ActivityQueryMessage): ServerToExtension {
+  try {
+    const q = msg.query ?? {};
+    const page = queryActivity({
+      ...(typeof q.since_id === 'number' ? { sinceId: q.since_id } : {}),
+      ...(typeof q.before_id === 'number' ? { beforeId: q.before_id } : {}),
+      ...(typeof q.tab_id === 'string' ? { tabId: q.tab_id } : {}),
+      ...(typeof q.agent === 'string' ? { agent: q.agent } : {}),
+      ...(typeof q.tool === 'string' ? { tool: q.tool } : {}),
+      ...(typeof q.flow_id === 'string' ? { flowId: q.flow_id } : {}),
+      ...(q.outcome === 'ok' || q.outcome === 'error' ? { outcome: q.outcome } : {}),
+      ...(typeof q.limit === 'number' ? { limit: q.limit } : {}),
+    });
+    return {
+      kind: 'activity.result',
+      request_id: msg.request_id,
+      ok: true,
+      records: page.records,
+      latest_id: page.latestId,
+      total: page.total,
+      agents: listActivityAgents(),
+      stats: toStatsPayload(activityStats()),
+    };
+  } catch (error) {
+    return {
+      kind: 'activity.result',
+      request_id: msg.request_id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** camelCase store shape → snake_case wire shape. One mapper so the two can
+ * never drift into reporting different numbers under the same name. */
+function toStatsPayload(s: ReturnType<typeof activityStats>): ActivityStatsPayload {
+  return {
+    rows: s.rows,
+    bytes: s.bytes,
+    oldest_at: s.oldestAt,
+    newest_at: s.newestAt,
+    max_rows: s.maxRows,
+  };
+}
+
+/**
+ * Answer one `activity.purge` frame.
+ *
+ * `dry_run` is not a courtesy — it is how the window can promise the user a
+ * real number before an irreversible delete. Both paths return fresh stats so
+ * the panel's size readout updates from the same round trip that changed it.
+ */
+export function handleActivityPurgeMessage(msg: ActivityPurgeMessage): ServerToExtension {
+  try {
+    const range = {
+      ...(typeof msg.from === 'string' ? { from: msg.from } : {}),
+      ...(typeof msg.to === 'string' ? { to: msg.to } : {}),
+    };
+    const dryRun = msg.dry_run === true;
+    const removed = dryRun ? countActivityInRange(range) : purgeActivityRange(range);
+    return {
+      kind: 'activity.purge.result',
+      request_id: msg.request_id,
+      ok: true,
+      removed,
+      dry_run: dryRun,
+      stats: toStatsPayload(activityStats()),
+    };
+  } catch (error) {
+    return {
+      kind: 'activity.purge.result',
+      request_id: msg.request_id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function sendToolCancel(
   tabs: Map<string, TabSession>,
   tabId: string,

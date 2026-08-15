@@ -11,6 +11,7 @@ import { runFreePort } from './commands/free-port.js';
 import { runConfigCommand } from './commands/config.js';
 import { runCdpCommand } from './commands/cdp.js';
 import { runMapCommand } from './commands/map.js';
+import { runActivityCommand } from './commands/activity.js';
 import {
   formatStatus as formatInstructionsStatus,
   installInstructionsAll,
@@ -128,6 +129,15 @@ Uso:
                                 entradas, versión de exportación, límites de tamaño) —
                                 cualquier elemento inválido aborta la importación sin
                                 escribir nada.
+  browser-link activity         Últimas acciones que los agentes ejecutaron en el
+                                navegador, más recientes primero. Filtros: --tab,
+                                --agent, --tool, --flow, --failed, --limit.
+  browser-link activity export [--out <archivo>] [--format json|ndjson|csv] [--redact]
+                                Vuelca el rastro a un fichero para archivarlo o
+                                pasárselo a otro agente. --redact quita los payloads,
+                                los títulos y las query strings de las URLs.
+  browser-link activity clear [--older-than 7d] [--yes]
+                                Borra el rastro. Sin --older-than exige --yes.
   browser-link instructions     Muestra si el bloque de instrucciones de browser-link
                                 está presente en el .md global de cada cliente
                                 (Claude, OpenCode, Copilot CLI).
@@ -231,6 +241,16 @@ Usage:
                                 first. The whole file is validated up front (flow
                                 steps, entry fields, export version, sanity caps) —
                                 any invalid item aborts the import without writing.
+  browser-link activity         Recent actions agents ran in the browser, newest
+                                first. Filters: --tab, --agent, --tool, --flow,
+                                --failed, --limit.
+  browser-link activity export [--out <file>] [--format json|ndjson|csv] [--redact]
+                                Dump the trail to a file to archive it or hand it to
+                                another agent. --redact strips payloads, titles and
+                                URL query strings.
+  browser-link activity clear [--older-than 7d] [--yes]
+                                Delete the trail. Without --older-than, --yes is
+                                required.
   browser-link instructions     Show whether the browser-link instructions block
                                 is present in each client's global .md file
                                 (Claude, OpenCode, Copilot CLI).
@@ -384,6 +404,10 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'map': {
       console.log(runMapCommand(rest, language));
+      return;
+    }
+    case 'activity': {
+      console.log(runActivityCommand(rest, language));
       return;
     }
     case 'instructions': {

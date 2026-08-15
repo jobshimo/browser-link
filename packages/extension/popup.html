@@ -318,6 +318,46 @@
         font-weight: 500;
       }
 
+      /* Secondary action: it opens a window rather than changing any state,
+         so it reads quieter than Connect/Disconnect while still being an
+         obvious, full-width target. */
+      .activity-button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        width: 100%;
+        margin-top: 12px;
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--text);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        cursor: pointer;
+        transition:
+          border-color 0.12s ease,
+          background 0.12s ease;
+      }
+
+      .activity-button:hover {
+        border-color: var(--brand-from);
+        background: #fff;
+      }
+
+      .activity-button:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
+      }
+
+      .activity-button svg {
+        width: 14px;
+        height: 14px;
+        color: var(--brand-to);
+      }
+
       .dialog-box {
         margin-top: 12px;
         padding: 12px 14px;
@@ -746,6 +786,24 @@
         </div>
         <ul id="flows-history" class="flows-list flows-history"></ul>
       </div>
+
+      <!-- Opens the Activity window: the full, persistent trail of every
+           action every agent ran, across all tabs. Always visible, unlike
+           the flows panel above — the trail is worth opening precisely when
+           this popup has nothing to show, because the popup only knows
+           about flows on this tab and only for this browser session. -->
+      <button id="open-activity" class="activity-button" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M2 12.5h12M4.5 10V6.5M8 10V3.5M11.5 10V7.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          />
+        </svg>
+        Activity
+      </button>
 
       <div class="footer">manual · per-tab · loopback only</div>
     </div>

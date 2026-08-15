@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>browser-link — Activity</title>
+    <style>
+      /* Same slate-blue system as popup.html, extended for a window that
+       * stays open: a dark variant (this panel is watched for long stretches)
+       * and a denser row rhythm than a 320px popup can carry. Only the tokens
+       * change between themes — every rule below is written once. */
+      :root {
+        --brand-from: #5b8def;
+        --brand-to: #2a5fd6;
+        --brand-ring: rgba(29, 78, 216, 0.32);
+
+        --bg: #ffffff;
+        --bg-soft: #f8fafc;
+        --bg-raised: #ffffff;
+        --border: #e2e8f0;
+        --border-soft: #eef2f7;
+
+        --text: #0f172a;
+        --text-muted: #64748b;
+        --text-faint: #94a3b8;
+
+        --ok-fg: #047857;
+        --ok-soft: #ecfdf5;
+        --error-fg: #b91c1c;
+        --error-soft: #fef2f2;
+        --warn-fg: #b45309;
+        --warn-soft: #fffbeb;
+
+        --shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1120;
+          --bg-soft: #111a2e;
+          --bg-raised: #131d33;
+          --border: #1e293b;
+          --border-soft: #172033;
+
+          --text: #e2e8f0;
+          --text-muted: #94a3b8;
+          --text-faint: #64748b;
+
+          --ok-fg: #34d399;
+          --ok-soft: rgba(16, 185, 129, 0.12);
+          --error-fg: #f87171;
+          --error-soft: rgba(239, 68, 68, 0.12);
+          --warn-fg: #fbbf24;
+          --warn-soft: rgba(245, 158, 11, 0.12);
+
+          --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family:
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Inter',
+          'Segoe UI',
+          system-ui,
+          sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ---------- header ---------- */
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-raised);
+        flex: 0 0 auto;
+      }
+
+      .mark {
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+        box-shadow: 0 0 0 3px var(--brand-ring);
+        flex: 0 0 auto;
+      }
+
+      .titles {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        margin-right: auto;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+
+      .subtitle {
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      /* ---------- controls ---------- */
+
+      button,
+      select,
+      input[type='search'] {
+        font: inherit;
+        color: var(--text);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        transition:
+          border-color 0.12s ease,
+          background 0.12s ease;
+      }
+
+      button:hover,
+      select:hover {
+        border-color: var(--brand-from);
+      }
+
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
+      }
+
+      input[type='search'] {
+        cursor: text;
+        min-width: 190px;
+      }
+
+      button.primary {
+        color: #fff;
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+        border-color: transparent;
+        font-weight: 600;
+      }
+
+      button[aria-pressed='true'] {
+        border-color: var(--brand-from);
+        background: var(--brand-ring);
+        font-weight: 600;
+      }
+
+      .live-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        margin-right: 6px;
+        background: var(--text-faint);
+        vertical-align: middle;
+      }
+
+      button[aria-pressed='true'] .live-dot {
+        background: var(--ok-fg);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        button[aria-pressed='true'] .live-dot {
+          animation: none;
+        }
+      }
+
+      /* ---------- usage strip ---------- */
+
+      .usage {
+        display: flex;
+        align-items: center;
+        gap: 26px;
+        padding: 11px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-raised);
+        flex: 0 0 auto;
+      }
+
+      .usage-figure {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        line-height: 1.15;
+      }
+
+      .usage-value {
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .usage-label {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+      }
+
+      /* Reads as a fuel gauge, because that is the question it answers: how
+         close is the trail to the point where it drops its oldest entries. */
+      .usage-meter {
+        position: relative;
+        flex: 1 1 auto;
+        max-width: 320px;
+        height: 20px;
+        border-radius: 999px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        overflow: hidden;
+      }
+
+      .usage-meter-fill {
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--brand-from), var(--brand-to));
+        transition: width 0.3s ease;
+      }
+
+      .usage-meter.warn .usage-meter-fill {
+        background: linear-gradient(90deg, #f59e0b, #b45309);
+      }
+
+      .usage-meter-text {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--text-muted);
+        mix-blend-mode: normal;
+      }
+
+      .danger-ghost {
+        margin-left: auto;
+        color: var(--error-fg);
+        border-color: var(--border);
+      }
+
+      .danger-ghost:hover {
+        border-color: var(--error-fg);
+        background: var(--error-soft);
+      }
+
+      /* ---------- purge panel ---------- */
+
+      .purge {
+        flex: 0 0 auto;
+        padding: 12px 18px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--error-soft);
+      }
+
+      .purge-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .purge-row label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      .purge input[type='date'] {
+        font: inherit;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 5px 8px;
+      }
+
+      .chip {
+        font-size: 11.5px;
+        padding: 5px 9px;
+        background: var(--bg);
+      }
+
+      .purge-confirm {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .purge-confirm p {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--text);
+      }
+
+      .purge-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      button.danger {
+        color: #fff;
+        background: var(--error-fg);
+        border-color: transparent;
+        font-weight: 650;
+      }
+
+      button.danger:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      button.danger:not(:disabled):hover {
+        filter: brightness(1.08);
+      }
+
+      .purge-warning {
+        font-size: 11.5px !important;
+        color: var(--text-muted) !important;
+      }
+
+      .purge-warning code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+      }
+
+      /* ---------- filter bar ---------- */
+
+      .filters {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 10px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-soft);
+        flex: 0 0 auto;
+      }
+
+      .filters .spacer {
+        margin-left: auto;
+      }
+
+      .count {
+        font-size: 11.5px;
+        color: var(--text-muted);
+        white-space: nowrap;
+      }
+
+      /* ---------- table ---------- */
+
+      .scroll {
+        flex: 1 1 auto;
+        overflow: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        text-align: left;
+        font-size: 10.5px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        background: var(--bg);
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+
+      tbody td {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+      }
+
+      tbody tr:hover {
+        background: var(--bg-soft);
+      }
+
+      tbody tr.failed td {
+        background: var(--error-soft);
+      }
+
+      .when {
+        color: var(--text-muted);
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .agent {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        background: var(--brand-ring);
+        color: var(--text);
+        white-space: nowrap;
+      }
+
+      .tool {
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .target,
+      .payload {
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 11.5px;
+        color: var(--text-muted);
+        word-break: break-all;
+      }
+
+      .payload {
+        display: block;
+        margin-top: 3px;
+        color: var(--text-faint);
+      }
+
+      .url {
+        display: block;
+        margin-top: 3px;
+        font-size: 11px;
+        color: var(--text-faint);
+        word-break: break-all;
+      }
+
+      .outcome {
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .outcome.ok {
+        color: var(--ok-fg);
+      }
+
+      .outcome.error {
+        color: var(--error-fg);
+        font-weight: 600;
+      }
+
+      .flow-tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 6px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        background: var(--warn-soft);
+        color: var(--warn-fg);
+      }
+
+      /* ---------- states ---------- */
+
+      .state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 64px 24px;
+        text-align: center;
+        color: var(--text-muted);
+      }
+
+      .state strong {
+        color: var(--text);
+        font-size: 14px;
+      }
+
+      .state code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 6px;
+      }
+
+      footer {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 18px;
+        border-top: 1px solid var(--border);
+        background: var(--bg-raised);
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="mark" aria-hidden="true"></div>
+      <div class="titles">
+        <h1>Activity</h1>
+        <span class="subtitle" id="subtitle">Everything agents did in your browser</span>
+      </div>
+      <button id="live" type="button" aria-pressed="true" title="Keep the newest actions streaming in">
+        <span class="live-dot" aria-hidden="true"></span>Live
+      </button>
+      <button id="refresh" type="button" title="Reload now">Refresh</button>
+      <button id="export" class="primary" type="button" title="Download the visible trail">
+        Export
+      </button>
+    </header>
+
+    <!-- Size and counts, always on screen. The whole reason this strip is
+         permanent rather than tucked behind a menu: a trail that grows without
+         the user seeing it grow is the failure mode this feature exists to
+         prevent. -->
+    <div class="usage" id="usage">
+      <div class="usage-figure">
+        <span class="usage-value" id="usage-rows">—</span>
+        <span class="usage-label">actions</span>
+      </div>
+      <div class="usage-figure">
+        <span class="usage-value" id="usage-size">—</span>
+        <span class="usage-label">on disk</span>
+      </div>
+      <div class="usage-figure">
+        <span class="usage-value" id="usage-span">—</span>
+        <span class="usage-label">oldest entry</span>
+      </div>
+      <div class="usage-meter" title="How full the trail is before it starts pruning its oldest entries">
+        <div class="usage-meter-fill" id="usage-fill"></div>
+        <span class="usage-meter-text" id="usage-cap"></span>
+      </div>
+      <button id="purge-toggle" type="button" class="danger-ghost">Purge…</button>
+    </div>
+
+    <!-- Purge panel. Collapsed by default; a destructive control that is always
+         expanded is a destructive control someone eventually hits by accident. -->
+    <div class="purge" id="purge-panel" hidden>
+      <div class="purge-row">
+        <label for="purge-from">From</label>
+        <input id="purge-from" type="date" />
+        <label for="purge-to">To</label>
+        <input id="purge-to" type="date" />
+        <button id="purge-preset-30d" type="button" class="chip">Older than 30 days</button>
+        <button id="purge-preset-7d" type="button" class="chip">Older than 7 days</button>
+        <button id="purge-preset-all" type="button" class="chip">Everything</button>
+        <span class="spacer" style="margin-left: auto"></span>
+        <button id="purge-cancel" type="button">Close</button>
+      </div>
+      <div class="purge-confirm" id="purge-confirm">
+        <p id="purge-summary">Pick a range. Leave both dates empty to purge the whole trail.</p>
+        <div class="purge-actions">
+          <button id="purge-check" type="button">Check how many</button>
+          <button id="purge-run" type="button" class="danger" disabled>
+            Delete permanently
+          </button>
+        </div>
+        <p class="purge-warning">
+          <strong>This cannot be undone.</strong> Deleted rows are gone from
+          <code>activity.db</code> — they are not in the recycle bin and not recoverable from an
+          earlier export unless you already made one.
+        </p>
+      </div>
+    </div>
+
+    <div class="filters">
+      <select id="filter-agent" aria-label="Filter by agent">
+        <option value="">All agents</option>
+      </select>
+      <select id="filter-tool" aria-label="Filter by tool">
+        <option value="">All tools</option>
+      </select>
+      <button id="filter-failed" type="button" aria-pressed="false" title="Show only actions that errored">
+        Failures only
+      </button>
+      <input id="filter-text" type="search" placeholder="Filter selector, URL or payload…" aria-label="Free-text filter" />
+      <button id="filter-reset" type="button">Reset</button>
+      <span class="spacer"></span>
+      <span class="count" id="count"></span>
+    </div>
+
+    <div class="scroll">
+      <table id="table" class="hidden">
+        <thead>
+          <tr>
+            <th scope="col">When</th>
+            <th scope="col">Agent</th>
+            <th scope="col">Tool</th>
+            <th scope="col">Target</th>
+            <th scope="col">Result</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+
+      <div class="state" id="state">
+        <strong id="state-title">Loading…</strong>
+        <span id="state-detail"></span>
+      </div>
+    </div>
+
+    <footer>
+      <span id="status">—</span>
+      <span class="spacer" style="margin-left: auto"></span>
+      <span id="hint">Trail is stored locally in activity.db · never uploaded</span>
+    </footer>
+
+    <script type="module" src="activity.js"></script>
+  </body>
+</html>

@@ -808,6 +808,21 @@ setInterval(() => {
   })();
 }, 800);
 
+/** Open the Activity window. Closes the popup afterwards: the popup would
+ * lose focus and vanish on its own the moment the new window appears, and
+ * doing it explicitly makes that a deliberate handoff instead of a flicker. */
+document.getElementById('open-activity')?.addEventListener('click', () => {
+  void chrome.runtime.sendMessage({ action: 'openActivityWindow' }).then(
+    () => {
+      window.close();
+    },
+    () => {
+      // Service worker asleep or mid-restart — the click is cheap to retry
+      // and the popup stays open so the user can see it did not take.
+    },
+  );
+});
+
 refresh().catch((err: unknown) => {
   setStatus('error', err instanceof Error ? err.message : String(err));
 });
