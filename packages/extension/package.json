@@ -1,6 +1,6 @@
 {
   "name": "@browser-link/extension",
-  "version": "0.28.4",
+  "version": "0.28.5",
   "private": true,
   "scripts": {
     "build": "tsc && node copy-assets.mjs",
@@ -18,6 +18,6 @@
     "@types/chrome": "^0.2.5",
     "jsdom": "^30.0.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
