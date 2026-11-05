@@ -1514,8 +1514,9 @@ had to be connected by hand in the first place.
 One deliberate tradeoff to state plainly: since v0.23.9 the extension
 **auto-reconnects** after an involuntary drop — when a registered tab's
 socket dies uncleanly (the primary MCP server crashed or restarted), it
-retries the connection four times with backoff, over the exact same
-channel a manual "Connect this tab" click uses, just without waiting for
+keeps retrying the connection with capped backoff (1s, 2s, 4s, 8s, 15s,
+then every 30s, for up to 10 minutes while the Chrome tab stays open),
+over the exact same channel a manual "Connect this tab" click uses, just without waiting for
 a fresh human gesture. The server verifies the client's process; the
 client never authenticates the server (a legitimately restarted primary
 has no shared secret to present — that is what `tab-renamed` continuity
@@ -1525,8 +1526,10 @@ reconnect. That attacker needs local code execution and a won loopback
 port race — the same preconditions the "malware already inside Chrome"
 caveat above and the cdp-direct port-squatting note already accept.
 Explicit disconnects and `browser.reset` closes are deliberate goodbyes
-and never auto-reconnect; past the fourth attempt the popup's Connect
-button is the only way back.
+and never auto-reconnect, nor does a closed tab; once the 10-minute
+window is spent the popup's Connect button is the only way back. The
+extension holds the `alarms` permission for this: it wakes the sleeping
+service worker between the 30s attempts.
 
 ## Where your data lives
 

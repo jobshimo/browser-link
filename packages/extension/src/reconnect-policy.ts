@@ -20,29 +20,76 @@
  */
 
 /**
- * Backoff schedule, one entry per attempt: 1s, 2s, 4s, 8s — four attempts,
- * 15s of scheduled wait total (each attempt's own duration — debugger
- * attach, CDP enables, WS round trip — adds on top of the delays, so the
- * wall-clock window is longer). Sized for the observed failure (a primary
- * process restarting within seconds) and kept comfortably inside the MV3
- * service worker's ~30s idle grace: every timer fire touches chrome.* APIs,
- * which resets the idle clock, so the whole sequence normally runs without
- * the worker being torn down. If Chrome kills the worker anyway, the
- * persisted `pendingReconnect:*` state resumes the budget on the next wake
- * (see background.ts's resumePendingReconnects). Past the last entry the
- * budget is exhausted and the popup's Connect button is the fallback, as
- * before this feature existed.
+ * How long a dropped tab keeps being retried: 10 minutes. Measured in a real
+ * session, the primary bridge process died, the old 15s budget ran out while
+ * the agent was still diagnosing, and the tab stayed released until the
+ * human pressed Connect again. A retry against a dead loopback port is
+ * nearly free; giving up costs the whole session, so keep trying while the
+ * Chrome tab is still open. Past the window the popup's Connect button is
+ * the fallback, as before.
  */
-export const RECONNECT_DELAYS_MS: readonly number[] = [1000, 2000, 4000, 8000];
+export const RECONNECT_WINDOW_MS = 10 * 60_000;
+
+/** Slowest pace of the backoff (the plateau after the ramp). */
+export const RECONNECT_MAX_DELAY_MS = 30_000;
+
+/** First, fast steps — sized for the common failure, a primary restarting
+ * within seconds — before settling onto the plateau. */
+const RECONNECT_RAMP_MS: readonly number[] = [1000, 2000, 4000, 8000, 15_000];
 
 /**
- * How long a persisted `pendingReconnect:*` entry stays resumable. A
- * service worker that wakes MINUTES after the drop should not surprise the
- * user with a reconnect long after they moved on — past this window the
- * entry is discarded and the popup's Connect button is the fallback.
- * Matches the temperament of WS_IDLE_SWEEP_MS (one minute).
+ * chrome.alarms' minimum delay (Chrome 120+). Used for the safety-net
+ * alarm that wakes a sleeping MV3 service worker (see background.ts).
  */
-export const RECONNECT_STATE_TTL_MS = 60_000;
+export const ALARM_MIN_DELAY_MS = 30_000;
+
+/** Capped exponential backoff: the `ramp` steps, then `capMs` repeated for
+ * as long as the cumulative scheduled wait stays within `windowMs`. */
+export function buildReconnectDelays(
+  opts: { ramp?: readonly number[]; capMs?: number; windowMs?: number } = {},
+): number[] {
+  const ramp = opts.ramp ?? RECONNECT_RAMP_MS;
+  const capMs = opts.capMs ?? RECONNECT_MAX_DELAY_MS;
+  const windowMs = opts.windowMs ?? RECONNECT_WINDOW_MS;
+  const delays: number[] = [];
+  let total = 0;
+  for (const d of ramp) {
+    if (total + d > windowMs) return delays;
+    delays.push(d);
+    total += d;
+  }
+  while (total + capMs <= windowMs) {
+    delays.push(capMs);
+    total += capMs;
+  }
+  return delays;
+}
+
+/**
+ * Backoff schedule, one entry per attempt: 1s, 2s, 4s, 8s, 15s, then every
+ * 30s until the 10-minute window is spent (24 attempts, exactly 600s of
+ * scheduled wait; each attempt's own duration — debugger attach, CDP
+ * enables, WS round trip — adds on top). No jitter: it is a single local
+ * client talking to a single loopback port, so there is no herd to spread.
+ *
+ * MV3 durability: plain timers cover the fast ramp (each fire touches
+ * chrome.* APIs, which resets the worker's ~30s idle clock), but the 30s
+ * plateau lets Chrome tear the worker down between attempts. background.ts
+ * therefore mirrors every armed attempt into `pendingReconnect:*` storage
+ * AND a `chrome.alarms` safety net; the alarm wakes the worker, which
+ * resumes from storage (see resumePendingReconnects).
+ */
+export const RECONNECT_DELAYS_MS: readonly number[] = buildReconnectDelays();
+
+/**
+ * How long a persisted `pendingReconnect:*` entry stays resumable. Each
+ * schedule refreshes `updatedAt`, so this only has to cover the longest
+ * gap between schedules; it is set to the whole retry window plus a minute
+ * of slack so the stored state always outlives the schedule it describes.
+ * Past it the entry is discarded and the popup's Connect button is the
+ * fallback.
+ */
+export const RECONNECT_STATE_TTL_MS = RECONNECT_WINDOW_MS + 60_000;
 
 /** chrome.storage.session key prefix for per-tab reconnect state — sits
  * alongside the existing `prevTabId:*` keys (same area, same per-browser-
@@ -114,6 +161,17 @@ export interface StoredReconnectState {
   attempt: number;
   /** Epoch ms of the last schedule — see `isReconnectStateFresh`. */
   updatedAt: number;
+  /** Epoch ms the scheduled attempt is due. Lets a resumed cycle wait only
+   * the REMAINING time (or fire at once if the worker slept past it)
+   * instead of replaying the full step. Optional: older entries lack it. */
+  dueAt?: number;
+}
+
+/** Remaining wait for a resumed attempt, or `undefined` when the entry has
+ * no `dueAt` (the scheduler then uses the attempt's regular delay). */
+export function resumeDelayMs(state: StoredReconnectState, now: number): number | undefined {
+  if (state.dueAt === undefined) return undefined;
+  return Math.max(0, state.dueAt - now);
 }
 
 /** Runtime shape guard for a stored `pendingReconnect:*` value — storage
@@ -124,7 +182,10 @@ export function parseStoredReconnectState(value: unknown): StoredReconnectState 
   const s = value as Record<string, unknown>;
   if (typeof s.attempt !== 'number' || !Number.isInteger(s.attempt) || s.attempt < 0) return null;
   if (typeof s.updatedAt !== 'number' || !Number.isFinite(s.updatedAt)) return null;
-  return { attempt: s.attempt, updatedAt: s.updatedAt };
+  const dueAt = typeof s.dueAt === 'number' && Number.isFinite(s.dueAt) ? s.dueAt : undefined;
+  return dueAt === undefined
+    ? { attempt: s.attempt, updatedAt: s.updatedAt }
+    : { attempt: s.attempt, updatedAt: s.updatedAt, dueAt };
 }
 
 /** Whether a persisted reconnect entry is still worth resuming. A negative
@@ -153,7 +214,7 @@ export interface ReconnectSchedulerOptions {
    * schedule, and with `null` whenever the cycle ends for any reason
    * (success, stop, cancel, exhaustion) — background.ts mirrors this into
    * `chrome.storage.session` so a killed service worker can resume. */
-  onStateChange?(tabId: number, state: { attempt: number } | null): void;
+  onStateChange?(tabId: number, state: { attempt: number; delayMs: number } | null): void;
 }
 
 export interface ReconnectScheduler {
@@ -161,8 +222,9 @@ export interface ReconnectScheduler {
    * (0 for a fresh drop; the persisted attempt when resuming). Returns
    * false — scheduling nothing — when a cycle is already pending for the
    * tab (per-tab backoff, no thundering herd) or the budget is already
-   * exhausted at `startAttempt` (a stale resume). */
-  schedule(tabId: number, startAttempt?: number): boolean;
+   * exhausted at `startAttempt` (a stale resume). `firstDelayMs`
+   * overrides the first wait (a resume waits only the time that was left). */
+  schedule(tabId: number, startAttempt?: number, firstDelayMs?: number): boolean;
   /** Abort the tab's pending cycle, if any — explicit disconnect, explicit
    * popup Connect, and tab removal all route here. Safe mid-attempt: an
    * in-flight `attempt` whose cycle was cancelled never re-arms. */
@@ -189,24 +251,30 @@ export function createReconnectScheduler(options: ReconnectSchedulerOptions): Re
     });
   const pending = new Map<number, PendingEntry>();
 
-  const notify = (tabId: number, state: { attempt: number } | null): void => {
+  const notify = (tabId: number, state: { attempt: number; delayMs: number } | null): void => {
     options.onStateChange?.(tabId, state);
   };
 
-  function arm(tabId: number, entry: PendingEntry, attempt: number): boolean {
-    const delayMs = reconnectDelayMs(attempt, delays);
-    if (delayMs === undefined) {
+  function arm(
+    tabId: number,
+    entry: PendingEntry,
+    attempt: number,
+    delayOverrideMs?: number,
+  ): boolean {
+    const stepMs = reconnectDelayMs(attempt, delays);
+    if (stepMs === undefined) {
       // Budget exhausted — end the cycle cleanly. The popup's Connect
       // button remains the fallback, exactly as before this feature.
       pending.delete(tabId);
       notify(tabId, null);
       return false;
     }
+    const delayMs = delayOverrideMs ?? stepMs;
     entry.attempt = attempt;
     entry.timer = setTimer(() => {
       void fire(tabId, entry);
     }, delayMs);
-    notify(tabId, { attempt });
+    notify(tabId, { attempt, delayMs });
     return true;
   }
 
@@ -230,11 +298,11 @@ export function createReconnectScheduler(options: ReconnectSchedulerOptions): Re
   }
 
   return {
-    schedule(tabId: number, startAttempt = 0): boolean {
+    schedule(tabId: number, startAttempt = 0, firstDelayMs?: number): boolean {
       if (pending.has(tabId)) return false;
       const entry: PendingEntry = { attempt: startAttempt, timer: undefined };
       pending.set(tabId, entry);
-      return arm(tabId, entry, startAttempt);
+      return arm(tabId, entry, startAttempt, firstDelayMs);
     },
     cancel(tabId: number): boolean {
       const entry = pending.get(tabId);

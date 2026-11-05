@@ -1,14 +1,18 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  ALARM_MIN_DELAY_MS,
   RECONNECT_DELAYS_MS,
+  RECONNECT_WINDOW_MS,
   RECONNECT_STATE_TTL_MS,
   RECONNECT_STORAGE_PREFIX,
+  buildReconnectDelays,
   createReconnectScheduler,
   isInvoluntaryClose,
   isReconnectStateFresh,
   parseStoredReconnectState,
   reconnectDelayMs,
   reconnectStorageKey,
+  resumeDelayMs,
   tabIdFromReconnectKey,
   type ReconnectAttemptResult,
 } from './reconnect-policy.js';
@@ -54,7 +58,7 @@ function makeScheduler(
 ) {
   const timers = makeTimerHost();
   const attempts: number[] = [];
-  const stateChanges: [number, { attempt: number } | null][] = [];
+  const stateChanges: [number, { attempt: number; delayMs: number } | null][] = [];
   const scheduler = createReconnectScheduler({
     attempt: (tabId) => {
       attempts.push(tabId);
@@ -109,8 +113,31 @@ describe('reconnectDelayMs', () => {
     expect(reconnectDelayMs(1.5)).toBeUndefined();
   });
 
-  test('schedule is 1s/2s/4s/8s — sized for a primary restarting within seconds', () => {
-    expect(RECONNECT_DELAYS_MS).toEqual([1000, 2000, 4000, 8000]);
+  test('schedule starts 1s/2s/4s/8s/15s — fast first retries for a primary restarting within seconds', () => {
+    expect(RECONNECT_DELAYS_MS.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 15_000]);
+  });
+
+  test('after the ramp every delay is capped at 30s', () => {
+    expect(RECONNECT_DELAYS_MS.slice(5).every((d) => d === 30_000)).toBe(true);
+    expect(Math.max(...RECONNECT_DELAYS_MS)).toBe(30_000);
+  });
+
+  test('keeps trying for the whole 10 minute window, never past it', () => {
+    expect(RECONNECT_WINDOW_MS).toBe(600_000);
+    const total = RECONNECT_DELAYS_MS.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThanOrEqual(RECONNECT_WINDOW_MS);
+    // Within one capped step of the window: no unexplained slack.
+    expect(total).toBeGreaterThan(RECONNECT_WINDOW_MS - 30_000);
+  });
+
+  test('buildReconnectDelays honours custom ramp, cap and window', () => {
+    expect(buildReconnectDelays({ ramp: [10, 20], capMs: 50, windowMs: 200 })).toEqual([
+      10, 20, 50, 50, 50,
+    ]);
+  });
+
+  test('persisted state outlives the whole retry window', () => {
+    expect(RECONNECT_STATE_TTL_MS).toBeGreaterThan(RECONNECT_WINDOW_MS);
   });
 });
 
@@ -128,27 +155,21 @@ describe('createReconnectScheduler', () => {
   });
 
   test('retries walk the full backoff sequence, then exhaustion stops cleanly', async () => {
-    const { scheduler, timers, attempts, stateChanges } = makeScheduler([
-      'retry',
-      'retry',
-      'retry',
-      'retry',
-    ]);
+    const { scheduler, timers, attempts, stateChanges } = makeScheduler(
+      RECONNECT_DELAYS_MS.map(() => 'retry' as const),
+    );
     scheduler.schedule(7);
     const delays: number[] = [];
     for (let i = 0; i < RECONNECT_DELAYS_MS.length; i++) {
       delays.push(await timers.fireOnly());
     }
     expect(delays).toEqual([...RECONNECT_DELAYS_MS]);
-    expect(attempts).toEqual([7, 7, 7, 7]);
+    expect(attempts).toEqual(RECONNECT_DELAYS_MS.map(() => 7));
     // Budget exhausted: no timer left, cycle ended, state cleared.
     expect(timers.pending.size).toBe(0);
     expect(scheduler.isPending(7)).toBe(false);
     expect(stateChanges).toEqual([
-      [7, { attempt: 0 }],
-      [7, { attempt: 1 }],
-      [7, { attempt: 2 }],
-      [7, { attempt: 3 }],
+      ...RECONNECT_DELAYS_MS.map((delayMs, attempt) => [7, { attempt, delayMs }]),
       [7, null],
     ]);
   });
@@ -194,7 +215,7 @@ describe('createReconnectScheduler', () => {
     expect(timers.pending.size).toBe(0);
     expect(scheduler.isPending(9)).toBe(false);
     expect(stateChanges).toEqual([
-      [9, { attempt: 0 }],
+      [9, { attempt: 0, delayMs: RECONNECT_DELAYS_MS[0] }],
       [9, null],
     ]);
     // Nothing pending → nothing to cancel.
@@ -231,7 +252,7 @@ describe('createReconnectScheduler', () => {
     // must own the (only) end-of-cycle notification, and the resolving
     // attempt must neither re-arm nor notify again.
     const timers = makeTimerHost();
-    const stateChanges: [number, { attempt: number } | null][] = [];
+    const stateChanges: [number, { attempt: number; delayMs: number } | null][] = [];
     let cancelSelf: () => void = () => undefined;
     const scheduler = createReconnectScheduler({
       attempt: () => {
@@ -252,7 +273,7 @@ describe('createReconnectScheduler', () => {
     expect(scheduler.isPending(12)).toBe(false);
     expect(timers.pending.size).toBe(0);
     expect(stateChanges).toEqual([
-      [12, { attempt: 0 }],
+      [12, { attempt: 0, delayMs: RECONNECT_DELAYS_MS[0] }],
       [12, null],
     ]);
   });
@@ -322,6 +343,36 @@ describe('createReconnectScheduler', () => {
     expect(stateChanges).toEqual([[8, null]]);
   });
 
+  test('a late attempt (deep in the 30s plateau) is cancelled by a manual disconnect', async () => {
+    const { scheduler, timers, stateChanges } = makeScheduler(
+      RECONNECT_DELAYS_MS.slice(0, 12).map(() => 'retry' as const),
+    );
+    scheduler.schedule(5);
+    for (let i = 0; i < 12; i++) await timers.fireOnly();
+    expect(scheduler.isPending(5)).toBe(true);
+    expect(scheduler.cancel(5)).toBe(true);
+    expect(timers.pending.size).toBe(0);
+    expect(stateChanges.at(-1)).toEqual([5, null]);
+  });
+
+  test('a closed tab (stop) ends a late cycle without re-arming', async () => {
+    const { scheduler, timers } = makeScheduler(['retry', 'retry', 'stop']);
+    scheduler.schedule(5);
+    await timers.fireOnly();
+    await timers.fireOnly();
+    await timers.fireOnly();
+    expect(timers.pending.size).toBe(0);
+    expect(scheduler.isPending(5)).toBe(false);
+  });
+
+  test('resuming with a remaining-delay override arms that delay, not the full step', async () => {
+    const { scheduler, timers, stateChanges } = makeScheduler(['connected']);
+    expect(scheduler.schedule(8, 6, 1234)).toBe(true);
+    const delay = await timers.fireOnly();
+    expect(delay).toBe(1234);
+    expect(stateChanges[0]).toEqual([8, { attempt: 6, delayMs: 1234 }]);
+  });
+
   test('falls back to real timers when none are injected', async () => {
     vi.useFakeTimers();
     try {
@@ -361,6 +412,28 @@ describe('reconnect storage keys + stored state', () => {
       attempt: 2,
       updatedAt: 1000,
     });
+  });
+
+  test('parseStoredReconnectState keeps a numeric dueAt and drops a malformed one', () => {
+    expect(parseStoredReconnectState({ attempt: 2, updatedAt: 1000, dueAt: 5000 })).toEqual({
+      attempt: 2,
+      updatedAt: 1000,
+      dueAt: 5000,
+    });
+    expect(parseStoredReconnectState({ attempt: 2, updatedAt: 1000, dueAt: 'x' })).toEqual({
+      attempt: 2,
+      updatedAt: 1000,
+    });
+  });
+
+  test('resumeDelayMs is the time left until dueAt, floored at 0, else undefined', () => {
+    expect(resumeDelayMs({ attempt: 1, updatedAt: 0, dueAt: 5000 }, 3000)).toBe(2000);
+    expect(resumeDelayMs({ attempt: 1, updatedAt: 0, dueAt: 5000 }, 9000)).toBe(0);
+    expect(resumeDelayMs({ attempt: 1, updatedAt: 0 }, 9000)).toBeUndefined();
+  });
+
+  test('ALARM_MIN_DELAY_MS is the chrome.alarms floor used for the safety-net wake-up', () => {
+    expect(ALARM_MIN_DELAY_MS).toBe(30_000);
   });
 
   test('parseStoredReconnectState rejects malformed values', () => {
