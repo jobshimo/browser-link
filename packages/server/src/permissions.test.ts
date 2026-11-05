@@ -22,10 +22,16 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 33 tools currently exposed', () => {
+  test('covers exactly the 34 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(33);
+    expect(TOOL_CATALOGUE.length).toBe(34);
+  });
+
+  test('browser.download is an action (it clicks and writes a file to disk)', () => {
+    const download = TOOL_CATALOGUE.find((t) => t.name === 'browser.download');
+    expect(download?.family).toBe('bridge');
+    expect(download?.category).toBe('action');
   });
 
   test('includes browser.flow_status as a read tool and browser.flow_cancel as an action', () => {

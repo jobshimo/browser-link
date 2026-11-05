@@ -20,6 +20,7 @@ const SELECTOR_ARG: Readonly<Record<string, string | undefined>> = {
   'browser.wait_for': 'selector',
   'browser.snapshot': 'within_selector',
   'browser.canvas_screenshot': 'selector',
+  'browser.download': 'selector',
 };
 
 /**
@@ -36,6 +37,7 @@ const PAYLOAD_ARG: Readonly<Record<string, string | undefined>> = {
   'browser.find': 'text',
   'browser.evaluate': 'expression',
   'browser.press': 'key',
+  'browser.download': 'url',
 };
 
 function readString(args: unknown, key: string): string | null {

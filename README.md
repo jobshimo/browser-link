@@ -64,10 +64,10 @@ whole browser. Designed for the loop "user reports bug → agent reproduces
 it in the real UI → agent fixes the code → agent re-verifies in the same
 tab", not for unattended consumer automation.
 
-- ✅ **What it does** — exposes **31** `browser.*` MCP tools: 25 to drive
+- ✅ **What it does** — exposes **32** `browser.*` MCP tools: 26 to drive
   a connected tab (list_tabs, ping, snapshot, find, state,
   canvas_screenshot, click, type, press, drag, flow, navigate, evaluate,
-  wait_for, wait_for_tab, dialog_respond, set_permission, console,
+  wait_for, wait_for_tab, dialog_respond, set_permission, download, console,
   network, network_body, claim/release/my_tabs, events, reset) plus 6
   persistent-map tools, so the agent learns your apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.13 and Chrome / Chromium / Edge / Brave
@@ -341,6 +341,7 @@ two exceptions are footnoted):
 | `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                                                                 |
 | `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                                                                  |
 | `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                                                                 |
+| `browser.download`       | Download a file — click a button or fetch a URL — with no native "Save as" dialog; see [Downloads](#downloads)                                           |
 | `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                                                                     |
 | `browser.release_tab`    | Release a tab claim the calling agent holds                                                                                                              |
 | `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                                                              |
@@ -908,6 +909,54 @@ placeholder to the real value the task calls for, then calls
 `browser.flow` with the adapted steps. No new MCP tool surface — recording
 only changes how a recipe gets INTO the map, not how an agent gets it out.
 
+## Downloads
+
+A plain `browser.click` on a Download button can open Chrome's native
+"Save as" dialog (when "Ask where to save each file" is on). Nothing in CDP
+or the page can press that dialog, so an agent gets stuck. `browser.download`
+never lets it appear:
+
+- `browser.download({ tab_id, selector })` clicks the element, catches the
+  download Chrome starts in `chrome.downloads.onDeterminingFilename` —
+  which Chrome consults _before_ it prompts — and cancels it there. The
+  cancelled download's URL is then fetched like the `url` mode below.
+- `browser.download({ tab_id, url })` fetches an http(s), `blob:` or
+  `data:` URL in the page, with the page's cookies.
+
+The server writes the bytes into the downloads directory and returns
+`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error? }`.
+Timeouts and failures still report what is known (URL, MIME type, bytes
+received so far). `browser.events` gets `download-started` and
+`download-finished` entries.
+
+```bash
+browser-link config get downloads.dir                   # default: <data dir>/downloads
+browser-link config set downloads.dir /home/me/agent-dl # absolute paths only
+browser-link config set downloads.dir default
+```
+
+Only you choose the directory: an agent's `filename` must be a plain
+basename (no separators, no `..`), and an existing file is never
+overwritten (`report (1).csv`).
+
+Why not just tell Chrome to save without asking? Because an extension
+cannot: Chromium answers `Browser.setDownloadBehavior` and
+`Page.setDownloadBehavior` with "Not allowed" for `chrome.debugger`
+clients, and `chrome.downloads.download({ saveAs: false })` still prompts
+when the user's "Ask where to save" setting is on. Fetching the file a
+second time in the page sidesteps both — with these limits:
+
+- A download produced by a one-shot POST form or a single-use token cannot
+  be fetched again; it comes back `interrupted` with the HTTP error.
+- A `blob:` URL the page revoked right after the click is gone.
+- 25 MiB per file.
+- `chrome.downloads` gives no tab id, so selector mode takes the first
+  download Chrome starts while it waits whose referrer is not another
+  origin. A download from another tab on the same site, or one with no
+  referrer, can still be taken. Only one `browser.download` can wait at a
+  time.
+- On cdp-direct tabs only `url` mode works.
+
 ## Activity trail
 
 Every browser tool an agent dispatches is recorded — what it did, where, on
@@ -1299,9 +1348,9 @@ history, canvas capture wiring, native permission grants, the popup's
 dialog channel, or `window.open` tab-creation events) are explicitly out of
 v1 scope and return a clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                                                                         | NOT supported in v1 (use the extension instead)                                                                       |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel` | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag` |
+| Supported in v1                                                                                                                                                                                  | NOT supported in v1 (use the extension instead)                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `download` (`url` mode) | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag`, `download` (`selector` mode) |
 
 \* `wait_for`'s `network_url` mode also falls back to "use the extension"
 — cdp-direct does not buffer network requests, so there is nothing to poll

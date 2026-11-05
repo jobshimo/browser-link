@@ -16,7 +16,8 @@
  * Kept out of scope for v1 (see the README's cdp-direct tool-support table
  * and the CHANGELOG's Internal section for the future-work list): `drag`,
  * `console`, `network`, `network_body`, `canvas_screenshot`,
- * `dialog_respond`, `set_permission`, `wait_for_tab`.
+ * `dialog_respond`, `set_permission`, `wait_for_tab`, and `download`
+ * (`browser.download`'s selector mode).
  */
 // A real Map (not a plain object/Record) so a tool name absent from the
 // table types as genuinely `undefined` at `.get()` — the same reason
@@ -47,6 +48,10 @@ export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
   ['dialog_respond', false],
   ['set_permission', false],
   ['wait_for_tab', false],
+  // `browser.download`'s selector mode: capturing a click-started download
+  // needs the extension's `chrome.downloads` hook. Its url mode never sends
+  // this wire tool — it rides `evaluate` — so it works on cdp-direct too.
+  ['download', false],
 ]);
 
 export function isCdpToolSupported(tool: string): boolean {

@@ -11,6 +11,12 @@
  */
 
 import type { ToolDefinition } from './types.js';
+import {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  DOWNLOAD_BRIDGE_SLACK_MS,
+  MAX_DOWNLOAD_BYTES,
+  MAX_DOWNLOAD_TIMEOUT_MS,
+} from '../downloads.js';
 
 /**
  * Shared `settle_ms` / `settle_timeout_ms` schema properties for
@@ -52,7 +58,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Returns only tabs the user has connected manually, plus cdp-direct tabs when that optional mode is enabled and granted (off by default — see cdp-direct docs). If the list is empty, ask the user to open the extension popup.',
         'After a primary restart ("primary just closed" errors), the extension auto-reconnects dropped tabs with four backoff attempts (1s/2s/4s/8s delays, plus per-attempt connect time), keeping the same tab_id when the new primary can honour it (tab-renamed in browser.events otherwise) — so a briefly-empty list right after such an error deserves a short wait and one retry before asking the user to re-press Connect. An explicit disconnect or browser.reset never auto-reconnects.',
         'When an entry carries a map field, call browser.map.recall BEFORE snapshotting that tab — the persistent map already has selectors, gotchas, or flow recipes for it, and re-discovering them via a fresh snapshot/find wastes a round trip.',
-        "A tab_id starting with cdp: (transport: 'cdp') works with every tool except browser.drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab in v1 — those (and a browser.flow drag step) return a clear error naming the extension transport as the fallback.",
+        "A tab_id starting with cdp: (transport: 'cdp') works with every tool except browser.drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab and browser.download's selector mode in v1 — those (and a browser.flow drag step) return a clear error naming the extension transport as the fallback.",
       ],
     },
   },
@@ -608,6 +614,55 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
       example:
         'browser.set_permission({ tab_id: "tab_1", origin: "https://maps.example.com", name: "geolocation", state: "granted" })',
+    },
+  },
+  {
+    name: 'browser.download',
+    description:
+      'Download a file to disk WITHOUT Chrome\'s native "Save as" dialog — a dialog nothing in CDP or the page can press, which strands an agent that just clicks a download button. Two modes, pass exactly one: `selector` clicks the element and captures the download it starts (Chrome\'s download is cancelled before it can prompt, then re-fetched); `url` fetches that URL directly. Either way the bytes are fetched IN THE PAGE with the page\'s own cookies/credentials and written by the server into the human-configured downloads directory (`browser-link config get downloads.dir`, default `<data dir>/downloads`). Returns `{ ok, state: "complete"|"interrupted"|"timeout", path, filename, bytes, mime, url, error? }` — a timeout or failure still reports what it knows (url, mime, bytes received so far), never nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        selector: {
+          type: 'string',
+          description:
+            'CSS selector of the element whose click starts the download (same deep Shadow DOM / same-origin iframe search as browser.click). Mutually exclusive with url.',
+        },
+        url: {
+          type: 'string',
+          description:
+            "http(s), blob: or data: URL to download with the page's credentials. A blob: URL must belong to this page's origin and still be alive. Mutually exclusive with selector.",
+        },
+        filename: {
+          type: 'string',
+          description:
+            'Optional plain basename for the saved file ("q3.csv"). Path separators, "..", reserved characters, a trailing dot/space and Windows device names (CON, NUL, COM1, …) are rejected — you choose the name, never the directory. Default: Chrome\'s suggestion, then Content-Disposition, then the URL\'s last segment. An existing file is never overwritten — the name gets a " (1)" suffix.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: `Budget in ms SHARED by the click-to-download wait and the fetch: the fetch only gets what the wait left over. Default ${DEFAULT_DOWNLOAD_TIMEOUT_MS}, max ${MAX_DOWNLOAD_TIMEOUT_MS}. Worst case before an answer: timeout_ms, plus up to ${DOWNLOAD_BRIDGE_SLACK_MS / 1000}s per bridge hop (url mode 1 hop, selector mode 2) — and that slack is only spent if the bridge itself stalls.`,
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Get a file onto disk from a connected tab without ever surfacing the native "Save as" dialog, and tell the agent exactly where it landed.',
+      when_to_use: [
+        'Instead of browser.click on any "Download" / "Export" / "Save" button — a plain click may open a native "Save as" dialog that freezes the flow.',
+        'When you already know the file URL (a link href, an API export endpoint) — pass url and skip the click.',
+      ],
+      gotchas: [
+        'The file is fetched a second time, in the page, from the download\'s URL. A download produced by a one-shot POST form or a single-use token cannot be re-fetched — that comes back as state "interrupted" with the HTTP error.',
+        'Selector mode captures the FIRST download Chrome starts while it waits whose referrer is not another origin — chrome.downloads gives no tab id, so a download from another tab on the same origin (or one with no referrer) can still be taken. Avoid starting other downloads in parallel; only one browser.download can wait at a time.',
+        'A blob: URL the page revoked right after the click cannot be fetched any more — the result says so.',
+        `Size cap: ${MAX_DOWNLOAD_BYTES / (1024 * 1024)} MiB per file. Bigger files come back as "interrupted" with the cap named in error.`,
+        'cdp: tabs support url mode only — selector mode needs the extension.',
+      ],
+      example:
+        'browser.download({ tab_id: "tab_1", selector: "#export-csv" })  // → { ok: true, state: "complete", path: ".../downloads/report.csv", bytes: 5120, mime: "text/csv", ... }',
     },
   },
   {

@@ -125,6 +125,14 @@ export interface BrowserLinkConfig {
    * export can be decided every time.
    */
   activityRecordPayloads?: boolean;
+  /**
+   * Absolute directory `browser.download` writes files into. Undefined means
+   * the default, `<dataDir>/downloads` (see `downloads.ts`'s
+   * `resolveDownloadsDir`, which also ignores a relative or malformed value).
+   * Only the human sets this, via `browser-link config set downloads.dir
+   * <path|default>` — the agent can name a file, never choose where it lands.
+   */
+  downloadsDir?: string;
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept

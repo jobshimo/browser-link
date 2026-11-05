@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
@@ -2895,5 +2895,339 @@ describe('flow lifecycle schema shapes', () => {
     // it reads the schema, not only in the prose.
     expect(schema.properties.detach?.description).toMatch(/ONE detached flow per tab/);
     expect(schema.properties.detach?.description).toMatch(/browser\.flow_status/);
+  });
+});
+
+describe('browser.download', () => {
+  const okFetch = {
+    state: 'complete',
+    status: 200,
+    mime: 'text/csv',
+    content_disposition: null,
+    final_url: 'https://x.test/files/report.csv',
+    bytes: 3,
+    data_b64: Buffer.from('a,b').toString('base64'),
+  };
+
+  function downloadDeps(overrides: Partial<BrowserToolDeps> = {}) {
+    const saveDownload = vi.fn(
+      (filename: string, data: Buffer) => `/dl/${filename}:${data.length}`,
+    );
+    const emitEvent = vi.fn();
+    const deps = makeDeps({
+      callBrowserTool: vi.fn(async (_tab: string, tool: string) =>
+        tool === 'evaluate' ? okFetch : undefined,
+      ),
+      saveDownload,
+      emitEvent,
+      ...overrides,
+    });
+    return { deps, saveDownload, emitEvent };
+  }
+
+  test('is a known browser tool with a definition', () => {
+    expect(isBrowserTool('browser.download')).toBe(true);
+    expect(BROWSER_TOOL_DEFINITIONS.some((d) => d.name === 'browser.download')).toBe(true);
+  });
+
+  test('url mode fetches in the page and writes the file through saveDownload', async () => {
+    const { deps, saveDownload } = downloadDeps();
+    const out = await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', url: 'https://x.test/files/report.csv' },
+      deps,
+      TEST_CALLER,
+    );
+    const calls = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('tab_1');
+    expect(calls[0][1]).toBe('evaluate');
+    expect((calls[0][2] as { expression: string }).expression).toContain(
+      JSON.stringify('https://x.test/files/report.csv'),
+    );
+    expect(saveDownload).toHaveBeenCalledWith('report.csv', Buffer.from('a,b'));
+    expect(out).toEqual({
+      ok: true,
+      state: 'complete',
+      path: '/dl/report.csv:3',
+      filename: 'report.csv',
+      bytes: 3,
+      mime: 'text/csv',
+      url: 'https://x.test/files/report.csv',
+    });
+  });
+
+  test('a requested filename wins', async () => {
+    const { deps, saveDownload } = downloadDeps();
+    await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', url: 'https://x.test/files/report.csv', filename: 'q3.csv' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(saveDownload).toHaveBeenCalledWith('q3.csv', expect.any(Buffer));
+  });
+
+  test('selector mode captures the download the click starts, then fetches its URL', async () => {
+    const callBrowserTool = vi.fn(async (_tab: string, tool: string) => {
+      if (tool === 'download') {
+        return {
+          state: 'captured',
+          url: 'https://x.test/export?id=7',
+          filename: 'Export 7.xlsx',
+          mime: 'application/vnd.ms-excel',
+        };
+      }
+      return { ...okFetch, final_url: 'https://x.test/export?id=7' };
+    });
+    const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+    const out = (await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', selector: '#export', timeout_ms: 5000 },
+      deps,
+      TEST_CALLER,
+    )) as { filename: string; state: string };
+    expect(callBrowserTool.mock.calls[0][1]).toBe('download');
+    expect(callBrowserTool.mock.calls[0][2]).toEqual({ selector: '#export', timeout_ms: 5000 });
+    expect(callBrowserTool.mock.calls[1][1]).toBe('evaluate');
+    expect((callBrowserTool.mock.calls[1][2] as { expression: string }).expression).toContain(
+      JSON.stringify('https://x.test/export?id=7'),
+    );
+    expect(saveDownload).toHaveBeenCalledWith('Export 7.xlsx', expect.any(Buffer));
+    expect(out.state).toBe('complete');
+  });
+
+  test('selector mode with no download within the timeout returns a timeout result, never nothing', async () => {
+    const callBrowserTool = vi.fn(async () => ({ state: 'timeout' }));
+    const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+    const out = await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', selector: '#export', timeout_ms: 1000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callBrowserTool).toHaveBeenCalledOnce();
+    expect(saveDownload).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      ok: false,
+      state: 'timeout',
+      path: null,
+      bytes: 0,
+      error: expect.stringMatching(/1000ms/),
+    });
+  });
+
+  test('a timed-out fetch reports partial bytes', async () => {
+    const { deps } = downloadDeps({
+      callBrowserTool: vi.fn(async () => ({
+        state: 'timeout',
+        bytes: 4096,
+        mime: 'application/zip',
+        final_url: 'https://x.test/big.zip',
+        error: 'timed out after 30000ms',
+      })),
+    });
+    const out = await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', url: 'https://x.test/big.zip' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(out).toMatchObject({ ok: false, state: 'timeout', bytes: 4096, filename: 'big.zip' });
+  });
+
+  test('emits download-started and download-finished bridge events', async () => {
+    const { deps, emitEvent } = downloadDeps();
+    await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', url: 'https://x.test/files/report.csv' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(emitEvent).toHaveBeenNthCalledWith(1, 'download-started', {
+      tab_id: 'tab_1',
+      mode: 'url',
+    });
+    expect(emitEvent).toHaveBeenNthCalledWith(2, 'download-finished', {
+      tab_id: 'tab_1',
+      state: 'complete',
+      filename: 'report.csv',
+      bytes: 3,
+      path: '/dl/report.csv:3',
+    });
+  });
+
+  test('a throwing transport still closes the event pair with an interrupted download-finished', async () => {
+    const { deps, emitEvent } = downloadDeps({
+      callBrowserTool: vi.fn(async () => {
+        throw new Error('another browser.download is already waiting');
+      }),
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/already waiting/);
+    expect(emitEvent).toHaveBeenCalledTimes(2);
+    expect(emitEvent).toHaveBeenNthCalledWith(2, 'download-finished', {
+      tab_id: 'tab_1',
+      state: 'interrupted',
+      filename: null,
+      bytes: 0,
+      error: 'another browser.download is already waiting',
+    });
+  });
+
+  test('a claim conflict also gets exactly one download-finished', async () => {
+    const tabClaims = new TabClaimRegistry();
+    tabClaims.claim('tab_1', { agent_id: 'other', pid: 1, binary: 'x' });
+    const { deps, emitEvent } = downloadDeps({ tabClaims });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', url: 'https://x.test/a' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/other/);
+    const kinds = emitEvent.mock.calls.map((c) => c[0] as string);
+    expect(kinds).toEqual(['download-started', 'download-finished']);
+  });
+
+  describe('one shared timeout budget across capture and fetch', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    test('the fetch only gets what the capture left over', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000_000);
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string) => {
+        if (tool === 'download') {
+          vi.setSystemTime(1_004_000); // the click-to-download wait took 4s
+          return { state: 'captured', url: 'https://x.test/f.csv', filename: 'f.csv' };
+        }
+        return okFetch;
+      });
+      const { deps } = downloadDeps({ callBrowserTool });
+      await handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 10_000 },
+        deps,
+        TEST_CALLER,
+      );
+      const [captureCall, fetchCall] = callBrowserTool.mock.calls as unknown as [
+        unknown[],
+        unknown[],
+      ];
+      expect(captureCall[3]).toBe(10_000 + 10_000);
+      expect((fetchCall[2] as { expression: string }).expression).toContain(
+        'const timeoutMs = 6000;',
+      );
+      expect(fetchCall[3]).toBe(6_000 + 10_000);
+    });
+
+    test('a capture that used the whole budget returns timeout with the URL, without fetching', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000_000);
+      const callBrowserTool = vi.fn(async () => {
+        vi.setSystemTime(1_010_000);
+        return { state: 'captured', url: 'https://x.test/f.csv', filename: 'f.csv' };
+      });
+      const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+      const out = await handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 10_000 },
+        deps,
+        TEST_CALLER,
+      );
+      expect(callBrowserTool).toHaveBeenCalledOnce();
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(out).toMatchObject({
+        ok: false,
+        state: 'timeout',
+        url: 'https://x.test/f.csv',
+        filename: 'f.csv',
+      });
+    });
+  });
+
+  test('the schema states the shared budget and the real worst case', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.download');
+    const schema = def?.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    };
+    expect(schema.properties.timeout_ms?.description).toMatch(/shared/i);
+    expect(schema.properties.timeout_ms?.description).toMatch(/worst case/i);
+  });
+
+  test.each([
+    [{ tab_id: 'tab_1' }, /exactly one of selector, url/],
+    [{ tab_id: 'tab_1', selector: '#a', url: 'https://x.test/a' }, /exactly one of selector, url/],
+    [{ tab_id: 'tab_1', url: 'javascript:alert(1)' }, /http\(s\), blob: or data:/],
+    [{ tab_id: 'tab_1', url: 'file:///etc/passwd' }, /http\(s\), blob: or data:/],
+    [{ tab_id: 'tab_1', url: 'https://x.test/a', filename: '../a.txt' }, /filename/],
+  ])('rejects invalid args %j', async (args, message) => {
+    const { deps } = downloadDeps();
+    await expect(handleBrowserTool('browser.download', args, deps, TEST_CALLER)).rejects.toThrow(
+      message,
+    );
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('fails plainly when no download directory is wired', async () => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', url: 'https://x.test/a' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/not available/);
+  });
+
+  test('respects another agent holding the tab claim', async () => {
+    const tabClaims = new TabClaimRegistry();
+    tabClaims.claim('tab_1', { agent_id: 'other', pid: 1, binary: 'x' });
+    const { deps } = downloadDeps({ tabClaims });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', url: 'https://x.test/a' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/other/);
+  });
+
+  test('url mode works on a cdp: tab (in-page fetch rides the supported evaluate path)', async () => {
+    const callCdpTool = vi.fn(async () => okFetch);
+    const { deps } = downloadDeps({ cdpGate: () => ({ ok: true as const }), callCdpTool });
+    const out = (await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'cdp:ABC', url: 'https://x.test/files/report.csv' },
+      deps,
+      TEST_CALLER,
+    )) as { ok: boolean };
+    expect(callCdpTool.mock.calls[0][1]).toBe('evaluate');
+    expect(out.ok).toBe(true);
+  });
+
+  test('selector mode on a cdp: tab fails with the unsupported-over-cdp-direct error', async () => {
+    const callCdpTool = vi.fn(async () => okFetch);
+    const { deps } = downloadDeps({ cdpGate: () => ({ ok: true as const }), callCdpTool });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'cdp:ABC', selector: '#export' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/not supported over cdp-direct/);
+    expect(callCdpTool).not.toHaveBeenCalled();
   });
 });

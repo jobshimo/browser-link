@@ -82,6 +82,10 @@ Uso:
                                 Habilita/deshabilita la grabación de flows (opt-in, apagado por
                                 defecto). El mismo valor es editable desde el popup de la
                                 extensión — gana la última escritura (ver README).
+  browser-link config set downloads.dir <ruta-absoluta|default>
+                                Directorio donde browser.download guarda los archivos (por
+                                defecto <directorio de datos>/downloads). Los agentes pueden
+                                nombrar el archivo, nunca elegir el directorio.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Muestra la configuración de cdp-direct (ver "browser-link cdp"
                                 más abajo).
@@ -200,6 +204,10 @@ Usage:
                                 Enable/disable flow recording (opt-in, off by default). The same
                                 setting is editable from the extension's popup — last write wins
                                 (see README).
+  browser-link config set downloads.dir <absolute-path|default>
+                                Directory browser.download writes files into (default
+                                <data dir>/downloads). Agents can name a file, never pick the
+                                directory.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Show cdp-direct's configuration (see "browser-link cdp" below).
   browser-link config set cdp-direct.enabled <true|false>
