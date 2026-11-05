@@ -27,7 +27,6 @@ function handleReset(
 
 import { randomUUID } from 'node:crypto';
 import { requireTabId } from './responses.js';
-import { buildEmptyTabsHint } from './empty-tabs-hint.js';
 import type {
   BridgeEvent,
   BridgeEventKind,
@@ -1121,18 +1120,10 @@ function originOf(url: string): string | null {
 async function handleListTabs(
   deps: BrowserToolDeps,
   caller: AgentCaller,
-): Promise<EnrichedTabSnapshot[] | { tabs: []; hint: string }> {
+): Promise<EnrichedTabSnapshot[]> {
   const extensionTabs = deps.listTabs();
   const cdpTabs = deps.listCdpTabs ? await deps.listCdpTabs() : [];
   const allTabs = [...extensionTabs, ...cdpTabs];
-
-  // An empty list explains itself. The shape stays a bare array whenever
-  // there are tabs (what every client already parses); only the EMPTY case
-  // becomes `{ tabs: [], hint }`, because a bare `[]` has nowhere to carry
-  // the hint. No event log wired (unit fixtures) → no basis → legacy `[]`.
-  if (allTabs.length === 0 && deps.recentEvents) {
-    return { tabs: [], hint: buildEmptyTabsHint(deps.recentEvents({ limit: 200 }), Date.now()) };
-  }
 
   // Resolve every tab's map hint in ONE batched call over the DISTINCT
   // origins present, instead of one lookup per tab — see `getMapHints`'

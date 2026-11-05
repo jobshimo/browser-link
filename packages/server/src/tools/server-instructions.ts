@@ -38,8 +38,8 @@ end-to-end, persist UI structure (NEVER domain data) with
 (\`{ app_key, entries, flows }\`), call \`browser.map.recall\` BEFORE
 snapshotting — the map already has selectors, gotchas or flow recipes
 for that origin, so recall first instead of rediscovering them from
-scratch. When list_tabs is empty it returns { tabs: [], hint } —
-read the hint: it says whether to wait for the extension's
+scratch. When list_tabs is empty ([]) a second text block "hint: ..."
+follows the result — read it: it says whether to wait for the extension's
 auto-reconnect (up to 10 minutes after a drop) or ask the user to press
 Connect.
 

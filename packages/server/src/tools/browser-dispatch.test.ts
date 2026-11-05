@@ -538,47 +538,6 @@ function makeDepsWithClaims(): BrowserToolDeps {
   };
 }
 
-describe('list_tabs — empty-list hint', () => {
-  test('an empty list with an event log becomes { tabs: [], hint }', async () => {
-    const events = new BridgeEventLog();
-    events.add('primary-elected', { pid: 1 });
-    const deps = makeDeps({ recentEvents: (o) => events.recent(o) });
-    const out = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as {
-      tabs: unknown[];
-      hint: string;
-    };
-    expect(out.tabs).toEqual([]);
-    expect(out.hint).toMatch(/Connect/);
-  });
-
-  test('the hint names tabs that were connected and dropped', async () => {
-    const events = new BridgeEventLog();
-    events.add('primary-elected', { pid: 1 });
-    events.add('tab-registered', { tabId: 'tab_1', url: 'https://a.test/x' });
-    events.add('tab-disconnected', { tabId: 'tab_1' });
-    const deps = makeDeps({ recentEvents: (o) => events.recent(o) });
-    const out = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as {
-      hint: string;
-    };
-    expect(out.hint).toContain('tab_1 (https://a.test)');
-  });
-
-  test('without an event log the legacy bare [] is kept (no basis for a hint)', async () => {
-    const out = await handleBrowserTool('browser.list_tabs', {}, makeDeps(), TEST_CALLER);
-    expect(out).toEqual([]);
-  });
-
-  test('a non-empty list stays a bare array with no hint', async () => {
-    const events = new BridgeEventLog();
-    const deps = makeDeps({
-      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://x', title: 't' }]),
-      recentEvents: (o) => events.recent(o),
-    });
-    const out = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
-    expect(Array.isArray(out)).toBe(true);
-  });
-});
-
 describe('list_tabs enrichment', () => {
   test('returns claimed_by:null and claimed_by_me:false when no claim exists', async () => {
     const deps = makeDepsWithClaims();

@@ -1531,6 +1531,12 @@ window is spent the popup's Connect button is the only way back. The
 extension holds the `alarms` permission for this: it wakes the sleeping
 service worker between the 30s attempts.
 
+When `browser.list_tabs` finds no tab it still returns the bare `[]` as its first
+content block, and adds a second text block `hint: ...` built from the bridge
+event log: never connected, connected-then-dropped (how many, which origins,
+how long ago), bridge restarted recently, or wiped by `browser.reset` — and
+whether to wait for the auto-reconnect or press Connect.
+
 ## Where your data lives
 
 The persistent map is a single SQLite file (`map.db`) on **your

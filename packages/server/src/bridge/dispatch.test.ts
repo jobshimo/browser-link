@@ -17,6 +17,7 @@ import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.j
 import { handleMapTool } from '../map/tools.js';
 import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
+import { BridgeEventLog } from './events.js';
 
 const TEST_CALLER: AgentCaller = {
   agent_id: 'test',
@@ -204,6 +205,47 @@ describe('handleToolCall — screenshot image content', () => {
       makeDeps(),
     );
     expect(res.content).toHaveLength(1);
+  });
+});
+
+describe('handleToolCall — empty list_tabs hint block', () => {
+  function depsWithEvents(): DispatchDeps {
+    const log = new BridgeEventLog();
+    log.add('primary-elected', { pid: 1 });
+    log.add('tab-registered', { tabId: 'tab_1', url: 'https://a.test/x' });
+    log.add('tab-disconnected', { tabId: 'tab_1' });
+    return makeDeps({
+      browserTools: {
+        listTabs: vi.fn(() => []),
+        callBrowserTool: vi.fn(async () => undefined),
+        recentEvents: (o) => log.recent(o),
+      } as BrowserToolDeps,
+    });
+  }
+  const call = { name: 'browser.list_tabs', arguments: {}, caller: TEST_CALLER };
+
+  test('empty list: first block is the unchanged bare [] and a SECOND block carries the hint', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([]);
+    const res = await handleToolCall(call, depsWithEvents());
+    expect(res.content).toHaveLength(2);
+    expect((res.content[0] as { text: string }).text).toBe('[]');
+    const hint = (res.content[1] as { text: string }).text;
+    expect(hint.startsWith('hint: ')).toBe(true);
+    expect(hint).toContain('tab_1 (https://a.test)');
+  });
+
+  test('non-empty list: a single block, exactly as before', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([{ tab_id: 'tab_1' }]);
+    const res = await handleToolCall(call, depsWithEvents());
+    expect(res.content).toHaveLength(1);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual([{ tab_id: 'tab_1' }]);
+  });
+
+  test('empty list without an event log: single [] block, no hint', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([]);
+    const res = await handleToolCall(call, makeDeps());
+    expect(res.content).toHaveLength(1);
+    expect((res.content[0] as { text: string }).text).toBe('[]');
   });
 });
 

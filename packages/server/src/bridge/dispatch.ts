@@ -16,7 +16,13 @@ import {
   isBrowserTool,
   type BrowserToolDeps,
 } from '../tools/browser-dispatch.js';
-import { imageToolResponse, toolError, toolResponse } from '../tools/responses.js';
+import {
+  hintToolResponse,
+  imageToolResponse,
+  toolError,
+  toolResponse,
+} from '../tools/responses.js';
+import { buildEmptyTabsHint } from '../tools/empty-tabs-hint.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 
 export interface DispatchDeps {
@@ -72,7 +78,14 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
     if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
     if (isBrowserTool(name)) {
       const result = await handleBrowserTool(name, args, deps.browserTools, caller);
-      return name === 'browser.screenshot' ? imageToolResponse(result) : toolResponse(result);
+      if (name === 'browser.screenshot') return imageToolResponse(result);
+      // An empty list_tabs explains itself in a second block; the first
+      // stays the bare `[]` every client already parses.
+      if (name === 'browser.list_tabs' && Array.isArray(result) && result.length === 0) {
+        const events = deps.browserTools.recentEvents?.({ limit: 200 });
+        if (events) return hintToolResponse(result, buildEmptyTabsHint(events, Date.now()));
+      }
+      return toolResponse(result);
     }
     return toolError(`Unknown tool: ${name}`);
   } catch (err) {
