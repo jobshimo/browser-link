@@ -32,6 +32,7 @@ export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
   ['snapshot', true],
   ['find', true],
   ['state', true],
+  ['screenshot', true],
   ['click', true],
   ['type', true],
   ['press', true],

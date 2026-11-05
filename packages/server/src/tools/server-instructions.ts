@@ -190,6 +190,15 @@ tokens AND more reliable than a hand-rolled expression.
   in your working notes and pass it as \`since_id\` on the next call.
   That is one variable. The server does not maintain per-agent cursors.
 
+## Seeing a page: browser.screenshot
+
+To SEE a page, use \`browser.screenshot\`: \`mode: "viewport"\` (default),
+\`"full_page"\` (the whole document in one image, no scrolling) or \`"element"\`
+(with \`selector\`). It returns a real image plus metadata, scales long pages
+down to \`max_dimension\` (default 8000 px) and caps the result at ~8 MB. It is
+a read tool and works on \`cdp:\` tabs too. Images cost tokens: prefer
+"element" or JPEG when full fidelity is not needed.
+
 ## Pages rendered to a canvas (Qt-WASM, WebGL, DOMless UIs)
 
 Some pages render their entire UI to a single \`<canvas>\` element — Victron

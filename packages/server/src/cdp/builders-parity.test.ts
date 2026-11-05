@@ -47,6 +47,12 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildSettleJs(opts)).toBe(ext.buildSettleJs(opts));
   });
 
+  test('buildElementRectJs', () => {
+    expect(srv.buildElementRectJs({ selector: '#card' })).toBe(
+      ext.buildElementRectJs({ selector: '#card' }),
+    );
+  });
+
   test('buildStateJs', () => {
     expect(srv.buildStateJs()).toBe(ext.buildStateJs());
   });

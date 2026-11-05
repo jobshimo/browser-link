@@ -215,6 +215,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.find',
   'browser.state',
   'browser.canvas_screenshot',
+  'browser.screenshot',
   'browser.console',
   'browser.network',
   'browser.network_body',
@@ -243,6 +244,10 @@ export function isBrowserTool(name: string): boolean {
 }
 
 const NAVIGATE_TIMEOUT_MS = 30_000;
+
+/** Full-page captures of very long pages (layout + render + base64) can
+ * outlast the bridge's default read timeout. */
+const SCREENSHOT_TIMEOUT_MS = 30_000;
 
 /** Same floor click/type/drag/wait_for already use. Action tools default
  * here when they have no other reason to run longer. */
@@ -1375,6 +1380,56 @@ async function dispatchBrowserTool(
         requireTabId(args),
         { selector, region: normalizedRegion, format },
         deps,
+      );
+    }
+    case 'browser.screenshot': {
+      const {
+        mode = 'viewport',
+        selector,
+        format = 'png',
+        quality,
+        max_dimension,
+      } = (args ?? {}) as Record<string, unknown>;
+      if (mode !== 'viewport' && mode !== 'full_page' && mode !== 'element') {
+        throw new Error('browser.screenshot: mode must be "viewport", "full_page" or "element"');
+      }
+      if (selector !== undefined && typeof selector !== 'string') {
+        throw new Error('browser.screenshot: selector must be a string when provided');
+      }
+      if (mode === 'element' && !selector) {
+        throw new Error('browser.screenshot: selector is required for mode "element"');
+      }
+      if (mode !== 'element' && selector !== undefined) {
+        throw new Error('browser.screenshot: selector is only valid with mode "element"');
+      }
+      if (format !== 'png' && format !== 'jpeg') {
+        throw new Error('browser.screenshot: format must be "png" or "jpeg"');
+      }
+      if (
+        quality !== undefined &&
+        (typeof quality !== 'number' || !Number.isInteger(quality) || quality < 0 || quality > 100)
+      ) {
+        throw new Error('browser.screenshot: quality must be an integer between 0 and 100');
+      }
+      if (
+        max_dimension !== undefined &&
+        (typeof max_dimension !== 'number' ||
+          !Number.isInteger(max_dimension) ||
+          max_dimension < 100 ||
+          max_dimension > 16_000)
+      ) {
+        throw new Error(
+          'browser.screenshot: max_dimension must be an integer between 100 and 16000',
+        );
+      }
+      // Read tool — several agents may capture the same tab. No claim
+      // enforcement. A full-page capture of a long page can take a while.
+      return routeToolCall(
+        'screenshot',
+        requireTabId(args),
+        { mode, selector, format, quality, max_dimension },
+        deps,
+        SCREENSHOT_TIMEOUT_MS,
       );
     }
     case 'browser.console': {

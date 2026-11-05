@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import {
   buildClickResolveJs,
   buildDragProbeJs,
+  buildElementRectJs,
   buildFindJs,
   buildFocusJs,
   buildSettleJs,
@@ -998,5 +999,52 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     expect('err' in result).toBe(false);
     if ('err' in result) return;
     expect(result.draggable).toBe(false);
+  });
+});
+
+describe('buildElementRectJs', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  test('returns the element rect in page coordinates (viewport rect + scroll)', () => {
+    const el = document.createElement('div');
+    el.id = 'card';
+    document.body.appendChild(el);
+    el.getBoundingClientRect = () => ({ left: 10, top: 20, width: 300, height: 100 }) as DOMRect;
+    Object.defineProperty(window, 'scrollX', { value: 5, configurable: true });
+    Object.defineProperty(window, 'scrollY', { value: 400, configurable: true });
+    const res = evalExpr<{ ok: boolean; x: number; y: number; width: number; height: number }>(
+      buildElementRectJs({ selector: '#card' }),
+    );
+    expect(res).toEqual({ ok: true, x: 15, y: 420, width: 300, height: 100 });
+  });
+
+  test('reports not-found and invalid-selector separately', () => {
+    expect(evalExpr<{ reason: string }>(buildElementRectJs({ selector: '#nope' })).reason).toBe(
+      'not-found',
+    );
+    expect(evalExpr<{ reason: string }>(buildElementRectJs({ selector: '(' })).reason).toBe(
+      'invalid-selector',
+    );
+  });
+
+  test('adds same-origin iframe offsets', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 200, width: 400, height: 300 }) as DOMRect;
+    const inner = frame.contentDocument!.createElement('p');
+    inner.id = 'inner';
+    frame.contentDocument!.body.appendChild(inner);
+    inner.getBoundingClientRect = () => ({ left: 7, top: 9, width: 50, height: 20 }) as DOMRect;
+    Object.defineProperty(window, 'scrollX', { value: 0, configurable: true });
+    Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+    const res = evalExpr<{ ok: boolean; x: number; y: number }>(
+      buildElementRectJs({ selector: '#inner' }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.x).toBe(107);
+    expect(res.y).toBe(209);
   });
 });

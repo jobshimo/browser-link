@@ -13,7 +13,9 @@ import {
   buildFocusJs,
   buildStateJs,
   buildDragProbeJs,
+  buildElementRectJs,
 } from './inpage/builders.js';
+import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import {
   buildKeyEventSequence,
   resolveKey,
@@ -1887,6 +1889,37 @@ async function handleCanvasScreenshot(
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
 }
 
+/**
+ * `browser.screenshot`: viewport / full page / one element through the
+ * already-attached debugger. `Page.captureScreenshot` with
+ * `captureBeyondViewport` and a `clip` renders past the viewport, so no
+ * scrolling or stitching is needed. Planning and the byte cap live in
+ * `screenshot.ts` (unit-tested; shared verbatim with cdp-direct).
+ */
+async function handleScreenshot(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+  optStr: (key: string) => string | undefined,
+): Promise<ExtensionToServer> {
+  const mode: ScreenshotMode = p.mode === 'full_page' || p.mode === 'element' ? p.mode : 'viewport';
+  const result = await runScreenshot(
+    {
+      send: (method, params) => cdp(tabId, method, params ?? {}),
+      resolveElementRect: (selector) =>
+        evaluateInTab<ElementRectOutcome>(tabId, buildElementRectJs({ selector })),
+    },
+    {
+      mode,
+      selector: optStr('selector'),
+      format: optStr('format') === 'jpeg' ? 'jpeg' : 'png',
+      quality: typeof p.quality === 'number' ? p.quality : undefined,
+      maxDimension: typeof p.max_dimension === 'number' ? p.max_dimension : undefined,
+    },
+  );
+  return { kind: 'tool.response', id: msg.id, ok: true, result };
+}
+
 function handleConsole(
   state: TabState,
   msg: ToolRequestMessage,
@@ -2586,6 +2619,9 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'canvas_screenshot':
         return await handleCanvasScreenshot(tabId, msg, p, optStr);
+
+      case 'screenshot':
+        return await handleScreenshot(tabId, msg, p, optStr);
 
       case 'console':
         return handleConsole(state, msg, optStr);

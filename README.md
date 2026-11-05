@@ -66,7 +66,7 @@ tab", not for unattended consumer automation.
 
 - ✅ **What it does** — exposes **32** `browser.*` MCP tools: 26 to drive
   a connected tab (list_tabs, ping, snapshot, find, state,
-  canvas_screenshot, click, type, press, drag, flow, navigate, evaluate,
+  canvas_screenshot, screenshot, click, type, press, drag, flow, navigate, evaluate,
   wait_for, wait_for_tab, dialog_respond, set_permission, download, console,
   network, network_body, claim/release/my_tabs, events, reset) plus 6
   persistent-map tools, so the agent learns your apps across sessions.
@@ -308,23 +308,24 @@ drive the connected tab (14 read, 13 action) and 6 persistent-map tools
 
 **Browser bridge — read-only** (no claim required, observation only):
 
-| Tool                        | Purpose                                                                                                                                             |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                             |
-| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                          |
-| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                               |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                                     |
-| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                                   |
-| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                    |
-| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                            |
-| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                |
-| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                |
-| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                              |
-| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                                      |
-| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                        |
-| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                    |
-| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`         |
-| `browser.activity`          | On-disk [activity trail](#activity-trail) — every action every agent dispatched, filterable by agent, tab, tool, flow or outcome; survives restarts |
+| Tool                        | Purpose                                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                                         |
+| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                      |
+| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                           |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                                                 |
+| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                                               |
+| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                |
+| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                        |
+| `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB) |
+| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                            |
+| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                            |
+| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                                          |
+| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                                                  |
+| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                                    |
+| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                                |
+| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`                     |
+| `browser.activity`          | On-disk [activity trail](#activity-trail) — every action every agent dispatched, filterable by agent, tab, tool, flow or outcome; survives restarts             |
 
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
@@ -1348,9 +1349,9 @@ history, canvas capture wiring, native permission grants, the popup's
 dialog channel, or `window.open` tab-creation events) are explicitly out of
 v1 scope and return a clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                                                                                                  | NOT supported in v1 (use the extension instead)                                                                                                     |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `download` (`url` mode) | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag`, `download` (`selector` mode) |
+| Supported in v1                                                                                                                                                                                                | NOT supported in v1 (use the extension instead)                                                                                                     |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `download` (`url` mode) | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag`, `download` (`selector` mode) |
 
 \* `wait_for`'s `network_url` mode also falls back to "use the extension"
 — cdp-direct does not buffer network requests, so there is nothing to poll

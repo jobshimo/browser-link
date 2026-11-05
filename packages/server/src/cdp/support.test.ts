@@ -19,6 +19,9 @@ const SUPPORTED = [
   // with no cdp-direct equivalent (`browser-link cdp revoke` instead).
   'flow_status',
   'flow_cancel',
+  // Raw CDP Page.getLayoutMetrics + Page.captureScreenshot: same two commands
+  // the extension sends.
+  'screenshot',
 ];
 
 const UNSUPPORTED = [

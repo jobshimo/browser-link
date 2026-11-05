@@ -352,6 +352,68 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.screenshot',
+    description:
+      'Take a real screenshot of a tab and return it as an MCP image (plus a JSON text block with the metadata). `mode: "viewport"` (default) captures what is visible now; `mode: "full_page"` captures the WHOLE document from top to bottom in one image, without scrolling or stitching; `mode: "element"` captures one element (pass `selector`; the same deep Shadow DOM / same-origin iframe search as click/find, scrolled into view first). Unlike `browser.canvas_screenshot` this renders the page as the browser paints it, so it works on any page, not just a `<canvas>`. Returns `{ ok, mode, format, width, height, scale, bytes, truncated? , size_reduced? }` plus the image.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        mode: {
+          type: 'string',
+          enum: ['viewport', 'full_page', 'element'],
+          description:
+            'What to capture. "viewport" (default): the visible area. "full_page": the entire scrollable document. "element": the element matched by `selector`.',
+        },
+        selector: {
+          type: 'string',
+          description:
+            'CSS selector of the element to capture. Required for mode "element"; rejected for the other modes.',
+        },
+        format: {
+          type: 'string',
+          enum: ['png', 'jpeg'],
+          description:
+            'Output format. PNG (default) is lossless; JPEG is much smaller for photo-heavy pages. If a PNG exceeds the ~8 MB cap the tool retries as JPEG automatically (reported in `format` and `size_reduced`).',
+        },
+        quality: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 100,
+          description: 'JPEG quality 0-100 (default 80 when JPEG is used). Ignored for PNG.',
+        },
+        max_dimension: {
+          type: 'integer',
+          minimum: 100,
+          maximum: 16000,
+          description:
+            'Longest side of the output image in pixels (default 8000). Larger regions are scaled down to fit; pages so tall that the scale would drop below 0.25 are cropped instead and flagged `truncated: true`.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Let the agent SEE a page: the current viewport, the entire page in one image, or a single element — for visual checks, layout bugs and "does it look right" questions.',
+      when_to_use: [
+        'To verify a layout or styling change visually, or when the user says the page "looks wrong" / "se ve mal".',
+        'To capture a whole long page (landing page, article, report) without scrolling: `mode: "full_page"`.',
+        'To look at one component (a card, a chart, a dialog) at full fidelity without the surrounding noise: `mode: "element"`.',
+      ],
+      gotchas: [
+        'Images cost tokens. Prefer "element" or a smaller `max_dimension` when you only need to inspect one area; use JPEG for photo-heavy pages.',
+        'Very tall pages are scaled down to fit `max_dimension`; below a 0.25 scale the page is cropped from the top and `truncated: true` is set — use "element" for the rest.',
+        'The result is capped at ~8 MB. A PNG over the cap is retried as JPEG, then at a lower scale; if nothing fits the call fails with the measured size.',
+        'Lazy-loaded content that only renders on scroll is NOT triggered by a full-page capture; scroll the page (e.g. `browser.evaluate`) first if images below the fold are blank.',
+        '"element" mode scrolls the element into view first (which can change the page scroll position) and clips to its border box. Content inside cross-origin iframes or closed shadow roots is painted in the image but cannot be targeted by `selector`.',
+        'This is a read tool: it does not claim the tab. For a `<canvas>` whose pixels you want exactly as drawn, `browser.canvas_screenshot` is still the right tool.',
+      ],
+      example:
+        'browser.screenshot({ tab_id: "tab_1", mode: "full_page", format: "jpeg", quality: 70 })',
+    },
+  },
+  {
     name: 'browser.console',
     description:
       'Return recent console messages (log, info, warn, error) from the connected tab since it was attached. Rolling buffer (last 200).',

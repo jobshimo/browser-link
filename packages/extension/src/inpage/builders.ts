@@ -459,6 +459,65 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
 }
 
 /**
+ * Build the element-rect probe for `browser.screenshot`'s element mode.
+ * Resolves the selector with the same deep search scope as click/find,
+ * scrolls it into view (frames first), and returns its border-box rect in
+ * TOP-document page coordinates (viewport rect + accumulated iframe content
+ * origins + top-window scroll) — the space `Page.captureScreenshot`'s
+ * `clip` expects. Returns:
+ *   { ok: true, x, y, width, height }
+ *   { ok: false, reason: 'invalid-selector', error }
+ *   { ok: false, reason: 'not-found' }
+ */
+export interface ElementRectOpts {
+  selector: string;
+}
+
+export function buildElementRectJs(opts: ElementRectOpts): string {
+  const optsJson = JSON.stringify({ selector: opts.selector });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const opts = ${optsJson};
+  try {
+    document.querySelector(opts.selector);
+  } catch (e) {
+    return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
+  }
+  const el = deepQueryFirst(opts.selector);
+  if (!el) return { ok: false, reason: 'not-found' };
+  const chain = frameElementChain(el);
+  for (const fe of chain) {
+    if (fe.scrollIntoView) fe.scrollIntoView({ block: 'center', inline: 'center' });
+  }
+  if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+  const rect = el.getBoundingClientRect();
+  let offsetX = 0;
+  let offsetY = 0;
+  for (const fe of chain) {
+    const fr = fe.getBoundingClientRect();
+    const origin = frameViewportOriginOffset(fe);
+    offsetX += fr.left + origin.x;
+    offsetY += fr.top + origin.y;
+  }
+  let scrollX = 0;
+  let scrollY = 0;
+  try {
+    const top = window.top || window;
+    scrollX = top.scrollX || 0;
+    scrollY = top.scrollY || 0;
+  } catch (_) {}
+  return {
+    ok: true,
+    x: offsetX + rect.left + scrollX,
+    y: offsetY + rect.top + scrollY,
+    width: rect.width,
+    height: rect.height,
+  };
+})()`;
+}
+
+/**
  * Build the drag endpoint-resolution probe for `browser.drag`. Resolves
  * `from_selector`/`to_selector` across the SAME deep search scope
  * `snapshot`/`find`/`click`/`type` use (`deepQueryFirst` — open Shadow DOM

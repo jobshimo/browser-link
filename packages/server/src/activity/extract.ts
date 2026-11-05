@@ -20,6 +20,7 @@ const SELECTOR_ARG: Readonly<Record<string, string | undefined>> = {
   'browser.wait_for': 'selector',
   'browser.snapshot': 'within_selector',
   'browser.canvas_screenshot': 'selector',
+  'browser.screenshot': 'selector',
   'browser.download': 'selector',
 };
 
