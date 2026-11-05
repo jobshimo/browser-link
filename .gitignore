@@ -17,3 +17,7 @@ build/
 
 # Local CodeGraph index (per-machine, never committed)
 .codegraph/
+
+# Local agent workflow state (per-machine, never committed)
+.atl/
+odd/
