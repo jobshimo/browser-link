@@ -261,6 +261,10 @@ export interface RecallInput {
 
 export interface RecallResult {
   app: AppRow | null;
+  /** Listed first on purpose: a pitfall is the most expensive thing to
+   * rediscover, so it is the first thing an agent reads. */
+  pitfalls: InsightRow[];
+  mechanisms: InsightRow[];
   entries: EntryRow[];
   flows: FlowRow[];
 }
@@ -283,7 +287,7 @@ export function recall(input: RecallInput): RecallResult {
       .get(origin) as AppRow | undefined;
   }
 
-  if (!app) return { app: null, entries: [], flows: [] };
+  if (!app) return { app: null, pitfalls: [], mechanisms: [], entries: [], flows: [] };
 
   // Touch last_seen_at so apps that are actively used bubble up.
   db.prepare('UPDATE apps SET last_seen_at = ? WHERE id = ?').run(now(), app.id);
@@ -304,7 +308,13 @@ export function recall(input: RecallInput): RecallResult {
   // Flow recipes are not url_pattern-scoped (see the schema comment in
   // db.ts) — recall always returns every flow saved for the app, regardless
   // of the optional `url` filter.
-  return { app, entries: rows.map(hydrate), flows: listFlows(app.id) };
+  return {
+    app,
+    pitfalls: listInsights(app.id, 'pitfall'),
+    mechanisms: listInsights(app.id, 'mechanism'),
+    entries: rows.map(hydrate),
+    flows: listFlows(app.id),
+  };
 }
 
 function extractPathname(url: string): string {
@@ -478,10 +488,63 @@ export function listEntries(app_id: number): EntryRow[] {
   return rows.map(hydrate);
 }
 
+/** Compact form of an insight for the inline hint (no ids or timestamps). */
+export interface InsightSummary {
+  key: string;
+  description: string;
+  symptom?: string;
+}
+
+/** The recalled content of a SMALL map, carried inside the list_tabs hint
+ * so the agent skips the `browser.map.recall` round trip. Same section
+ * order as `RecallResult`: pitfalls first. */
+export interface MapHintInline {
+  pitfalls: InsightSummary[];
+  mechanisms: InsightSummary[];
+  entries: { url_pattern: string; kind: EntryKind; purpose: string; payload: unknown }[];
+  flows: { name: string; description: string | null; steps: unknown }[];
+}
+
 export interface MapHint {
   app_key: string;
   entries: number;
   flows: number;
+  mechanisms: number;
+  pitfalls: number;
+  /** Present only when the map is small (see `INLINE_MAX_ITEMS` /
+   * `INLINE_MAX_BYTES`); otherwise the counts above are all there is. */
+  inline?: MapHintInline;
+}
+
+/** A map is inlined into the hint only when it holds at most this many
+ * items in total (entries + flows + mechanisms + pitfalls)... */
+const INLINE_MAX_ITEMS = 5;
+/** ...and its JSON serialization stays under this many characters. */
+const INLINE_MAX_BYTES = 2048;
+
+function summarizeInsight(row: InsightRow): InsightSummary {
+  return row.symptom === null
+    ? { key: row.key, description: row.description }
+    : { key: row.key, description: row.description, symptom: row.symptom };
+}
+
+function buildInline(appId: number): MapHintInline | null {
+  const inline: MapHintInline = {
+    pitfalls: listInsights(appId, 'pitfall').map(summarizeInsight),
+    mechanisms: listInsights(appId, 'mechanism').map(summarizeInsight),
+    entries: listEntries(appId).map((e) => ({
+      url_pattern: e.url_pattern,
+      kind: e.kind,
+      purpose: e.purpose,
+      payload: e.payload,
+    })),
+    flows: listFlows(appId).map((f) => ({
+      name: f.name,
+      description: f.description,
+      steps: f.steps,
+    })),
+  };
+  return JSON.stringify(inline).length <= INLINE_MAX_BYTES ? inline : null;
 }
 
 /**
@@ -559,14 +622,30 @@ export function getMapHints(origins: string[]): Map<string, MapHint> {
     )
     .all(...appIds) as { app_id: number; n: number }[];
 
+  const insightCounts = db
+    .prepare(
+      `SELECT app_id, kind, COUNT(*) AS n FROM insights WHERE app_id IN (${idPlaceholders}) GROUP BY app_id, kind`,
+    )
+    .all(...appIds) as { app_id: number; kind: InsightKind; n: number }[];
+
   const entriesByAppId = new Map(entryCounts.map((row) => [row.app_id, row.n]));
   const flowsByAppId = new Map(flowCounts.map((row) => [row.app_id, row.n]));
+  const insightCount = (appId: number, kind: InsightKind): number =>
+    insightCounts.find((row) => row.app_id === appId && row.kind === kind)?.n ?? 0;
 
   for (const [origin, app] of winnerByOrigin) {
     const entries = entriesByAppId.get(app.id) ?? 0;
     const flows = flowsByAppId.get(app.id) ?? 0;
-    if (entries === 0 && flows === 0) continue;
-    result.set(origin, { app_key: app.app_key, entries, flows });
+    const mechanisms = insightCount(app.id, 'mechanism');
+    const pitfalls = insightCount(app.id, 'pitfall');
+    const total = entries + flows + mechanisms + pitfalls;
+    if (total === 0) continue;
+    const hint: MapHint = { app_key: app.app_key, entries, flows, mechanisms, pitfalls };
+    // Only small maps are expanded (extra queries run just for them), so a
+    // big map costs nothing beyond the count queries above.
+    const inline = total <= INLINE_MAX_ITEMS ? buildInline(app.id) : null;
+    if (inline) hint.inline = inline;
+    result.set(origin, hint);
   }
   return result;
 }
@@ -699,6 +778,64 @@ export function restoreFlow(input: RestoreFlowInput): { app: AppRow; flow: FlowR
   const inserted = db.prepare('SELECT * FROM flows WHERE id = ?').get(info.lastInsertRowid) as
     RawFlowRow | undefined;
   return { app, flow: hydrateFlow(inserted as RawFlowRow) };
+}
+
+// === Mechanisms and pitfalls ===============================================
+//
+// What an app does underneath (mechanism) and what does NOT work (pitfall).
+// See the schema comment in db.ts for why this is its own table. Shape
+// validation lives in map/tools.ts; this stays a thin persistence layer.
+
+export type InsightKind = 'mechanism' | 'pitfall';
+
+export interface InsightRow {
+  id: number;
+  app_id: number;
+  kind: InsightKind;
+  key: string;
+  description: string;
+  symptom: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveInsightInput {
+  origin: string;
+  app_key?: string | null;
+  title?: string | null;
+  kind: InsightKind;
+  key: string;
+  description: string;
+  symptom?: string | null;
+}
+
+/** Upsert on (app, kind, key): re-saving a key replaces its description and
+ * symptom and bumps updated_at. */
+export function saveInsight(input: SaveInsightInput): { app: AppRow; insight: InsightRow } {
+  const app = upsertApp({
+    origin: input.origin,
+    app_key: input.app_key ?? null,
+    title: input.title ?? null,
+  });
+  const ts = now();
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO insights (app_id, kind, key, description, symptom, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(app_id, kind, key)
+     DO UPDATE SET description = excluded.description, symptom = excluded.symptom, updated_at = excluded.updated_at`,
+  ).run(app.id, input.kind, input.key, input.description, input.symptom ?? null, ts, ts);
+  const insight = db
+    .prepare('SELECT * FROM insights WHERE app_id = ? AND kind = ? AND key = ?')
+    .get(app.id, input.kind, input.key) as InsightRow;
+  return { app, insight };
+}
+
+/** Every insight of one kind saved for an app, alphabetical by key. */
+export function listInsights(app_id: number, kind: InsightKind): InsightRow[] {
+  return getDb()
+    .prepare('SELECT * FROM insights WHERE app_id = ? AND kind = ? ORDER BY key')
+    .all(app_id, kind) as InsightRow[];
 }
 
 /** Every flow recipe saved for an app, alphabetical by name. */

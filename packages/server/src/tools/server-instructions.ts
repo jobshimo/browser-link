@@ -35,10 +35,12 @@ change. If a call returns "Tab not connected", call \`browser.events\`
 to find the new tab_id before retrying. After a non-trivial flow worked
 end-to-end, persist UI structure (NEVER domain data) with
 \`browser.map.save\`. When \`list_tabs\` shows a \`map\` hint on a tab
-(\`{ app_key, entries, flows }\`), call \`browser.map.recall\` BEFORE
-snapshotting — the map already has selectors, gotchas or flow recipes
-for that origin, so recall first instead of rediscovering them from
-scratch. When list_tabs is empty ([]) a second text block "hint: ..."
+(\`{ app_key, entries, flows, mechanisms, pitfalls, inline? }\`): if
+\`inline\` is present the small map is already in the hint — read its
+pitfalls first and skip the round trip; otherwise call
+\`browser.map.recall\` BEFORE snapshotting — the map already has
+selectors, gotchas, flow recipes, mechanisms or pitfalls for that origin,
+so recall first instead of rediscovering them from scratch. When list_tabs is empty ([]) a second text block "hint: ..."
 follows the result — read it: it says whether to wait for the extension's
 auto-reconnect (up to 10 minutes after a drop) or ask the user to press
 Connect.
@@ -113,6 +115,19 @@ SAME privacy rule as every other map entry: flows store UI STRUCTURE
 only, never domain data (real names, IDs, dates, message content) —
 placeholders exist precisely so a flow can be saved without ever writing
 that data to disk.
+
+## Saving mechanisms and pitfalls
+
+After a non-trivial discovery, save more than selectors.
+\`browser.map.save\` also takes \`mechanisms: [{ key, description }]\` (how
+the app behaves underneath — "a GET of an item URL marks it complete
+server-side", "progress % is client-rendered, not in the fetched HTML")
+and \`pitfalls: [{ key, description, symptom? }]\` (what does NOT work —
+"click on the next link returns ok but does not navigate (onmouseup
+handler)"). \`browser.map.recall\` returns \`pitfalls\` first, then
+\`mechanisms\`. A pitfall is the most expensive thing to rediscover, so
+write them down. Same privacy rule as the rest of the map: behaviour,
+never content — no IDs, names, dates or real values.
 
 ## Token-efficient patterns (READ THIS BEFORE REACHING FOR EVALUATE)
 

@@ -10,11 +10,14 @@ import {
   listAppsWithCounts,
   listEntries,
   listFlows,
+  listInsights,
   restoreEntry,
   restoreFlow,
+  saveInsight,
   upsertApp,
   type AppRow,
   type EntryKind,
+  type InsightKind,
 } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { Language } from './welcome.js';
@@ -156,6 +159,8 @@ interface MapI18n {
   lastSeenLabel: string;
   entriesHeader: (n: number) => string;
   flowsHeader: (n: number) => string;
+  pitfallsHeader: (n: number) => string;
+  mechanismsHeader: (n: number) => string;
   none: string;
   statusVerified: string;
   statusFailed: string;
@@ -185,6 +190,7 @@ interface MapI18n {
   importMalformedApp: string;
   importFlowError: (appKey: string, flowName: string, error: string) => string;
   importEntryError: (appKey: string, index: number, error: string) => string;
+  importInsightError: (appKey: string, kind: string, index: number, error: string) => string;
   importCapExceeded: (what: string, found: number, max: number) => string;
   importAborted: (errors: string[]) => string;
   importSummary: (s: ImportSummary) => string;
@@ -207,6 +213,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
     lastSeenLabel: 'last seen:',
     entriesHeader: (n) => `Entries (${n}):`,
     flowsHeader: (n) => `Flows (${n}):`,
+    pitfallsHeader: (n) => `Pitfalls (${n}):`,
+    mechanismsHeader: (n) => `Mechanisms (${n}):`,
     none: '(none)',
     statusVerified: 'verified',
     statusFailed: 'FAILED',
@@ -249,6 +257,7 @@ const MAP_I18N: Record<Language, MapI18n> = {
     importMalformedApp: 'Malformed app entry in the export file (missing origin or app_key).',
     importFlowError: (appKey, flowName, error) => `${appKey} / flow "${flowName}": ${error}`,
     importEntryError: (appKey, index, error) => `${appKey} / entry #${index}: ${error}`,
+    importInsightError: (appKey, kind, index, error) => `${appKey} / ${kind} #${index}: ${error}`,
     importCapExceeded: (what, found, max) => `too many ${what} in one file: ${found} (max ${max})`,
     importAborted: (errors) =>
       `Import aborted — ${errors.length} invalid item${errors.length === 1 ? '' : 's'}, nothing was written:\n` +
@@ -277,6 +286,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
     lastSeenLabel: 'última vez:',
     entriesHeader: (n) => `Entradas (${n}):`,
     flowsHeader: (n) => `Flows (${n}):`,
+    pitfallsHeader: (n) => `Trampas (${n}):`,
+    mechanismsHeader: (n) => `Mecanismos (${n}):`,
     none: '(ninguno)',
     statusVerified: 'verificado',
     statusFailed: 'FALLÓ',
@@ -320,6 +331,7 @@ const MAP_I18N: Record<Language, MapI18n> = {
       'Entrada de app inválida en el archivo de exportación (falta origin o app_key).',
     importFlowError: (appKey, flowName, error) => `${appKey} / flow "${flowName}": ${error}`,
     importEntryError: (appKey, index, error) => `${appKey} / entrada #${index}: ${error}`,
+    importInsightError: (appKey, kind, index, error) => `${appKey} / ${kind} #${index}: ${error}`,
     importCapExceeded: (what, found, max) =>
       `demasiados ${what} en un solo archivo: ${found} (máximo ${max})`,
     importAborted: (errors) =>
@@ -384,6 +396,20 @@ function runShow(argv: string[], language: Language): string {
   if (app.notes) lines.push(`  ${t.notesLabel} ${app.notes}`);
   lines.push(`  ${t.lastSeenLabel} ${formatRelative(app.last_seen_at, language)}`);
   lines.push('');
+  // Pitfalls first, then mechanisms — same order browser.map.recall uses.
+  for (const [kind, header] of [
+    ['pitfall', t.pitfallsHeader],
+    ['mechanism', t.mechanismsHeader],
+  ] as const) {
+    const rows = listInsights(app.id, kind);
+    if (rows.length === 0) continue;
+    lines.push(header(rows.length));
+    for (const r of rows) {
+      lines.push(`  ${r.key} — ${r.description}`);
+      if (r.symptom) lines.push(`      ${r.symptom}`);
+    }
+    lines.push('');
+  }
   lines.push(t.entriesHeader(entries.length));
   if (entries.length === 0) {
     lines.push(`  ${t.none}`);
@@ -499,6 +525,17 @@ interface MapExportApp {
   notes: string | null;
   entries: MapExportEntry[];
   flows: MapExportFlow[];
+  /** Added after export version 1 shipped; optional on read so older
+   * export files (without them) still import. Additive, so the version
+   * number stays 1. */
+  pitfalls: MapExportInsight[];
+  mechanisms: MapExportInsight[];
+}
+
+interface MapExportInsight {
+  key: string;
+  description: string;
+  symptom: string | null;
 }
 
 interface MapExportFile {
@@ -534,8 +571,18 @@ function buildExport(appFilter: string | undefined, t: MapI18n): MapExportFile {
         steps: f.steps,
         use_count: f.use_count,
       })),
+      pitfalls: exportInsights(app.id, 'pitfall'),
+      mechanisms: exportInsights(app.id, 'mechanism'),
     })),
   };
+}
+
+function exportInsights(appId: number, kind: InsightKind): MapExportInsight[] {
+  return listInsights(appId, kind).map((r) => ({
+    key: r.key,
+    description: r.description,
+    symptom: r.symptom,
+  }));
 }
 
 function runExport(argv: string[], language: Language): string {
@@ -596,6 +643,8 @@ interface RawExportApp {
   notes: string | null;
   entries: unknown[];
   flows: unknown[];
+  pitfalls: unknown[];
+  mechanisms: unknown[];
 }
 
 /** Parse + container-shape checks. Throws (single error, no aggregation)
@@ -628,6 +677,8 @@ function parseExportFile(raw: string, t: MapI18n): RawExportApp[] {
       notes: typeof app.notes === 'string' ? app.notes : null,
       entries: Array.isArray(app.entries) ? app.entries : [],
       flows: Array.isArray(app.flows) ? app.flows : [],
+      pitfalls: Array.isArray(app.pitfalls) ? app.pitfalls : [],
+      mechanisms: Array.isArray(app.mechanisms) ? app.mechanisms : [],
     };
   });
 }
@@ -749,6 +800,36 @@ function validateImportFile(
       });
     });
 
+    const validateInsightList = (items: unknown[], kind: InsightKind): MapExportInsight[] => {
+      const out: MapExportInsight[] = [];
+      items.forEach((item, index) => {
+        const problems: string[] = [];
+        if (!isRecord(item)) {
+          problems.push('must be an object');
+        } else {
+          if (typeof item.key !== 'string' || item.key.trim().length === 0) {
+            problems.push('key must be a non-empty string');
+          }
+          if (typeof item.description !== 'string' || item.description.trim().length === 0) {
+            problems.push('description must be a non-empty string');
+          }
+          if (!isNullableString(item.symptom)) problems.push('symptom must be a string or null');
+        }
+        if (problems.length > 0 || !isRecord(item)) {
+          for (const p of problems) {
+            errors.push(t.importInsightError(rawApp.app_key, kind, index, p));
+          }
+          return;
+        }
+        out.push({
+          key: item.key as string,
+          description: item.description as string,
+          symptom: (item.symptom as string | null | undefined) ?? null,
+        });
+      });
+      return out;
+    };
+
     apps.push({
       origin: rawApp.origin,
       app_key: rawApp.app_key,
@@ -756,6 +837,8 @@ function validateImportFile(
       notes: rawApp.notes,
       entries,
       flows,
+      pitfalls: validateInsightList(rawApp.pitfalls, 'pitfall'),
+      mechanisms: validateInsightList(rawApp.mechanisms, 'mechanism'),
     });
   }
 
@@ -886,6 +969,22 @@ function writeImport(apps: MapExportApp[], replace: boolean): ImportSummary {
           use_count: flowData.use_count,
         });
         summary.flowsImported++;
+      }
+
+      for (const [kind, items] of [
+        ['pitfall', appData.pitfalls],
+        ['mechanism', appData.mechanisms],
+      ] as const) {
+        for (const item of items) {
+          saveInsight({
+            origin: app.origin,
+            app_key: app.app_key,
+            kind,
+            key: item.key,
+            description: item.description,
+            symptom: item.symptom,
+          });
+        }
       }
     }
   });

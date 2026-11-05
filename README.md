@@ -705,14 +705,14 @@ a truncated array would read as "that is everything that happened".
 
 **Persistent UI map** — local-only memory across sessions:
 
-| Tool                     | Purpose                                                                                         |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `browser.map.recall`     | Recall selectors / flow notes / gotchas / named flow recipes known for an app+route             |
-| `browser.map.save`       | Persist a `selector`, `flow` note or `gotcha`, and/or one or more named replayable flow recipes |
-| `browser.map.record_use` | Mark an entry as freshly verified or failed (not applicable to named flow recipes)              |
-| `browser.map.forget`     | Delete an entry or an entire app                                                                |
-| `browser.map.rename_app` | Fix an auto-derived app_key                                                                     |
-| `browser.map.apps`       | List known apps                                                                                 |
+| Tool                     | Purpose                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------- |
+| `browser.map.recall`     | Recall selectors / flow notes / gotchas / named flow recipes known for an app+route                |
+| `browser.map.save`       | Persist a `selector`, `flow` note or `gotcha`, and/or named flow recipes, `mechanisms`, `pitfalls` |
+| `browser.map.record_use` | Mark an entry as freshly verified or failed (not applicable to named flow recipes)                 |
+| `browser.map.forget`     | Delete an entry or an entire app                                                                   |
+| `browser.map.rename_app` | Fix an auto-derived app_key                                                                        |
+| `browser.map.apps`       | List known apps                                                                                    |
 
 On every MCP `initialize` handshake the server pushes a structured usage
 protocol to the client (when to call `recall`, what kinds to save, what
@@ -720,9 +720,13 @@ to _never_ save) — no manual prompt engineering required.
 
 `browser.list_tabs` also surfaces the map directly: any tab whose origin
 already has saved knowledge carries a `map` field (`{ app_key, entries,
-flows }`). The usage protocol above instructs the agent to call
+flows, mechanisms, pitfalls }`). When the app's map is small (at most 5
+items in total and under 2 KB serialized) the field also carries the
+recalled content as `inline`, so the agent skips the round trip; bigger
+maps get counts only. The usage protocol above instructs the agent to call
 `browser.map.recall` for that origin BEFORE taking a fresh `browser.snapshot`
-— no separate lookup needed to know memory already exists for that page.
+when there is no `inline` content — no separate lookup needed to know memory
+already exists for that page.
 
 ## Persistent UI map
 
@@ -761,7 +765,21 @@ intended loop: `recall` → **adapt** any placeholder text in `steps` (e.g.
 apply to recipes — re-saving a recipe with the same `name` refreshes it
 instead.
 
-**Placeholder privacy rule** applies to both layers: never store domain
+**Mechanisms and pitfalls** — a separate `insights` table for what does
+not fit a selector. A **mechanism** is how the app behaves underneath; a
+**pitfall** is what does _not_ work or misleads (the most expensive thing
+to rediscover). `browser.map.save({ mechanisms: [{ key, description }],
+pitfalls: [{ key, description, symptom? }] })` upserts on `(app, kind,
+key)`; `browser.map.recall` returns `pitfalls` first, then `mechanisms`,
+then `entries` and `flows`. They describe **behaviour, never content**:
+
+| Allowed                                                               | Forbidden                                       |
+| --------------------------------------------------------------------- | ----------------------------------------------- |
+| "A GET of an item URL marks it complete server-side"                  | "Item 4812 is complete"                         |
+| "Click on the next link returns ok but does not navigate (onmouseup)" | "User jane@example.com is enrolled in course X" |
+| "Progress % is rendered client-side, not present in the fetched HTML" | Any real ID, name, date or message text         |
+
+**Placeholder privacy rule** applies to every layer: never store domain
 data (IDs, user names, dates, message content). Free text inside a
 `flow` note or a flow recipe's `steps` uses a placeholder like `<QUERY>`
 or `<NAME>`, never the value the user actually typed.
@@ -810,6 +828,14 @@ CREATE TABLE flows (
   steps_json,                    -- ordered find/click/type/press/wait_for steps
   use_count, created_at, updated_at
   -- UNIQUE(app_id, name)
+);
+
+CREATE TABLE insights (
+  id, app_id,
+  kind TEXT,                     -- 'mechanism' | 'pitfall'
+  key, description, symptom,     -- symptom: pitfalls only, optional
+  created_at, updated_at
+  -- UNIQUE(app_id, kind, key)
 );
 ```
 
