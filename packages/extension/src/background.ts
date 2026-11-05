@@ -22,6 +22,7 @@ import {
   type KeyDefinition,
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
+import { createDownloadCapture } from './download-capture.js';
 import {
   runFlow,
   type ActionOutcome,
@@ -2438,6 +2439,40 @@ async function handleDialogRespond(
   };
 }
 
+/** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
+ * so only one `browser.download` may wait for a download at a time. */
+const downloadCapture = createDownloadCapture(chrome.downloads);
+
+/**
+ * `browser.download`'s selector mode: arm the capture, click, and wait for
+ * the download the click starts. The capture cancels that download before
+ * Chrome can show "Save as" (see `download-capture.ts`) and hands its URL
+ * back; the server then fetches the bytes in the page and writes the file.
+ * A click that starts nothing within `timeout_ms` answers `state: "timeout"`.
+ */
+async function handleDownloadCapture(
+  tabId: number,
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+): Promise<ExtensionToServer> {
+  const selector = typeof p.selector === 'string' ? p.selector : '';
+  const timeoutMs = typeof p.timeout_ms === 'number' && p.timeout_ms > 0 ? p.timeout_ms : 30_000;
+  const armed = downloadCapture.arm(timeoutMs);
+  // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
+  const click = await performClick(tabId, { selector, settle_ms: 0 });
+  if (!click.ok) {
+    armed.disarm();
+    return { kind: 'tool.response', id: msg.id, ok: false, error: click.error };
+  }
+  const captured = await armed.result;
+  return {
+    kind: 'tool.response',
+    id: msg.id,
+    ok: true,
+    result: captured ? { state: 'captured', ...captured } : { state: 'timeout' },
+  };
+}
+
 async function handleSetPermission(
   msg: ToolRequestMessage,
   str: (key: string) => string,
@@ -2627,6 +2662,9 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'set_permission':
         return await handleSetPermission(msg, str);
+
+      case 'download':
+        return await handleDownloadCapture(tabId, msg, p);
 
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };

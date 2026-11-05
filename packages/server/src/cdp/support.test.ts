@@ -30,6 +30,10 @@ const UNSUPPORTED = [
   'dialog_respond',
   'set_permission',
   'wait_for_tab',
+  // Selector mode only — it needs the extension's chrome.downloads capture.
+  // browser.download's url mode never reaches this wire tool: it rides
+  // `evaluate`, which IS supported.
+  'download',
 ];
 
 describe('CDP_TOOL_SUPPORT / isCdpToolSupported', () => {

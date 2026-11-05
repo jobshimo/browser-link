@@ -73,9 +73,11 @@ yourself. Every \`browser.*\` tool works on a \`cdp:\` tab exactly like on an
 extension tab, EXCEPT \`browser.drag\` (standalone and as a
 \`browser.flow\` drag step), \`browser.console\`,
 \`browser.network\`, \`browser.network_body\`, \`browser.canvas_screenshot\`,
-\`browser.dialog_respond\`, \`browser.set_permission\` and
-\`browser.wait_for_tab\`, which are not implemented for this transport yet —
-those calls fail with a clear error naming the extension as the fallback.
+\`browser.dialog_respond\`, \`browser.set_permission\`,
+\`browser.wait_for_tab\` and \`browser.download\` by \`selector\`, which are
+not implemented for this transport yet — those calls fail with a clear
+error naming the extension as the fallback (\`browser.download\` by \`url\`
+does work there).
 If any tool call on a \`cdp:\` tab fails with "cdp-direct is disabled" or
 "cdp-direct requires an active grant", that is the two-step permission gate
 talking, not a bug — relay the exact suggested command
@@ -207,7 +209,19 @@ Qt-WASM and similar runtimes only accept \`isTrusted: true\` input from
 the browser kernel; \`browser.click\` / \`browser.type\` / synthetic
 \`dispatchEvent\` go straight through without effect. Take screenshots,
 reason about what is on screen, ask the user to act when interaction
-is needed.`;
+is needed.
+
+## Downloads — never click a download button directly
+
+A plain \`browser.click\` on a Download / Export button can open Chrome's
+native "Save as" dialog (when the user enabled "Ask where to save each
+file"). Nothing in CDP or the page can press that dialog, so the agent is
+stuck. Use \`browser.download({ tab_id, selector })\` instead: it captures the
+download the click starts, cancels it before Chrome can prompt, fetches the
+file in the page with the page's credentials and writes it into the
+human-configured downloads directory. With a known URL, pass \`url\`. The
+result always says what happened — \`state: "complete" | "interrupted" |
+"timeout"\` with \`path\`, \`bytes\`, \`mime\` — so you never have to guess.`;
 
 /** Render a single tool's documentation as a markdown section. Skips
  * tools without a `doc` block (the structured shape is opt-in for now

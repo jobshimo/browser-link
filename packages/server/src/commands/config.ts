@@ -11,7 +11,10 @@ import {
   loadConfig,
   saveConfig,
 } from '../config.js';
+import { isAbsolute } from 'node:path';
 import { HandshakeError, IpcClient } from '../bridge/ipc-client.js';
+import { resolveDownloadsDir } from '../downloads.js';
+import { getDataDir } from '../map/paths.js';
 import { readToken } from '../bridge/token.js';
 import type { Language } from './welcome.js';
 
@@ -79,6 +82,10 @@ export interface ConfigI18n {
   invalidGrantTtlValue: (raw: string) => string;
   grantTtlNever: string;
   cdpDirectGrantTtlSetSaved: (label: string) => string;
+  downloadsDirLabel: string;
+  downloadsDirDefaultNote: string;
+  invalidDownloadsDirValue: (raw: string) => string;
+  downloadsDirSetSaved: (dir: string) => string;
 }
 
 /** Exported so `commands/cdp.ts` can reuse `parseGrantTtlArg`'s exact
@@ -103,9 +110,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never>',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default>',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir.`,
     unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'enabled',
@@ -132,6 +139,12 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     grantTtlNever: 'never (grants never expire until revoked — reduces the security posture)',
     cdpDirectGrantTtlSetSaved: (label) =>
       `cdp-direct.grant-ttl (default for \`cdp allow\`) set to ${label}.`,
+    downloadsDirLabel: 'downloads.dir',
+    downloadsDirDefaultNote: ' (default)',
+    invalidDownloadsDirValue: (raw) =>
+      `Invalid downloads.dir value: "${raw}". Use an absolute path, or "default" for <data dir>/downloads.`,
+    downloadsDirSetSaved: (dir) =>
+      `downloads.dir set to ${dir}. browser.download writes files there.`,
   },
   es: {
     header: 'Configuración de browser-link',
@@ -152,9 +165,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never>',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default>',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir.`,
     unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'habilitado',
@@ -182,6 +195,12 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
       'nunca (los permisos no expiran hasta revocarlos — reduce la postura de seguridad)',
     cdpDirectGrantTtlSetSaved: (label) =>
       `cdp-direct.grant-ttl (valor por defecto para \`cdp allow\`) configurado a ${label}.`,
+    downloadsDirLabel: 'downloads.dir',
+    downloadsDirDefaultNote: ' (por defecto)',
+    invalidDownloadsDirValue: (raw) =>
+      `Valor de downloads.dir inválido: "${raw}". Usá una ruta absoluta, o "default" para <directorio de datos>/downloads.`,
+    downloadsDirSetSaved: (dir) =>
+      `downloads.dir configurado a ${dir}. browser.download guarda los archivos ahí.`,
   },
 };
 
@@ -254,6 +273,7 @@ export function listConfig(language: Language = 'en'): string {
     getCdpDirectEnabledLine(language),
     getCdpDirectPortLine(language),
     getCdpDirectGrantTtlLine(language),
+    getDownloadsDirLine(language),
   ].join('\n');
 }
 
@@ -491,6 +511,34 @@ function setCdpDirectKey(key: CdpDirectKey, value: string, language: Language): 
   return setCdpDirectGrantTtl(value, language);
 }
 
+/** One formatted line describing where `browser.download` writes files. */
+export function getDownloadsDirLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const dir = resolveDownloadsDir(cfg, getDataDir());
+  const note = cfg.downloadsDir === undefined ? t.downloadsDirDefaultNote : '';
+  return `  ${t.downloadsDirLabel}   ${dir}${note}`;
+}
+
+/**
+ * `config set downloads.dir <absolute-path|default>`. Absolute only: a
+ * relative path would silently resolve against whatever directory the MCP
+ * server happened to be launched from. `default` clears the override.
+ */
+export function setDownloadsDir(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = rawValue.trim();
+  if (value.toLowerCase() === 'default') {
+    saveConfig({ downloadsDir: undefined });
+    return t.downloadsDirSetSaved(resolveDownloadsDir({}, getDataDir()));
+  }
+  if (value.length === 0 || !isAbsolute(value)) {
+    throw new Error(t.invalidDownloadsDirValue(rawValue));
+  }
+  saveConfig({ downloadsDir: value });
+  return t.downloadsDirSetSaved(value);
+}
+
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
@@ -502,6 +550,7 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'idle-ttl') return getIdleTtlLine(language);
     if (key === 'flow-recording') return getFlowRecordingLine(language);
     if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
+    if (key === 'downloads.dir') return getDownloadsDirLine(language);
     throw new Error(t.unknownKey(key));
   }
   if (action === 'set') {
@@ -513,6 +562,10 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (isCdpDirectKey(key)) {
       if (value === undefined) throw new Error(t.usage);
       return setCdpDirectKey(key, value, language);
+    }
+    if (key === 'downloads.dir') {
+      if (value === undefined) throw new Error(t.usage);
+      return setDownloadsDir(value, language);
     }
     throw new Error(t.unknownKey(key));
   }

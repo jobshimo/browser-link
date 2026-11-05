@@ -160,6 +160,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Grant or deny a browser permission for an origin (geo, notifs, etc.)',
   },
   {
+    name: 'browser.download',
+    family: 'bridge',
+    category: 'action',
+    summary: 'Download a file (click a button or fetch a URL) without the native "Save as" dialog',
+  },
+  {
     name: 'browser.claim_tab',
     family: 'bridge',
     category: 'action',

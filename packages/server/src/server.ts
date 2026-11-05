@@ -9,6 +9,8 @@ import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch
 import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
 import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
 import { loadConfig } from './config.js';
+import { resolveDownloadsDir, writeDownloadFile } from './downloads.js';
+import { getDataDir } from './map/paths.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dispatch.js';
 import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/proxy.js';
@@ -210,6 +212,13 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     listCdpTabs: () => listCdpTargets(),
     callCdpTool,
     cdpGate: () => checkCdpDirectGate(),
+    // browser.download writes here. The directory is re-read per download so
+    // `browser-link config set downloads.dir` applies without a restart.
+    saveDownload: (filename, data) =>
+      writeDownloadFile(resolveDownloadsDir(loadConfig(), getDataDir()), filename, data),
+    emitEvent: (kind, data) => {
+      events.add(kind, data);
+    },
     resetBridge: () => {
       // Close every WS to the extension first so the client side flips to
       // "Not connected" before we drop the local state. Best-effort: a tab

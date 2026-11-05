@@ -27,7 +27,21 @@ function handleReset(
 
 import { randomUUID } from 'node:crypto';
 import { requireTabId } from './responses.js';
-import type { BridgeEvent, BridgeEventListener, SubscribeOptions } from '../bridge/events.js';
+import type {
+  BridgeEvent,
+  BridgeEventKind,
+  BridgeEventListener,
+  SubscribeOptions,
+} from '../bridge/events.js';
+import {
+  MAX_DOWNLOAD_BYTES,
+  buildFetchDownloadJs,
+  clampDownloadTimeoutMs,
+  shapeDownloadResult,
+  validateRequestedFilename,
+  type DownloadResult,
+  type FetchDownloadOutcome,
+} from '../downloads.js';
 import type { MapHint } from '../map/queries.js';
 import type { ActivityInput } from '../activity/types.js';
 import { buildRow } from '../activity/extract.js';
@@ -171,6 +185,17 @@ export interface BrowserToolDeps {
    * wires `recordActivity` without wiring this gets the full trail it clearly
    * asked for rather than a silently gutted one. */
   recordActivityPayloads?: boolean;
+  /** Writes a `browser.download` file into the human-configured downloads
+   * directory and returns the absolute path written (never overwriting —
+   * see `downloads.ts`'s `writeDownloadFile`). The agent supplies only a
+   * validated basename; where it lands is decided here, not by the caller.
+   * Absent in unit tests and builds without a data dir, in which case
+   * `browser.download` fails plainly instead of downloading into nowhere. */
+  saveDownload?: (filename: string, data: Buffer) => string;
+  /** Appends a server-owned event to the `browser.events` log. Optional —
+   * used by `browser.download` for `download-started`/`download-finished`;
+   * absent in unit tests that do not care. */
+  emitEvent?(kind: BridgeEventKind, data: Record<string, unknown>): void;
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -206,6 +231,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.wait_for_tab',
   'browser.dialog_respond',
   'browser.set_permission',
+  'browser.download',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -1039,6 +1065,137 @@ function handleActivity(args: unknown): unknown {
   };
 }
 
+/** URL schemes `browser.download`'s url mode accepts — the ones an in-page
+ * `fetch` can read. `javascript:`, `file:`, `chrome:` and the rest are
+ * refused before anything reaches the page. */
+const DOWNLOAD_URL_SCHEMES = new Set(['http:', 'https:', 'blob:', 'data:']);
+
+/** Extra budget on top of `timeout_ms` for the bridge round trip — the
+ * in-page fetch enforces `timeout_ms` itself and always answers. */
+const DOWNLOAD_BRIDGE_SLACK_MS = 10_000;
+
+interface DownloadCapture {
+  state: 'captured' | 'timeout';
+  url?: string;
+  filename?: string;
+  mime?: string;
+}
+
+/**
+ * `browser.download` — get a file onto disk without ever surfacing Chrome's
+ * native "Save as" dialog (which nothing in CDP or the page can press).
+ *
+ *   - url mode: fetch the URL in the page (page credentials) and write it.
+ *   - selector mode: the extension arms a `chrome.downloads` capture, clicks
+ *     the element, cancels the download Chrome starts BEFORE it can prompt,
+ *     and hands back its URL — which is then fetched exactly like url mode.
+ *
+ * The bytes are always written here, by the server, into the directory the
+ * human configured (`downloads.dir`). See `downloads.ts` for why Chrome's
+ * own download manager cannot be told to skip the dialog from an extension.
+ *
+ * Every outcome is a `DownloadResult` — a timeout or a failed fetch reports
+ * what it knows (url, mime, bytes so far) rather than throwing; only invalid
+ * arguments and transport failures throw.
+ */
+async function handleDownload(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<DownloadResult> {
+  const tabId = requireTabId(args);
+  const { selector, url, filename, timeout_ms } = (args ?? {}) as {
+    selector?: unknown;
+    url?: unknown;
+    filename?: unknown;
+    timeout_ms?: unknown;
+  };
+  const hasSelector = typeof selector === 'string' && selector.length > 0;
+  const hasUrl = typeof url === 'string' && url.length > 0;
+  if (hasSelector === hasUrl) {
+    throw new Error('browser.download: provide exactly one of selector, url');
+  }
+  if (hasUrl && !DOWNLOAD_URL_SCHEMES.has(urlScheme(url))) {
+    throw new Error('browser.download: url must be an http(s), blob: or data: URL');
+  }
+  const requested = filename === undefined ? undefined : validateRequestedFilename(filename);
+  const save = deps.saveDownload;
+  if (!save) {
+    throw new Error('browser.download is not available in this build (no download directory).');
+  }
+  const timeoutMs = clampDownloadTimeoutMs(timeout_ms);
+
+  deps.emitEvent?.('download-started', { tab_id: tabId, mode: hasSelector ? 'selector' : 'url' });
+  const finish = (result: DownloadResult): DownloadResult => {
+    deps.emitEvent?.('download-finished', {
+      tab_id: tabId,
+      state: result.state,
+      filename: result.filename,
+      bytes: result.bytes,
+      ...(result.path ? { path: result.path } : {}),
+    });
+    return result;
+  };
+
+  let sourceUrl: string;
+  let suggested: string | undefined;
+  let capturedMime: string | null = null;
+  if (hasSelector) {
+    const capture = (await runAction(
+      'download',
+      tabId,
+      { selector, timeout_ms: timeoutMs },
+      deps,
+      caller,
+      timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
+    )) as DownloadCapture;
+    if (capture.state !== 'captured' || typeof capture.url !== 'string') {
+      return finish({
+        ok: false,
+        state: 'timeout',
+        path: null,
+        filename: requested ?? null,
+        bytes: 0,
+        mime: null,
+        url: null,
+        error: `no download started within ${timeoutMs}ms after clicking ${selector}`,
+      });
+    }
+    sourceUrl = capture.url;
+    suggested = capture.filename;
+    capturedMime = capture.mime ?? null;
+  } else {
+    sourceUrl = url as string;
+  }
+
+  const outcome = (await runAction(
+    'evaluate',
+    tabId,
+    {
+      expression: buildFetchDownloadJs({ url: sourceUrl, timeoutMs, maxBytes: MAX_DOWNLOAD_BYTES }),
+    },
+    deps,
+    caller,
+    timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
+  )) as FetchDownloadOutcome;
+  const withMime = outcome.mime ? outcome : { ...outcome, mime: capturedMime };
+  return finish(
+    shapeDownloadResult(
+      withMime,
+      { url: sourceUrl, suggested, ...(requested !== undefined ? { requested } : {}) },
+      save,
+    ),
+  );
+}
+
+function urlScheme(url: string): string {
+  try {
+    return new URL(url).protocol;
+  } catch {
+    return '';
+  }
+}
+
 function handleEvents(
   args: unknown,
   deps: BrowserToolDeps,
@@ -1556,6 +1713,8 @@ async function dispatchBrowserTool(
       }
       return runAction('set_permission', requireTabId(args), { origin, name, state }, deps, caller);
     }
+    case 'browser.download':
+      return handleDownload(args, deps, caller);
     case 'browser.wait_for': {
       const { selector, expression, network_url, condition, timeout_ms, poll_interval_ms } =
         (args ?? {}) as {

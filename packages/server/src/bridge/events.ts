@@ -23,7 +23,11 @@ export type BridgeEventKind =
   | 'dialog-closed'
   | 'tab-created'
   | 'flow-recorded'
-  | 'flow-finished';
+  | 'flow-finished'
+  // Server-owned: `browser.download` writes the file itself, so only the
+  // dispatcher can truthfully say a download started or where it ended up.
+  | 'download-started'
+  | 'download-finished';
 
 /** Kinds the extension is permitted to push via `bridge.event`. Lifecycle
  * events (primary-elected, tab-registered, etc.) are produced server-side

@@ -394,3 +394,32 @@ describe('cdp-direct.* keys', () => {
     expect(out).toMatch(/activado/);
   });
 });
+
+describe('downloads.dir key', () => {
+  test('"get downloads.dir" defaults to <dataDir>/downloads', async () => {
+    expect(await runConfigCommand(['get', 'downloads.dir'])).toContain(join(dataDir, 'downloads'));
+  });
+
+  test('"set downloads.dir <absolute>" round-trips through loadConfig', async () => {
+    const target = join(dataDir, 'my-downloads');
+    const msg = await runConfigCommand(['set', 'downloads.dir', target]);
+    expect(loadConfig().downloadsDir).toBe(target);
+    expect(msg).toContain(target);
+    expect(await runConfigCommand(['get', 'downloads.dir'])).toContain(target);
+  });
+
+  test('"set downloads.dir" rejects a relative path', async () => {
+    await expect(runConfigCommand(['set', 'downloads.dir', 'rel/dir'])).rejects.toThrow(/absolute/);
+    expect(loadConfig().downloadsDir).toBeUndefined();
+  });
+
+  test('"set downloads.dir default" clears the override', async () => {
+    await runConfigCommand(['set', 'downloads.dir', join(dataDir, 'x')]);
+    await runConfigCommand(['set', 'downloads.dir', 'default']);
+    expect(loadConfig().downloadsDir).toBeUndefined();
+  });
+
+  test('listConfig includes the downloads.dir line', () => {
+    expect(listConfig()).toMatch(/downloads\.dir/);
+  });
+});
