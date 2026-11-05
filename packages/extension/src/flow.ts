@@ -49,6 +49,7 @@
  * fails with the same unsupported-transport error the standalone
  * `browser.drag` returns on a `cdp:` tab.
  */
+import type { ExpectMet, ExpectParams } from './expect.js';
 
 /** Structured success/failure outcome shared by every perform* function
  * (`background.ts` in the extension, `cdp/transport.ts` on the server).
@@ -96,6 +97,7 @@ export interface ClickStepParams {
   selector?: string;
   force?: boolean;
   settle_ms?: number;
+  expect?: ExpectParams;
 }
 
 export interface ClickStepResult {
@@ -109,6 +111,7 @@ export interface ClickStepResult {
    * the click lands on the target itself. */
   hit_element?: string;
   settle?: Record<string, unknown>;
+  expect?: ExpectMet;
 }
 
 export interface TypeStepParams {
@@ -116,12 +119,14 @@ export interface TypeStepParams {
   text: string;
   clear?: boolean;
   settle_ms?: number;
+  expect?: ExpectParams;
 }
 
 export interface TypeStepResult {
   typed: number;
   selector?: string;
   settle?: Record<string, unknown>;
+  expect?: ExpectMet;
 }
 
 export interface PressStepParams {
@@ -129,12 +134,14 @@ export interface PressStepParams {
   modifiers?: string[];
   selector?: string;
   settle_ms?: number;
+  expect?: ExpectParams;
 }
 
 export interface PressStepResult {
   key: string;
   modifiers: string[];
   settle?: Record<string, unknown>;
+  expect?: ExpectMet;
 }
 
 export interface WaitForStepParams {
@@ -413,17 +420,20 @@ export type FlowResult = FlowSuccess | FlowFailure;
  * events fired (see `DragStepResult`). */
 function compactActionResult(result: {
   settle?: Record<string, unknown>;
+  expect?: ExpectMet;
   hit_element?: string;
   drag_mode?: string;
 }): {
   ok: true;
   settle?: Record<string, unknown>;
+  expect?: ExpectMet;
   hit_element?: string;
   drag_mode?: string;
 } {
   return {
     ok: true,
     ...(result.settle ? { settle: result.settle } : {}),
+    ...(result.expect ? { expect: result.expect } : {}),
     ...(result.hit_element ? { hit_element: result.hit_element } : {}),
     ...(result.drag_mode ? { drag_mode: result.drag_mode } : {}),
   };
@@ -631,6 +641,7 @@ async function executeLeafStep(
     const outcome = await deps.performClick({
       force: params.force,
       settle_ms: params.settle_ms,
+      expect: params.expect,
       selector: resolved,
     });
     if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
@@ -646,6 +657,7 @@ async function executeLeafStep(
       text: params.text,
       clear: params.clear,
       settle_ms: params.settle_ms,
+      expect: params.expect,
       selector: resolved,
     });
     if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
@@ -661,6 +673,7 @@ async function executeLeafStep(
     key: params.key,
     modifiers: params.modifiers,
     settle_ms: params.settle_ms,
+    expect: params.expect,
     selector: resolved,
   });
   if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };

@@ -24,6 +24,7 @@ import {
   type KeyDefinition,
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
+import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
 import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
   runFlow,
@@ -1269,7 +1270,13 @@ async function performFind(
 
 async function performClick(
   tabId: number,
-  params: { selector: string; force?: boolean; settle_ms?: number; settle_timeout_ms?: number },
+  params: {
+    selector: string;
+    force?: boolean;
+    settle_ms?: number;
+    settle_timeout_ms?: number;
+    expect?: ExpectParams;
+  },
 ): Promise<ActionOutcome<ClickStepResult>> {
   try {
     const { selector, force = false } = params;
@@ -1277,6 +1284,8 @@ async function performClick(
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
     });
+    const expectSpec = resolveExpectParams(params.expect);
+    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
     const resolved = await evaluateInTab<ClickResolveResult>(
       tabId,
       buildClickResolveJs({ selector, force }),
@@ -1293,6 +1302,7 @@ async function performClick(
       }
       return { ok: false, error: `Element not found: ${selector}` };
     }
+    const startUrl = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x: resolved.x,
@@ -1313,9 +1323,12 @@ async function performClick(
       clickCount: 1,
     });
     const settleResult = await runSettle(tabId, settle);
+    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
     if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
+    if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1330,6 +1343,7 @@ async function performType(
     clear?: boolean;
     settle_ms?: number;
     settle_timeout_ms?: number;
+    expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<TypeStepResult>> {
   try {
@@ -1338,6 +1352,8 @@ async function performType(
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
     });
+    const expectSpec = resolveExpectParams(params.expect);
+    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
     if (selector !== undefined) {
       const resolved = await evaluateInTab<TypeResolveResult>(
         tabId,
@@ -1350,11 +1366,15 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
+    const startUrl = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.insertText', { text });
     const settleResult = await runSettle(tabId, settle);
+    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
     if (settleResult) result.settle = settleResult;
+    if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1369,6 +1389,7 @@ async function performPress(
     selector?: string;
     settle_ms?: number;
     settle_timeout_ms?: number;
+    expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<PressStepResult>> {
   try {
@@ -1383,6 +1404,8 @@ async function performPress(
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
     });
+    const expectSpec = resolveExpectParams(params.expect);
+    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
     if (params.selector) {
       const focused = await evaluateInTab<boolean>(
         tabId,
@@ -1392,10 +1415,14 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
+    const startUrl = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(tabId, def, modifiers);
     const settleResult = await runSettle(tabId, settle);
+    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: PressStepResult = { key, modifiers: modifierNames };
     if (settleResult) result.settle = settleResult;
+    if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -2639,6 +2666,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
           settle_timeout_ms:
             typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+          expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
@@ -2654,6 +2682,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
           settle_timeout_ms:
             typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+          expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
@@ -2672,6 +2701,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
           settle_timeout_ms:
             typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
+          expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };

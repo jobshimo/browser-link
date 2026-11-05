@@ -710,6 +710,88 @@ export function buildSettleJs(opts: SettleOpts): string {
 })()`;
 }
 
+export interface ExpectProbeOpts {
+  selector_appears?: string;
+  selector_disappears?: string;
+  text_appears?: string;
+}
+
+/**
+ * Build the `expect` probe: ONE cheap in-page sample of everything an
+ * action's `expect` may ask about, polled by `verifyExpect` (expect.ts)
+ * until its conditions hold or its window closes. Returns
+ * `{ url, selector_appears?, selector_disappears?, text_appears?,
+ * invalid_selector? }` — only the keys that were requested are present.
+ *
+ * - `selector_appears` / `selector_disappears` resolve through
+ *   `deepQueryAll` (open Shadow DOM + same-origin iframes, like click and
+ *   find) and count only VISIBLE matches (`isVisible`, the same notion
+ *   find/snapshot use). "Disappears" holds when no visible match remains.
+ * - `text_appears` is a case-insensitive, whitespace-collapsed substring
+ *   test over the rendered text of the document, every open shadow root
+ *   and every same-origin iframe.
+ * - A selector the parser rejects is reported as `invalid_selector`
+ *   (naming the condition) instead of silently reading as "absent" —
+ *   which would make `selector_disappears` trivially, wrongly true.
+ */
+export function buildExpectProbeJs(opts: ExpectProbeOpts): string {
+  const optsJson = JSON.stringify({
+    selectorAppears: opts.selector_appears,
+    selectorDisappears: opts.selector_disappears,
+    textAppears: opts.text_appears,
+  });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  ${DOM_HELPERS_JS}
+  const opts = ${optsJson};
+  const out = { url: location.href };
+  function selectorIsValid(sel) {
+    try {
+      document.querySelector(sel);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  function hasVisibleMatch(sel) {
+    return deepQueryAll(sel).some(isVisible);
+  }
+  function normalized(s) {
+    return String(s).replace(/\\s+/g, ' ').trim().toLowerCase();
+  }
+  function renderedText() {
+    const parts = [];
+    const roots = collectSearchRoots(document);
+    for (let i = 0; i < roots.length; i++) {
+      const root = roots[i];
+      if (root.nodeType === 9) {
+        if (root.body) parts.push(root.body.innerText || root.body.textContent || '');
+      } else {
+        const kids = root.children || [];
+        for (let j = 0; j < kids.length; j++) {
+          parts.push(kids[j].innerText || kids[j].textContent || '');
+        }
+      }
+    }
+    return normalized(parts.join(' '));
+  }
+  if (opts.selectorAppears !== undefined) {
+    if (selectorIsValid(opts.selectorAppears)) out.selector_appears = hasVisibleMatch(opts.selectorAppears);
+    else out.invalid_selector = 'selector_appears';
+  }
+  if (opts.selectorDisappears !== undefined) {
+    if (selectorIsValid(opts.selectorDisappears)) out.selector_disappears = !hasVisibleMatch(opts.selectorDisappears);
+    else out.invalid_selector = 'selector_disappears';
+  }
+  if (opts.textAppears !== undefined) {
+    out.text_appears = renderedText().indexOf(normalized(opts.textAppears)) !== -1;
+  }
+  return out;
+})()
+`;
+}
+
 /**
  * Build the `browser.state` expression: a compact orientation snapshot —
  * current url/title, the deep-resolved focused element, visible dialog-role

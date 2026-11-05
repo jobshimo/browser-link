@@ -406,6 +406,33 @@ itself. The result carries a compact report:
   actions against a rate-limited backend — use a `sleep` step inside
   `browser.flow` (below).
 
+#### `expect` — assert the effect, not just the quiet
+
+`click` / `type` / `press` (and the matching `browser.flow` steps) accept
+an optional `expect`, any combination of:
+
+| Key                   | Holds when                                                               |
+| --------------------- | ------------------------------------------------------------------------ |
+| `url_changed`         | `location.href` differs from its value right before the action           |
+| `selector_appears`    | a **visible** element matches the selector (deep Shadow DOM / iframes)   |
+| `selector_disappears` | no **visible** element matches the selector any more                     |
+| `text_appears`        | the text is visible on the page (case-insensitive, whitespace-collapsed) |
+| `timeout_ms`          | expectation window, default 3000, max 10000 (out-of-range is rejected)   |
+
+After dispatch and settle, the page is polled until every condition holds
+or the window closes. Met: the result gains `expect: { met: true,
+elapsed_ms }`. Unmet: `ok: false` with `expectation not met: <which> after
+<ms>ms` plus the settle report; inside a flow it fails that step fail-fast
+(with the usual `recovery_snapshot`). Works on `cdp:` tabs too.
+
+```js
+browser.click({ tab_id, selector: 'a.next-lesson-link', expect: { url_changed: true } });
+```
+
+An action with `expect` adds its window to a flow step's worst-case
+budget, so a long run of expectant steps can trip the 60 s up-front
+rejection.
+
 #### `sleep` — the fixed pause, and why it is a flow step
 
 A `{ sleep: { ms } }` step (1–30 000 ms) pauses the flow for exactly that

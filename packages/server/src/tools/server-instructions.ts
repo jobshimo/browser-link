@@ -186,6 +186,12 @@ tokens AND more reliable than a hand-rolled expression.
   NOT mean the action did nothing. Reach for \`wait_for\` when you need a
   SPECIFIC condition (a particular selector, network request, or
   expression), not just "did anything change".
+- **Counting on a specific effect of an action** (navigation, a dialog
+  opening, a result appearing) → pass \`expect\` to \`browser.click\` /
+  \`.type\` / \`.press\` (or the matching \`browser.flow\` step):
+  \`url_changed\`, \`selector_appears\`, \`selector_disappears\`,
+  \`text_appears\`, \`timeout_ms\`. A no-op action then fails right
+  there with \`expectation not met: ...\` instead of reading as success.
 - **Paging through \`browser.events\`** → keep \`lastId = result.latest_id\`
   in your working notes and pass it as \`since_id\` on the next call.
   That is one variable. The server does not maintain per-agent cursors.

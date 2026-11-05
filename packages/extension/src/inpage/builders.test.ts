@@ -3,6 +3,7 @@ import {
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
+  buildExpectProbeJs,
   buildFindJs,
   buildFocusJs,
   buildSettleJs,
@@ -1058,5 +1059,66 @@ describe('buildElementRectJs', () => {
     expect(res.ok).toBe(true);
     expect(res.x).toBe(107);
     expect(res.y).toBe(209);
+  });
+});
+
+describe('buildExpectProbeJs', () => {
+  interface Probe {
+    url: string;
+    selector_appears?: boolean;
+    selector_disappears?: boolean;
+    text_appears?: boolean;
+    invalid_selector?: string;
+  }
+  const probe = (opts: Parameters<typeof buildExpectProbeJs>[0]): Probe =>
+    evalExpr<Probe>(buildExpectProbeJs(opts));
+
+  test('always reports the current url and nothing else when no condition is asked', () => {
+    const out = probe({});
+    expect(out.url).toBe(location.href);
+    expect(out).not.toHaveProperty('selector_appears');
+    expect(out).not.toHaveProperty('text_appears');
+  });
+
+  test('selector_appears is true only for a VISIBLE match', () => {
+    document.body.innerHTML = '<div id="hidden"></div><div id="shown"></div>';
+    makeVisible(document.getElementById('shown')!);
+    expect(probe({ selector_appears: '#shown' }).selector_appears).toBe(true);
+    expect(probe({ selector_appears: '#hidden' }).selector_appears).toBe(false);
+    expect(probe({ selector_appears: '#missing' }).selector_appears).toBe(false);
+  });
+
+  test('selector_disappears is true when no visible match remains', () => {
+    document.body.innerHTML = '<div id="hidden"></div><div id="shown"></div>';
+    makeVisible(document.getElementById('shown')!);
+    expect(probe({ selector_disappears: '#shown' }).selector_disappears).toBe(false);
+    expect(probe({ selector_disappears: '#hidden' }).selector_disappears).toBe(true);
+    expect(probe({ selector_disappears: '#missing' }).selector_disappears).toBe(true);
+  });
+
+  test('selector conditions pierce open shadow roots', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<button id="deep"></button>';
+    makeVisible(root.getElementById('deep')!);
+    expect(probe({ selector_appears: '#deep' }).selector_appears).toBe(true);
+  });
+
+  test('an invalid selector is reported instead of silently counting as absent', () => {
+    const out = probe({ selector_disappears: '##bad[' });
+    expect(out.invalid_selector).toBe('selector_disappears');
+    expect(out).not.toHaveProperty('selector_disappears');
+  });
+
+  test('text_appears matches case-insensitively with collapsed whitespace', () => {
+    document.body.innerHTML = '<p>Lesson   <b>Complete</b></p>';
+    // jsdom has no layout engine and no innerText: stub it like a browser would render it.
+    Object.defineProperty(document.body, 'innerText', {
+      value: 'Lesson Complete',
+      configurable: true,
+    });
+    expect(probe({ text_appears: 'lesson complete' }).text_appears).toBe(true);
+    expect(probe({ text_appears: 'nothing here' }).text_appears).toBe(false);
   });
 });
