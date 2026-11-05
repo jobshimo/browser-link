@@ -461,6 +461,12 @@ const FLOW_ACTION_SETTLE_WORST_MS = DEFAULT_SETTLE_TIMEOUT_MS;
  * step the extension would happily run longer. */
 const FLOW_WAIT_FOR_DEFAULT_TIMEOUT_MS = 5_000;
 const FLOW_WAIT_FOR_MAX_TIMEOUT_MS = 30_000;
+/** How much earlier than the bridge timeout the runner's own deadline
+ * lands. The runner stops cooperatively at the next step / iteration
+ * boundary once the deadline passes and answers with what it has
+ * (`stopped_by: "timeout"`); the margin is the time it needs to deliver
+ * that answer before the bridge gives up on it. */
+const FLOW_DEADLINE_MARGIN_MS = 3_000;
 /** Mirror the standalone drag contract: interpolation defaults to 1500ms,
  * the extension clamps `duration_ms` at 60s and each hold at 10s
  * (`MAX_DRAG_DURATION_MS` / `MAX_DRAG_HOLD_MS` in `background.ts`). The
@@ -592,6 +598,19 @@ export function validateFlowSteps(
     if (kind === 'click' || kind === 'type' || kind === 'press') {
       const expectError = expectArgError(bodyRecord.expect);
       if (expectError) return { ok: false, error: `step ${i}: ${kind}.${expectError}` };
+      const settleTimeout = bodyRecord.settle_timeout_ms;
+      if (
+        settleTimeout !== undefined &&
+        (typeof settleTimeout !== 'number' ||
+          !Number.isFinite(settleTimeout) ||
+          settleTimeout < 0 ||
+          settleTimeout > MAX_SETTLE_TIMEOUT_MS)
+      ) {
+        return {
+          ok: false,
+          error: `step ${i}: ${kind}.settle_timeout_ms must be a number between 0 and ${MAX_SETTLE_TIMEOUT_MS}`,
+        };
+      }
     }
     if (kind === 'find') {
       if (typeof bodyRecord.text !== 'string' || bodyRecord.text.length === 0) {
@@ -885,10 +904,72 @@ function requireFlowId(args: unknown, tool: string): string {
   return flow_id;
 }
 
+/** The bridge rejects with this text when a tool outlives its timeout. */
+function isBridgeTimeout(err: unknown): err is Error {
+  return err instanceof Error && /timed out after \d+ms/.test(err.message);
+}
+
+/**
+ * Answer a foreground flow whose bridge timeout fired. Asks the runner to
+ * stop (it may be wedged inside one step and would otherwise keep acting
+ * after the agent was told the flow ended), then reads its progress back
+ * from the flow registry via `flow_status`. The step results themselves
+ * live only in the runner, so they are reported as unavailable rather than
+ * invented. If the progress cannot be read either, the original error is
+ * rethrown tagged with the flow_id so the agent can still ask later.
+ */
+async function recoverTimedOutFlow(
+  tabId: string,
+  flowId: string,
+  original: Error,
+  deps: BrowserToolDeps,
+): Promise<unknown> {
+  if (!isCdpTabId(tabId)) {
+    try {
+      deps.cancelFlow?.(tabId, flowId);
+    } catch {
+      // Best effort: the status read below is what matters.
+    }
+  }
+  let status: unknown;
+  try {
+    status = await routeToolCall('flow_status', tabId, { flow_id: flowId }, deps);
+  } catch {
+    throw new Error(
+      `${original.message} (flow_id ${flowId}; its progress could not be recovered — try browser.flow_status)`,
+    );
+  }
+  const s = (typeof status === 'object' && status !== null ? status : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    ok: true,
+    stopped_by: 'timeout',
+    steps_completed: typeof s.steps_completed === 'number' ? s.steps_completed : 0,
+    ...(typeof s.iterations_completed === 'number'
+      ? { iterations_completed: s.iterations_completed }
+      : {}),
+    results: [],
+    results_available: false,
+    ...(typeof s.state === 'string' ? { flow_state: s.state } : {}),
+    flow_id: flowId,
+  };
+}
+
 function flowActionBudgetMs(body: Record<string, unknown>): number {
   const settleDisabled = body.settle_ms === 0;
+  // The worst case of one settle is its TIMEOUT (the cap), never its quiet
+  // period `settle_ms`: a page that never goes quiet burns the whole cap on
+  // every action. A step that raises `settle_timeout_ms` is charged for it;
+  // one that omits it is charged the default cap.
+  const settleCap = body.settle_timeout_ms;
+  const settleWorstMs =
+    typeof settleCap === 'number' && Number.isFinite(settleCap) && settleCap >= 0
+      ? Math.min(settleCap, MAX_SETTLE_TIMEOUT_MS)
+      : FLOW_ACTION_SETTLE_WORST_MS;
   return (
-    (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) +
+    (settleDisabled ? 0 : settleWorstMs) +
     (body.expect === undefined ? 0 : expectWindowMs(body.expect)) +
     FLOW_STEP_SLACK_MS
   );
@@ -1709,21 +1790,36 @@ async function dispatchBrowserTool(
       // transport has registered the flow, so both get the plain action
       // floor instead of a budget modelling work the CALL will never wait
       // for.
-      const result = await runAction(
-        'flow',
-        requireTabId(args),
-        {
-          steps: validated.steps,
-          flow_id: flowId,
-          ...(dryRun ? { dry_run: true } : {}),
-          ...(detached ? { detach: true } : {}),
-        },
-        deps,
-        caller,
-        dryRun || detached
-          ? ACTION_TIMEOUT_FLOOR_MS
-          : Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs),
-      );
+      const flowTabId = requireTabId(args);
+      const foreground = !dryRun && !detached;
+      const flowTimeoutMs = foreground
+        ? Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs)
+        : ACTION_TIMEOUT_FLOOR_MS;
+      let result: unknown;
+      try {
+        result = await runAction(
+          'flow',
+          flowTabId,
+          {
+            steps: validated.steps,
+            flow_id: flowId,
+            ...(dryRun ? { dry_run: true } : {}),
+            ...(detached ? { detach: true } : {}),
+            // A RELATIVE duration, not a timestamp: the extension and the
+            // server do not share a clock.
+            ...(foreground ? { deadline_ms: flowTimeoutMs - FLOW_DEADLINE_MARGIN_MS } : {}),
+          },
+          deps,
+          caller,
+          flowTimeoutMs,
+        );
+      } catch (err) {
+        // The runner's own deadline normally answers first. This is the
+        // backstop for a runner stuck INSIDE one step past the bridge
+        // timeout: recover what the registry knows instead of losing it.
+        if (!foreground || !isBridgeTimeout(err)) throw err;
+        return recoverTimedOutFlow(flowTabId, flowId, err, deps);
+      }
       // A projection is only useful if it says which mode the flow needs —
       // see the dry-run comment above.
       const decorated = dryRun

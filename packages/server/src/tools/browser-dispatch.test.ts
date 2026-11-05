@@ -1421,7 +1421,7 @@ describe('browser.flow dispatch', () => {
     expect(deps.callBrowserTool).toHaveBeenCalledWith(
       'tab_1',
       'flow',
-      { steps, flow_id: expect.any(String) },
+      { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
       expect.any(Number),
     );
   });
@@ -1484,7 +1484,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps, flow_id: expect.any(String) },
+        { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
         expect.any(Number),
       );
     });
@@ -1573,7 +1573,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps, flow_id: expect.any(String) },
+        { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
         expect.any(Number),
       );
     });
@@ -1585,7 +1585,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps, flow_id: expect.any(String) },
+        { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
         expect.any(Number),
       );
     });
@@ -1597,7 +1597,7 @@ describe('browser.flow dispatch', () => {
       expect(deps.callBrowserTool).toHaveBeenCalledWith(
         'tab_1',
         'flow',
-        { steps, flow_id: expect.any(String) },
+        { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
         expect.any(Number),
       );
     });
@@ -1695,7 +1695,7 @@ describe('browser.flow dispatch', () => {
         expect(deps.callBrowserTool).toHaveBeenCalledWith(
           'tab_1',
           'flow',
-          { steps, flow_id: expect.any(String) },
+          { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
           expect.any(Number),
         );
       }
@@ -1713,7 +1713,7 @@ describe('browser.flow dispatch', () => {
         expect(deps.callBrowserTool).toHaveBeenCalledWith(
           'tab_1',
           'flow',
-          { steps, flow_id: expect.any(String) },
+          { steps, flow_id: expect.any(String), deadline_ms: expect.any(Number) },
           expect.any(Number),
         );
       }

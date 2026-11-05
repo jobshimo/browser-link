@@ -625,13 +625,17 @@ async function performWaitFor(
 function buildCdpFlowDeps(
   client: CdpClient,
   shouldCancel: () => boolean,
+  /** What a `wait_for` poll loop checks: the cancel flag plus, for a
+   * foreground flow, its deadline. The runner itself only gets
+   * `shouldCancel`, which is how it tells a human stop from a timeout. */
+  shouldStopWaiting: () => boolean = shouldCancel,
 ): Omit<FlowDeps, 'onProgress'> {
   return {
     performFind: (fp) => performFind(client, fp),
     performClick: (cp) => performClick(client, cp),
     performType: (tp) => performType(client, tp),
     performPress: (pp) => performPress(client, pp),
-    performWaitFor: (wp) => performWaitFor(client, wp, shouldCancel),
+    performWaitFor: (wp) => performWaitFor(client, wp, shouldStopWaiting),
     shouldCancel,
     // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
     // false), so a flow drag step fails fast at this step with the exact
@@ -851,7 +855,24 @@ export async function callCdpTool(
       const gateAllows = (): boolean => checkCdpDirectGate().ok;
       if (!detach) {
         const shouldCancel = (): boolean => !gateAllows();
-        return runFlow(rawSteps as FlowStep[], buildCdpFlowDeps(client, shouldCancel), { dryRun });
+        // Same relative-duration deadline the extension path honours. No
+        // bridge timeout applies over cdp-direct, but the MCP client's own
+        // call timeout still does, and a flow that outlives it loses its
+        // partial state exactly as it would there.
+        const deadlineAt =
+          !dryRun && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
+            ? Date.now() + Math.max(0, p.deadline_ms)
+            : undefined;
+        const deps = buildCdpFlowDeps(
+          client,
+          shouldCancel,
+          deadlineAt === undefined ? undefined : () => shouldCancel() || Date.now() >= deadlineAt,
+        );
+        return runFlow(
+          rawSteps as FlowStep[],
+          deadlineAt === undefined ? deps : { ...deps, deadlineAt },
+          { dryRun },
+        );
       }
 
       // ONE detached flow per tab — same rule, same reason, same error

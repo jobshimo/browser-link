@@ -405,6 +405,17 @@ export function summarizeFlow(
   }
   const iterations = countIterations(result.results);
   const tail = iterations === undefined ? {} : { iterationsCompleted: iterations };
+  if (result.stopped_by === 'timeout') {
+    // The runner hit its own deadline (a foreground flow outlasting its
+    // time budget). It ran out of time rather than being stopped by a
+    // human, which is exactly what `expired` already means.
+    return {
+      outcome: 'expired',
+      stepsCompleted: result.steps_completed,
+      ...tail,
+      stoppedBy: 'expired',
+    };
+  }
   if (result.stopped_by !== 'cancelled') {
     return { outcome: 'completed', stepsCompleted: result.steps_completed, ...tail };
   }
