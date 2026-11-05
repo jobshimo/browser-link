@@ -22,7 +22,7 @@ import {
   type KeyDefinition,
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
-import { createDownloadCapture } from './download-capture.js';
+import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
   runFlow,
   type ActionOutcome,
@@ -2443,6 +2443,17 @@ async function handleDialogRespond(
  * so only one `browser.download` may wait for a download at a time. */
 const downloadCapture = createDownloadCapture(chrome.downloads);
 
+/** The tab's origin for `mayComeFrom`, or undefined when it has none worth
+ * matching (opaque `null` origins, unparseable URLs). */
+function downloadOriginOf(url: string): string | undefined {
+  try {
+    const origin = new URL(url).origin;
+    return origin === 'null' ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * `browser.download`'s selector mode: arm the capture, click, and wait for
  * the download the click starts. The capture cancels that download before
@@ -2456,20 +2467,30 @@ async function handleDownloadCapture(
   p: Record<string, unknown>,
 ): Promise<ExtensionToServer> {
   const selector = typeof p.selector === 'string' ? p.selector : '';
-  const timeoutMs = typeof p.timeout_ms === 'number' && p.timeout_ms > 0 ? p.timeout_ms : 30_000;
-  const armed = downloadCapture.arm(timeoutMs);
-  // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
-  const click = await performClick(tabId, { selector, settle_ms: 0 });
-  if (!click.ok) {
-    armed.disarm();
-    return { kind: 'tool.response', id: msg.id, ok: false, error: click.error };
+  // No local default: the server always sends a clamped budget, and a second
+  // copy of its default here would only drift.
+  if (typeof p.timeout_ms !== 'number' || !(p.timeout_ms > 0)) {
+    return { kind: 'tool.response', id: msg.id, ok: false, error: 'download: timeout_ms required' };
   }
-  const captured = await armed.result;
+  const timeoutMs = p.timeout_ms;
+  // Narrow the capture to downloads that may come from this tab's origin —
+  // `chrome.downloads` items carry no tab id (see `mayComeFrom`).
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const origin = tab?.url ? downloadOriginOf(tab.url) : undefined;
+  const outcome = await captureAround(
+    downloadCapture,
+    { timeoutMs, ...(origin ? { origin } : {}) },
+    // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
+    () => performClick(tabId, { selector, settle_ms: 0 }),
+  );
+  if (!outcome.ok) {
+    return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+  }
   return {
     kind: 'tool.response',
     id: msg.id,
     ok: true,
-    result: captured ? { state: 'captured', ...captured } : { state: 'timeout' },
+    result: outcome.captured ? { state: 'captured', ...outcome.captured } : { state: 'timeout' },
   };
 }
 

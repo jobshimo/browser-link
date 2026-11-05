@@ -30,6 +30,8 @@ export interface DeterminingItem {
   finalUrl?: string;
   filename: string;
   mime?: string;
+  /** The page that started the download — empty when the page sent none. */
+  referrer?: string;
 }
 
 export type DeterminingListener = (
@@ -62,11 +64,38 @@ export interface ArmedCapture {
   disarm(): void;
 }
 
-export function createDownloadCapture(api: DownloadsApi): { arm(timeoutMs: number): ArmedCapture } {
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Could this download have come from a page on `origin`? `DownloadItem` has
+ * no tab id, so this is the cheapest narrowing available: a download whose
+ * referrer (or, for a `blob:` URL, whose own origin) points at ANOTHER origin
+ * is certainly not the clicked tab's and is left alone. A download with no
+ * such evidence (a `no-referrer` page, a `data:` URL) is still taken —
+ * refusing it would turn a working capture into a timeout.
+ */
+export function mayComeFrom(item: DeterminingItem, origin: string): boolean {
+  if (item.referrer) return originOf(item.referrer) === origin;
+  if (item.url.startsWith('blob:')) return originOf(item.url.slice('blob:'.length)) === origin;
+  return true;
+}
+
+export interface DownloadCapture {
+  /** `origin`, when given, narrows the capture with `mayComeFrom`. */
+  arm(timeoutMs: number, origin?: string): ArmedCapture;
+}
+
+export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
   let armed = false;
 
   return {
-    arm(timeoutMs: number): ArmedCapture {
+    arm(timeoutMs: number, origin?: string): ArmedCapture {
       if (armed) {
         throw new Error('download: another browser.download is already waiting for a download');
       }
@@ -85,7 +114,10 @@ export function createDownloadCapture(api: DownloadsApi): { arm(timeoutMs: numbe
       };
 
       const listener: DeterminingListener = (item, suggest) => {
+        // Not ours: return without holding it, so Chrome carries on exactly
+        // as if no listener were installed.
         if (!armed) return undefined;
+        if (origin !== undefined && !mayComeFrom(item, origin)) return undefined;
         done({
           url: item.finalUrl || item.url,
           original_url: item.url,
@@ -121,4 +153,27 @@ export function createDownloadCapture(api: DownloadsApi): { arm(timeoutMs: numbe
       };
     },
   };
+}
+
+/**
+ * Arm `capture`, run `click`, then wait for the download it starts. The
+ * capture is ALWAYS disarmed when the click fails or throws, so a broken
+ * click can never leave the worker-wide listener eating the user's next
+ * download (or refusing every later `browser.download` as "already waiting").
+ */
+export async function captureAround(
+  capture: DownloadCapture,
+  opts: { timeoutMs: number; origin?: string },
+  click: () => Promise<{ ok: true } | { ok: false; error: string }>,
+): Promise<{ ok: true; captured: CapturedDownload | null } | { ok: false; error: string }> {
+  const armed = capture.arm(opts.timeoutMs, opts.origin);
+  let clicked = false;
+  try {
+    const outcome = await click();
+    if (!outcome.ok) return outcome;
+    clicked = true;
+  } finally {
+    if (!clicked) armed.disarm();
+  }
+  return { ok: true, captured: await armed.result };
 }

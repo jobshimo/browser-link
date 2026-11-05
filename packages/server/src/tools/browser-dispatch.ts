@@ -34,9 +34,11 @@ import type {
   SubscribeOptions,
 } from '../bridge/events.js';
 import {
+  DOWNLOAD_BRIDGE_SLACK_MS,
   MAX_DOWNLOAD_BYTES,
   buildFetchDownloadJs,
   clampDownloadTimeoutMs,
+  pickFilename,
   shapeDownloadResult,
   validateRequestedFilename,
   type DownloadResult,
@@ -1070,10 +1072,6 @@ function handleActivity(args: unknown): unknown {
  * refused before anything reaches the page. */
 const DOWNLOAD_URL_SCHEMES = new Set(['http:', 'https:', 'blob:', 'data:']);
 
-/** Extra budget on top of `timeout_ms` for the bridge round trip — the
- * in-page fetch enforces `timeout_ms` itself and always answers. */
-const DOWNLOAD_BRIDGE_SLACK_MS = 10_000;
-
 interface DownloadCapture {
   state: 'captured' | 'timeout';
   url?: string;
@@ -1125,8 +1123,18 @@ async function handleDownload(
   }
   const timeoutMs = clampDownloadTimeoutMs(timeout_ms);
 
+  // Every download-started gets exactly one download-finished — on a result
+  // AND on a throw (claim conflict, bridge timeout, "already waiting"), so
+  // browser.events never shows a download that started and silently vanished.
   deps.emitEvent?.('download-started', { tab_id: tabId, mode: hasSelector ? 'selector' : 'url' });
-  const finish = (result: DownloadResult): DownloadResult => {
+  try {
+    const result = await runDownload(
+      tabId,
+      hasSelector ? { selector } : { url: url as string },
+      { requested, timeoutMs, save },
+      deps,
+      caller,
+    );
     deps.emitEvent?.('download-finished', {
       tab_id: tabId,
       state: result.state,
@@ -1135,22 +1143,52 @@ async function handleDownload(
       ...(result.path ? { path: result.path } : {}),
     });
     return result;
-  };
+  } catch (err) {
+    deps.emitEvent?.('download-finished', {
+      tab_id: tabId,
+      state: 'interrupted',
+      filename: null,
+      bytes: 0,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
 
+/**
+ * The two bridge hops of `browser.download`, under ONE deadline: the capture
+ * gets `timeoutMs`, and the in-page fetch gets only what the capture left.
+ * Each hop's bridge timeout is its own budget plus `DOWNLOAD_BRIDGE_SLACK_MS`
+ * — slack that is only ever spent when the bridge itself stalls, since both
+ * the capture and the fetch enforce their budgets and answer on their own.
+ */
+async function runDownload(
+  tabId: string,
+  source: { selector: string } | { url: string },
+  opts: {
+    requested: string | undefined;
+    timeoutMs: number;
+    save: (filename: string, data: Buffer) => string;
+  },
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<DownloadResult> {
+  const { requested, timeoutMs, save } = opts;
+  const deadline = Date.now() + timeoutMs;
   let sourceUrl: string;
   let suggested: string | undefined;
   let capturedMime: string | null = null;
-  if (hasSelector) {
+  if ('selector' in source) {
     const capture = (await runAction(
       'download',
       tabId,
-      { selector, timeout_ms: timeoutMs },
+      { selector: source.selector, timeout_ms: timeoutMs },
       deps,
       caller,
       timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
     )) as DownloadCapture;
     if (capture.state !== 'captured' || typeof capture.url !== 'string') {
-      return finish({
+      return {
         ok: false,
         state: 'timeout',
         path: null,
@@ -1158,34 +1196,46 @@ async function handleDownload(
         bytes: 0,
         mime: null,
         url: null,
-        error: `no download started within ${timeoutMs}ms after clicking ${selector}`,
-      });
+        error: `no download started within ${timeoutMs}ms after clicking ${source.selector}`,
+      };
     }
     sourceUrl = capture.url;
     suggested = capture.filename;
     capturedMime = capture.mime ?? null;
   } else {
-    sourceUrl = url as string;
+    sourceUrl = source.url;
   }
 
+  const sources = { url: sourceUrl, suggested, ...(requested !== undefined ? { requested } : {}) };
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return {
+      ok: false,
+      state: 'timeout',
+      path: null,
+      filename: pickFilename(sources),
+      bytes: 0,
+      mime: capturedMime,
+      url: sourceUrl,
+      error: `the ${timeoutMs}ms budget ran out before the file could be fetched`,
+    };
+  }
   const outcome = (await runAction(
     'evaluate',
     tabId,
     {
-      expression: buildFetchDownloadJs({ url: sourceUrl, timeoutMs, maxBytes: MAX_DOWNLOAD_BYTES }),
+      expression: buildFetchDownloadJs({
+        url: sourceUrl,
+        timeoutMs: remainingMs,
+        maxBytes: MAX_DOWNLOAD_BYTES,
+      }),
     },
     deps,
     caller,
-    timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
+    remainingMs + DOWNLOAD_BRIDGE_SLACK_MS,
   )) as FetchDownloadOutcome;
   const withMime = outcome.mime ? outcome : { ...outcome, mime: capturedMime };
-  return finish(
-    shapeDownloadResult(
-      withMime,
-      { url: sourceUrl, suggested, ...(requested !== undefined ? { requested } : {}) },
-      save,
-    ),
-  );
+  return shapeDownloadResult(withMime, sources, save);
 }
 
 function urlScheme(url: string): string {

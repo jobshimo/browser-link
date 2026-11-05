@@ -37,6 +37,18 @@ describe('validateRequestedFilename', () => {
     },
   );
 
+  test.each(['CON', 'nul', 'Aux.txt', 'com1', 'LPT9.log', 'prn.tar.gz', 'name.', 'name '])(
+    'rejects the Windows-unsafe name %j',
+    (name) => {
+      expect(() => validateRequestedFilename(name)).toThrow(/filename/);
+    },
+  );
+
+  test('accepts names that merely start like a device name', () => {
+    expect(validateRequestedFilename('console.log')).toBe('console.log');
+    expect(validateRequestedFilename('com10.txt')).toBe('com10.txt');
+  });
+
   test('rejects a non-string', () => {
     expect(() => validateRequestedFilename(42)).toThrow(/filename/);
   });
@@ -62,6 +74,13 @@ describe('sanitizeDerivedFilename', () => {
     expect(sanitizeDerivedFilename('..')).toBeNull();
     expect(sanitizeDerivedFilename(undefined)).toBeNull();
     expect(sanitizeDerivedFilename('dir/')).toBeNull();
+  });
+
+  test('defuses Windows device names from the page by prefixing "_"', () => {
+    expect(sanitizeDerivedFilename('NUL')).toBe('_NUL');
+    expect(sanitizeDerivedFilename('con.txt')).toBe('_con.txt');
+    expect(sanitizeDerivedFilename('LPT1. ')).toBe('_LPT1');
+    expect(pickFilename({ contentDisposition: 'attachment; filename="aux.csv"' })).toBe('_aux.csv');
   });
 
   test('strips leading dots so a derived name never becomes hidden or relative', () => {

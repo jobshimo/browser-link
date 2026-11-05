@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  captureAround,
   createDownloadCapture,
   type DeterminingItem,
   type DeterminingListener,
@@ -118,6 +119,34 @@ describe('createDownloadCapture', () => {
     await expect(second.result).resolves.toMatchObject({ filename: 'two.csv' });
   });
 
+  test('with an origin, a download whose referrer is another origin is left alone', async () => {
+    const { api, fire, listenerCount } = fakeDownloads();
+    const armed = createDownloadCapture(api).arm(1000, 'https://app.test');
+    const { returns, suggest } = fire({ referrer: 'https://elsewhere.test/page' });
+    expect(returns).toEqual([undefined]);
+    expect(suggest).not.toHaveBeenCalled();
+    expect(api.cancel).not.toHaveBeenCalled();
+    expect(listenerCount()).toBe(1); // still waiting for the right one
+    fire({ id: 9, referrer: 'https://app.test/reports', filename: 'mine.csv' });
+    await expect(armed.result).resolves.toMatchObject({ filename: 'mine.csv' });
+  });
+
+  test('with an origin, a blob: download of that origin matches even without a referrer', async () => {
+    const { api, fire } = fakeDownloads();
+    const armed = createDownloadCapture(api).arm(1000, 'https://app.test');
+    fire({ referrer: '', url: 'blob:https://other.test/1', finalUrl: '' });
+    expect(api.cancel).not.toHaveBeenCalled();
+    fire({ id: 9, referrer: '', url: 'blob:https://app.test/2', finalUrl: '' });
+    await expect(armed.result).resolves.toMatchObject({ url: 'blob:https://app.test/2' });
+  });
+
+  test('with an origin, a download carrying no origin evidence is still taken (cannot tell)', async () => {
+    const { api, fire } = fakeDownloads();
+    const armed = createDownloadCapture(api).arm(1000, 'https://app.test');
+    fire({ referrer: '', url: 'https://cdn.test/f.zip' });
+    await expect(armed.result).resolves.toMatchObject({ url: 'https://x.test/files/export.csv' });
+  });
+
   test('a failing cancel still releases Chrome (suggest called) and still reports the item', async () => {
     const { api, fire } = fakeDownloads();
     api.cancel.mockRejectedValueOnce(new Error('Download must be in progress'));
@@ -126,5 +155,49 @@ describe('createDownloadCapture', () => {
     await expect(armed.result).resolves.toMatchObject({ filename: 'export.csv' });
     await flush();
     expect(suggest).toHaveBeenCalledOnce();
+  });
+});
+
+describe('captureAround', () => {
+  test('a click that throws disarms the capture and rethrows', async () => {
+    const { api, listenerCount, fire } = fakeDownloads();
+    const capture = createDownloadCapture(api);
+    await expect(
+      captureAround(capture, { timeoutMs: 1000 }, async () => {
+        throw new Error('Debugger is not attached');
+      }),
+    ).rejects.toThrow(/not attached/);
+    expect(listenerCount()).toBe(0);
+    fire();
+    expect(api.cancel).not.toHaveBeenCalled();
+    // and the worker-wide capture is free again
+    expect(() => capture.arm(1000).disarm()).not.toThrow();
+  });
+
+  test('a click that reports failure disarms and returns the error', async () => {
+    const { api, listenerCount } = fakeDownloads();
+    const out = await captureAround(createDownloadCapture(api), { timeoutMs: 1000 }, async () => ({
+      ok: false as const,
+      error: 'Element not found: #x',
+    }));
+    expect(out).toEqual({ ok: false, error: 'Element not found: #x' });
+    expect(listenerCount()).toBe(0);
+  });
+
+  test('a successful click waits for the capture, armed with the origin', async () => {
+    const { api, fire } = fakeDownloads();
+    const pending = captureAround(
+      createDownloadCapture(api),
+      { timeoutMs: 1000, origin: 'https://app.test' },
+      async () => {
+        fire({ referrer: 'https://elsewhere.test/' });
+        fire({ id: 2, referrer: 'https://app.test/', filename: 'ok.csv' });
+        return { ok: true as const };
+      },
+    );
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      captured: { filename: 'ok.csv' },
+    });
   });
 });

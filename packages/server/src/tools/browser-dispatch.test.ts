@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
@@ -3055,6 +3055,113 @@ describe('browser.download', () => {
       bytes: 3,
       path: '/dl/report.csv:3',
     });
+  });
+
+  test('a throwing transport still closes the event pair with an interrupted download-finished', async () => {
+    const { deps, emitEvent } = downloadDeps({
+      callBrowserTool: vi.fn(async () => {
+        throw new Error('another browser.download is already waiting');
+      }),
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/already waiting/);
+    expect(emitEvent).toHaveBeenCalledTimes(2);
+    expect(emitEvent).toHaveBeenNthCalledWith(2, 'download-finished', {
+      tab_id: 'tab_1',
+      state: 'interrupted',
+      filename: null,
+      bytes: 0,
+      error: 'another browser.download is already waiting',
+    });
+  });
+
+  test('a claim conflict also gets exactly one download-finished', async () => {
+    const tabClaims = new TabClaimRegistry();
+    tabClaims.claim('tab_1', { agent_id: 'other', pid: 1, binary: 'x' });
+    const { deps, emitEvent } = downloadDeps({ tabClaims });
+    await expect(
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', url: 'https://x.test/a' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/other/);
+    const kinds = emitEvent.mock.calls.map((c) => c[0] as string);
+    expect(kinds).toEqual(['download-started', 'download-finished']);
+  });
+
+  describe('one shared timeout budget across capture and fetch', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    test('the fetch only gets what the capture left over', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000_000);
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string) => {
+        if (tool === 'download') {
+          vi.setSystemTime(1_004_000); // the click-to-download wait took 4s
+          return { state: 'captured', url: 'https://x.test/f.csv', filename: 'f.csv' };
+        }
+        return okFetch;
+      });
+      const { deps } = downloadDeps({ callBrowserTool });
+      await handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 10_000 },
+        deps,
+        TEST_CALLER,
+      );
+      const [captureCall, fetchCall] = callBrowserTool.mock.calls as unknown as [
+        unknown[],
+        unknown[],
+      ];
+      expect(captureCall[3]).toBe(10_000 + 10_000);
+      expect((fetchCall[2] as { expression: string }).expression).toContain(
+        'const timeoutMs = 6000;',
+      );
+      expect(fetchCall[3]).toBe(6_000 + 10_000);
+    });
+
+    test('a capture that used the whole budget returns timeout with the URL, without fetching', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000_000);
+      const callBrowserTool = vi.fn(async () => {
+        vi.setSystemTime(1_010_000);
+        return { state: 'captured', url: 'https://x.test/f.csv', filename: 'f.csv' };
+      });
+      const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+      const out = await handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 10_000 },
+        deps,
+        TEST_CALLER,
+      );
+      expect(callBrowserTool).toHaveBeenCalledOnce();
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(out).toMatchObject({
+        ok: false,
+        state: 'timeout',
+        url: 'https://x.test/f.csv',
+        filename: 'f.csv',
+      });
+    });
+  });
+
+  test('the schema states the shared budget and the real worst case', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.download');
+    const schema = def?.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    };
+    expect(schema.properties.timeout_ms?.description).toMatch(/shared/i);
+    expect(schema.properties.timeout_ms?.description).toMatch(/worst case/i);
   });
 
   test.each([

@@ -11,6 +11,12 @@
  */
 
 import type { ToolDefinition } from './types.js';
+import {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  DOWNLOAD_BRIDGE_SLACK_MS,
+  MAX_DOWNLOAD_BYTES,
+  MAX_DOWNLOAD_TIMEOUT_MS,
+} from '../downloads.js';
 
 /**
  * Shared `settle_ms` / `settle_timeout_ms` schema properties for
@@ -631,12 +637,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         filename: {
           type: 'string',
           description:
-            'Optional plain basename for the saved file ("q3.csv"). Path separators, ".." and reserved characters are rejected — you choose the name, never the directory. Default: Chrome\'s suggestion, then Content-Disposition, then the URL\'s last segment. An existing file is never overwritten — the name gets a " (1)" suffix.',
+            'Optional plain basename for the saved file ("q3.csv"). Path separators, "..", reserved characters, a trailing dot/space and Windows device names (CON, NUL, COM1, …) are rejected — you choose the name, never the directory. Default: Chrome\'s suggestion, then Content-Disposition, then the URL\'s last segment. An existing file is never overwritten — the name gets a " (1)" suffix.',
         },
         timeout_ms: {
           type: 'number',
-          description:
-            'Overall budget in ms for the click-to-download wait AND the fetch. Default 30000, max 120000.',
+          description: `Budget in ms SHARED by the click-to-download wait and the fetch: the fetch only gets what the wait left over. Default ${DEFAULT_DOWNLOAD_TIMEOUT_MS}, max ${MAX_DOWNLOAD_TIMEOUT_MS}. Worst case before an answer: timeout_ms, plus up to ${DOWNLOAD_BRIDGE_SLACK_MS / 1000}s per bridge hop (url mode 1 hop, selector mode 2) — and that slack is only spent if the bridge itself stalls.`,
         },
       },
       required: ['tab_id'],
@@ -651,9 +656,9 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       ],
       gotchas: [
         'The file is fetched a second time, in the page, from the download\'s URL. A download produced by a one-shot POST form or a single-use token cannot be re-fetched — that comes back as state "interrupted" with the HTTP error.',
-        'Selector mode captures the FIRST download Chrome starts anywhere while it waits — avoid starting other downloads in parallel.',
+        'Selector mode captures the FIRST download Chrome starts while it waits whose referrer is not another origin — chrome.downloads gives no tab id, so a download from another tab on the same origin (or one with no referrer) can still be taken. Avoid starting other downloads in parallel; only one browser.download can wait at a time.',
         'A blob: URL the page revoked right after the click cannot be fetched any more — the result says so.',
-        'Size cap: 25 MiB per file. Bigger files come back as "interrupted" with the cap named in error.',
+        `Size cap: ${MAX_DOWNLOAD_BYTES / (1024 * 1024)} MiB per file. Bigger files come back as "interrupted" with the cap named in error.`,
         'cdp: tabs support url mode only — selector mode needs the extension.',
       ],
       example:

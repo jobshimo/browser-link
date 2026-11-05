@@ -15,8 +15,14 @@ import { extname, isAbsolute, join } from 'node:path';
  * false})` does NOT suppress the dialog either: Chrome still prompts when the
  * user enabled "Ask where to save each file". So instead the bytes are
  * fetched IN THE PAGE (with the page's own cookies) and written here, into a
- * directory only the human configures. Chrome's download manager — and with
- * it the native "Save as" dialog — is never involved.
+ * directory only the human configures.
+ *
+ * Chrome's download manager never SAVES anything. In url mode it is not
+ * involved at all. In selector mode the extension uses it only to catch the
+ * download a click starts: it hooks `chrome.downloads.onDeterminingFilename`,
+ * which Chrome consults before prompting, cancels and erases that download
+ * there, and hands its URL to the same in-page fetch (see the extension's
+ * `download-capture.ts`).
  */
 
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -25,6 +31,11 @@ export const MAX_DOWNLOAD_TIMEOUT_MS = 120_000;
  * CDP `Runtime.evaluate` result and then a bridge frame, so this also bounds
  * the memory both hops can be asked to hold. */
 export const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+/** Extra bridge timeout on top of each hop's own budget (selector mode has
+ * two hops: capture, then fetch), for the round trip only — the capture and
+ * the in-page fetch enforce their budgets themselves and always answer, so
+ * this is spent only when the bridge itself stalls. */
+export const DOWNLOAD_BRIDGE_SLACK_MS = 10_000;
 
 const MAX_FILENAME_LENGTH = 200;
 // Characters no filename may carry on any OS we run on (Windows is the
@@ -51,14 +62,27 @@ export function validateRequestedFilename(name: unknown): string {
   if (name === '.' || name === '..') return fail('must not be "." or ".."');
   if (RESERVED_CHARS.test(name))
     return fail('must not contain path separators or reserved characters');
+  if (/[.\s]$/.test(name)) return fail('must not end with a dot or a space');
+  if (WINDOWS_DEVICE_NAME.test(name)) {
+    return fail('must not be a Windows device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)');
+  }
   return name;
 }
+
+/**
+ * Windows device names — `NUL`, `con.txt`, `LPT1.log`: with or without an
+ * extension, any case. Writing to one on Windows hits the device (or a
+ * normalized name), so the server would report a file that does not exist.
+ */
+const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 /**
  * Make a filename that came from the PAGE (Chrome's suggestion, a
  * Content-Disposition header, a URL) safe to write: keep the last path
  * segment, replace reserved characters, drop control characters and leading
- * dots. Returns null when nothing usable is left.
+ * or trailing dots/spaces, and defuse Windows device names with a `_`
+ * prefix. Cleaned up rather than rejected: the page, not the agent, chose
+ * it. Returns null when nothing usable is left.
  */
 export function sanitizeDerivedFilename(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
@@ -67,9 +91,10 @@ export function sanitizeDerivedFilename(raw: string | null | undefined): string 
     .replace(CONTROL_CHARS, '')
     .replace(/[<>:"|?*]/g, '_')
     .replace(/^[.\s]+/, '')
-    .replace(/[.\s]+$/, '')
-    .slice(0, MAX_FILENAME_LENGTH);
-  return cleaned.length > 0 ? cleaned : null;
+    .slice(0, MAX_FILENAME_LENGTH - 1)
+    .replace(/[.\s]+$/, '');
+  if (cleaned.length === 0) return null;
+  return WINDOWS_DEVICE_NAME.test(cleaned) ? `_${cleaned}` : cleaned;
 }
 
 /** Extract the filename from a Content-Disposition header, preferring the

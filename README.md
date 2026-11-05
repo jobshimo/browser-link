@@ -950,8 +950,11 @@ second time in the page sidesteps both — with these limits:
   be fetched again; it comes back `interrupted` with the HTTP error.
 - A `blob:` URL the page revoked right after the click is gone.
 - 25 MiB per file.
-- Selector mode takes the first download Chrome starts anywhere while it
-  waits, and only one `browser.download` can wait at a time.
+- `chrome.downloads` gives no tab id, so selector mode takes the first
+  download Chrome starts while it waits whose referrer is not another
+  origin. A download from another tab on the same site, or one with no
+  referrer, can still be taken. Only one `browser.download` can wait at a
+  time.
 - On cdp-direct tabs only `url` mode works.
 
 ## Activity trail
