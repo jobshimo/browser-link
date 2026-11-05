@@ -7,6 +7,7 @@ import {
   saveEntry,
   saveFlow,
   saveInsight,
+  upsertApp,
   type EntryKind,
   type FlowRow,
   type InsightKind,
@@ -55,7 +56,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.save',
     description:
-      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall. Also optionally pass `mechanisms` (`{ key, description }`: how the app behaves underneath) and `pitfalls` (`{ key, description, symptom? }`: what does NOT work) — behaviour, never content.',
+      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). The entry fields (url_pattern, kind, purpose, payload) are optional AS A GROUP: pass all four, or omit all four to save only `flows`, `mechanisms` or `pitfalls` (no throwaway entry needed); a partial entry or a call carrying nothing to save is rejected. Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall. Also optionally pass `mechanisms` (`{ key, description }`: how the app behaves underneath) and `pitfalls` (`{ key, description, symptom? }`: what does NOT work) — behaviour, never content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -152,7 +153,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
           },
         },
       },
-      required: ['origin', 'url_pattern', 'kind', 'purpose', 'payload'],
+      required: ['origin'],
       additionalProperties: false,
     },
     doc: {
@@ -160,7 +161,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Persist UI structure you just discovered — a selector, a note, a gotcha, and/or one or more named replayable flow recipes — keyed by app (and, for the entry, a url pattern).',
       when_to_use: [
         'After a non-trivial flow worked end-to-end (opened a dialog, completed a form, found a setting).',
-        'You learned HOW the app works underneath, or hit something that does NOT work → save a `mechanisms` / `pitfalls` item, not just a selector. A pitfall costs far more to rediscover than a selector.',
+        'You learned HOW the app works underneath, or hit something that does NOT work → save a `mechanisms` / `pitfalls` item on its own (omit url_pattern/kind/purpose/payload), not just a selector. A pitfall costs far more to rediscover than a selector.',
         'The multi-step path you just ran is worth replaying later as-is → attach it via `flows` so a future browser.map.recall can hand it straight to browser.flow.',
       ],
       gotchas: [
@@ -261,14 +262,17 @@ interface SaveFlowArg {
   steps: unknown;
 }
 
+const ENTRY_KINDS: readonly EntryKind[] = ['selector', 'flow', 'gotcha'];
+
 interface SaveArgs {
   origin: string;
   app_key?: string;
   title?: string;
-  url_pattern: string;
-  kind: EntryKind;
-  purpose: string;
-  payload: unknown;
+  /** The four entry fields are optional as a group (see the handler). */
+  url_pattern?: string;
+  kind?: EntryKind;
+  purpose?: string;
+  payload?: unknown;
   notes?: string;
   /** Untrusted until narrowed — the IPC/proxy path in multi-agent mode
    * reaches handleMapTool without JSON-schema validation, so the handler
@@ -393,16 +397,52 @@ export function handleMapTool(name: string, args: unknown): unknown {
       const validatedMechanisms = validateInsights(a.mechanisms, 'mechanism');
       const validatedPitfalls = validateInsights(a.pitfalls, 'pitfall');
 
-      const savedEntry = saveEntry({
-        origin: a.origin,
-        app_key: a.app_key ?? null,
-        title: a.title ?? null,
-        url_pattern: a.url_pattern,
-        kind: a.kind,
-        purpose: a.purpose,
-        payload: a.payload,
-        notes: a.notes ?? null,
-      });
+      if (typeof a.origin !== 'string' || a.origin.trim().length === 0) {
+        throw new Error('browser.map.save: origin is required');
+      }
+      // The base entry is all-or-nothing: either all four of url_pattern /
+      // kind / purpose / payload, or none of them (then the call must carry
+      // flows, mechanisms or pitfalls). A half-filled entry is almost
+      // certainly a mistake and would store junk.
+      const entryFields = ['url_pattern', 'kind', 'purpose', 'payload'] as const;
+      const present = entryFields.filter((f) => a[f] !== undefined);
+      const hasEntry = present.length > 0;
+      if (hasEntry && present.length < entryFields.length) {
+        const missing = entryFields.filter((f) => a[f] === undefined);
+        throw new Error(
+          `browser.map.save: an entry requires url_pattern, kind, purpose and payload together (missing: ${missing.join(', ')})`,
+        );
+      }
+      if (hasEntry && !ENTRY_KINDS.includes(a.kind as EntryKind)) {
+        throw new Error(`browser.map.save: kind must be one of ${ENTRY_KINDS.join(' | ')}`);
+      }
+      if (
+        !hasEntry &&
+        validatedFlows.length + validatedMechanisms.length + validatedPitfalls.length === 0
+      ) {
+        throw new Error(
+          'browser.map.save: nothing to save — pass an entry (url_pattern, kind, purpose, payload) and/or flows, mechanisms or pitfalls',
+        );
+      }
+
+      const savedEntry = hasEntry
+        ? saveEntry({
+            origin: a.origin,
+            app_key: a.app_key ?? null,
+            title: a.title ?? null,
+            url_pattern: a.url_pattern as string,
+            kind: a.kind as EntryKind,
+            purpose: a.purpose as string,
+            payload: a.payload,
+            notes: a.notes ?? null,
+          })
+        : {
+            app: upsertApp({
+              origin: a.origin,
+              app_key: a.app_key ?? null,
+              title: a.title ?? null,
+            }),
+          };
 
       const extras: { flows?: FlowRow[]; mechanisms?: InsightRow[]; pitfalls?: InsightRow[] } = {};
       if (validatedFlows.length > 0) {
