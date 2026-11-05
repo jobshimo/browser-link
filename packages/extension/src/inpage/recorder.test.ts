@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { buildRecorderJs, buildStopRecorderJs } from './recorder.js';
 
@@ -25,27 +26,35 @@ if (typeof (globalThis as unknown as { CSS?: unknown }).CSS === 'undefined') {
 /**
  * jsdom marks every event `isTrusted: false` and — per the DOM spec —
  * RESETS it to false at the start of `dispatchEvent`, so a plain
- * pre-dispatch flip is clobbered before any listener runs. To exercise the
- * recorder's trusted path we install a getter/setter accessor on the
- * event's internal jsdom impl slot: the getter always returns true, the
- * setter swallows jsdom's dispatch-time reset. The rejection tests dispatch
- * WITHOUT this override, so the event stays `isTrusted:false`, exactly like
- * a page-dispatched synthetic event (`el.click()`, `dispatchEvent(...)`) in
- * a real browser.
+ * pre-dispatch flip is clobbered before any listener runs. The public
+ * `isTrusted` is an unforgeable (non-configurable) accessor on the wrapper,
+ * so the only seam is the internal jsdom impl object behind it. To exercise
+ * the recorder's trusted path we install a getter/setter accessor on that
+ * impl: the getter always returns true, the setter swallows jsdom's
+ * dispatch-time reset. The rejection tests dispatch WITHOUT this override,
+ * so the event stays `isTrusted:false`, exactly like a page-dispatched
+ * synthetic event (`el.click()`, `dispatchEvent(...)`) in a real browser.
+ *
+ * The impl is resolved through jsdom's own `implForWrapper` helper: since
+ * jsdom 30.1.0 the wrapper->impl link is a JS private field (`#impl`), no
+ * longer a symbol-keyed own property that could be found by enumeration.
  */
+const jsdomIdlUtils = createRequire(import.meta.url)('jsdom/lib/generated/idl/utils.js') as {
+  implForWrapper: (wrapper: unknown) => object | null;
+};
+
 function markTrusted(ev: Event): Event {
-  for (const s of Object.getOwnPropertySymbols(ev)) {
-    const impl = (ev as unknown as Record<symbol, unknown>)[s];
-    if (impl && typeof impl === 'object' && 'isTrusted' in impl) {
-      Object.defineProperty(impl, 'isTrusted', {
-        configurable: true,
-        get: () => true,
-        set: () => {
-          /* swallow jsdom's dispatch-time reset to false */
-        },
-      });
-    }
+  const impl = jsdomIdlUtils.implForWrapper(ev);
+  if (!impl || !('isTrusted' in impl)) {
+    throw new Error('jsdom internals changed: cannot reach the event impl to mark it trusted');
   }
+  Object.defineProperty(impl, 'isTrusted', {
+    configurable: true,
+    get: () => true,
+    set: () => {
+      /* swallow jsdom's dispatch-time reset to false */
+    },
+  });
   return ev;
 }
 
