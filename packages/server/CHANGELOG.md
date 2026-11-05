@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.29.0](https://github.com/jobshimo/browser-link/compare/v0.28.9...v0.29.0) (2026-11-05)
+
+### Features
+
+- **download:** new `browser.download` tool. It downloads a file by clicking an element (`selector`) or by fetching a URL (`url`), and it never leaves the agent stuck behind Chrome's native "Save as" dialog. Chrome refuses `Browser.setDownloadBehavior` and `Page.setDownloadBehavior` to extension debugger clients, and `chrome.downloads.download({ saveAs: false })` still prompts when "Ask where to save each file" is on. So selector mode catches the download in `chrome.downloads.onDeterminingFilename`, which Chrome consults before it prompts, cancels and erases it, and re-fetches the file inside the page with the page's own cookies. The server writes the bytes to disk.
+- **download:** the result is `{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error? }`. A timeout or a failure still reports the URL, the MIME type and the bytes received so far, so the agent always knows where it stopped. Capture and re-fetch share one `timeout_ms` budget.
+- **download:** new `downloads.dir` config key (`browser-link config set downloads.dir <absolute-path|default>`, default `<data dir>/downloads`). Agents may name the file but never choose the directory: `filename` must be a plain basename, Windows reserved device names are rejected, and an existing file is never overwritten (`name (1).ext`).
+- **download:** `browser.events` now reports `download-started` and `download-finished`, balanced on every exit path.
+- **download:** on cdp-direct tabs `url` mode works; `selector` mode needs the extension and says so.
+
+### Known limitations
+
+- A download from a one-shot POST form or a single-use token cannot be fetched a second time and comes back `interrupted` with the HTTP error. A `blob:` URL the page revokes right after the click is gone. Files over 25 MiB come back `interrupted`.
+- Chrome's download item carries no tab id. While a selector capture waits, a download from another site is left alone, but one from the same site or with no referrer can still be taken.
+
+
+
 ## [0.28.0](https://github.com/jobshimo/browser-link/compare/v0.27.1...v0.28.0) (2026-08-15)
 
 ### Features
