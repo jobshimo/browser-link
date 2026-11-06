@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.34.1](https://github.com/jobshimo/browser-link/compare/v0.34.0...v0.34.1) (2026-11-06)
+
+### Security
+
+- **deps:** `zod` 4.6.7, patching a memory exhaustion when validating oversized constrained collections (high). It is a peer dependency of `@modelcontextprotocol/sdk`, so the server now declares it explicitly instead of relying on an auto-installed peer.
+- **deps:** `vite` 8.3.6 and `vitest` / `@vitest/mocker` 4.1.12 for test tooling, patching a `server.fs.allow` bypass, cross-origin script execution, mock-registration code injection and a Windows backslash traversal. None of these ship in the published package.
+- **deps:** `minimatch` stays on 10.2.6 because every current eslint and typescript-eslint release still requires `^10`. It is a development-only dependency, and the affected glob patterns come from this repository's own lint configuration.
+
 ## [0.34.0](https://github.com/jobshimo/browser-link/compare/v0.33.0...v0.34.0) (2026-11-06)
 
 ### Features
