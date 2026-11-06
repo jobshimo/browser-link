@@ -6,8 +6,13 @@ import {
   renameApp,
   saveEntry,
   saveFlow,
+  inTransaction,
+  saveInsight,
+  upsertApp,
   type EntryKind,
   type FlowRow,
+  type InsightKind,
+  type InsightRow,
 } from './queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { ToolDefinition } from '../tools/types.js';
@@ -16,7 +21,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.recall',
     description:
-      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response includes `flows`: named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow.',
+      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response sections, in order: `pitfalls` (what does NOT work — read these first), `mechanisms` (how the app behaves underneath), `entries`, `flows`. `flows` are named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -52,7 +57,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.save',
     description:
-      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall.',
+      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). The entry fields (url_pattern, kind, purpose, payload) are optional AS A GROUP: pass all four, or omit all four to save only `flows`, `mechanisms` or `pitfalls` (no throwaway entry needed); a partial entry or a call carrying nothing to save is rejected. Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall. Also optionally pass `mechanisms` (`{ key, description }`: how the app behaves underneath) and `pitfalls` (`{ key, description, symptom? }`: what does NOT work) — behaviour, never content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -106,8 +111,50 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
             additionalProperties: false,
           },
         },
+        mechanisms: {
+          type: 'array',
+          description:
+            'Optional. How the app behaves underneath — behaviour, never content. Allowed: "a GET of an item URL marks it complete server-side", "progress % is rendered client-side, not in the fetched HTML". Forbidden: real IDs, names, dates, URLs with real values, message text. Upserts on (app, key).',
+          items: {
+            type: 'object',
+            properties: {
+              key: {
+                type: 'string',
+                description:
+                  'Stable slug-like label (e.g. "get-marks-item-complete"), max 100 chars.',
+              },
+              description: { type: 'string', description: 'The behaviour, max 1000 chars.' },
+            },
+            required: ['key', 'description'],
+            additionalProperties: false,
+          },
+        },
+        pitfalls: {
+          type: 'array',
+          description:
+            'Optional. What does NOT work or misleads — the most expensive thing to rediscover. Allowed: "click on the next-lesson link returns ok but does not navigate (onmouseup handler)", "the text \'lessons completed\' is always in the raw HTML (JS template) — false positive for enrolment detection". Forbidden: real IDs, names, dates or any domain data. Upserts on (app, key).',
+          items: {
+            type: 'object',
+            properties: {
+              key: {
+                type: 'string',
+                description: 'Stable slug-like label (e.g. "next-link-click-noop"), max 100 chars.',
+              },
+              description: {
+                type: 'string',
+                description: 'What fails or misleads, max 1000 chars.',
+              },
+              symptom: {
+                type: 'string',
+                description: 'Optional. What you observe when you hit it, max 1000 chars.',
+              },
+            },
+            required: ['key', 'description'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['origin', 'url_pattern', 'kind', 'purpose', 'payload'],
+      required: ['origin'],
       additionalProperties: false,
     },
     doc: {
@@ -115,6 +162,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Persist UI structure you just discovered — a selector, a note, a gotcha, and/or one or more named replayable flow recipes — keyed by app (and, for the entry, a url pattern).',
       when_to_use: [
         'After a non-trivial flow worked end-to-end (opened a dialog, completed a form, found a setting).',
+        'You learned HOW the app works underneath, or hit something that does NOT work → save a `mechanisms` / `pitfalls` item on its own (omit url_pattern/kind/purpose/payload), not just a selector. A pitfall costs far more to rediscover than a selector.',
         'The multi-step path you just ran is worth replaying later as-is → attach it via `flows` so a future browser.map.recall can hand it straight to browser.flow.',
       ],
       gotchas: [
@@ -122,6 +170,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         'NEVER store domain data (IDs, user names, dates, etc.). The map captures UI structure only — `flows` steps must use placeholders (`<QUERY>`, `<NAME>`) for any free-text value, never the real value you just typed.',
         'Use url_pattern = exact pathname by default; only promote to a glob if you have evidence of a parametric route.',
         'Give `purpose` a stable, reusable label ("open task detail dialog", not "open IB0311 detail"). Same rule for a flow recipe\'s `name`.',
+        '`mechanisms` and `pitfalls` describe behaviour, never content. Allowed: "a GET of an item URL marks it complete server-side"; "click on the next link returns ok but does not navigate". Forbidden: "item 4812 is complete", "user jane@x.com is enrolled", any real ID, name, date or value. Use a stable `key`; re-saving the same key replaces it.',
         "A `flows` entry's `steps` is validated with the SAME rules browser.flow enforces — an invalid steps array is rejected before anything is written, including the base entry.",
       ],
     },
@@ -155,12 +204,23 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.forget',
     description:
-      'Permanently delete an entry (entry_id) or a whole app and all its entries (app_id). Use when a refactor or app change makes the saved knowledge actively wrong.',
+      'Permanently delete an entry (entry_id), ONE mechanism/pitfall (insight: { app_id, kind, key } — the app_id, kind and key come straight from a browser.map.recall item), or a whole app and everything in it (app_id). Use when a refactor or app change makes the saved knowledge actively wrong.',
     inputSchema: {
       type: 'object',
       properties: {
         entry_id: { type: 'number' },
         app_id: { type: 'number' },
+        insight: {
+          type: 'object',
+          description: 'Delete a single saved mechanism or pitfall.',
+          properties: {
+            app_id: { type: 'number' },
+            kind: { type: 'string', enum: ['mechanism', 'pitfall'] },
+            key: { type: 'string' },
+          },
+          required: ['app_id', 'kind', 'key'],
+          additionalProperties: false,
+        },
         reason: { type: 'string' },
       },
       additionalProperties: false,
@@ -214,20 +274,89 @@ interface SaveFlowArg {
   steps: unknown;
 }
 
+const ENTRY_KINDS: readonly EntryKind[] = ['selector', 'flow', 'gotcha'];
+
 interface SaveArgs {
   origin: string;
   app_key?: string;
   title?: string;
-  url_pattern: string;
-  kind: EntryKind;
-  purpose: string;
-  payload: unknown;
+  /** The four entry fields are optional as a group (see the handler). */
+  url_pattern?: string;
+  kind?: EntryKind;
+  purpose?: string;
+  payload?: unknown;
   notes?: string;
   /** Untrusted until narrowed — the IPC/proxy path in multi-agent mode
    * reaches handleMapTool without JSON-schema validation, so the handler
    * re-checks array/object shape at runtime before treating an entry as
    * a `SaveFlowArg`. */
   flows?: unknown;
+  /** Untrusted until narrowed, same as `flows`. */
+  mechanisms?: unknown;
+  pitfalls?: unknown;
+}
+
+export const MAX_INSIGHT_KEY = 100;
+export const MAX_INSIGHT_TEXT = 1000;
+
+export interface ValidatedInsight {
+  key: string;
+  description: string;
+  symptom: string | null;
+}
+
+/** Validate ONE mechanism/pitfall. Shared by `browser.map.save` and
+ * `browser-link map import`, so an import file can never smuggle in what
+ * save would reject. Throws an unprefixed message. `symptom: null` counts as
+ * absent: recall returns `symptom: null`, and a recalled item must re-save
+ * unchanged. */
+export function parseInsight(item: unknown, kind: 'mechanism' | 'pitfall'): ValidatedInsight {
+  if (typeof item !== 'object' || item === null) {
+    throw new Error(`each ${kind} must be an object`);
+  }
+  const i = item as { key?: unknown; description?: unknown; symptom?: unknown };
+  if (typeof i.key !== 'string' || i.key.trim().length === 0) {
+    throw new Error(`each ${kind} requires a non-empty key`);
+  }
+  const key = i.key.trim();
+  if (key.length > MAX_INSIGHT_KEY) {
+    throw new Error(`${kind} key must be at most ${MAX_INSIGHT_KEY} chars`);
+  }
+  if (typeof i.description !== 'string' || i.description.trim().length === 0) {
+    throw new Error(`${kind} "${key}" requires a non-empty description`);
+  }
+  if (i.description.length > MAX_INSIGHT_TEXT) {
+    throw new Error(`${kind} "${key}" description must be at most ${MAX_INSIGHT_TEXT} chars`);
+  }
+  let symptom: string | null = null;
+  if (i.symptom !== undefined && i.symptom !== null) {
+    if (kind !== 'pitfall') {
+      throw new Error(`only a pitfall takes a symptom (mechanism "${key}")`);
+    }
+    if (typeof i.symptom !== 'string') {
+      throw new Error(`pitfall "${key}" symptom must be a string`);
+    }
+    if (i.symptom.length > MAX_INSIGHT_TEXT) {
+      throw new Error(`pitfall "${key}" symptom must be at most ${MAX_INSIGHT_TEXT} chars`);
+    }
+    symptom = i.symptom;
+  }
+  return { key, description: i.description, symptom };
+}
+
+/** Shape-check `mechanisms` / `pitfalls` BEFORE anything is written (same
+ * all-or-nothing rule as `flows`). Runs here, not only in the JSON schema,
+ * because the IPC/proxy path in multi-agent mode skips schema validation. */
+function validateInsights(raw: unknown, kind: 'mechanism' | 'pitfall'): ValidatedInsight[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error(`browser.map.save: ${kind}s must be an array`);
+  return raw.map((item: unknown) => {
+    try {
+      return parseInsight(item, kind);
+    } catch (err) {
+      throw new Error(`browser.map.save: ${(err as Error).message}`, { cause: err });
+    }
+  });
 }
 
 interface RecordUseArgs {
@@ -236,9 +365,17 @@ interface RecordUseArgs {
   notes?: string;
 }
 
+interface ForgetInsightArg {
+  app_id: number;
+  kind: InsightKind;
+  key: string;
+}
+
 interface ForgetArgs {
   entry_id?: number;
   app_id?: number;
+  /** Untrusted until narrowed (no schema validation on the IPC path). */
+  insight?: Partial<ForgetInsightArg> | null;
   reason?: string;
 }
 
@@ -284,31 +421,95 @@ export function handleMapTool(name: string, args: unknown): unknown {
         return { name: f.name, description: f.description ?? null, steps: validated.steps };
       });
 
-      const savedEntry = saveEntry({
-        origin: a.origin,
-        app_key: a.app_key ?? null,
-        title: a.title ?? null,
-        url_pattern: a.url_pattern,
-        kind: a.kind,
-        purpose: a.purpose,
-        payload: a.payload,
-        notes: a.notes ?? null,
+      const validatedMechanisms = validateInsights(a.mechanisms, 'mechanism');
+      const validatedPitfalls = validateInsights(a.pitfalls, 'pitfall');
+
+      if (typeof a.origin !== 'string' || a.origin.trim().length === 0) {
+        throw new Error('browser.map.save: origin is required');
+      }
+      // The base entry is all-or-nothing: either all four of url_pattern /
+      // kind / purpose / payload, or none of them (then the call must carry
+      // flows, mechanisms or pitfalls). A half-filled entry is almost
+      // certainly a mistake and would store junk.
+      const entryFields = ['url_pattern', 'kind', 'purpose', 'payload'] as const;
+      const present = entryFields.filter((f) => a[f] !== undefined);
+      const hasEntry = present.length > 0;
+      if (hasEntry && present.length < entryFields.length) {
+        const missing = entryFields.filter((f) => a[f] === undefined);
+        throw new Error(
+          `browser.map.save: an entry requires url_pattern, kind, purpose and payload together (missing: ${missing.join(', ')})`,
+        );
+      }
+      if (hasEntry && !ENTRY_KINDS.includes(a.kind as EntryKind)) {
+        throw new Error(`browser.map.save: kind must be one of ${ENTRY_KINDS.join(' | ')}`);
+      }
+      if (
+        !hasEntry &&
+        validatedFlows.length + validatedMechanisms.length + validatedPitfalls.length === 0
+      ) {
+        throw new Error(
+          'browser.map.save: nothing to save — pass an entry (url_pattern, kind, purpose, payload) and/or flows, mechanisms or pitfalls',
+        );
+      }
+
+      // One transaction for the whole write phase: a failure part-way must
+      // not leave an entry saved without the pitfalls that came with it.
+      return inTransaction(() => {
+        const savedEntry = hasEntry
+          ? saveEntry({
+              origin: a.origin,
+              app_key: a.app_key ?? null,
+              title: a.title ?? null,
+              url_pattern: a.url_pattern as string,
+              kind: a.kind as EntryKind,
+              purpose: a.purpose as string,
+              payload: a.payload,
+              notes: a.notes ?? null,
+            })
+          : {
+              app: upsertApp({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+              }),
+            };
+
+        const extras: { flows?: FlowRow[]; mechanisms?: InsightRow[]; pitfalls?: InsightRow[] } =
+          {};
+        if (validatedFlows.length > 0) {
+          extras.flows = validatedFlows.map(
+            (f) =>
+              saveFlow({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+                name: f.name,
+                description: f.description,
+                steps: f.steps,
+              }).flow,
+          );
+        }
+        const saveInsights = (kind: InsightKind, items: ValidatedInsight[]): InsightRow[] =>
+          items.map(
+            (i) =>
+              saveInsight({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+                kind,
+                key: i.key,
+                description: i.description,
+                symptom: i.symptom,
+              }).insight,
+          );
+        if (validatedMechanisms.length > 0) {
+          extras.mechanisms = saveInsights('mechanism', validatedMechanisms);
+        }
+        if (validatedPitfalls.length > 0) {
+          extras.pitfalls = saveInsights('pitfall', validatedPitfalls);
+        }
+        return Object.keys(extras).length === 0 ? savedEntry : { ...savedEntry, ...extras };
       });
-
-      if (validatedFlows.length === 0) return savedEntry;
-
-      const flows: FlowRow[] = validatedFlows.map(
-        (f) =>
-          saveFlow({
-            origin: a.origin,
-            app_key: a.app_key ?? null,
-            title: a.title ?? null,
-            name: f.name,
-            description: f.description,
-            steps: f.steps,
-          }).flow,
-      );
-      return { ...savedEntry, flows };
     }
     case 'browser.map.record_use': {
       const a = args as RecordUseArgs;
@@ -316,6 +517,25 @@ export function handleMapTool(name: string, args: unknown): unknown {
     }
     case 'browser.map.forget': {
       const a = args as ForgetArgs;
+      if (a.insight !== undefined) {
+        const ins = a.insight;
+        if (
+          typeof ins !== 'object' ||
+          ins === null ||
+          typeof ins.app_id !== 'number' ||
+          (ins.kind !== 'mechanism' && ins.kind !== 'pitfall') ||
+          typeof ins.key !== 'string' ||
+          ins.key.trim().length === 0
+        ) {
+          throw new Error(
+            'browser.map.forget: insight must be { app_id: number, kind: "mechanism" | "pitfall", key: string }',
+          );
+        }
+        return forget({
+          insight: { app_id: ins.app_id, kind: ins.kind, key: ins.key.trim() },
+          reason: a.reason,
+        });
+      }
       return forget({ entry_id: a.entry_id, app_id: a.app_id, reason: a.reason });
     }
     case 'browser.map.rename_app': {

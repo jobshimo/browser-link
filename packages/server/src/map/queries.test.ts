@@ -164,7 +164,11 @@ describe('forget', () => {
       purpose: 'p',
       payload: { body: 'x' },
     });
-    expect(forget({ entry_id: entry.id })).toEqual({ deleted_entries: 1, deleted_apps: 0 });
+    expect(forget({ entry_id: entry.id })).toEqual({
+      deleted_entries: 1,
+      deleted_apps: 0,
+      deleted_insights: 0,
+    });
     expect(recall({ origin: 'http://x' }).entries).toHaveLength(0);
   });
 
@@ -178,7 +182,7 @@ describe('forget', () => {
       payload: { body: 'x' },
     });
     const b = forget({ app_id: a.app.id });
-    expect(b).toEqual({ deleted_entries: 1, deleted_apps: 1 });
+    expect(b).toEqual({ deleted_entries: 1, deleted_apps: 1, deleted_insights: 0 });
     expect(listApps()).toHaveLength(0);
   });
 });
@@ -260,7 +264,7 @@ describe('saveFlow, listFlows and recall', () => {
 
   test('recall on an unknown origin returns flows: []', () => {
     const recalled = recall({ origin: 'http://does-not-exist' });
-    expect(recalled).toEqual({ app: null, entries: [], flows: [] });
+    expect(recalled).toEqual({ app: null, pitfalls: [], mechanisms: [], entries: [], flows: [] });
   });
 });
 
@@ -285,12 +289,12 @@ describe('getMapHint', () => {
       purpose: 'search box',
       payload: { selector: '#q' },
     });
-    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 1, flows: 0 });
+    expect(getMapHint('http://x')).toMatchObject({ app_key: 'my-app', entries: 1, flows: 0 });
   });
 
   test('returns app_key + counts when the app has flows', () => {
     saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
-    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 0, flows: 1 });
+    expect(getMapHint('http://x')).toMatchObject({ app_key: 'my-app', entries: 0, flows: 1 });
   });
 
   test('counts both entries and flows together', () => {
@@ -304,7 +308,7 @@ describe('getMapHint', () => {
     });
     saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
     saveFlow({ origin: 'http://x', title: 'My App', name: 'logout', steps: STEPS });
-    expect(getMapHint('http://x')).toEqual({ app_key: 'my-app', entries: 1, flows: 2 });
+    expect(getMapHint('http://x')).toMatchObject({ app_key: 'my-app', entries: 1, flows: 2 });
   });
 
   test('does not bump last_seen_at (unlike recall, listing tabs is passive)', () => {
@@ -333,7 +337,7 @@ describe('getMapHint', () => {
       payload: { selector: '#q' },
     });
     // Lookup key is what handleListTabs computes: new URL(tab.url).origin.
-    expect(getMapHint('https://myapp.example.com')).toEqual({
+    expect(getMapHint('https://myapp.example.com')).toMatchObject({
       app_key: 'my-app',
       entries: 1,
       flows: 0,
@@ -349,7 +353,7 @@ describe('getMapHint', () => {
       purpose: 'search box',
       payload: { selector: '#q' },
     });
-    expect(getMapHint('https://myapp.example.com/some/path')).toEqual({
+    expect(getMapHint('https://myapp.example.com/some/path')).toMatchObject({
       app_key: 'my-app',
       entries: 1,
       flows: 0,

@@ -100,6 +100,31 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_flows_app ON flows(app_id);
   `);
 
+  // Mechanisms and pitfalls: what an app does underneath ("a GET of the item
+  // URL completes it") and what does NOT work ("click on the next link
+  // returns ok but never navigates"). A separate table, not new values for
+  // entries.kind: that column has a CHECK constraint, and SQLite cannot
+  // alter a CHECK in place — widening it means rebuilding `entries` (copy,
+  // drop, rename), which is exactly the kind of rewrite the user's map must
+  // never go through. Additive CREATE-IF-NOT-EXISTS, same pattern as
+  // `flows`: an older DB picks it up on next open and no existing row is
+  // touched. Identified by (app, kind, key) — a stable slug, like a flow name.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS insights (
+      id INTEGER PRIMARY KEY,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('mechanism', 'pitfall')),
+      key TEXT NOT NULL,
+      description TEXT NOT NULL,
+      symptom TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(app_id, kind, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_insights_app ON insights(app_id);
+  `);
+
   // v0.20.0: normalize apps.origin rows written before the write path
   // canonicalized origins (see origin.ts). Before this release, save
   // stored whatever free text the agent passed ("https://x.com/" with a

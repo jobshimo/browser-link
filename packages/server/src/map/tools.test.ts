@@ -10,6 +10,7 @@ vi.mock('./queries.js', () => ({
   recall: vi.fn(),
   saveEntry: vi.fn(),
   saveFlow: vi.fn(),
+  inTransaction: vi.fn(<T>(fn: () => T) => fn()),
   recordUse: vi.fn(),
   forget: vi.fn(),
   renameApp: vi.fn(),

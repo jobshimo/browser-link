@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.34.0](https://github.com/jobshimo/browser-link/compare/v0.33.0...v0.34.0) (2026-11-06)
+
+### Features
+
+- **map:** `browser.map.save` accepts `mechanisms` (how the app behaves underneath, e.g. "a GET of a lesson URL marks it complete") and `pitfalls` (what does not work, with an optional `symptom`). They describe behaviour, never domain data. These were the most valuable things learned about an app and had no place in the map.
+- **map:** the base entry is optional when a call carries only `flows`, `mechanisms` or `pitfalls`, so saving a pitfall no longer needs a throwaway entry. Save is one transaction.
+- **map:** `browser.map.recall` returns pitfalls first, then mechanisms, entries and flows.
+- **list_tabs:** the `map` hint adds `mechanisms` and `pitfalls` counts, and a small map (5 items or fewer, under 2 KB) arrives inline as `map.inline`, saving a round trip.
+- **map:** single insights can be deleted (`browser.map.forget({ insight })`, `browser-link map forget <app> --pitfall|--mechanism <key>`). `map ls`, the forget dry-run, `export` and `import` all count and carry them. Storage is a new `insights` table; existing data is untouched.
+
 ## [0.33.0](https://github.com/jobshimo/browser-link/compare/v0.32.0...v0.33.0) (2026-11-06)
 
 ### Features
