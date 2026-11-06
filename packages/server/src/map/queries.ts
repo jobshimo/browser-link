@@ -354,29 +354,52 @@ export function recordUse(input: RecordUseInput): EntryRow | null {
 export interface ForgetInput {
   entry_id?: number;
   app_id?: number;
+  /** Delete one mechanism/pitfall, identified the way `recall` returns it. */
+  insight?: { app_id: number; kind: InsightKind; key: string };
   reason?: string;
 }
 
 export interface ForgetResult {
   deleted_entries: number;
   deleted_apps: number;
+  deleted_insights: number;
 }
 
 export function forget(input: ForgetInput): ForgetResult {
   const db = getDb();
   if (input.entry_id) {
     const info = db.prepare('DELETE FROM entries WHERE id = ?').run(input.entry_id);
-    return { deleted_entries: info.changes, deleted_apps: 0 };
+    return { deleted_entries: info.changes, deleted_apps: 0, deleted_insights: 0 };
   }
   if (input.app_id) {
-    // ON DELETE CASCADE wipes entries.
+    // ON DELETE CASCADE wipes entries, flows and insights.
     const before = db
       .prepare('SELECT COUNT(*) AS n FROM entries WHERE app_id = ?')
       .get(input.app_id) as { n: number };
+    const insights = db
+      .prepare('SELECT COUNT(*) AS n FROM insights WHERE app_id = ?')
+      .get(input.app_id) as { n: number };
     const info = db.prepare('DELETE FROM apps WHERE id = ?').run(input.app_id);
-    return { deleted_entries: before.n, deleted_apps: info.changes };
+    return {
+      deleted_entries: before.n,
+      deleted_apps: info.changes,
+      deleted_insights: info.changes > 0 ? insights.n : 0,
+    };
   }
-  return { deleted_entries: 0, deleted_apps: 0 };
+  if (input.insight) {
+    const { app_id, kind, key } = input.insight;
+    const info = db
+      .prepare('DELETE FROM insights WHERE app_id = ? AND kind = ? AND key = ?')
+      .run(app_id, kind, key);
+    return { deleted_entries: 0, deleted_apps: 0, deleted_insights: info.changes };
+  }
+  return { deleted_entries: 0, deleted_apps: 0, deleted_insights: 0 };
+}
+
+/** Run `fn` in one SQLite transaction: either every write inside lands or
+ * none does. Nests safely (better-sqlite3 uses savepoints). */
+export function inTransaction<T>(fn: () => T): T {
+  return getDb().transaction(fn)();
 }
 
 export function renameApp(app_id: number, new_app_key: string): AppRow | null {
@@ -395,6 +418,8 @@ export function listApps(): AppRow[] {
 }
 
 export interface AppSummary extends AppRow {
+  /** Pitfalls + mechanisms. */
+  insights: number;
   entries: number;
   flows: number;
 }
@@ -413,7 +438,8 @@ export function listAppsWithCounts(): AppSummary[] {
     .prepare(
       `SELECT a.*,
          (SELECT COUNT(*) FROM entries e WHERE e.app_id = a.id) AS entries,
-         (SELECT COUNT(*) FROM flows f WHERE f.app_id = a.id) AS flows
+         (SELECT COUNT(*) FROM flows f WHERE f.app_id = a.id) AS flows,
+         (SELECT COUNT(*) FROM insights i WHERE i.app_id = a.id) AS insights
        FROM apps a
        ORDER BY a.last_seen_at DESC`,
     )
@@ -519,7 +545,7 @@ export interface MapHint {
 /** A map is inlined into the hint only when it holds at most this many
  * items in total (entries + flows + mechanisms + pitfalls)... */
 const INLINE_MAX_ITEMS = 5;
-/** ...and its JSON serialization stays under this many characters. */
+/** ...and its JSON serialization stays under this many UTF-8 bytes. */
 const INLINE_MAX_BYTES = 2048;
 
 function summarizeInsight(row: InsightRow): InsightSummary {
@@ -544,7 +570,7 @@ function buildInline(appId: number): MapHintInline | null {
       steps: f.steps,
     })),
   };
-  return JSON.stringify(inline).length <= INLINE_MAX_BYTES ? inline : null;
+  return Buffer.byteLength(JSON.stringify(inline), 'utf8') <= INLINE_MAX_BYTES ? inline : null;
 }
 
 /**

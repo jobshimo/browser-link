@@ -6,6 +6,7 @@ import {
   renameApp,
   saveEntry,
   saveFlow,
+  inTransaction,
   saveInsight,
   upsertApp,
   type EntryKind,
@@ -203,12 +204,23 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.forget',
     description:
-      'Permanently delete an entry (entry_id) or a whole app and all its entries (app_id). Use when a refactor or app change makes the saved knowledge actively wrong.',
+      'Permanently delete an entry (entry_id), ONE mechanism/pitfall (insight: { app_id, kind, key } — the app_id, kind and key come straight from a browser.map.recall item), or a whole app and everything in it (app_id). Use when a refactor or app change makes the saved knowledge actively wrong.',
     inputSchema: {
       type: 'object',
       properties: {
         entry_id: { type: 'number' },
         app_id: { type: 'number' },
+        insight: {
+          type: 'object',
+          description: 'Delete a single saved mechanism or pitfall.',
+          properties: {
+            app_id: { type: 'number' },
+            kind: { type: 'string', enum: ['mechanism', 'pitfall'] },
+            key: { type: 'string' },
+          },
+          required: ['app_id', 'kind', 'key'],
+          additionalProperties: false,
+        },
         reason: { type: 'string' },
       },
       additionalProperties: false,
@@ -284,59 +296,66 @@ interface SaveArgs {
   pitfalls?: unknown;
 }
 
-const MAX_INSIGHT_KEY = 100;
-const MAX_INSIGHT_TEXT = 1000;
+export const MAX_INSIGHT_KEY = 100;
+export const MAX_INSIGHT_TEXT = 1000;
 
-interface ValidatedInsight {
+export interface ValidatedInsight {
   key: string;
   description: string;
   symptom: string | null;
+}
+
+/** Validate ONE mechanism/pitfall. Shared by `browser.map.save` and
+ * `browser-link map import`, so an import file can never smuggle in what
+ * save would reject. Throws an unprefixed message. `symptom: null` counts as
+ * absent: recall returns `symptom: null`, and a recalled item must re-save
+ * unchanged. */
+export function parseInsight(item: unknown, kind: 'mechanism' | 'pitfall'): ValidatedInsight {
+  if (typeof item !== 'object' || item === null) {
+    throw new Error(`each ${kind} must be an object`);
+  }
+  const i = item as { key?: unknown; description?: unknown; symptom?: unknown };
+  if (typeof i.key !== 'string' || i.key.trim().length === 0) {
+    throw new Error(`each ${kind} requires a non-empty key`);
+  }
+  const key = i.key.trim();
+  if (key.length > MAX_INSIGHT_KEY) {
+    throw new Error(`${kind} key must be at most ${MAX_INSIGHT_KEY} chars`);
+  }
+  if (typeof i.description !== 'string' || i.description.trim().length === 0) {
+    throw new Error(`${kind} "${key}" requires a non-empty description`);
+  }
+  if (i.description.length > MAX_INSIGHT_TEXT) {
+    throw new Error(`${kind} "${key}" description must be at most ${MAX_INSIGHT_TEXT} chars`);
+  }
+  let symptom: string | null = null;
+  if (i.symptom !== undefined && i.symptom !== null) {
+    if (kind !== 'pitfall') {
+      throw new Error(`only a pitfall takes a symptom (mechanism "${key}")`);
+    }
+    if (typeof i.symptom !== 'string') {
+      throw new Error(`pitfall "${key}" symptom must be a string`);
+    }
+    if (i.symptom.length > MAX_INSIGHT_TEXT) {
+      throw new Error(`pitfall "${key}" symptom must be at most ${MAX_INSIGHT_TEXT} chars`);
+    }
+    symptom = i.symptom;
+  }
+  return { key, description: i.description, symptom };
 }
 
 /** Shape-check `mechanisms` / `pitfalls` BEFORE anything is written (same
  * all-or-nothing rule as `flows`). Runs here, not only in the JSON schema,
  * because the IPC/proxy path in multi-agent mode skips schema validation. */
 function validateInsights(raw: unknown, kind: 'mechanism' | 'pitfall'): ValidatedInsight[] {
-  const plural = `${kind}s`;
   if (raw === undefined) return [];
-  if (!Array.isArray(raw)) throw new Error(`browser.map.save: ${plural} must be an array`);
+  if (!Array.isArray(raw)) throw new Error(`browser.map.save: ${kind}s must be an array`);
   return raw.map((item: unknown) => {
-    if (typeof item !== 'object' || item === null) {
-      throw new Error(`browser.map.save: each ${kind} must be an object`);
+    try {
+      return parseInsight(item, kind);
+    } catch (err) {
+      throw new Error(`browser.map.save: ${(err as Error).message}`, { cause: err });
     }
-    const i = item as { key?: unknown; description?: unknown; symptom?: unknown };
-    if (typeof i.key !== 'string' || i.key.trim().length === 0) {
-      throw new Error(`browser.map.save: each ${kind} requires a non-empty key`);
-    }
-    if (i.key.length > MAX_INSIGHT_KEY) {
-      throw new Error(`browser.map.save: ${kind} key must be at most ${MAX_INSIGHT_KEY} chars`);
-    }
-    if (typeof i.description !== 'string' || i.description.trim().length === 0) {
-      throw new Error(`browser.map.save: ${kind} "${i.key}" requires a non-empty description`);
-    }
-    if (i.description.length > MAX_INSIGHT_TEXT) {
-      throw new Error(
-        `browser.map.save: ${kind} "${i.key}" description must be at most ${MAX_INSIGHT_TEXT} chars`,
-      );
-    }
-    if (i.symptom !== undefined) {
-      if (kind !== 'pitfall') {
-        throw new Error(`browser.map.save: only a pitfall takes a symptom (mechanism "${i.key}")`);
-      }
-      if (typeof i.symptom !== 'string') {
-        throw new Error(`browser.map.save: pitfall "${i.key}" symptom must be a string`);
-      }
-      if (i.symptom.length > MAX_INSIGHT_TEXT) {
-        throw new Error(
-          `browser.map.save: pitfall "${i.key}" symptom must be at most ${MAX_INSIGHT_TEXT} chars`,
-        );
-      }
-    }
-    return {
-      key: i.key.trim(),
-      description: i.description,
-      symptom: typeof i.symptom === 'string' ? i.symptom : null,
-    };
   });
 }
 
@@ -346,9 +365,17 @@ interface RecordUseArgs {
   notes?: string;
 }
 
+interface ForgetInsightArg {
+  app_id: number;
+  kind: InsightKind;
+  key: string;
+}
+
 interface ForgetArgs {
   entry_id?: number;
   app_id?: number;
+  /** Untrusted until narrowed (no schema validation on the IPC path). */
+  insight?: Partial<ForgetInsightArg> | null;
   reason?: string;
 }
 
@@ -425,59 +452,64 @@ export function handleMapTool(name: string, args: unknown): unknown {
         );
       }
 
-      const savedEntry = hasEntry
-        ? saveEntry({
-            origin: a.origin,
-            app_key: a.app_key ?? null,
-            title: a.title ?? null,
-            url_pattern: a.url_pattern as string,
-            kind: a.kind as EntryKind,
-            purpose: a.purpose as string,
-            payload: a.payload,
-            notes: a.notes ?? null,
-          })
-        : {
-            app: upsertApp({
+      // One transaction for the whole write phase: a failure part-way must
+      // not leave an entry saved without the pitfalls that came with it.
+      return inTransaction(() => {
+        const savedEntry = hasEntry
+          ? saveEntry({
               origin: a.origin,
               app_key: a.app_key ?? null,
               title: a.title ?? null,
-            }),
-          };
+              url_pattern: a.url_pattern as string,
+              kind: a.kind as EntryKind,
+              purpose: a.purpose as string,
+              payload: a.payload,
+              notes: a.notes ?? null,
+            })
+          : {
+              app: upsertApp({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+              }),
+            };
 
-      const extras: { flows?: FlowRow[]; mechanisms?: InsightRow[]; pitfalls?: InsightRow[] } = {};
-      if (validatedFlows.length > 0) {
-        extras.flows = validatedFlows.map(
-          (f) =>
-            saveFlow({
-              origin: a.origin,
-              app_key: a.app_key ?? null,
-              title: a.title ?? null,
-              name: f.name,
-              description: f.description,
-              steps: f.steps,
-            }).flow,
-        );
-      }
-      const saveInsights = (kind: InsightKind, items: ValidatedInsight[]): InsightRow[] =>
-        items.map(
-          (i) =>
-            saveInsight({
-              origin: a.origin,
-              app_key: a.app_key ?? null,
-              title: a.title ?? null,
-              kind,
-              key: i.key,
-              description: i.description,
-              symptom: i.symptom,
-            }).insight,
-        );
-      if (validatedMechanisms.length > 0) {
-        extras.mechanisms = saveInsights('mechanism', validatedMechanisms);
-      }
-      if (validatedPitfalls.length > 0) {
-        extras.pitfalls = saveInsights('pitfall', validatedPitfalls);
-      }
-      return Object.keys(extras).length === 0 ? savedEntry : { ...savedEntry, ...extras };
+        const extras: { flows?: FlowRow[]; mechanisms?: InsightRow[]; pitfalls?: InsightRow[] } =
+          {};
+        if (validatedFlows.length > 0) {
+          extras.flows = validatedFlows.map(
+            (f) =>
+              saveFlow({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+                name: f.name,
+                description: f.description,
+                steps: f.steps,
+              }).flow,
+          );
+        }
+        const saveInsights = (kind: InsightKind, items: ValidatedInsight[]): InsightRow[] =>
+          items.map(
+            (i) =>
+              saveInsight({
+                origin: a.origin,
+                app_key: a.app_key ?? null,
+                title: a.title ?? null,
+                kind,
+                key: i.key,
+                description: i.description,
+                symptom: i.symptom,
+              }).insight,
+          );
+        if (validatedMechanisms.length > 0) {
+          extras.mechanisms = saveInsights('mechanism', validatedMechanisms);
+        }
+        if (validatedPitfalls.length > 0) {
+          extras.pitfalls = saveInsights('pitfall', validatedPitfalls);
+        }
+        return Object.keys(extras).length === 0 ? savedEntry : { ...savedEntry, ...extras };
+      });
     }
     case 'browser.map.record_use': {
       const a = args as RecordUseArgs;
@@ -485,6 +517,25 @@ export function handleMapTool(name: string, args: unknown): unknown {
     }
     case 'browser.map.forget': {
       const a = args as ForgetArgs;
+      if (a.insight !== undefined) {
+        const ins = a.insight;
+        if (
+          typeof ins !== 'object' ||
+          ins === null ||
+          typeof ins.app_id !== 'number' ||
+          (ins.kind !== 'mechanism' && ins.kind !== 'pitfall') ||
+          typeof ins.key !== 'string' ||
+          ins.key.trim().length === 0
+        ) {
+          throw new Error(
+            'browser.map.forget: insight must be { app_id: number, kind: "mechanism" | "pitfall", key: string }',
+          );
+        }
+        return forget({
+          insight: { app_id: ins.app_id, kind: ins.kind, key: ins.key.trim() },
+          reason: a.reason,
+        });
+      }
       return forget({ entry_id: a.entry_id, app_id: a.app_id, reason: a.reason });
     }
     case 'browser.map.rename_app': {

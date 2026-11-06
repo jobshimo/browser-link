@@ -164,7 +164,11 @@ describe('forget', () => {
       purpose: 'p',
       payload: { body: 'x' },
     });
-    expect(forget({ entry_id: entry.id })).toEqual({ deleted_entries: 1, deleted_apps: 0 });
+    expect(forget({ entry_id: entry.id })).toEqual({
+      deleted_entries: 1,
+      deleted_apps: 0,
+      deleted_insights: 0,
+    });
     expect(recall({ origin: 'http://x' }).entries).toHaveLength(0);
   });
 
@@ -178,7 +182,7 @@ describe('forget', () => {
       payload: { body: 'x' },
     });
     const b = forget({ app_id: a.app.id });
-    expect(b).toEqual({ deleted_entries: 1, deleted_apps: 1 });
+    expect(b).toEqual({ deleted_entries: 1, deleted_apps: 1, deleted_insights: 0 });
     expect(listApps()).toHaveLength(0);
   });
 });

@@ -771,7 +771,13 @@ not fit a selector. A **mechanism** is how the app behaves underneath; a
 to rediscover). `browser.map.save({ mechanisms: [{ key, description }],
 pitfalls: [{ key, description, symptom? }] })` upserts on `(app, kind,
 key)`; `browser.map.recall` returns `pitfalls` first, then `mechanisms`,
-then `entries` and `flows`. They describe **behaviour, never content**:
+then `entries` and `flows`. Delete one with `browser.map.forget({ insight:
+{ app_id, kind, key } })` or `browser-link map forget <app> --pitfall <key>`
+(`--mechanism <key>`). `map export` / `map import` carry them too — but
+importing an export that contains pitfalls or mechanisms into an **older**
+browser-link install silently drops them (older versions ignore the unknown
+fields and the export version number did not change), so update both sides
+before moving a map. They describe **behaviour, never content**:
 
 | Allowed                                                               | Forbidden                                       |
 | --------------------------------------------------------------------- | ----------------------------------------------- |

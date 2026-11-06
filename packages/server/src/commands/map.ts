@@ -19,6 +19,7 @@ import {
   type EntryKind,
   type InsightKind,
 } from '../map/queries.js';
+import { parseInsight } from '../map/tools.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { Language } from './welcome.js';
 
@@ -177,8 +178,26 @@ interface MapI18n {
     identifier: string,
     candidateCount: number,
   ) => string;
-  forgetDryRun: (appKey: string, origin: string, entries: number, flows: number) => string;
-  appForgotten: (appKey: string, deletedEntries: number) => string;
+  forgetDryRun: (
+    appKey: string,
+    origin: string,
+    entries: number,
+    flows: number,
+    insights: number,
+  ) => string;
+  appForgotten: (appKey: string, deletedEntries: number, deletedInsights: number) => string;
+  colInsights: string;
+  insightFlagRequiresValue: (flag: string) => string;
+  insightNotFound: (kind: string, key: string, appKey: string, origin: string) => string;
+  insightForgotten: (kind: string, key: string, appKey: string, origin: string) => string;
+  insightForgetAmbiguous: (
+    kind: string,
+    key: string,
+    appKey: string,
+    origin: string,
+    identifier: string,
+    candidateCount: number,
+  ) => string;
   exportWritten: (path: string, appCount: number) => string;
   exportWriteFailed: (path: string, detail: string) => string;
   exportPrivacyNote: string;
@@ -223,7 +242,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
       known.length === 0
         ? `No app matches "${identifier}" — the map is empty.`
         : `No app matches "${identifier}" by app_key or origin. Known app_keys: ${known.join(', ')}`,
-    forgetUsage: 'Usage: browser-link map forget <app> [--flow <name>] [--yes]',
+    forgetUsage:
+      'Usage: browser-link map forget <app> [--flow <name> | --pitfall <key> | --mechanism <key>] [--yes]',
     flowFlagRequiresValue:
       '--flow requires a flow name: browser-link map forget <app> --flow <name>',
     flowNotFound: (flowName, appKey, origin) =>
@@ -236,12 +256,33 @@ const MAP_I18N: Record<Language, MapI18n> = {
       `Nothing was deleted. If that is the right app, re-run with --yes to confirm:\n` +
       `  browser-link map forget ${identifier} --flow "${flowName}" --yes\n` +
       `Otherwise, pass the app's origin instead of its app_key to disambiguate.`,
-    forgetDryRun: (appKey, origin, entries, flows) =>
-      `This would delete app "${appKey}" (${origin}) — ${entries} entr${entries === 1 ? 'y' : 'ies'} and ${flows} flow${flows === 1 ? '' : 's'}.\n` +
+    forgetDryRun: (appKey, origin, entries, flows, insights) =>
+      `This would delete app "${appKey}" (${origin}) — ${entries} entr${entries === 1 ? 'y' : 'ies'} and ${flows} flow${flows === 1 ? '' : 's'}` +
+      (insights > 0
+        ? `, plus ${insights} ${insights === 1 ? 'pitfall/mechanism' : 'pitfalls/mechanisms'}`
+        : '') +
+      `.\n` +
       `Nothing was deleted. Re-run with --yes to confirm:\n` +
       `  browser-link map forget ${appKey} --yes`,
-    appForgotten: (appKey, deletedEntries) =>
-      `Deleted app "${appKey}" and its ${deletedEntries} entr${deletedEntries === 1 ? 'y' : 'ies'} (flows deleted along with it).`,
+    appForgotten: (appKey, deletedEntries, deletedInsights) =>
+      `Deleted app "${appKey}" and its ${deletedEntries} entr${deletedEntries === 1 ? 'y' : 'ies'} (flows deleted along with it)` +
+      (deletedInsights > 0
+        ? `, plus ${deletedInsights} ${deletedInsights === 1 ? 'pitfall/mechanism' : 'pitfalls/mechanisms'}`
+        : '') +
+      `.`,
+    colInsights: 'INSIGHTS',
+    insightFlagRequiresValue: (flag) =>
+      `${flag} requires a key: browser-link map forget <app> ${flag} <key>`,
+    insightNotFound: (kind, key, appKey, origin) =>
+      `No ${kind} named "${key}" on app "${appKey}" (${origin}).`,
+    insightForgotten: (kind, key, appKey, origin) =>
+      `Deleted ${kind} "${key}" from "${appKey}" (${origin}).`,
+    insightForgetAmbiguous: (kind, key, appKey, origin, identifier, candidateCount) =>
+      `"${identifier}" matches ${candidateCount} apps (same app_key on different origins).\n` +
+      `This would delete ${kind} "${key}" from "${appKey}" (${origin}) — the most recently seen match.\n` +
+      `Nothing was deleted. If that is the right app, re-run with --yes to confirm:\n` +
+      `  browser-link map forget ${identifier} --${kind} "${key}" --yes\n` +
+      `Otherwise, pass the app's origin instead of its app_key to disambiguate.`,
     exportWritten: (path, appCount) =>
       `Wrote ${appCount} app${appCount === 1 ? '' : 's'} to ${path}.`,
     exportWriteFailed: (path, detail) => `Could not write "${path}": ${detail}`,
@@ -267,7 +308,14 @@ const MAP_I18N: Record<Language, MapI18n> = {
       (s.appsReplaced > 0 ? ` (${s.appsReplaced} replaced)` : '') +
       `, ${s.entriesImported} entr${s.entriesImported === 1 ? 'y' : 'ies'}` +
       (s.entriesSkipped > 0 ? ` (${s.entriesSkipped} duplicate skipped)` : '') +
-      `, ${s.flowsImported} flow${s.flowsImported === 1 ? '' : 's'}.`,
+      `, ${s.flowsImported} flow${s.flowsImported === 1 ? '' : 's'}` +
+      (s.pitfallsImported > 0
+        ? `, ${s.pitfallsImported} pitfall${s.pitfallsImported === 1 ? '' : 's'}`
+        : '') +
+      (s.mechanismsImported > 0
+        ? `, ${s.mechanismsImported} mechanism${s.mechanismsImported === 1 ? '' : 's'}`
+        : '') +
+      `.`,
     unknownAction: (action) =>
       `Unknown map action: ${action}. Use (no arg for list) | show | forget | export | import.`,
   },
@@ -296,7 +344,8 @@ const MAP_I18N: Record<Language, MapI18n> = {
       known.length === 0
         ? `Ninguna app coincide con "${identifier}" — el mapa está vacío.`
         : `Ninguna app coincide con "${identifier}" por app_key u origen. App_keys conocidas: ${known.join(', ')}`,
-    forgetUsage: 'Uso: browser-link map forget <app> [--flow <nombre>] [--yes]',
+    forgetUsage:
+      'Uso: browser-link map forget <app> [--flow <nombre> | --pitfall <clave> | --mechanism <clave>] [--yes]',
     flowFlagRequiresValue:
       '--flow requiere un nombre de flow: browser-link map forget <app> --flow <nombre>',
     flowNotFound: (flowName, appKey, origin) =>
@@ -309,12 +358,33 @@ const MAP_I18N: Record<Language, MapI18n> = {
       `No se eliminó nada. Si esa es la app correcta, volvé a correr con --yes para confirmar:\n` +
       `  browser-link map forget ${identifier} --flow "${flowName}" --yes\n` +
       `Si no, pasá el origin de la app en lugar de su app_key para desambiguar.`,
-    forgetDryRun: (appKey, origin, entries, flows) =>
-      `Esto eliminaría la app "${appKey}" (${origin}) — ${entries} entrada${entries === 1 ? '' : 's'} y ${flows} flow${flows === 1 ? '' : 's'}.\n` +
+    forgetDryRun: (appKey, origin, entries, flows, insights) =>
+      `Esto eliminaría la app "${appKey}" (${origin}) — ${entries} entrada${entries === 1 ? '' : 's'} y ${flows} flow${flows === 1 ? '' : 's'}` +
+      (insights > 0
+        ? `, más ${insights} ${insights === 1 ? 'trampa/mecanismo' : 'trampas/mecanismos'}`
+        : '') +
+      `.\n` +
       `No se eliminó nada. Volvé a correr con --yes para confirmar:\n` +
       `  browser-link map forget ${appKey} --yes`,
-    appForgotten: (appKey, deletedEntries) =>
-      `Se eliminó la app "${appKey}" y sus ${deletedEntries} entrada${deletedEntries === 1 ? '' : 's'} (los flows se eliminaron junto con ella).`,
+    appForgotten: (appKey, deletedEntries, deletedInsights) =>
+      `Se eliminó la app "${appKey}" y sus ${deletedEntries} entrada${deletedEntries === 1 ? '' : 's'} (los flows se eliminaron junto con ella)` +
+      (deletedInsights > 0
+        ? `, más ${deletedInsights} ${deletedInsights === 1 ? 'trampa/mecanismo' : 'trampas/mecanismos'}`
+        : '') +
+      `.`,
+    colInsights: 'TRAMPAS/MEC.',
+    insightFlagRequiresValue: (flag) =>
+      `${flag} requiere una clave: browser-link map forget <app> ${flag} <clave>`,
+    insightNotFound: (kind, key, appKey, origin) =>
+      `No hay un ${kind} llamado "${key}" en la app "${appKey}" (${origin}).`,
+    insightForgotten: (kind, key, appKey, origin) =>
+      `Se eliminó el ${kind} "${key}" de "${appKey}" (${origin}).`,
+    insightForgetAmbiguous: (kind, key, appKey, origin, identifier, candidateCount) =>
+      `"${identifier}" coincide con ${candidateCount} apps (mismo app_key en distintos orígenes).\n` +
+      `Esto eliminaría el ${kind} "${key}" de "${appKey}" (${origin}) — la coincidencia vista más recientemente.\n` +
+      `No se eliminó nada. Si esa es la app correcta, volvé a correr con --yes para confirmar:\n` +
+      `  browser-link map forget ${identifier} --${kind} "${key}" --yes\n` +
+      `Si no, pasá el origin de la app en lugar de su app_key para desambiguar.`,
     exportWritten: (path, appCount) =>
       `Se escribieron ${appCount} app${appCount === 1 ? '' : 's'} en ${path}.`,
     exportWriteFailed: (path, detail) => `No se pudo escribir "${path}": ${detail}`,
@@ -346,7 +416,14 @@ const MAP_I18N: Record<Language, MapI18n> = {
       (s.entriesSkipped > 0
         ? ` (${s.entriesSkipped} duplicada${s.entriesSkipped === 1 ? '' : 's'} omitida${s.entriesSkipped === 1 ? '' : 's'})`
         : '') +
-      `, ${s.flowsImported} flow${s.flowsImported === 1 ? '' : 's'}.`,
+      `, ${s.flowsImported} flow${s.flowsImported === 1 ? '' : 's'}` +
+      (s.pitfallsImported > 0
+        ? `, ${s.pitfallsImported} trampa${s.pitfallsImported === 1 ? '' : 's'}`
+        : '') +
+      (s.mechanismsImported > 0
+        ? `, ${s.mechanismsImported} mecanismo${s.mechanismsImported === 1 ? '' : 's'}`
+        : '') +
+      `.`,
     unknownAction: (action) =>
       `Acción de map desconocida: ${action}. Usá (sin argumento para listar) | show | forget | export | import.`,
   },
@@ -369,12 +446,13 @@ function runLs(language: Language): string {
   const t = MAP_I18N[language];
   const apps = listAppsWithCounts();
   if (apps.length === 0) return t.lsEmpty;
-  const header = [t.colAppKey, t.colOrigin, t.colEntries, t.colFlows, t.colLastSeen];
+  const header = [t.colAppKey, t.colOrigin, t.colEntries, t.colFlows, t.colInsights, t.colLastSeen];
   const rows = apps.map((a) => [
     a.app_key,
     a.origin,
     String(a.entries),
     String(a.flows),
+    String(a.insights),
     formatRelative(a.last_seen_at, language),
   ]);
   return renderTable(header, rows);
@@ -456,6 +534,15 @@ function runForget(argv: string[], language: Language): string {
   // mistyped `--flow` never even resolves an app or touches the database.
   if (flags.flow === true) throw new Error(t.flowFlagRequiresValue);
   const flowName = typeof flags.flow === 'string' ? flags.flow : undefined;
+  // Same valueless-flag rule for --pitfall / --mechanism.
+  if (flags.pitfall === true) throw new Error(t.insightFlagRequiresValue('--pitfall'));
+  if (flags.mechanism === true) throw new Error(t.insightFlagRequiresValue('--mechanism'));
+  const insightTarget =
+    typeof flags.pitfall === 'string'
+      ? { kind: 'pitfall' as const, key: flags.pitfall }
+      : typeof flags.mechanism === 'string'
+        ? { kind: 'mechanism' as const, key: flags.mechanism }
+        : undefined;
 
   // Destructive command — resolve through findAppCandidates, not findApp,
   // so an ambiguous identifier (same app_key saved on two origins) is
@@ -490,13 +577,38 @@ function runForget(argv: string[], language: Language): string {
     return t.flowForgotten(flowName, app.app_key, app.origin);
   }
 
+  if (insightTarget !== undefined) {
+    const { kind, key } = insightTarget;
+    if (!listInsights(app.id, kind).some((r) => r.key === key)) {
+      throw new Error(t.insightNotFound(kind, key, app.app_key, app.origin));
+    }
+    if (candidates.length > 1 && flags.yes !== true) {
+      return t.insightForgetAmbiguous(
+        kind,
+        key,
+        app.app_key,
+        app.origin,
+        identifier,
+        candidates.length,
+      );
+    }
+    forget({ insight: { app_id: app.id, kind, key } });
+    return t.insightForgotten(kind, key, app.app_key, app.origin);
+  }
+
   if (flags.yes !== true) {
     const summary = listAppsWithCounts().find((a) => a.id === app.id);
-    return t.forgetDryRun(app.app_key, app.origin, summary?.entries ?? 0, summary?.flows ?? 0);
+    return t.forgetDryRun(
+      app.app_key,
+      app.origin,
+      summary?.entries ?? 0,
+      summary?.flows ?? 0,
+      summary?.insights ?? 0,
+    );
   }
 
   const result = forget({ app_id: app.id });
-  return t.appForgotten(app.app_key, result.deleted_entries);
+  return t.appForgotten(app.app_key, result.deleted_entries, result.deleted_insights);
 }
 
 // === map export ===============================================================
@@ -613,6 +725,8 @@ interface ImportSummary {
   entriesImported: number;
   entriesSkipped: number;
   flowsImported: number;
+  pitfallsImported: number;
+  mechanismsImported: number;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -628,6 +742,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 const MAX_IMPORT_APPS = 500;
 const MAX_IMPORT_ENTRIES = 5_000;
 const MAX_IMPORT_FLOWS = 1_000;
+const MAX_IMPORT_INSIGHTS = 5_000; // pitfalls + mechanisms combined
 const MAX_IMPORT_ITEM_BYTES = 1_048_576; // 1 MiB
 
 const ENTRY_KINDS: ReadonlySet<string> = new Set(['selector', 'flow', 'gotcha']);
@@ -718,10 +833,12 @@ function validateImportFile(
   }
   let totalEntries = 0;
   let totalFlows = 0;
+  let totalInsights = 0;
 
   for (const rawApp of rawApps) {
     totalEntries += rawApp.entries.length;
     totalFlows += rawApp.flows.length;
+    totalInsights += rawApp.pitfalls.length + rawApp.mechanisms.length;
 
     const entries: MapExportEntry[] = [];
     rawApp.entries.forEach((item, index) => {
@@ -803,29 +920,13 @@ function validateImportFile(
     const validateInsightList = (items: unknown[], kind: InsightKind): MapExportInsight[] => {
       const out: MapExportInsight[] = [];
       items.forEach((item, index) => {
-        const problems: string[] = [];
-        if (!isRecord(item)) {
-          problems.push('must be an object');
-        } else {
-          if (typeof item.key !== 'string' || item.key.trim().length === 0) {
-            problems.push('key must be a non-empty string');
-          }
-          if (typeof item.description !== 'string' || item.description.trim().length === 0) {
-            problems.push('description must be a non-empty string');
-          }
-          if (!isNullableString(item.symptom)) problems.push('symptom must be a string or null');
+        // Same rules browser.map.save enforces (length caps, no symptom on
+        // a mechanism, trimmed key) — see parseInsight in map/tools.ts.
+        try {
+          out.push(parseInsight(item, kind));
+        } catch (err) {
+          errors.push(t.importInsightError(rawApp.app_key, kind, index, (err as Error).message));
         }
-        if (problems.length > 0 || !isRecord(item)) {
-          for (const p of problems) {
-            errors.push(t.importInsightError(rawApp.app_key, kind, index, p));
-          }
-          return;
-        }
-        out.push({
-          key: item.key as string,
-          description: item.description as string,
-          symptom: (item.symptom as string | null | undefined) ?? null,
-        });
       });
       return out;
     };
@@ -847,6 +948,9 @@ function validateImportFile(
   }
   if (totalFlows > MAX_IMPORT_FLOWS) {
     errors.push(t.importCapExceeded('flows', totalFlows, MAX_IMPORT_FLOWS));
+  }
+  if (totalInsights > MAX_IMPORT_INSIGHTS) {
+    errors.push(t.importCapExceeded('insights', totalInsights, MAX_IMPORT_INSIGHTS));
   }
 
   return { errors, apps };
@@ -911,6 +1015,8 @@ function writeImport(apps: MapExportApp[], replace: boolean): ImportSummary {
     entriesImported: 0,
     entriesSkipped: 0,
     flowsImported: 0,
+    pitfallsImported: 0,
+    mechanismsImported: 0,
   };
 
   const runTxn = getDb().transaction((toImport: MapExportApp[]) => {
@@ -984,6 +1090,8 @@ function writeImport(apps: MapExportApp[], replace: boolean): ImportSummary {
             description: item.description,
             symptom: item.symptom,
           });
+          if (kind === 'pitfall') summary.pitfallsImported++;
+          else summary.mechanismsImported++;
         }
       }
     }
