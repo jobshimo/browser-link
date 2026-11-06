@@ -14,7 +14,26 @@ import {
   buildStateJs,
   buildDragProbeJs,
   buildElementRectJs,
+  buildWaitForSelectorJs,
+  type WaitForSelectorCondition,
 } from './inpage/builders.js';
+import {
+  OBSERVER_BINDING,
+  buildObserverChangesJs,
+  buildObserverInstallJs,
+  buildObserverMarkJs,
+  buildObserverTeardownJs,
+} from './inpage/observer.js';
+import {
+  TOP_DOCUMENT_PROBE_JS,
+  applyObserverMessage,
+  createObserverMirror,
+  isTopDocumentMessage,
+  mergeSettleChanges,
+  parseObserverMessage,
+  readObserverMark,
+  type ObserverMirror,
+} from './observer-host.js';
 import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import {
   buildKeyEventSequence,
@@ -297,6 +316,13 @@ interface TabState {
    * ever outstanding — same single-slot pattern the IPC bridge's
    * `settings.push` uses. */
   pendingFlowSave?: (result: { ok: true } | { ok: false; error: string }) => void;
+  /** Host mirror of the page observer (see observer-host.ts). Present from
+   * `connectTab` on; `installed` stays false when the install commands
+   * failed, and actions then report `settle.changes: null`. */
+  observer?: ObserverMirror;
+  /** `Page.addScriptToEvaluateOnNewDocument` identifier of the observer,
+   * removed again in `cleanup`. */
+  observerScriptId?: string;
 }
 
 /**
@@ -814,6 +840,176 @@ function runSettle(
   return settleSafely((expression) => evaluateInTab(tabId, expression), settle);
 }
 
+const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
+const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
+
+/** Ceiling for one observer plumbing evaluation: a page frozen by a native
+ * dialog never answers `Runtime.evaluate`, and `cleanup` must still be
+ * able to detach. */
+const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
+
+/**
+ * `Runtime.evaluate` for page-observer plumbing (mark, changes, probes,
+ * teardown). Unlike `evaluateInTab` it passes no `userGesture` — these
+ * reads must never hand the page transient user activation it did not
+ * earn — and it rejects after `OBSERVER_EVAL_TIMEOUT_MS`.
+ */
+async function evaluateObserverJs(tabId: number, expression: string): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`observer evaluation timed out after ${OBSERVER_EVAL_TIMEOUT_MS}ms`));
+    }, OBSERVER_EVAL_TIMEOUT_MS);
+  });
+  const result = await Promise.race([
+    cdp<CdpRuntimeEvaluateResponse<unknown>>(tabId, 'Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+    }),
+    timeout,
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+  if (result.exceptionDetails) {
+    const ex = result.exceptionDetails;
+    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
+  }
+  return result.result.value;
+}
+
+/**
+ * Take the page observer's action mark BEFORE an action dispatches (spec v4
+ * §5.4). `null` when settle is off for this call (no changes are reported
+ * then); an `observer-unavailable` marker when the observer was never
+ * installed on this tab or the mark could not be taken.
+ */
+async function takeObserverMark(
+  tabId: number,
+  settle: ReturnType<typeof resolveSettleParams>,
+): Promise<unknown> {
+  if (!settle) return null;
+  if (tabStates.get(tabId)?.observer?.installed !== true) return OBSERVER_UNAVAILABLE;
+  try {
+    return await evaluateObserverJs(tabId, buildObserverMarkJs());
+  } catch {
+    return OBSERVER_UNAVAILABLE;
+  }
+}
+
+/**
+ * Run the settle wait, then read what the page observer saw since `mark`
+ * and fold it into the settle result (`mergeSettleChanges`). Never throws:
+ * a changes read that rejects — typically because the action navigated and
+ * destroyed the context — is reported as `doc-changed`.
+ */
+async function settleWithChanges(
+  tabId: number,
+  settle: ReturnType<typeof resolveSettleParams>,
+  mark: unknown,
+): Promise<Record<string, unknown> | undefined> {
+  const settleResult = await runSettle(tabId, settle);
+  if (!settleResult) return undefined;
+  const parsed = readObserverMark(mark);
+  let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
+  if (parsed) {
+    try {
+      changes = await evaluateObserverJs(tabId, buildObserverChangesJs(parsed.mark, parsed.doc_id));
+    } catch {
+      changes = OBSERVER_DOC_CHANGED;
+    }
+  }
+  return mergeSettleChanges(settleResult, changes) ?? undefined;
+}
+
+/**
+ * Handle one page-observer binding message. Summaries only update the
+ * mirror. `doc_start` / `nav` are first checked against the top document
+ * (the install script also runs in same-process child frames, and the
+ * binding is page-visible), then reported to the server as a
+ * `tab-navigated` bridge event so it can keep the tab's URL and title
+ * current.
+ */
+async function handleObserverMessage(state: TabState, payload: string): Promise<void> {
+  const mirror = state.observer;
+  if (!mirror) return;
+  const message = parseObserverMessage(payload);
+  if (!message) return;
+  if (message.type === 'summary') {
+    applyObserverMessage(mirror, message);
+    return;
+  }
+  let probe: unknown;
+  try {
+    probe = await evaluateObserverJs(state.tabId, TOP_DOCUMENT_PROBE_JS);
+  } catch {
+    return;
+  }
+  if (!isTopDocumentMessage(probe, message.doc_id)) return;
+  const outcome = applyObserverMessage(mirror, message);
+  if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
+  let title = '';
+  try {
+    title = (await chrome.tabs.get(state.tabId)).title ?? '';
+  } catch {
+    // Best effort — the tab may be closing; the URL is still worth sending.
+  }
+  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
+    send(state.ws, {
+      kind: 'bridge.event',
+      eventKind: 'tab-navigated',
+      tabId: state.serverTabId,
+      data: { url: outcome.url, title },
+    });
+  }
+}
+
+/**
+ * Install the page observer on a freshly attached tab: the push binding,
+ * then the observer as a new-document script that also runs immediately in
+ * the current document. Non-fatal — on failure the tab connects as before
+ * and actions report `settle.changes: null` with `observer-unavailable`.
+ */
+async function installObserver(state: TabState): Promise<void> {
+  const mirror = createObserverMirror();
+  state.observer = mirror;
+  try {
+    await cdp(state.tabId, 'Runtime.addBinding', { name: OBSERVER_BINDING });
+    const added = await cdp<{ identifier?: string }>(
+      state.tabId,
+      'Page.addScriptToEvaluateOnNewDocument',
+      { source: buildObserverInstallJs(), runImmediately: true },
+    );
+    if (typeof added?.identifier === 'string') state.observerScriptId = added.identifier;
+    mirror.installed = true;
+  } catch (err) {
+    console.warn(
+      'browser-link: page observer not installed',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/** Best-effort observer removal before the debugger detaches. */
+async function uninstallObserver(state: TabState): Promise<void> {
+  if (!state.observer?.installed) return;
+  state.observer.installed = false;
+  if (state.observerScriptId !== undefined) {
+    try {
+      await cdp(state.tabId, 'Page.removeScriptToEvaluateOnNewDocument', {
+        identifier: state.observerScriptId,
+      });
+    } catch {
+      // Best effort — the tab may already be gone.
+    }
+    state.observerScriptId = undefined;
+  }
+  try {
+    await evaluateObserverJs(state.tabId, buildObserverTeardownJs());
+  } catch {
+    // Best effort — the tab may already be gone.
+  }
+}
+
 /**
  * Dispatch the CDP `Input.dispatchKeyEvent` sequence for one resolved key.
  * The event shapes come from `buildKeyEventSequence` (keymap.ts) — pure and
@@ -865,35 +1061,6 @@ function waitForCdpEvent<T = unknown>(
     }, timeoutMs);
     chrome.debugger.onEvent.addListener(handler);
   });
-}
-
-/**
- * Build the JS expression that checks a single wait_for condition for a
- * selector. Returns a boolean. Used by `case 'wait_for'` in handleTool.
- *
- *  - visible:  element exists AND non-zero box AND opacity > 0
- *  - hidden:   element doesn't exist OR zero box OR opacity 0 OR display:none
- *  - attached: element exists in DOM (any state)
- *  - detached: element does NOT exist in DOM
- */
-function buildWaitSelectorExpr(selector: string, condition: string): string {
-  const sel = JSON.stringify(selector);
-  if (condition === 'attached') {
-    return `Boolean(document.querySelector(${sel}))`;
-  }
-  if (condition === 'detached') {
-    return `!document.querySelector(${sel})`;
-  }
-  // visible / hidden share the same probe — only the truthiness flips.
-  const want = condition === 'hidden' ? '!' : '';
-  return `(() => {
-    const el = document.querySelector(${sel});
-    if (!el) return ${condition === 'hidden' ? 'true' : 'false'};
-    const s = getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return ${condition === 'hidden' ? 'true' : 'false'};
-    const r = el.getBoundingClientRect();
-    return ${want}(r.width > 0 && r.height > 0);
-  })()`;
 }
 
 // Convert an arbitrary console arg (`unknown`) into something printable
@@ -1036,6 +1203,10 @@ function attachDebuggerListener(state: TabState): void {
           data,
         });
       }
+      return;
+    }
+    if (method === 'Runtime.bindingCalled' && (params as { name?: string }).name === OBSERVER_BINDING) {
+      void handleObserverMessage(state, (params as { payload?: string }).payload ?? '');
       return;
     }
     if (method === 'Runtime.bindingCalled') {
@@ -1302,6 +1473,7 @@ async function performClick(
       }
       return { ok: false, error: `Element not found: ${selector}` };
     }
+    const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
@@ -1322,7 +1494,7 @@ async function performClick(
       button: 'left',
       clickCount: 1,
     });
-    const settleResult = await runSettle(tabId, settle);
+    const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
@@ -1366,9 +1538,10 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
+    const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.insertText', { text });
-    const settleResult = await runSettle(tabId, settle);
+    const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: TypeStepResult = { typed: text.length };
@@ -1415,9 +1588,10 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
+    const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(tabId, def, modifiers);
-    const settleResult = await runSettle(tabId, settle);
+    const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: PressStepResult = { key, modifiers: modifierNames };
@@ -1477,7 +1651,10 @@ async function performWaitFor(
     // null and we return matched=false immediately.
     let check: (() => Promise<boolean>) | null = null;
     if (waitSelector !== undefined) {
-      const expr = buildWaitSelectorExpr(waitSelector, waitCondition);
+      const expr = buildWaitForSelectorJs(
+        waitSelector,
+        waitCondition as WaitForSelectorCondition,
+      );
       check = async (): Promise<boolean> => {
         try {
           const result = await evaluateInTab(tabId, expr);
@@ -2822,6 +2999,7 @@ async function cleanup(tabId: number): Promise<void> {
     }
   }
   if (state.debuggerAttached) {
+    await uninstallObserver(state);
     try {
       await chrome.debugger.detach({ tabId });
     } catch {
@@ -3076,6 +3254,8 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
       error: `Could not enable CDP: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  await installObserver(state);
 
   const ws = new WebSocket(WS_URL);
   state.ws = ws;
