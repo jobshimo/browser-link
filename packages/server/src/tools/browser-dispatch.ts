@@ -164,7 +164,7 @@ export interface BrowserToolDeps {
    * on an extension tab reports that plainly instead of silently doing
    * nothing. cdp-direct tabs never reach it — that runner is in-process
    * and flips its own flag. */
-  cancelFlow?(tabId: string, flowId: string): void;
+  cancelFlow?(tabId: string, flowId: string, reason?: 'expired'): void;
   /** Optional cdp-direct permission gate — the live `cdp-direct.enabled` +
    * grant check from `cdp/gate.ts`. Checked on EVERY call that addresses a
    * `cdp:` tab, not cached, so a setting flip or grant expiry mid-session is
@@ -904,9 +904,12 @@ function requireFlowId(args: unknown, tool: string): string {
   return flow_id;
 }
 
-/** The bridge rejects with this text when a tool outlives its timeout. */
-function isBridgeTimeout(err: unknown): err is Error {
-  return err instanceof Error && /timed out after \d+ms/.test(err.message);
+/** The bridge's own rejection for the `flow` tool outliving its timeout
+ * (`ws-bridge.ts`). Deliberately exact: a cdp-direct client error such as
+ * `cdp-direct: command "X" timed out after 15000ms` is a transport failure,
+ * not a flow that ran out of its budget. */
+function isBridgeFlowTimeout(err: unknown): err is Error {
+  return err instanceof Error && /^Tool 'flow' timed out after \d+ms/.test(err.message);
 }
 
 /**
@@ -924,29 +927,35 @@ async function recoverTimedOutFlow(
   original: Error,
   deps: BrowserToolDeps,
 ): Promise<unknown> {
-  if (!isCdpTabId(tabId)) {
-    try {
-      deps.cancelFlow?.(tabId, flowId);
-    } catch {
-      // Best effort: the status read below is what matters.
-    }
+  try {
+    // 'expired', not a plain cancel: this is the flow running out of time,
+    // not a human stop, and the registry must record it that way.
+    deps.cancelFlow?.(tabId, flowId, 'expired');
+  } catch {
+    // Best effort: the status read below is what matters.
   }
+  const unrecoverable = new Error(
+    `${original.message} (flow_id ${flowId}; its progress could not be recovered — check browser.flow_status before re-running anything, completed steps may be irreversible)`,
+  );
   let status: unknown;
   try {
     status = await routeToolCall('flow_status', tabId, { flow_id: flowId }, deps);
   } catch {
-    throw new Error(
-      `${original.message} (flow_id ${flowId}; its progress could not be recovered — try browser.flow_status)`,
-    );
+    throw unrecoverable;
   }
   const s = (typeof status === 'object' && status !== null ? status : {}) as Record<
     string,
     unknown
   >;
+  // NEVER default the count: an unknown flow (a foreground flow that
+  // already finished and left the registry) or a status without a number
+  // would read as "0 steps done" and invite the agent to re-run
+  // irreversible work that really happened.
+  if (s.state !== 'running' || typeof s.steps_completed !== 'number') throw unrecoverable;
   return {
     ok: true,
     stopped_by: 'timeout',
-    steps_completed: typeof s.steps_completed === 'number' ? s.steps_completed : 0,
+    steps_completed: s.steps_completed,
     ...(typeof s.iterations_completed === 'number'
       ? { iterations_completed: s.iterations_completed }
       : {}),
@@ -1817,7 +1826,7 @@ async function dispatchBrowserTool(
         // The runner's own deadline normally answers first. This is the
         // backstop for a runner stuck INSIDE one step past the bridge
         // timeout: recover what the registry knows instead of losing it.
-        if (!foreground || !isBridgeTimeout(err)) throw err;
+        if (!foreground || isCdpTabId(flowTabId) || !isBridgeFlowTimeout(err)) throw err;
         return recoverTimedOutFlow(flowTabId, flowId, err, deps);
       }
       // A projection is only useful if it says which mode the flow needs —

@@ -152,7 +152,7 @@ describe('browser.flow bridge timeout recovery', () => {
     });
     // The runner is stuck inside a step: tell it to stop so it does not
     // keep acting after the agent was told the flow ended.
-    expect(cancelFlow).toHaveBeenCalledWith('tab_1', result.flow_id);
+    expect(cancelFlow).toHaveBeenCalledWith('tab_1', result.flow_id, 'expired');
   });
 
   test('rethrows the original error, tagged with the flow_id, when the status read fails', async () => {
@@ -165,6 +165,59 @@ describe('browser.flow bridge timeout recovery', () => {
         TEST_CALLER,
       ),
     ).rejects.toThrow(/timed out after 15000ms.*flow_/);
+  });
+
+  test.each([
+    ['an unknown flow (already finished and gone from the registry)', { state: 'unknown' }],
+    ['a status without a step count', { state: 'running' }],
+    ['a finished state', { state: 'completed', steps_completed: 4 }],
+  ])('never invents a step count: %s rethrows tagged with the flow_id', async (_n, status) => {
+    const { deps } = makeStuckDeps(status);
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ press: { key: 'a' } }] },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/timed out after 15000ms.*flow_/);
+  });
+
+  test('a cdp-direct client timeout is a transport failure, not a flow timeout', async () => {
+    const callCdpTool = vi.fn((_tab: string, tool: string) =>
+      tool === 'flow'
+        ? Promise.reject(
+            new Error('cdp-direct: command "Runtime.evaluate" timed out after 15000ms'),
+          )
+        : Promise.resolve({ state: 'running', steps_completed: 2 }),
+    );
+    const deps = makeDeps({
+      cdpGate: () => ({ ok: true as const }),
+      callCdpTool,
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'cdp:ABC', steps: [{ press: { key: 'a' } }] },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/cdp-direct: command "Runtime.evaluate" timed out/);
+    expect(callCdpTool).toHaveBeenCalledTimes(1);
+  });
+
+  test('only the bridge message for the flow tool counts as a flow timeout', async () => {
+    const deps = makeDeps({
+      callBrowserTool: vi.fn(() => Promise.reject(new Error("Tool 'click' timed out after 5ms"))),
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', steps: [{ press: { key: 'a' } }] },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow("Tool 'click' timed out");
   });
 
   test('a non-timeout failure is not rewritten', async () => {

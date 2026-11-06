@@ -3154,7 +3154,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // very much using this tab, and letting the idle sweeper close
             // the bridge underneath it would be perverse.
             state.lastActivityAt = Date.now();
-            flowRegistry.cancel(msg.flow_id);
+            flowRegistry.cancel(msg.flow_id, msg.reason === 'expired' ? 'expired' : undefined);
             return;
           }
           // Both activity replies settle the same way — a purge is just a
