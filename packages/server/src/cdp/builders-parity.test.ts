@@ -64,6 +64,14 @@ describe('cdp builders emit byte-identical output to the extension original', ()
   test('buildStateJs', () => {
     expect(srv.buildStateJs()).toBe(ext.buildStateJs());
   });
+
+  test('buildWaitForSelectorJs (every condition)', () => {
+    for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
+      expect(srv.buildWaitForSelectorJs('#panel .row', condition)).toBe(
+        ext.buildWaitForSelectorJs('#panel .row', condition),
+      );
+    }
+  });
 });
 
 describe('cdp page observer emits byte-identical output to the extension original', () => {

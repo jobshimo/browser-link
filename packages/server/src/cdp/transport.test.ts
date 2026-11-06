@@ -9,6 +9,14 @@ import { clearGrant, saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR } from './gate.js';
 import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
 import { resetDetachedFlowsForTest } from './detached-flows.js';
+import {
+  OBSERVER_BINDING,
+  OBSERVER_GLOBAL,
+  buildObserverChangesJs,
+  buildObserverMarkJs,
+} from './inpage/observer.js';
+import { buildSettleJs } from './inpage/builders.js';
+import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 
 /* Fake single-target CDP-over-WS server: a real ephemeral WebSocketServer
  * (no real Chrome required) that answers whatever commands the test wires
@@ -29,6 +37,12 @@ type Handler = (params: unknown) => unknown;
 /** Sentinel a handler can return to make the fake target swallow the
  * command without ever answering — exercises per-command timeouts. */
 const NO_REPLY = Symbol('no-reply');
+
+/** A handler returning one of these makes the fake target answer the
+ * command with a CDP error instead of a result. */
+class CdpError {
+  constructor(readonly message: string) {}
+}
 
 /** Default Target.getTargetInfo answer — a real page target, so
  * getConnection's connect-time re-validation passes. Tests that need a
@@ -55,6 +69,10 @@ function startFakeTarget(
             ? DEFAULT_PAGE_TARGET_INFO
             : {};
         if (result === NO_REPLY) return;
+        if (result instanceof CdpError) {
+          ws.send(JSON.stringify({ id: msg.id, error: { message: result.message } }));
+          return;
+        }
         ws.send(JSON.stringify({ id: msg.id, result }));
       });
       // Stash the ws so tests can push events (e.g. Page.loadEventFired)
@@ -843,5 +861,316 @@ describe('callCdpTool — detached execution', () => {
         }
       ).state,
     ).toBe('unknown');
+  });
+});
+
+/*
+ * The page observer on cdp-direct (spec v4 §5.1, §5.4): installed once per
+ * connection, an action mark taken before dispatch, and the changes since
+ * the mark folded into the settle result — the same shape the extension
+ * returns. The page is faked at the CDP boundary: `Runtime.evaluate`
+ * answers by expression, so each test names exactly which evaluation it
+ * expects and records every command it saw.
+ */
+describe('callCdpTool — page observer', () => {
+  interface Seen {
+    method: string;
+    params: Record<string, unknown>;
+  }
+
+  const MARK = { ok: true, mark: 3, doc_id: 'doc-1', url: 'https://example.com/' };
+  const CHANGES = {
+    ok: true,
+    doc_id: 'doc-1',
+    since: 3,
+    records: 4,
+    targets: 2,
+    kinds: { childList: 3, attributes: 1, characterData: 0 },
+    roots: { document: true, shadow: false, frame: false },
+    descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+    overflow: 0,
+    url_changed: 'https://example.com/#done',
+  };
+  /** What the settle wait alone reports: quiet, and blind to the sync change. */
+  const QUIET = { settled: true, duration_ms: 150, mutation_count: 0, focus_moved: true };
+  const DEFAULT_SETTLE_JS = buildSettleJs({ settle_ms: 150, settle_timeout_ms: 2000 });
+
+  /** A fake page whose observer answers `mark` / `changes` as given. */
+  function observerPage(
+    seen: Seen[],
+    answers: { mark?: unknown; changes?: unknown; extra?: Record<string, Handler> } = {},
+  ): Record<string, Handler> {
+    const record =
+      (method: string, reply: (params: Record<string, unknown>) => unknown): Handler =>
+      (params) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        seen.push({ method, params: p });
+        return reply(p);
+      };
+    return {
+      'Runtime.enable': record('Runtime.enable', () => ({})),
+      'Runtime.addBinding': record('Runtime.addBinding', () => ({})),
+      'Page.addScriptToEvaluateOnNewDocument': record(
+        'Page.addScriptToEvaluateOnNewDocument',
+        () => ({ identifier: 'script-1' }),
+      ),
+      'Page.removeScriptToEvaluateOnNewDocument': record(
+        'Page.removeScriptToEvaluateOnNewDocument',
+        () => ({}),
+      ),
+      'Runtime.evaluate': record('Runtime.evaluate', (p) => {
+        const expression = p.expression as string;
+        if (expression.includes("reason: 'invalid-selector'")) {
+          return { result: { value: { ok: true, x: 5, y: 6, tag: 'button' } } };
+        }
+        if (expression === buildObserverMarkJs())
+          return { result: { value: answers.mark ?? MARK } };
+        if (expression === buildObserverChangesJs(3, 'doc-1')) {
+          return { result: { value: answers.changes ?? CHANGES } };
+        }
+        if (expression === DEFAULT_SETTLE_JS) return { result: { value: QUIET } };
+        return { result: { value: true } };
+      }),
+      ...answers.extra,
+    };
+  }
+
+  function evaluations(seen: Seen[]): string[] {
+    return seen
+      .filter((s) => s.method === 'Runtime.evaluate')
+      .map((s) => s.params.expression as string);
+  }
+
+  test('installs the binding and the new-document script once per connection', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(observerPage(seen));
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+
+    expect(seen.filter((s) => s.method === 'Runtime.enable')).toHaveLength(1);
+    const bindings = seen.filter((s) => s.method === 'Runtime.addBinding');
+    expect(bindings).toEqual([
+      { method: 'Runtime.addBinding', params: { name: OBSERVER_BINDING } },
+    ]);
+    const scripts = seen.filter((s) => s.method === 'Page.addScriptToEvaluateOnNewDocument');
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].params.runImmediately).toBe(true);
+    expect(scripts[0].params.source).toContain(OBSERVER_GLOBAL);
+  });
+
+  test('a failed install leaves the connection usable and settle reports observer-unavailable', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      observerPage(seen, {
+        extra: { 'Runtime.addBinding': () => new CdpError('binding refused') },
+      }),
+    );
+    grantAccess(port);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(callCdpTool(`cdp:${targetId}`, 'ping', {})).resolves.toEqual({
+        title: '',
+        url: 'https://example.com/',
+      });
+      const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' });
+      expect(result).toEqual({
+        clicked: '#go',
+        tag: 'button',
+        settle: { ...QUIET, changes: null, observer: 'observer-unavailable' },
+      });
+      // No mark is attempted against an observer that was never installed.
+      expect(evaluations(seen)).not.toContain(buildObserverMarkJs());
+      expect(connectionCount).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('click reports the changes since a mark taken before the dispatch', async () => {
+    const seen: Seen[] = [];
+    const order: string[] = [];
+    const page = observerPage(seen);
+    const { port, targetId } = await startFakeTarget({
+      ...page,
+      'Input.dispatchMouseEvent': (params) => {
+        order.push(`input:${(params as { type: string }).type}`);
+        return {};
+      },
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === buildObserverMarkJs()) order.push('mark');
+        return page['Runtime.evaluate'](params);
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' });
+
+    expect(result).toEqual({
+      clicked: '#go',
+      tag: 'button',
+      settle: {
+        settled: true,
+        duration_ms: 150,
+        // Recomputed from the observer's records; url/focus baselined at the mark.
+        mutation_count: 4,
+        url_changed: 'https://example.com/#done',
+        changes: {
+          records: 4,
+          targets: 2,
+          kinds: { childList: 3, attributes: 1, characterData: 0 },
+          roots: { document: true, shadow: false, frame: false },
+          descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+          overflow: 0,
+        },
+      },
+    });
+    expect(order).toEqual([
+      'mark',
+      'input:mouseMoved',
+      'input:mousePressed',
+      'input:mouseReleased',
+    ]);
+    // Observer plumbing never hands the page a user gesture.
+    const mark = seen.find((s) => s.params.expression === buildObserverMarkJs());
+    expect(mark).toBeDefined();
+    expect(mark?.params.userGesture).toBeUndefined();
+  });
+
+  test('a mark the observer refuses yields changes: null and keeps the settle fields', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      observerPage(seen, { mark: { ok: false, reason: 'observer-unavailable' } }),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' });
+    expect(result).toEqual({
+      clicked: '#go',
+      tag: 'button',
+      settle: { ...QUIET, changes: null, observer: 'observer-unavailable' },
+    });
+    expect(evaluations(seen).some((e) => e.includes('g.changes('))).toBe(false);
+  });
+
+  test('a changes read for another document reports doc-changed', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      observerPage(seen, { changes: { ok: false, reason: 'doc-changed' } }),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'press', { key: 'Enter' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({ ...QUIET, changes: null, observer: 'doc-changed' });
+  });
+
+  test('type and press carry the same changes object as click', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(observerPage(seen));
+    grantAccess(port);
+    const typed = (await callCdpTool(`cdp:${targetId}`, 'type', { text: 'hi' })) as {
+      settle: Record<string, unknown>;
+    };
+    const pressed = (await callCdpTool(`cdp:${targetId}`, 'press', { key: 'a' })) as {
+      settle: Record<string, unknown>;
+    };
+    for (const settle of [typed.settle, pressed.settle]) {
+      expect(settle).toMatchObject({ mutation_count: 4, changes: { records: 4, targets: 2 } });
+    }
+  });
+
+  test('settle_ms: 0 takes no mark and returns no settle (unchanged)', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(observerPage(seen));
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      selector: '#go',
+      settle_ms: 0,
+    });
+    expect(result).toEqual({ clicked: '#go', tag: 'button' });
+    expect(evaluations(seen)).not.toContain(buildObserverMarkJs());
+  });
+
+  test('a doc_start from the binding is checked against the top document', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(observerPage(seen));
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    const docStart = JSON.stringify({
+      type: 'doc_start',
+      doc_id: 'doc-2',
+      url: 'https://example.com/next',
+      version: 1,
+      coverage: 'full',
+    });
+    pushEvent('Runtime.bindingCalled', { name: 'someoneElsesBinding', payload: docStart });
+    pushEvent('Runtime.bindingCalled', { name: OBSERVER_BINDING, payload: 'not json' });
+    pushEvent('Runtime.bindingCalled', { name: OBSERVER_BINDING, payload: docStart });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Exactly one probe: the foreign binding and the malformed payload are
+    // dropped before any evaluation.
+    expect(evaluations(seen).filter((e) => e === TOP_DOCUMENT_PROBE_JS)).toHaveLength(1);
+  });
+
+  test('the idle sweep removes the observer script and tears the observer down', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(observerPage(seen));
+    grantAccess(port);
+    setIdleCleanupConfigForTest(30, 20);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(seen.filter((s) => s.method === 'Page.removeScriptToEvaluateOnNewDocument')).toEqual([
+      {
+        method: 'Page.removeScriptToEvaluateOnNewDocument',
+        params: { identifier: 'script-1' },
+      },
+    ]);
+    expect(evaluations(seen).some((e) => e.includes('g.teardown()'))).toBe(true);
+  });
+});
+
+describe('callCdpTool — wait_for', () => {
+  function recordingPage(expressions: string[]): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        expressions.push((params as { expression: string }).expression);
+        return { result: { value: true } };
+      },
+    };
+  }
+
+  test('selector mode resolves through the deep query (open shadow roots, same-origin iframes)', async () => {
+    const expressions: string[] = [];
+    const { port, targetId } = await startFakeTarget(recordingPage(expressions));
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'wait_for', {
+      selector: '#late',
+      condition: 'attached',
+    });
+    expect(result).toMatchObject({ matched: true, checks: 1 });
+    const probe = expressions.find((e) => e.includes('"#late"'));
+    expect(probe).toContain('function deepQueryFirst');
+    expect(probe).toContain('deepQueryFirst(opts.selector)');
+    expect(probe).not.toContain('document.querySelector("#late")');
+  });
+
+  test('expression mode still evaluates Boolean(<expression>) (unchanged)', async () => {
+    const expressions: string[] = [];
+    const { port, targetId } = await startFakeTarget(recordingPage(expressions));
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'wait_for', {
+      expression: 'window.ready',
+    });
+    expect(result).toMatchObject({ matched: true, checks: 1 });
+    expect(expressions).toContain('Boolean(window.ready)');
+  });
+
+  test('network_url mode is still refused on cdp-direct (unchanged)', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'wait_for', { network_url: '/api' }),
+    ).rejects.toThrow(/network_url mode is not supported over cdp-direct/);
   });
 });

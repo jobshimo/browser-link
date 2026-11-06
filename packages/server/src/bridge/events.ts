@@ -24,6 +24,10 @@ export type BridgeEventKind =
   | 'tab-created'
   | 'flow-recorded'
   | 'flow-finished'
+  // Pushed by the extension's page observer on a top-document navigation
+  // (full load or same-document history change); the bridge also updates
+  // the tab's `TabSession.url` / `title` from it (`applyTabNavigated`).
+  | 'tab-navigated'
   // Server-owned: `browser.download` writes the file itself, so only the
   // dispatcher can truthfully say a download started or where it ended up.
   | 'download-started'
@@ -45,12 +49,19 @@ export type BridgeEventKind =
  * detached flow — never per iteration, which with `MAX_EVENTS = 200` would
  * let a single 200-iteration run silently evict every other event in the
  * log. On cdp-direct the same event is added server-side by
- * `cdp/detached-flows.ts`, since there is no extension there to push it. */
+ * `cdp/detached-flows.ts`, since there is no extension there to push it.
+ *
+ * `tab-navigated` is extension-pushable for the same reason: it reports
+ * what the tab's own page observer saw (its top document's URL). The bridge
+ * accepts it only for the tab the sending connection registered — see
+ * `ws-bridge.ts`'s `applyTabNavigated` — so one tab cannot rewrite
+ * another's URL or title. */
 const EXTENSION_EVENT_KINDS: ReadonlySet<BridgeEventKind> = new Set([
   'dialog-opening',
   'dialog-closed',
   'tab-created',
   'flow-finished',
+  'tab-navigated',
 ]);
 
 export function isExtensionEventKind(kind: string): kind is BridgeEventKind {

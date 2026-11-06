@@ -30,11 +30,30 @@ import {
   buildSnapshotJs,
   buildStateJs,
   buildTypeResolveJs,
+  buildWaitForSelectorJs,
   type ClickResolveOpts,
   type FindOpts,
   type SnapshotOpts,
   type TypeResolveOpts,
+  type WaitForSelectorCondition,
 } from './inpage/builders.js';
+import {
+  OBSERVER_BINDING,
+  buildObserverChangesJs,
+  buildObserverInstallJs,
+  buildObserverMarkJs,
+  buildObserverTeardownJs,
+} from './inpage/observer.js';
+import {
+  TOP_DOCUMENT_PROBE_JS,
+  applyObserverMessage,
+  createObserverMirror,
+  isTopDocumentMessage,
+  mergeSettleChanges,
+  parseObserverMessage,
+  readObserverMark,
+  type ObserverMirror,
+} from './observer-host.js';
 import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
@@ -75,6 +94,17 @@ interface CdpConnection {
   lastUsedAt: number;
 }
 
+/** Page-observer state of one connection (see `observer-host.ts`): the host
+ * mirror, and the `Page.addScriptToEvaluateOnNewDocument` identifier to
+ * remove on close. Keyed by client so the perform* helpers, which only get
+ * the client, can reach it. */
+interface CdpObserverState {
+  mirror: ObserverMirror;
+  scriptId?: string;
+}
+
+const observers = new WeakMap<CdpClient, CdpObserverState>();
+
 /** Resolved connections currently believed live, keyed by CDP targetId.
  * Only ever holds SETTLED, successful dials — see `getConnection`. */
 const connections = new Map<string, CdpConnection>();
@@ -109,8 +139,8 @@ function ensureCleanupTimer(): void {
     const now = Date.now();
     for (const [targetId, conn] of connections) {
       if (now - conn.lastUsedAt > idleCleanupMs) {
-        conn.client.close();
         connections.delete(targetId);
+        void closeConnection(conn.client, targetId);
       }
     }
   }, idleSweepIntervalMs);
@@ -161,9 +191,106 @@ async function dial(targetId: string): Promise<CdpConnection> {
   // Page.enable is the only domain cdp-direct's v1 tool set needs enabled
   // up front — it unlocks Page.loadEventFired, which navigate's
   // wait_for_load uses. Runtime.evaluate and Input.* commands work without
-  // their own domain being explicitly enabled.
+  // their own domain being explicitly enabled. The page observer enables
+  // Runtime itself, for `Runtime.bindingCalled` (see `installObserver`).
   await client.send('Page.enable');
+  await installObserver(client);
   return { client, lastUsedAt: Date.now() };
+}
+
+/**
+ * Install the page observer on a freshly dialled connection, as the
+ * extension does in `connectTab`: Runtime (for `Runtime.bindingCalled`),
+ * the push binding, then the observer as a new-document script that also
+ * runs immediately in the current document. Non-fatal — on failure the
+ * connection is used as before and actions report `settle.changes: null`
+ * with `observer-unavailable`.
+ */
+async function installObserver(client: CdpClient): Promise<void> {
+  const state: CdpObserverState = { mirror: createObserverMirror() };
+  observers.set(client, state);
+  client.on('Runtime.bindingCalled', (params) => {
+    const p = (params ?? {}) as { name?: unknown; payload?: unknown };
+    if (p.name !== OBSERVER_BINDING) return;
+    void handleObserverMessage(client, state, typeof p.payload === 'string' ? p.payload : '');
+  });
+  try {
+    await client.send('Runtime.enable');
+    await client.send('Runtime.addBinding', { name: OBSERVER_BINDING });
+    const added = await client.send<{ identifier?: unknown }>(
+      'Page.addScriptToEvaluateOnNewDocument',
+      { source: buildObserverInstallJs(), runImmediately: true },
+    );
+    if (typeof added.identifier === 'string') state.scriptId = added.identifier;
+    state.mirror.installed = true;
+  } catch (err) {
+    console.warn(
+      'browser-link: cdp-direct page observer not installed',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/**
+ * Fold one binding message into the connection's mirror. `doc_start` / `nav`
+ * are first checked against the top document (the install script also runs
+ * in same-process child frames, and the binding is page-visible). cdp-direct
+ * has no bridge events and `list_tabs` reads target info live, so the mirror
+ * is the only thing updated here.
+ */
+async function handleObserverMessage(
+  client: CdpClient,
+  state: CdpObserverState,
+  payload: string,
+): Promise<void> {
+  const message = parseObserverMessage(payload);
+  if (!message) return;
+  if (message.type === 'summary') {
+    applyObserverMessage(state.mirror, message);
+    return;
+  }
+  let probe: unknown;
+  try {
+    probe = await evaluateObserverJs(client, TOP_DOCUMENT_PROBE_JS);
+  } catch {
+    return;
+  }
+  if (!isTopDocumentMessage(probe, message.doc_id)) return;
+  applyObserverMessage(state.mirror, message);
+}
+
+/**
+ * Best-effort observer removal, then close the socket. Never throws. The
+ * in-page teardown is skipped when a newer connection to the same target
+ * already exists: the page holds one observer instance, which that
+ * connection's install left in place (equal version), so tearing it down
+ * here would leave the newer connection without an observer.
+ */
+async function closeConnection(client: CdpClient, targetId: string): Promise<void> {
+  const state = observers.get(client);
+  if (state?.mirror.installed === true && client.isOpen) {
+    state.mirror.installed = false;
+    if (state.scriptId !== undefined) {
+      try {
+        await client.send(
+          'Page.removeScriptToEvaluateOnNewDocument',
+          { identifier: state.scriptId },
+          OBSERVER_EVAL_TIMEOUT_MS,
+        );
+      } catch {
+        // Best effort — the target may already be gone.
+      }
+      state.scriptId = undefined;
+    }
+    if (!connections.has(targetId) && !inFlight.has(targetId)) {
+      try {
+        await evaluateObserverJs(client, buildObserverTeardownJs());
+      } catch {
+        // Best effort — the target may already be gone.
+      }
+    }
+  }
+  client.close();
 }
 
 async function getConnection(targetId: string): Promise<CdpClient> {
@@ -256,6 +383,29 @@ async function evaluateInTab<T = unknown>(
   return res.result.value;
 }
 
+/** Ceiling for one observer plumbing evaluation, as in the extension: a
+ * page frozen by a native dialog never answers `Runtime.evaluate`. */
+const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
+
+/**
+ * `Runtime.evaluate` for page-observer plumbing (mark, changes, probes,
+ * teardown). Unlike `evaluateInTab` it passes no `userGesture` — these
+ * reads must never hand the page transient user activation it did not
+ * earn — and it gives up after `OBSERVER_EVAL_TIMEOUT_MS`.
+ */
+async function evaluateObserverJs(client: CdpClient, expression: string): Promise<unknown> {
+  const res = await client.send<CdpEvaluateResult<unknown>>(
+    'Runtime.evaluate',
+    { expression, returnByValue: true },
+    OBSERVER_EVAL_TIMEOUT_MS,
+  );
+  if (res.exceptionDetails) {
+    const ex = res.exceptionDetails;
+    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
+  }
+  return res.result.value;
+}
+
 function waitForLoad(client: CdpClient, timeoutMs = 20_000): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -280,6 +430,53 @@ function runSettle(
   settle: SettleParams | null,
 ): Promise<Record<string, unknown> | undefined> {
   return settleSafely((expression) => evaluateInTab(client, expression), settle);
+}
+
+const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
+const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
+
+/**
+ * Take the page observer's action mark BEFORE an action dispatches (spec v4
+ * §5.4). `null` when settle is off for this call (no changes are reported
+ * then); an `observer-unavailable` marker when the observer was never
+ * installed on this connection or the mark could not be taken.
+ */
+async function takeObserverMark(client: CdpClient, settle: SettleParams | null): Promise<unknown> {
+  if (!settle) return null;
+  if (observers.get(client)?.mirror.installed !== true) return OBSERVER_UNAVAILABLE;
+  try {
+    return await evaluateObserverJs(client, buildObserverMarkJs());
+  } catch {
+    return OBSERVER_UNAVAILABLE;
+  }
+}
+
+/**
+ * Run the settle wait, then read what the page observer saw since `mark`
+ * and fold it into the settle result (`mergeSettleChanges`). Never throws:
+ * a changes read that rejects — typically because the action navigated and
+ * destroyed the context — is reported as `doc-changed`.
+ */
+async function settleWithChanges(
+  client: CdpClient,
+  settle: SettleParams | null,
+  mark: unknown,
+): Promise<Record<string, unknown> | undefined> {
+  const settleResult = await runSettle(client, settle);
+  if (!settleResult) return undefined;
+  const parsed = readObserverMark(mark);
+  let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
+  if (parsed) {
+    try {
+      changes = await evaluateObserverJs(
+        client,
+        buildObserverChangesJs(parsed.mark, parsed.doc_id),
+      );
+    } catch {
+      changes = OBSERVER_DOC_CHANGED;
+    }
+  }
+  return mergeSettleChanges(settleResult, changes) ?? undefined;
 }
 
 async function dispatchKeyEventSequence(
@@ -357,6 +554,7 @@ async function performClick(
       }
       return { ok: false, error: `Element not found: ${selector}` };
     }
+    const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
@@ -377,7 +575,7 @@ async function performClick(
       button: 'left',
       clickCount: 1,
     });
-    const settleResult = await runSettle(client, settle);
+    const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
@@ -419,9 +617,10 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
+    const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.insertText', { text });
-    const settleResult = await runSettle(client, settle);
+    const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: TypeStepResult = { typed: text.length };
@@ -467,9 +666,10 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
+    const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEventSequence(client, def, modifiers);
-    const settleResult = await runSettle(client, settle);
+    const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: PressStepResult = { key, modifiers: modifierNames };
@@ -479,25 +679,6 @@ async function performPress(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-}
-
-function buildWaitSelectorExpr(selector: string, condition: string): string {
-  const sel = JSON.stringify(selector);
-  if (condition === 'attached') {
-    return `Boolean(document.querySelector(${sel}))`;
-  }
-  if (condition === 'detached') {
-    return `!document.querySelector(${sel})`;
-  }
-  const want = condition === 'hidden' ? '!' : '';
-  return `(() => {
-    const el = document.querySelector(${sel});
-    if (!el) return ${condition === 'hidden' ? 'true' : 'false'};
-    const s = getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return ${condition === 'hidden' ? 'true' : 'false'};
-    const r = el.getBoundingClientRect();
-    return ${want}(r.width > 0 && r.height > 0);
-  })()`;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -560,7 +741,7 @@ async function performWaitFor(
 
     let check: (() => Promise<boolean>) | null = null;
     if (waitSelector !== undefined) {
-      const expr = buildWaitSelectorExpr(waitSelector, waitCondition);
+      const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
           const value = await evaluateInTab(client, expr);

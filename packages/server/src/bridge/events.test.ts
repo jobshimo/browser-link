@@ -170,3 +170,13 @@ describe('flow-finished — the one-per-flow audit event', () => {
     expect(log.recent({ limit: 200 }).some((e) => e.kind === 'tab-registered')).toBe(false);
   });
 });
+
+describe('tab-navigated — the observer navigation report', () => {
+  test('the extension may push it, and it round-trips through the log', () => {
+    expect(isExtensionEventKind('tab-navigated')).toBe(true);
+    const log = new BridgeEventLog();
+    const e = log.add('tab-navigated', { tab_id: 'tab_1', url: 'https://x/next', title: 'Next' });
+    expect(log.recent()).toEqual([e]);
+    expect(e.kind).toBe('tab-navigated');
+  });
+});

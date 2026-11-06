@@ -241,6 +241,13 @@ export function startWsBridge(
             log(`Ignoring bridge.event with unknown/forbidden kind: ${msg.eventKind}`);
             return;
           }
+          if (msg.eventKind === 'tab-navigated') {
+            const outcome = applyTabNavigated(tabs, ws, assignedTabId, msg.tabId, msg.data);
+            if (!outcome.ok) {
+              log(`Ignoring tab-navigated for ${String(msg.tabId)}: ${outcome.reason}`);
+              return;
+            }
+          }
           const data: Record<string, unknown> = { ...msg.data };
           if (msg.tabId) data.tab_id = msg.tabId;
           events.add(msg.eventKind, data);
@@ -577,6 +584,42 @@ export function handleActivityPurgeMessage(msg: ActivityPurgeMessage): ServerToE
  * reads this to avoid telling an agent to wait for a reconnect that will not
  * happen.
  */
+/**
+ * Apply a `tab-navigated` report (spec v4 §5.5) to the tab's session so
+ * `list_tabs` shows the current URL and title rather than the ones captured
+ * at registration. Accepted only for the tab THIS connection registered and
+ * still owns (same defence as `flow.recorded`), with a non-empty string
+ * `url`. An empty `title` keeps the previous one: the observer reports
+ * `doc_start` before the new document's `<title>` is parsed. Returns the
+ * values now on the session, or why nothing was changed.
+ */
+export function applyTabNavigated(
+  tabs: Map<string, TabSession>,
+  ws: WebSocket,
+  assignedTabId: string | null,
+  tabId: unknown,
+  data: unknown,
+): { ok: true; url: string; title: string } | { ok: false; reason: string } {
+  const session = assignedTabId ? tabs.get(assignedTabId) : undefined;
+  if (!session || tabId !== assignedTabId || session.ws !== ws) {
+    return { ok: false, reason: 'tab_id does not match this connection' };
+  }
+  const payload = (typeof data === 'object' && data !== null ? data : {}) as Record<
+    string,
+    unknown
+  >;
+  const { url, title } = payload;
+  if (typeof url !== 'string' || url.length === 0) {
+    return { ok: false, reason: 'malformed tab-navigated payload' };
+  }
+  if (title !== undefined && typeof title !== 'string') {
+    return { ok: false, reason: 'malformed tab-navigated payload' };
+  }
+  session.url = url;
+  if (typeof title === 'string' && title.length > 0) session.title = title;
+  return { ok: true, url: session.url, title: session.title };
+}
+
 export function buildTabDisconnectedData(
   tabId: string,
   code: number,

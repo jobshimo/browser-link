@@ -99,6 +99,64 @@ describe('cdp verbatim-copy drift guard: page observer (full body)', () => {
   });
 });
 
+/** Everything from the first line containing `marker` to the end of the
+ * file. Used for `observer-host.ts`, whose import block cannot be identical:
+ * the extension imports the observer types from `@browser-link/shared`,
+ * which the standalone server package cannot resolve, so the server copy
+ * declares them locally between its header and the shared body. */
+function bodyFrom(text: string, marker: string): string {
+  const start = text.indexOf(marker);
+  if (start < 0) throw new Error(`could not find ${JSON.stringify(marker)}`);
+  return text.slice(start);
+}
+
+/** Text of `export interface NAME { ... }` / `export type NAME = ...;` with
+ * the `export ` keyword dropped, so an exported declaration (in
+ * `@browser-link/shared`) compares equal to a module-local one. */
+function typeDeclaration(text: string, name: string): string {
+  const iface = new RegExp(`(?:export )?interface ${name} \\{[\\s\\S]*?\\n\\}`).exec(text);
+  if (iface) return iface[0].replace(/^export /, '');
+  const alias = new RegExp(`(?:export )?type ${name} = [^;]+;`).exec(text);
+  if (alias) return alias[0].replace(/^export /, '');
+  throw new Error(`could not find type ${name}`);
+}
+
+describe('cdp verbatim-copy drift guard: observer host (body below the imports)', () => {
+  const HOST_BODY_MARKER = '/** Summaries kept in the host mirror';
+
+  test('observer-host.ts body is byte-identical to the extension original', () => {
+    const extText = read(join(EXT_ROOT, 'observer-host.ts'));
+    const srvText = read(join(SRV_ROOT, 'observer-host.ts'));
+    expect(bodyFrom(srvText, HOST_BODY_MARKER)).toBe(bodyFrom(extText, HOST_BODY_MARKER));
+    // Both copies read the observer global from their own (byte-identical)
+    // in-page observer copy.
+    const observerImport = "import { OBSERVER_GLOBAL } from './inpage/observer.js';";
+    expect(extText).toContain(observerImport);
+    expect(srvText).toContain(observerImport);
+    // Sanity: the body is the real module, not an empty match.
+    const body = bodyFrom(srvText, HOST_BODY_MARKER);
+    expect(body).toContain('export function mergeSettleChanges');
+    expect(body).toContain('export function applyObserverMessage');
+  });
+
+  test('the server copy declares the observer types exactly as @browser-link/shared does', () => {
+    const shared = read(join(here, '..', '..', '..', 'shared', 'src', 'index.ts'));
+    const srvText = read(join(SRV_ROOT, 'observer-host.ts'));
+    for (const name of [
+      'PageObserverKinds',
+      'PageObserverRoots',
+      'PageObserverDescriptor',
+      'PageObserverSummary',
+      'PageObserverDocStart',
+      'PageObserverNav',
+      'PageObserverMessage',
+      'SettleChanges',
+    ]) {
+      expect(typeDeclaration(srvText, name), name).toBe(typeDeclaration(shared, name));
+    }
+  });
+});
+
 describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => {
   test('settle.ts body is byte-identical to the extension original', () => {
     const ext = stripHeader(read(join(EXT_ROOT, 'settle.ts')));

@@ -5,7 +5,7 @@
  *
  * DELIBERATELY A SUBSET: only the builders `cdp/transport.ts` needs for
  * cdp-direct's v1 supported tool set (snapshot, find, click, type, press,
- * state, plus the shared settle wait) are copied. `buildDragProbeJs` /
+ * state, wait_for, plus the shared settle wait) are copied. `buildDragProbeJs` /
  * `DragProbeOpts` are NOT copied — `browser.drag` is explicitly out of
  * v1 scope for cdp-direct (see the README's cdp-direct tool-support table
  * and `cdp/transport.ts`'s `CDP_TOOL_SUPPORT`). If drag is ever added to
@@ -469,6 +469,48 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
   if (!el) return false;
   el.focus();
   return true;
+})()`;
+}
+
+/**
+ * Build the `wait_for` selector probe: one poll tick of `browser.wait_for`
+ * in selector mode, evaluating to a boolean. The element is resolved with
+ * `deepQueryFirst` — the same deep search scope `find` / `click` / `type`
+ * use (open Shadow DOM roots and same-origin iframes) — so an element `find`
+ * reports can also be waited for.
+ *
+ * Visibility keeps the probe `wait_for` always used — computed `display` /
+ * `visibility` / `opacity` plus a non-empty box — rather than `isVisible`,
+ * whose `offsetParent` test reports `<body>` as hidden and accepts
+ * zero-size elements; light-DOM results stay what they were. A missing
+ * element is `hidden` and `detached`. A malformed selector throws (checked
+ * once against `document`, before the deep search swallows the error per
+ * root), so the caller's poll counts it as "not matched" for every
+ * condition, as before.
+ */
+export type WaitForSelectorCondition = 'visible' | 'hidden' | 'attached' | 'detached';
+
+export function buildWaitForSelectorJs(
+  selector: string,
+  condition: WaitForSelectorCondition,
+): string {
+  const optsJson = JSON.stringify({ selector, condition });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const opts = ${optsJson};
+  document.querySelector(opts.selector);
+  const el = deepQueryFirst(opts.selector);
+  if (opts.condition === 'attached') return Boolean(el);
+  if (opts.condition === 'detached') return !el;
+  const wantHidden = opts.condition === 'hidden';
+  if (!el) return wantHidden;
+  const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+  const s = view.getComputedStyle(el);
+  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return wantHidden;
+  const r = el.getBoundingClientRect();
+  const shown = r.width > 0 && r.height > 0;
+  return wantHidden ? !shown : shown;
 })()`;
 }
 
