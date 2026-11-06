@@ -68,6 +68,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Screenshot a <canvas> as PNG/JPEG — for Qt-WASM, WebGL and other DOMless surfaces',
   },
   {
+    name: 'browser.screenshot',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Screenshot the viewport, the FULL page or one element as PNG/JPEG',
+  },
+  {
     name: 'browser.console',
     family: 'bridge',
     category: 'read',

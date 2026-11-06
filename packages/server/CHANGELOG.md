@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.30.0](https://github.com/jobshimo/browser-link/compare/v0.29.0...v0.30.0) (2026-11-05)
+
+### Features
+
+- **screenshot:** new `browser.screenshot` tool. It captures the viewport, the full page or one element as PNG or JPEG, and returns a real MCP image block plus a metadata block. Until now the only capture was `browser.canvas_screenshot`, which reads a single `<canvas>` from inside the page.
+- **screenshot:** full-page capture uses `Page.getLayoutMetrics` and `Page.captureScreenshot` with `captureBeyondViewport`, so there is no scrolling and no stitching.
+- **screenshot:** element mode resolves its selector through open Shadow DOM roots and same-origin iframes, exactly like `browser.click` and `browser.find`.
+- **screenshot:** long pages are scaled down so the longest side stays within `max_dimension` (default 8000 px); below a 0.25 scale the image is cropped and flagged `truncated: true`. Results are capped at about 8 MB, falling back to JPEG and then to a lower scale (`size_reduced: true`), or failing with the measured size.
+- **screenshot:** works on cdp-direct tabs as well.
+
 ## [0.29.0](https://github.com/jobshimo/browser-link/compare/v0.28.9...v0.29.0) (2026-11-05)
 
 ### Features

@@ -65,6 +65,12 @@ describe('extractPayload', () => {
   });
 });
 
+describe('screenshot trail', () => {
+  test('records the element selector as the selector', () => {
+    expect(extractSelector('browser.screenshot', { selector: '#card' })).toBe('#card');
+  });
+});
+
 describe('transportFor', () => {
   test('cdp: ids are the cdp-direct transport', () => {
     expect(transportFor('cdp:TARGET-1')).toBe('cdp');

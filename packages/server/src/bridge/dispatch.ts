@@ -16,7 +16,7 @@ import {
   isBrowserTool,
   type BrowserToolDeps,
 } from '../tools/browser-dispatch.js';
-import { toolError, toolResponse } from '../tools/responses.js';
+import { imageToolResponse, toolError, toolResponse } from '../tools/responses.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 
 export interface DispatchDeps {
@@ -70,8 +70,10 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
   }
   try {
     if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
-    if (isBrowserTool(name))
-      return toolResponse(await handleBrowserTool(name, args, deps.browserTools, caller));
+    if (isBrowserTool(name)) {
+      const result = await handleBrowserTool(name, args, deps.browserTools, caller);
+      return name === 'browser.screenshot' ? imageToolResponse(result) : toolResponse(result);
+    }
     return toolError(`Unknown tool: ${name}`);
   } catch (err) {
     return toolError(err instanceof Error ? err.message : String(err));

@@ -22,10 +22,10 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 34 tools currently exposed', () => {
+  test('covers exactly the 35 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(34);
+    expect(TOOL_CATALOGUE.length).toBe(35);
   });
 
   test('browser.download is an action (it clicks and writes a file to disk)', () => {
@@ -87,6 +87,14 @@ describe('TOOL_CATALOGUE', () => {
     expect(cs).toBeDefined();
     expect(cs?.family).toBe('bridge');
     expect(cs?.category).toBe('read');
+  });
+});
+
+describe('browser.screenshot catalogue entry', () => {
+  test('is a read tool', () => {
+    const s = TOOL_CATALOGUE.find((t) => t.name === 'browser.screenshot');
+    expect(s?.family).toBe('bridge');
+    expect(s?.category).toBe('read');
   });
 });
 

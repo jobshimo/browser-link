@@ -165,6 +165,48 @@ describe('handleToolCall — response envelope', () => {
   });
 });
 
+describe('handleToolCall — screenshot image content', () => {
+  test('browser.screenshot returns MCP image content plus a metadata text block without the base64', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({
+      ok: true,
+      mode: 'full_page',
+      format: 'jpeg',
+      width: 10,
+      height: 20,
+      scale: 1,
+      bytes: 3,
+      image_b64: 'QUJD',
+    });
+    const res = await handleToolCall(
+      { name: 'browser.screenshot', arguments: { tab_id: 'tab_1' }, caller: TEST_CALLER },
+      makeDeps(),
+    );
+    expect(res.content).toHaveLength(2);
+    expect(res.content[1]).toEqual({ type: 'image', data: 'QUJD', mimeType: 'image/jpeg' });
+    const meta = JSON.parse((res.content[0] as { text: string }).text) as Record<string, unknown>;
+    expect(meta).toMatchObject({ ok: true, mode: 'full_page', width: 10, bytes: 3 });
+    expect(meta).not.toHaveProperty('image_b64');
+  });
+
+  test('png maps to image/png', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: true, format: 'png', image_b64: 'QUJD' });
+    const res = await handleToolCall(
+      { name: 'browser.screenshot', arguments: { tab_id: 'tab_1' }, caller: TEST_CALLER },
+      makeDeps(),
+    );
+    expect(res.content[1]).toMatchObject({ mimeType: 'image/png' });
+  });
+
+  test('a result without image data stays a plain text response', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: false, reason: 'x' });
+    const res = await handleToolCall(
+      { name: 'browser.screenshot', arguments: { tab_id: 'tab_1' }, caller: TEST_CALLER },
+      makeDeps(),
+    );
+    expect(res.content).toHaveLength(1);
+  });
+});
+
 describe('handleToolCall — refusal and error handling', () => {
   test('refuses a disabled tool with a guidance message + isError flag', async () => {
     const deps = makeDeps({ disabledTools: ['browser.evaluate'] });

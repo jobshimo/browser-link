@@ -25,6 +25,7 @@ import { cdpUnsupportedToolError } from './support.js';
 import {
   buildClickResolveJs,
   buildFindJs,
+  buildElementRectJs,
   buildFocusJs,
   buildSnapshotJs,
   buildStateJs,
@@ -34,6 +35,7 @@ import {
   type SnapshotOpts,
   type TypeResolveOpts,
 } from './inpage/builders.js';
+import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
 import { buildKeyEventSequence, modifiersToBitmask, resolveKey } from './keymap.js';
 import {
@@ -694,6 +696,25 @@ export async function callCdpTool(
 
     case 'state':
       return evaluateInTab(client, buildStateJs());
+
+    case 'screenshot': {
+      const mode: ScreenshotMode =
+        p.mode === 'full_page' || p.mode === 'element' ? p.mode : 'viewport';
+      return runScreenshot(
+        {
+          send: (method, params) => client.send(method, params),
+          resolveElementRect: (selector) =>
+            evaluateInTab<ElementRectOutcome>(client, buildElementRectJs({ selector })),
+        },
+        {
+          mode,
+          selector: typeof p.selector === 'string' ? p.selector : undefined,
+          format: p.format === 'jpeg' ? 'jpeg' : 'png',
+          quality: typeof p.quality === 'number' ? p.quality : undefined,
+          maxDimension: typeof p.max_dimension === 'number' ? p.max_dimension : undefined,
+        },
+      );
+    }
 
     case 'find': {
       const outcome = await performFind(client, {

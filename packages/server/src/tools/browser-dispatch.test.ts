@@ -28,6 +28,7 @@ describe('isBrowserTool', () => {
       'browser.find',
       'browser.state',
       'browser.canvas_screenshot',
+      'browser.screenshot',
       'browser.click',
       'browser.type',
       'browser.press',
@@ -1053,6 +1054,76 @@ describe('action-tool claim enforcement', () => {
       'tab_1',
       'canvas_screenshot',
       expect.any(Object),
+    );
+  });
+
+  test('screenshot defaults to viewport / png and forwards only set fields', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool('browser.screenshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'screenshot',
+      {
+        mode: 'viewport',
+        selector: undefined,
+        format: 'png',
+        quality: undefined,
+        max_dimension: undefined,
+      },
+      expect.any(Number),
+    );
+  });
+
+  test('screenshot forwards element mode arguments', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.screenshot',
+      {
+        tab_id: 'tab_1',
+        mode: 'element',
+        selector: '#card',
+        format: 'jpeg',
+        quality: 60,
+        max_dimension: 2000,
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'screenshot',
+      { mode: 'element', selector: '#card', format: 'jpeg', quality: 60, max_dimension: 2000 },
+      expect.any(Number),
+    );
+  });
+
+  test.each([
+    [{ mode: 'fullpage' }, /mode must be/],
+    [{ mode: 'element' }, /selector is required/],
+    [{ mode: 'viewport', selector: '#x' }, /selector is only valid with mode "element"/],
+    [{ selector: 5, mode: 'element' }, /selector must be a string/],
+    [{ format: 'webp' }, /format must be "png" or "jpeg"/],
+    [{ format: 'jpeg', quality: 101 }, /quality must be an integer between 0 and 100/],
+    [{ quality: 1.5 }, /quality must be an integer between 0 and 100/],
+    [{ max_dimension: 10 }, /max_dimension must be an integer between 100 and 16000/],
+    [{ max_dimension: 'big' }, /max_dimension must be an integer between 100 and 16000/],
+  ])('screenshot rejects invalid args %j', async (extra, message) => {
+    const deps = makeDeps();
+    await expect(
+      handleBrowserTool('browser.screenshot', { tab_id: 'tab_1', ...extra }, deps, TEST_CALLER),
+    ).rejects.toThrow(message);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('screenshot bypasses claim enforcement (read tool)', async () => {
+    const deps = makeDepsWithClaims();
+    await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
+    await handleBrowserTool('browser.screenshot', { tab_id: 'tab_1' }, deps, B);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'screenshot',
+      expect.any(Object),
+      expect.any(Number),
     );
   });
 
