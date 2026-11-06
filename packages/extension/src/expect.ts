@@ -102,16 +102,28 @@ export function resolveExpectParams(raw: unknown): ExpectSpec | null {
   return { urlChanged, selectorAppears, selectorDisappears, textAppears, timeoutMs };
 }
 
+/** What the page looked like right BEFORE the action: the url plus one
+ * full probe sample. `*_appears` / `selector_disappears` are transitions,
+ * so each needs its starting state. */
+export interface ExpectBaseline {
+  url?: string;
+  observed?: ExpectObservation;
+}
+
 /** Describe every condition of `spec` that `observed` does not satisfy.
  * Pure: an empty array means the expectation is met. */
 export function unmetExpectations(
   spec: ExpectSpec,
-  startUrl: string | undefined,
+  baseline: ExpectBaseline | undefined,
   observed: ExpectObservation,
 ): string[] {
   const unmet: string[] = [];
   const invalid = observed.invalid_selector;
-  if (spec.urlChanged && (startUrl === undefined || observed.url === startUrl)) {
+  const startUrl = baseline?.url;
+  if (
+    spec.urlChanged &&
+    (startUrl === undefined || observed.url === undefined || observed.url === startUrl)
+  ) {
     unmet.push('url_changed');
   }
   if (spec.selectorAppears !== undefined && observed.selector_appears !== true) {
@@ -135,17 +147,67 @@ export function unmetExpectations(
 }
 
 /**
- * Capture what `url_changed` compares against. Call it right BEFORE the
- * action is dispatched; it is a no-op (no page round trip) unless the
- * caller asked for `url_changed`.
+ * Conditions that already held BEFORE the action, which therefore cannot
+ * prove the action did anything (a dialog already open, text already on
+ * the page). `expect` asserts a TRANSITION, so these fail up front.
+ */
+export function alreadyHeldExpectations(
+  spec: ExpectSpec,
+  baseline: ExpectBaseline | undefined,
+): string[] {
+  const before = baseline?.observed;
+  if (!before) return [];
+  const held: string[] = [];
+  if (spec.selectorAppears !== undefined && before.selector_appears === true) {
+    held.push(`selector_appears "${spec.selectorAppears}" was already present before the action`);
+  }
+  if (spec.selectorDisappears !== undefined && before.selector_disappears === true) {
+    held.push(`selector_disappears "${spec.selectorDisappears}" was not present before the action`);
+  }
+  if (spec.textAppears !== undefined && before.text_appears === true) {
+    held.push(`text_appears "${spec.textAppears}" was already on the page before the action`);
+  }
+  return held;
+}
+
+function probeExpression(spec: ExpectSpec): string {
+  return buildExpectProbeJs({
+    selector_appears: spec.selectorAppears,
+    selector_disappears: spec.selectorDisappears,
+    text_appears: spec.textAppears,
+  });
+}
+
+/** Reject if `promise` has not settled within `ms`, so a hung probe (a
+ * frozen tab, a wedged debugger) cannot stall the verification loop. */
+function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  const bound = ms > 0 && ms <= MAX_EXPECT_TIMEOUT_MS ? ms : EXPECT_POLL_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`probe timed out after ${bound}ms`));
+    }, bound);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * Sample the page right BEFORE the action is dispatched: the baseline for
+ * `url_changed` and the starting state of every transition condition. A
+ * no-op (no page round trip) when nothing is expected. A failing sample
+ * rejects, which aborts the action before it dispatches.
  */
 export async function beginExpect(
   evaluate: EvaluateFn,
   spec: ExpectSpec | null,
-): Promise<string | undefined> {
-  if (!spec || !spec.urlChanged) return undefined;
-  const href = await evaluate('location.href');
-  return typeof href === 'string' ? href : undefined;
+): Promise<ExpectBaseline | undefined> {
+  if (!spec) return undefined;
+  const raw = await withProbeTimeout(evaluate(probeExpression(spec)), spec.timeoutMs);
+  if (typeof raw !== 'object' || raw === null) return {};
+  const observed = raw as ExpectObservation;
+  return { url: observed.url, observed };
 }
 
 /**
@@ -153,8 +215,11 @@ export async function beginExpect(
  * the action was dispatched and settled. Never throws: a probe that fails
  * (typically the action navigated and tore down the execution context) is
  * treated as "not observable yet" and retried until the deadline — the
- * next tick usually lands on the new document. An invalid selector is the
- * one exception: it can never become true, so it fails immediately.
+ * next tick usually lands on the new document. Each probe is bounded so
+ * the loop overruns the window by at most one poll. An invalid selector is
+ * the one exception: it can never become true, so it fails immediately.
+ * A condition that already held before the action also fails immediately
+ * (see `alreadyHeldExpectations`).
  *
  * Returns `{ ok: true, expect: { met: true, elapsed_ms } }`, or
  * `{ ok: false, error: 'expectation not met: <which> after <ms>ms ...' }`
@@ -164,27 +229,34 @@ export async function beginExpect(
 export async function verifyExpect(
   evaluate: EvaluateFn,
   spec: ExpectSpec | null,
-  startUrl: string | undefined,
+  baseline: ExpectBaseline | undefined,
   settle: Record<string, unknown> | undefined,
   clock: ExpectClock = realClock,
 ): Promise<ExpectVerdict> {
   if (!spec) return { ok: true };
-  const expression = buildExpectProbeJs({
-    selector_appears: spec.selectorAppears,
-    selector_disappears: spec.selectorDisappears,
-    text_appears: spec.textAppears,
-  });
+  const settleNote = settle ? `; settle: ${JSON.stringify(settle)}` : '';
+  const held = alreadyHeldExpectations(spec, baseline);
+  if (held.length > 0) {
+    return { ok: false, error: `expectation not met: ${held.join(', ')}${settleNote}` };
+  }
+  const expression = probeExpression(spec);
   const startedAt = clock.now();
   let unmet: string[];
+  let probeFailures = 0;
+  let probeSuccesses = 0;
+  let lastProbeError = '';
   for (;;) {
     let observed: ExpectObservation | undefined;
     try {
-      const raw = await evaluate(expression);
+      const remaining = spec.timeoutMs - (clock.now() - startedAt);
+      const raw = await withProbeTimeout(evaluate(expression), Math.max(remaining, EXPECT_POLL_MS));
       if (typeof raw === 'object' && raw !== null) observed = raw;
-    } catch {
-      observed = undefined;
+      probeSuccesses++;
+    } catch (err) {
+      probeFailures++;
+      lastProbeError = err instanceof Error ? err.message : String(err);
     }
-    unmet = unmetExpectations(spec, startUrl, observed ?? {});
+    unmet = unmetExpectations(spec, baseline, observed ?? {});
     if (unmet.length === 0) {
       return { ok: true, expect: { met: true, elapsed_ms: clock.now() - startedAt } };
     }
@@ -193,9 +265,12 @@ export async function verifyExpect(
     await clock.sleep(EXPECT_POLL_MS);
   }
   const elapsed = clock.now() - startedAt;
-  const settleNote = settle ? `; settle: ${JSON.stringify(settle)}` : '';
+  const probeNote =
+    probeSuccesses === 0 && probeFailures > 0
+      ? `; probe failed ${probeFailures} times (last: ${lastProbeError})`
+      : '';
   return {
     ok: false,
-    error: `expectation not met: ${unmet.join(', ')} after ${elapsed}ms${settleNote}`,
+    error: `expectation not met: ${unmet.join(', ')} after ${elapsed}ms${probeNote}${settleNote}`,
   };
 }

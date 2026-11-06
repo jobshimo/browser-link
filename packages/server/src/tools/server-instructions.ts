@@ -192,6 +192,9 @@ tokens AND more reliable than a hand-rolled expression.
   \`url_changed\`, \`selector_appears\`, \`selector_disappears\`,
   \`text_appears\`, \`timeout_ms\`. A no-op action then fails right
   there with \`expectation not met: ...\` instead of reading as success.
+  \`expect\` asserts a transition: appears/disappears conditions are
+  sampled before the action, and one that already held beforehand fails
+  immediately.
 - **Paging through \`browser.events\`** → keep \`lastId = result.latest_id\`
   in your working notes and pass it as \`since_id\` on the next call.
   That is one variable. The server does not maintain per-agent cursors.

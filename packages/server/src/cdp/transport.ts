@@ -357,7 +357,7 @@ async function performClick(
       }
       return { ok: false, error: `Element not found: ${selector}` };
     }
-    const startUrl = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x: resolved.x,
@@ -378,7 +378,7 @@ async function performClick(
       clickCount: 1,
     });
     const settleResult = await runSettle(client, settle);
-    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
     if (resolved.hit_element) result.hit_element = resolved.hit_element;
@@ -419,10 +419,10 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
-    const startUrl = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.insertText', { text });
     const settleResult = await runSettle(client, settle);
-    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
@@ -467,10 +467,10 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
-    const startUrl = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEventSequence(client, def, modifiers);
     const settleResult = await runSettle(client, settle);
-    const verdict = await verifyExpect(evaluate, expectSpec, startUrl, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: PressStepResult = { key, modifiers: modifierNames };
     if (settleResult) result.settle = settleResult;

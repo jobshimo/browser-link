@@ -1121,4 +1121,46 @@ describe('buildExpectProbeJs', () => {
     expect(probe({ text_appears: 'lesson complete' }).text_appears).toBe(true);
     expect(probe({ text_appears: 'nothing here' }).text_appears).toBe(false);
   });
+
+  test('text_appears reads a shadow root only when its host and child are visible', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<p id="msg">Shadow secret</p>';
+    const msg = root.getElementById('msg')!;
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(false);
+    makeVisible(host);
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(false);
+    makeVisible(msg);
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(true);
+  });
+
+  test('text_appears skips style/script/template children of a visible shadow root', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    makeVisible(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML =
+      '<style id="s">.k{content:"cssonly"}</style><script id="j">var x="jsonly"</script><template id="t">tmplonly</template>';
+    for (const id of ['s', 'j', 't']) makeVisible(root.getElementById(id)!);
+    expect(probe({ text_appears: 'cssonly' }).text_appears).toBe(false);
+    expect(probe({ text_appears: 'jsonly' }).text_appears).toBe(false);
+    expect(probe({ text_appears: 'tmplonly' }).text_appears).toBe(false);
+  });
+
+  test('text_appears reads a same-origin iframe body only when the iframe is visible', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.textContent = 'Frame secret';
+    expect(probe({ text_appears: 'frame secret' }).text_appears).toBe(false);
+    makeVisible(frame);
+    expect(probe({ text_appears: 'frame secret' }).text_appears).toBe(true);
+  });
+
+  test('text_appears prefers rendered innerText over textContent when innerText is a string', () => {
+    document.body.innerHTML = '<p>hidden words</p>';
+    // A real browser omits non-rendered text from innerText; textContent would still hold it.
+    Object.defineProperty(document.body, 'innerText', { value: '', configurable: true });
+    expect(probe({ text_appears: 'hidden words' }).text_appears).toBe(false);
+  });
 });

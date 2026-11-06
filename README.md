@@ -429,6 +429,16 @@ elapsed_ms }`. Unmet: `ok: false` with `expectation not met: <which> after
 browser.click({ tab_id, selector: 'a.next-lesson-link', expect: { url_changed: true } });
 ```
 
+`expect` asserts a **transition**. The page is sampled right before the
+action: `selector_appears` / `text_appears` must be absent beforehand and
+present afterwards; `selector_disappears` must be present beforehand and
+gone afterwards. A condition that already held before the action fails
+immediately (`selector_appears "[role=dialog]" was already present before
+the action`), because it cannot prove the action did anything.
+`url_changed` compares against the URL sampled right before _this_ action,
+so a navigation still pending from a previous step can satisfy it — when
+chaining navigations, confirm the earlier one landed first.
+
 An action with `expect` adds its window to a flow step's worst-case
 budget, so a long run of expectant steps can trip the 60 s up-front
 rejection.

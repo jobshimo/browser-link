@@ -760,20 +760,35 @@ export function buildExpectProbeJs(opts: ExpectProbeOpts): string {
   function normalized(s) {
     return String(s).replace(/\\s+/g, ' ').trim().toLowerCase();
   }
-  function renderedText() {
-    const parts = [];
-    const roots = collectSearchRoots(document);
-    for (let i = 0; i < roots.length; i++) {
-      const root = roots[i];
-      if (root.nodeType === 9) {
-        if (root.body) parts.push(root.body.innerText || root.body.textContent || '');
-      } else {
-        const kids = root.children || [];
-        for (let j = 0; j < kids.length; j++) {
-          parts.push(kids[j].innerText || kids[j].textContent || '');
-        }
-      }
+  function ownText(node) {
+    const t = node.innerText;
+    return typeof t === 'string' ? t : node.textContent || '';
+  }
+  function elementText(el) {
+    const tag = el.tagName;
+    if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'TEMPLATE' || tag === 'NOSCRIPT') return '';
+    if (!isVisible(el)) return '';
+    return ownText(el);
+  }
+  function rootText(root) {
+    if (root.nodeType === 9) {
+      let frame = null;
+      try {
+        frame = root.defaultView && root.defaultView.frameElement;
+      } catch (_) {}
+      if (frame && !isVisible(frame)) return '';
+      return root.body ? ownText(root.body) : '';
     }
+    if (root.host && !isVisible(root.host)) return '';
+    const kids = root.children || [];
+    const parts = [];
+    for (let j = 0; j < kids.length; j++) parts.push(elementText(kids[j]));
+    return parts.join(' ');
+  }
+  function renderedText() {
+    const roots = collectSearchRoots(document);
+    const parts = [];
+    for (let i = 0; i < roots.length; i++) parts.push(rootText(roots[i]));
     return normalized(parts.join(' '));
   }
   if (opts.selectorAppears !== undefined) {
