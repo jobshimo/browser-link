@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * DRIFT GUARD for the verbatim copies under `packages/server/src/cdp/`.
  *
  * `cdp/inpage/{deep-query,dom-helpers,builders}.ts`, `cdp/settle.ts`,
- * `cdp/keymap.ts` and `cdp/flow.ts` are independent copies of their
+ * `cdp/keymap.ts`, `cdp/flow.ts` and `cdp/inpage/observer.ts` are independent copies of their
  * `packages/extension/src/` originals (the server publishes to npm
  * standalone and cannot depend on the private `@browser-link/extension`
  * package — see each copy's header comment). That duplication is exactly
@@ -84,6 +84,18 @@ describe('cdp verbatim-copy drift guard: injected DOM logic', () => {
     expect(srv).toBe(ext);
     expect(srv).toContain('function isVisible');
     expect(srv).toContain('function genSelectorInfo');
+  });
+});
+
+describe('cdp verbatim-copy drift guard: page observer (full body)', () => {
+  test('inpage/observer.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_INPAGE, 'observer.ts')));
+    const srv = stripHeader(read(join(SRV_INPAGE, 'observer.ts')));
+    expect(srv).toBe(ext);
+    // Sanity: the stripped body is the real observer, not an empty match.
+    expect(srv).toContain('export const OBSERVER_VERSION');
+    expect(srv).toContain('export function buildObserverInstallJs');
+    expect(srv).toContain('setTimeout(onTimer, 16)');
   });
 });
 
