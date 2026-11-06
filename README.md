@@ -574,7 +574,10 @@ results: [...] }` (a `repeat` adds `iterations_completed` and, for an
   a single step and cannot answer, the server cancels it and recovers
   what the flow registry knows (`steps_completed`, `iterations_completed`,
   `flow_id`, `results_available: false` — the per-step results are lost
-  in that case). A detached flow has its own 30-minute ceiling instead.
+  in that case). In that recovered case `steps_completed` can also be
+  **one lower** than what really ran — the step in flight when the
+  cancel landed is not counted — so verify the page state of the first
+  step to re-run instead of blindly repeating it. A detached flow has its own 30-minute ceiling instead.
 - **Worst-case latency is one step.** Cancelling means the runner declines
   to dispatch step N+1 — it does not interrupt a CDP command already in
   flight, because nothing can. The flag is checked before every top-level
