@@ -197,11 +197,15 @@ tokens AND more reliable than a hand-rolled expression.
   instead of a follow-up \`browser.wait_for\` + \`browser.snapshot\`. The
   action waits for the page to go quiet — no DOM mutations for
   \`settle_ms\` — and returns a \`settle\` object
-  (\`{ settled, duration_ms, mutation_count, url_changed?, focus_moved? }\`).
-  Settle proves QUIET, not EFFECT: mutations completing before the
-  observer installs (right after dispatch) and async reactions starting
-  after the quiet window are both invisible — \`mutation_count: 0\` does
-  NOT mean the action did nothing. Reach for \`wait_for\` when you need a
+  (\`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?,
+  changes, observer? }\`). Settle proves QUIET, not EFFECT, but it
+  measures from a mark taken BEFORE the action: \`settle.changes\`
+  (records, targets, kinds, roots, descriptors) is what the action
+  caused, and \`mutation_count: 0\` with \`changes\` present means no DOM
+  change in the quiet window. \`changes: null\` with
+  \`observer: "<reason>"\` means the observer was not available for that
+  action. A reaction that starts after the quiet window is still
+  invisible: reach for \`expect\` or \`wait_for\` when you need a
   SPECIFIC condition (a particular selector, network request, or
   expression), not just "did anything change".
 - **Counting on a specific effect of an action** (navigation, a dialog

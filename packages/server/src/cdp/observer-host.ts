@@ -183,7 +183,9 @@ export function parseObserverMessage(payload: string): PageObserverMessage | nul
   if (!isRecord(raw) || typeof raw.doc_id !== 'string') return null;
   switch (raw.type) {
     case 'summary':
-      return isCount(raw.seq) && hasChangeCounts(raw) ? (raw as unknown as PageObserverSummary) : null;
+      return isCount(raw.seq) && hasChangeCounts(raw)
+        ? (raw as unknown as PageObserverSummary)
+        : null;
     case 'doc_start':
       return typeof raw.url === 'string' && (raw.coverage === 'full' || raw.coverage === 'partial')
         ? (raw as unknown as PageObserverMessage)
@@ -217,13 +219,15 @@ export function applyObserverMessage(
       mirror.recent = [];
       return { kind: 'doc_start', url: message.url };
     case 'nav':
-      if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id) return { kind: 'ignored' };
+      if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id)
+        return { kind: 'ignored' };
       if (message.url === mirror.url) return { kind: 'ignored' };
       mirror.url = message.url;
       return { kind: 'nav', url: message.url };
     case 'summary':
       if (message.roots.frame) return { kind: 'ignored' };
-      if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id) return { kind: 'ignored' };
+      if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id)
+        return { kind: 'ignored' };
       mirror.last_seq = Math.max(mirror.last_seq, message.seq);
       mirror.recent.push(message);
       while (mirror.recent.length > OBSERVER_RECENT_CAP) mirror.recent.shift();

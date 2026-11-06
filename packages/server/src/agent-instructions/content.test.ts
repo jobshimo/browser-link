@@ -91,6 +91,13 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('settle_ms');
     expect(out).toContain('settle');
     expect(out).toContain('mutation_count');
+    // Settle reports what the action caused since a pre-dispatch mark.
+    expect(out).toContain('settle.changes');
+    expect(out).toContain('changes: null');
+    expect(out).toContain('observer: "<reason>"');
+    expect(out).toMatch(/starts\s+after\s+the\s+quiet\s+window/);
+    // The old blind spot must be gone.
+    expect(out).not.toContain('before the observer');
   });
 
   test('BULK WORK section points at flow+repeat instead of an evaluate loop', () => {
