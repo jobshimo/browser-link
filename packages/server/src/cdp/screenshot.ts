@@ -32,6 +32,9 @@ export interface LayoutMetrics {
   contentSize?: Size;
   cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
   visualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
+  /** Layout viewport in device pixels / CSS pixels — their ratio is the DPR. */
+  layoutViewport?: { clientWidth: number };
+  cssLayoutViewport?: { clientWidth: number };
 }
 export interface ScreenshotPlan {
   clip: Rect & { scale: number };
@@ -39,7 +42,26 @@ export interface ScreenshotPlan {
   width: number;
   height: number;
   scale: number;
+  /** Device pixels per CSS pixel; the capture is clip x scale x dpr pixels. */
+  dpr: number;
   truncated: boolean;
+}
+
+/**
+ * Device pixels per CSS pixel, derived from the layout metrics (no extra
+ * in-page round trip): layout-viewport width ratio, else content-size
+ * ratio, else 1.
+ */
+export function dprFromMetrics(m: LayoutMetrics): number {
+  const pairs: [number | undefined, number | undefined][] = [
+    [m.layoutViewport?.clientWidth, m.cssLayoutViewport?.clientWidth],
+    [m.contentSize?.width, m.cssContentSize?.width],
+    [m.visualViewport?.clientWidth, m.cssVisualViewport?.clientWidth],
+  ];
+  for (const [device, css] of pairs) {
+    if (positive(device) && positive(css)) return device / css;
+  }
+  return 1;
 }
 
 function positive(n: unknown): n is number {
@@ -52,16 +74,33 @@ export function planClip(
   elementRect: Rect | undefined,
   maxDimension: number,
 ): ScreenshotPlan {
+  const dpr = dprFromMetrics(metrics);
   let region: Rect;
   if (mode === 'element') {
     if (!elementRect) throw new Error('screenshot: element rect missing for element mode');
     region = { ...elementRect };
   } else if (mode === 'viewport') {
-    const vp = metrics.cssVisualViewport ?? metrics.visualViewport;
-    if (!vp) throw new Error('screenshot: layout metrics have no viewport');
-    region = { x: vp.pageX, y: vp.pageY, width: vp.clientWidth, height: vp.clientHeight };
+    // Device-pixel fallback values are converted to the CSS pixels clip uses.
+    const css = metrics.cssVisualViewport;
+    const dev = metrics.visualViewport;
+    if (css) {
+      region = { x: css.pageX, y: css.pageY, width: css.clientWidth, height: css.clientHeight };
+    } else if (dev) {
+      region = {
+        x: dev.pageX / dpr,
+        y: dev.pageY / dpr,
+        width: dev.clientWidth / dpr,
+        height: dev.clientHeight / dpr,
+      };
+    } else {
+      throw new Error('screenshot: layout metrics have no viewport');
+    }
   } else {
-    const size = metrics.cssContentSize ?? metrics.contentSize;
+    const size = metrics.cssContentSize
+      ? metrics.cssContentSize
+      : metrics.contentSize
+        ? { width: metrics.contentSize.width / dpr, height: metrics.contentSize.height / dpr }
+        : undefined;
     if (!size) throw new Error('screenshot: layout metrics have no content size');
     region = { x: 0, y: 0, width: size.width, height: size.height };
   }
@@ -69,20 +108,23 @@ export function planClip(
     throw new Error(`screenshot: ${mode} region is zero-sized — nothing to capture`);
   }
 
-  let scale = Math.min(1, maxDimension / Math.max(region.width, region.height));
+  // The output is clip x scale x dpr DEVICE pixels, so max_dimension bounds
+  // the longest side in device pixels.
+  let scale = Math.min(1, maxDimension / (Math.max(region.width, region.height) * dpr));
   let truncated = false;
   if (scale < MIN_SCALE) {
     scale = MIN_SCALE;
-    const limit = maxDimension / MIN_SCALE;
+    const limit = maxDimension / (MIN_SCALE * dpr);
     if (region.width > limit) region.width = limit;
     if (region.height > limit) region.height = limit;
     truncated = true;
   }
   return {
     clip: { ...region, scale },
-    width: Math.max(1, Math.round(region.width * scale)),
-    height: Math.max(1, Math.round(region.height * scale)),
+    width: Math.max(1, Math.round(region.width * scale * dpr)),
+    height: Math.max(1, Math.round(region.height * scale * dpr)),
     scale,
+    dpr,
     truncated,
   };
 }
@@ -152,7 +194,6 @@ export async function runScreenshot(
   const mode = opts.mode ?? 'viewport';
   const maxDimension = opts.maxDimension ?? DEFAULT_MAX_DIMENSION;
 
-  let metrics: LayoutMetrics = {};
   let elementRect: Rect | undefined;
   if (mode === 'element') {
     if (!opts.selector) throw new Error('screenshot: selector is required for element mode');
@@ -164,9 +205,10 @@ export async function runScreenshot(
       throw new Error(`Element not found: ${opts.selector}`);
     }
     elementRect = { x: r.x, y: r.y, width: r.width, height: r.height };
-  } else {
-    metrics = (await deps.send('Page.getLayoutMetrics')) as LayoutMetrics;
   }
+  // Always read the metrics: besides the page size they carry the DPR the
+  // output dimensions depend on.
+  const metrics = (await deps.send('Page.getLayoutMetrics')) as LayoutMetrics;
   const plan = planClip(mode, metrics, elementRect, maxDimension);
 
   let attempt: Attempt = {
@@ -193,8 +235,8 @@ export async function runScreenshot(
         ok: true,
         mode,
         format: attempt.format,
-        width: Math.max(1, Math.round(plan.clip.width * attempt.scale)),
-        height: Math.max(1, Math.round(plan.clip.height * attempt.scale)),
+        width: Math.max(1, Math.round(plan.clip.width * attempt.scale * plan.dpr)),
+        height: Math.max(1, Math.round(plan.clip.height * attempt.scale * plan.dpr)),
         scale: attempt.scale,
         bytes,
         image_b64: res.data,

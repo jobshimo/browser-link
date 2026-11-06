@@ -407,6 +407,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'The result is capped at ~8 MB. A PNG over the cap is retried as JPEG, then at a lower scale; if nothing fits the call fails with the measured size.',
         'Lazy-loaded content that only renders on scroll is NOT triggered by a full-page capture; scroll the page (e.g. `browser.evaluate`) first if images below the fold are blank.',
         '"element" mode scrolls the element into view first (which can change the page scroll position) and clips to its border box. Content inside cross-origin iframes or closed shadow roots is painted in the image but cannot be targeted by `selector`.',
+        'Known limitation: an "element" larger than the visible area of its iframe or scrollable/overflow container is only painted as far as that container shows it — the rest of the element is blank in the image. Capture the container instead, or use "full_page" when the element is not inside a nested scroller.',
         'This is a read tool: it does not claim the tab. For a `<canvas>` whose pixels you want exactly as drawn, `browser.canvas_screenshot` is still the right tool.',
       ],
       example:

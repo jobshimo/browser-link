@@ -246,8 +246,9 @@ export function isBrowserTool(name: string): boolean {
 const NAVIGATE_TIMEOUT_MS = 30_000;
 
 /** Full-page captures of very long pages (layout + render + base64) can
- * outlast the bridge's default read timeout. */
-const SCREENSHOT_TIMEOUT_MS = 30_000;
+ * outlast the bridge's default read timeout, and the byte-cap fallback may
+ * capture up to 4 times — budget for the worst case. */
+const SCREENSHOT_TIMEOUT_MS = 90_000;
 
 /** Same floor click/type/drag/wait_for already use. Action tools default
  * here when they have no other reason to run longer. */

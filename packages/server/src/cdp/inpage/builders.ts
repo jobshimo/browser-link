@@ -501,10 +501,13 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
   const el = deepQueryFirst(opts.selector);
   if (!el) return { ok: false, reason: 'not-found' };
   const chain = frameElementChain(el);
+  // behavior 'instant' overrides CSS scroll-behavior: smooth, which would
+  // leave the rect below stale while the scroll is still animating.
+  const jump = { block: 'center', inline: 'center', behavior: 'instant' };
   for (const fe of chain) {
-    if (fe.scrollIntoView) fe.scrollIntoView({ block: 'center', inline: 'center' });
+    if (fe.scrollIntoView) fe.scrollIntoView(jump);
   }
-  if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+  if (el.scrollIntoView) el.scrollIntoView(jump);
   const rect = el.getBoundingClientRect();
   let offsetX = 0;
   let offsetY = 0;

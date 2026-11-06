@@ -28,14 +28,64 @@ describe('planClip', () => {
     expect(plan.height).toBe(5000);
   });
 
-  test('falls back to the device-pixel content size when css metrics are absent', () => {
+  test('converts the device-pixel content size to CSS pixels when css metrics are absent', () => {
     const plan = planClip(
       'full_page',
-      { contentSize: { width: 800, height: 600 } },
+      {
+        contentSize: { width: 1600, height: 1200 },
+        layoutViewport: { clientWidth: 2000 },
+        cssLayoutViewport: { clientWidth: 1000 },
+      },
       undefined,
       8000,
     );
     expect(plan.clip).toMatchObject({ width: 800, height: 600 });
+    expect(plan).toMatchObject({ width: 1600, height: 1200 });
+  });
+
+  test('devicePixelRatio 2: scale accounts for device pixels so the OUTPUT fits max_dimension', () => {
+    const plan = planClip(
+      'full_page',
+      {
+        cssContentSize: { width: 1000, height: 8000 },
+        contentSize: { width: 2000, height: 16000 },
+      },
+      undefined,
+      8000,
+    );
+    expect(plan.scale).toBeCloseTo(0.5);
+    expect(plan.clip.scale).toBeCloseTo(0.5);
+    expect(plan.height).toBe(8000);
+    expect(plan.width).toBe(1000);
+  });
+
+  test('devicePixelRatio 1.5 reports device-pixel output dimensions', () => {
+    const plan = planClip(
+      'element',
+      { layoutViewport: { clientWidth: 1500 }, cssLayoutViewport: { clientWidth: 1000 } },
+      { x: 0, y: 0, width: 400, height: 200 },
+      8000,
+    );
+    expect(plan.scale).toBe(1);
+    expect(plan.width).toBe(600);
+    expect(plan.height).toBe(300);
+  });
+
+  test('devicePixelRatio 2: the truncation threshold is in device pixels', () => {
+    const plan = planClip(
+      'full_page',
+      {
+        cssContentSize: { width: 1000, height: 50000 },
+        contentSize: { width: 2000, height: 100000 },
+      },
+      undefined,
+      8000,
+    );
+    expect(plan.truncated).toBe(true);
+    expect(plan.scale).toBe(0.25);
+    // 8000 / (0.25 * 2) CSS px of height survive the crop.
+    expect(plan.clip.height).toBe(16000);
+    expect(plan.height).toBe(8000);
   });
 
   test('element mode clips the resolved element rect', () => {
@@ -201,10 +251,21 @@ describe('runScreenshot', () => {
     expect(shot?.params).toMatchObject({ format: 'jpeg', quality: 55 });
   });
 
-  test('element mode resolves the rect and skips layout metrics', async () => {
+  test('reported dimensions are device pixels on a DPR 2 display', async () => {
+    const { deps } = fakeDeps({
+      metrics: {
+        cssContentSize: { width: 1000, height: 8000 },
+        contentSize: { width: 2000, height: 16000 },
+      },
+    });
+    const out = await runScreenshot(deps, { mode: 'full_page' });
+    expect(out).toMatchObject({ scale: 0.5, width: 1000, height: 8000 });
+  });
+
+  test('element mode resolves the rect and still reads layout metrics for the DPR', async () => {
     const { deps, calls } = fakeDeps({});
     const out = await runScreenshot(deps, { mode: 'element', selector: '#card' });
-    expect(calls.some((c) => c.method === 'Page.getLayoutMetrics')).toBe(false);
+    expect(calls.some((c) => c.method === 'Page.getLayoutMetrics')).toBe(true);
     const shot = calls.find((c) => c.method === 'Page.captureScreenshot');
     expect(shot?.params.clip).toEqual({ x: 5, y: 6, width: 100, height: 50, scale: 1 });
     expect(out).toMatchObject({ width: 100, height: 50 });

@@ -1020,6 +1020,18 @@ describe('buildElementRectJs', () => {
     expect(res).toEqual({ ok: true, x: 15, y: 420, width: 300, height: 100 });
   });
 
+  test('scrolls instantly so smooth-scroll containers cannot leave a stale rect', () => {
+    const el = document.createElement('div');
+    el.id = 'card';
+    document.body.appendChild(el);
+    const calls: unknown[] = [];
+    el.scrollIntoView = ((arg: unknown) => {
+      calls.push(arg);
+    }) as typeof el.scrollIntoView;
+    evalExpr(buildElementRectJs({ selector: '#card' }));
+    expect(calls).toEqual([{ block: 'center', inline: 'center', behavior: 'instant' }]);
+  });
+
   test('reports not-found and invalid-selector separately', () => {
     expect(evalExpr<{ reason: string }>(buildElementRectJs({ selector: '#nope' })).reason).toBe(
       'not-found',
