@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.32.0](https://github.com/jobshimo/browser-link/compare/v0.31.0...v0.32.0) (2026-11-06)
+
+### Features
+
+- **flow:** a `browser.flow` that runs out of time now returns what it did: `{ ok: true, stopped_by: "timeout", steps_completed, results }`, plus `iterations_completed` and `partial_iteration` for a `repeat`. It used to die with nothing, so the agent could not tell whether 0 or 13 iterations had run.
+- **flow:** the server gives the runner a deadline 3 s before the bridge timeout. The runner stops at the next step or iteration boundary, and `sleep`, `repeat.delay_ms` and `wait_for` are cut to the time left. A human Stop still wins and reports `cancelled`.
+- **flow:** if the bridge timeout fires anyway because one step is stuck, the server cancels the flow (recorded as `expired`, not as a human stop) and recovers `steps_completed` and `flow_id` from the registry. It never invents a count: when the registry no longer knows the flow, the original error comes back with the `flow_id`. cdp-direct transport errors are never mistaken for a bridge timeout.
+- **flow:** steps accept `settle_timeout_ms`, and the worst-case budget charges it per action, multiplied through `repeat`.
+- **flow:** after a recovered timeout `steps_completed` can be one lower than what really ran; the docs say to check the page before re-running that step.
+
 ## [0.31.0](https://github.com/jobshimo/browser-link/compare/v0.30.0...v0.31.0) (2026-11-06)
 
 ### Features
