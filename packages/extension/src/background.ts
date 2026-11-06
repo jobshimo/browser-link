@@ -848,6 +848,19 @@ const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
  * able to detach. */
 const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
 
+/** Race a CDP call against `OBSERVER_EVAL_TIMEOUT_MS`; rejects on timeout. */
+async function withObserverTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`observer evaluation timed out after ${OBSERVER_EVAL_TIMEOUT_MS}ms`));
+    }, OBSERVER_EVAL_TIMEOUT_MS);
+  });
+  return Promise.race([work, timeout]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 /**
  * `Runtime.evaluate` for page-observer plumbing (mark, changes, probes,
  * teardown). Unlike `evaluateInTab` it passes no `userGesture` — these
@@ -855,21 +868,12 @@ const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
  * earn — and it rejects after `OBSERVER_EVAL_TIMEOUT_MS`.
  */
 async function evaluateObserverJs(tabId: number, expression: string): Promise<unknown> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`observer evaluation timed out after ${OBSERVER_EVAL_TIMEOUT_MS}ms`));
-    }, OBSERVER_EVAL_TIMEOUT_MS);
-  });
-  const result = await Promise.race([
-    cdp<CdpRuntimeEvaluateResponse<unknown>>(tabId, 'Runtime.evaluate', {
+  const result = await withObserverTimeout(
+    cdp<CdpRuntimeEvaluateResponse>(tabId, 'Runtime.evaluate', {
       expression,
       returnByValue: true,
     }),
-    timeout,
-  ]).finally(() => {
-    clearTimeout(timer);
-  });
+  );
   if (result.exceptionDetails) {
     const ex = result.exceptionDetails;
     throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
@@ -974,7 +978,7 @@ async function installObserver(state: TabState): Promise<void> {
   state.observer = mirror;
   try {
     await cdp(state.tabId, 'Runtime.addBinding', { name: OBSERVER_BINDING });
-    const added = await cdp<{ identifier?: string }>(
+    const added = await cdp<{ identifier?: string } | undefined>(
       state.tabId,
       'Page.addScriptToEvaluateOnNewDocument',
       { source: buildObserverInstallJs(), runImmediately: true },
@@ -995,9 +999,11 @@ async function uninstallObserver(state: TabState): Promise<void> {
   state.observer.installed = false;
   if (state.observerScriptId !== undefined) {
     try {
-      await cdp(state.tabId, 'Page.removeScriptToEvaluateOnNewDocument', {
-        identifier: state.observerScriptId,
-      });
+      await withObserverTimeout(
+        cdp(state.tabId, 'Page.removeScriptToEvaluateOnNewDocument', {
+          identifier: state.observerScriptId,
+        }),
+      );
     } catch {
       // Best effort — the tab may already be gone.
     }
@@ -1205,7 +1211,10 @@ function attachDebuggerListener(state: TabState): void {
       }
       return;
     }
-    if (method === 'Runtime.bindingCalled' && (params as { name?: string }).name === OBSERVER_BINDING) {
+    if (
+      method === 'Runtime.bindingCalled' &&
+      (params as { name?: string }).name === OBSERVER_BINDING
+    ) {
       void handleObserverMessage(state, (params as { payload?: string }).payload ?? '');
       return;
     }
@@ -1651,10 +1660,7 @@ async function performWaitFor(
     // null and we return matched=false immediately.
     let check: (() => Promise<boolean>) | null = null;
     if (waitSelector !== undefined) {
-      const expr = buildWaitForSelectorJs(
-        waitSelector,
-        waitCondition as WaitForSelectorCondition,
-      );
+      const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
           const result = await evaluateInTab(tabId, expr);

@@ -48,7 +48,9 @@ describe('parseObserverMessage', () => {
     expect(parseObserverMessage('null')).toBeNull();
     expect(parseObserverMessage(JSON.stringify({ type: 'bogus', doc_id: 'x' }))).toBeNull();
     expect(parseObserverMessage(JSON.stringify({ type: 'nav', doc_id: 'x' }))).toBeNull();
-    expect(parseObserverMessage(JSON.stringify({ type: 'summary', doc_id: 'x', seq: 'one' }))).toBeNull();
+    expect(
+      parseObserverMessage(JSON.stringify({ type: 'summary', doc_id: 'x', seq: 'one' })),
+    ).toBeNull();
   });
 
   test('accepts the three observer message types', () => {
@@ -210,7 +212,13 @@ describe('mergeSettleChanges', () => {
   });
 
   test('non-object, malformed or unknown-reason changes report changes-error', () => {
-    for (const bad of [undefined, null, 'x', { ok: true, records: 'many' }, { ok: false, reason: 'weird' }]) {
+    for (const bad of [
+      undefined,
+      null,
+      'x',
+      { ok: true, records: 'many' },
+      { ok: false, reason: 'weird' },
+    ]) {
       expect(mergeSettleChanges(baseSettle(), bad)).toEqual({
         ...baseSettle(),
         changes: null,
@@ -243,7 +251,13 @@ describe('mergeSettleChanges', () => {
 describe('readObserverMark', () => {
   test('accepts an ok mark with a numeric mark and a doc_id', () => {
     expect(
-      readObserverMark({ ok: true, doc_id: 'doc-a', mark: 3, url: 'https://a.test/', has_focus_baseline: true }),
+      readObserverMark({
+        ok: true,
+        doc_id: 'doc-a',
+        mark: 3,
+        url: 'https://a.test/',
+        has_focus_baseline: true,
+      }),
     ).toEqual({ mark: 3, doc_id: 'doc-a' });
   });
 

@@ -576,15 +576,6 @@ export function handleActivityPurgeMessage(msg: ActivityPurgeMessage): ServerToE
 }
 
 /**
- * Payload of the `tab-disconnected` event. `clean` is false only for close
- * code 1006 (abnormal closure: the peer's process or socket died without a
- * close frame) — the one drop the extension retries. Every other code is a
- * deliberate close (manual Disconnect, tab closed, idle sweep, navigation),
- * which the extension never retries; `browser.list_tabs`' empty-list hint
- * reads this to avoid telling an agent to wait for a reconnect that will not
- * happen.
- */
-/**
  * Apply a `tab-navigated` report (spec v4 §5.5) to the tab's session so
  * `list_tabs` shows the current URL and title rather than the ones captured
  * at registration. Accepted only for the tab THIS connection registered and
@@ -620,6 +611,15 @@ export function applyTabNavigated(
   return { ok: true, url: session.url, title: session.title };
 }
 
+/**
+ * Payload of the `tab-disconnected` event. `clean` is false only for close
+ * code 1006 (abnormal closure: the peer's process or socket died without a
+ * close frame) — the one drop the extension retries. Every other code is a
+ * deliberate close (manual Disconnect, tab closed, idle sweep, navigation),
+ * which the extension never retries; `browser.list_tabs`' empty-list hint
+ * reads this to avoid telling an agent to wait for a reconnect that will not
+ * happen.
+ */
 export function buildTabDisconnectedData(
   tabId: string,
   code: number,

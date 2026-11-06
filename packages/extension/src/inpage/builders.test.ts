@@ -1171,10 +1171,22 @@ describe('buildWaitForSelectorJs', () => {
    * so the visible / hidden probe sees a rendered box. */
   function giveSize(el: Element): void {
     el.getBoundingClientRect = () =>
-      ({ x: 0, y: 0, top: 0, left: 0, right: 10, bottom: 10, width: 10, height: 10, toJSON() {} }) as DOMRect;
+      ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 10,
+        bottom: 10,
+        width: 10,
+        height: 10,
+        toJSON() {},
+      }) as DOMRect;
   }
-  const wait = (selector: string, condition: 'visible' | 'hidden' | 'attached' | 'detached'): boolean =>
-    evalExpr<boolean>(buildWaitForSelectorJs(selector, condition));
+  const wait = (
+    selector: string,
+    condition: 'visible' | 'hidden' | 'attached' | 'detached',
+  ): boolean => evalExpr<boolean>(buildWaitForSelectorJs(selector, condition));
 
   test('finds a selector inside an open shadow root as attached and visible', () => {
     const host = document.createElement('div');

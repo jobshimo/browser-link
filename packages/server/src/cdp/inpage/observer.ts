@@ -51,9 +51,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const optsJson = JSON.stringify({
     key: OBSERVER_GLOBAL,
     binding:
-      typeof opts.binding === 'string' && opts.binding.length > 0
-        ? opts.binding
-        : OBSERVER_BINDING,
+      typeof opts.binding === 'string' && opts.binding.length > 0 ? opts.binding : OBSERVER_BINDING,
     version: clampInt(opts.version, OBSERVER_VERSION, 0, Number.MAX_SAFE_INTEGER),
     cap: clampInt(opts.descriptor_cap, DEFAULT_DESCRIPTOR_CAP, 1, MAX_DESCRIPTOR_CAP),
     ringSize: clampInt(opts.ring_size, DEFAULT_RING_SIZE, 1, MAX_RING_SIZE),
