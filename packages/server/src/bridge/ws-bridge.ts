@@ -291,10 +291,10 @@ export function startWsBridge(
         }
       });
 
-      ws.on('close', () => {
+      ws.on('close', (code: number) => {
         if (assignedTabId) {
           tabs.delete(assignedTabId);
-          events.add('tab-disconnected', { tabId: assignedTabId });
+          events.add('tab-disconnected', buildTabDisconnectedData(assignedTabId, code));
           log(`Tab disconnected: ${assignedTabId}`);
         }
       });
@@ -566,6 +566,22 @@ export function handleActivityPurgeMessage(msg: ActivityPurgeMessage): ServerToE
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Payload of the `tab-disconnected` event. `clean` is false only for close
+ * code 1006 (abnormal closure: the peer's process or socket died without a
+ * close frame) — the one drop the extension retries. Every other code is a
+ * deliberate close (manual Disconnect, tab closed, idle sweep, navigation),
+ * which the extension never retries; `browser.list_tabs`' empty-list hint
+ * reads this to avoid telling an agent to wait for a reconnect that will not
+ * happen.
+ */
+export function buildTabDisconnectedData(
+  tabId: string,
+  code: number,
+): { tabId: string; code: number; clean: boolean } {
+  return { tabId, code, clean: code !== 1006 };
 }
 
 export function sendToolCancel(

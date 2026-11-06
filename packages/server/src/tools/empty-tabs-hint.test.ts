@@ -35,8 +35,8 @@ describe('buildEmptyTabsHint', () => {
       ev('primary-elected', T0 - 600_000),
       ev('tab-registered', T0 - 500_000, { tabId: 'tab_1', url: 'https://app.example.com/a?x=1' }),
       ev('tab-registered', T0 - 490_000, { tabId: 'tab_2', url: 'https://other.test/' }),
-      ev('tab-disconnected', T0 - 30_000, { tabId: 'tab_1' }),
-      ev('tab-disconnected', T0 - 29_000, { tabId: 'tab_2' }),
+      ev('tab-disconnected', T0 - 30_000, { tabId: 'tab_1', clean: false }),
+      ev('tab-disconnected', T0 - 29_000, { tabId: 'tab_2', clean: false }),
     ];
     const hint = buildEmptyTabsHint(events, T0);
     expect(hint).toMatch(/2 tab\(s\) were connected and dropped/);
@@ -52,12 +52,51 @@ describe('buildEmptyTabsHint', () => {
   test('tabs dropped longer ago than the reconnect window: ask the user to press Connect', () => {
     const events = [
       ev('tab-registered', T0 - 900_000, { tabId: 'tab_1', url: 'https://a.test/' }),
-      ev('tab-disconnected', T0 - EXTENSION_RECONNECT_WINDOW_MS - 1000, { tabId: 'tab_1' }),
+      ev('tab-disconnected', T0 - EXTENSION_RECONNECT_WINDOW_MS - 120_000, {
+        tabId: 'tab_1',
+        clean: false,
+      }),
     ];
     const hint = buildEmptyTabsHint(events, T0);
     expect(hint).toMatch(/1 tab\(s\) were connected and dropped/);
     expect(hint).toMatch(/press Connect/i);
     expect(hint).not.toMatch(/wait for/i);
+  });
+
+  test('attempt time adds on top of the 600s of waits: still "wait" shortly past the window', () => {
+    const events = [
+      ev('tab-registered', T0 - 900_000, { tabId: 'tab_1', url: 'https://a.test/' }),
+      ev('tab-disconnected', T0 - EXTENSION_RECONNECT_WINDOW_MS - 30_000, {
+        tabId: 'tab_1',
+        clean: false,
+      }),
+    ];
+    expect(buildEmptyTabsHint(events, T0)).toMatch(/wait for reconnect/i);
+  });
+
+  test('a clean close (manual Disconnect, tab closed, idle sweep) is NOT "wait for reconnect"', () => {
+    const events = [
+      ev('tab-registered', T0 - 60_000, { tabId: 'tab_1', url: 'https://a.test/x' }),
+      ev('tab-disconnected', T0 - 5_000, { tabId: 'tab_1', clean: true, code: 1000 }),
+    ];
+    const hint = buildEmptyTabsHint(events, T0);
+    expect(hint).toMatch(/disconnected|closed/i);
+    expect(hint).toMatch(/does not auto-reconnect/i);
+    expect(hint).toMatch(/press Connect/i);
+    expect(hint).not.toMatch(/wait for reconnect/i);
+  });
+
+  test('mixed clean and unclean drops: wait applies only to the unclean ones', () => {
+    const events = [
+      ev('tab-registered', T0 - 60_000, { tabId: 'tab_1', url: 'https://a.test/' }),
+      ev('tab-registered', T0 - 60_000, { tabId: 'tab_2', url: 'https://b.test/' }),
+      ev('tab-disconnected', T0 - 5_000, { tabId: 'tab_1', clean: true }),
+      ev('tab-disconnected', T0 - 5_000, { tabId: 'tab_2', clean: false }),
+    ];
+    const hint = buildEmptyTabsHint(events, T0);
+    expect(hint).toMatch(/wait for reconnect/i);
+    expect(hint).toContain('tab_2 (https://b.test)');
+    expect(hint).toMatch(/tab_1 .*closed|disconnected/i);
   });
 
   test('a renamed tab is tracked under its new id and the old id is not reported', () => {

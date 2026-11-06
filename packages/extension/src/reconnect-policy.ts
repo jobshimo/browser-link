@@ -196,6 +196,48 @@ export function isReconnectStateFresh(updatedAt: number, now: number): boolean {
   return age >= 0 && age < RECONNECT_STATE_TTL_MS;
 }
 
+/** One persisted entry that survived the freshness / liveness checks. */
+export interface ResumableReconnect {
+  tabId: number;
+  attempt: number;
+  /** Remaining wait (undefined → the attempt's regular step delay). */
+  delayMs: number | undefined;
+}
+
+export interface ResumePlan {
+  resume: ResumableReconnect[];
+  /** Tabs whose persisted entry is stale, malformed or moot: clear it. */
+  discard: number[];
+}
+
+/**
+ * Decide, from a snapshot of `chrome.storage.session`, which persisted
+ * reconnect cycles to resume. Pure so the race with a concurrent cancel is
+ * unit-testable: `cancelledSince(tabId)` must answer "was this tab cancelled
+ * (disconnect / manual Connect / tab removal) after the snapshot read began?".
+ * Such a tab is neither resumed NOR discarded — the canceller already cleared
+ * storage, and a fresh cycle scheduled since then must not be wiped.
+ */
+export function planResume(
+  stored: Record<string, unknown>,
+  now: number,
+  ctx: { isLive(tabId: number): boolean; cancelledSince(tabId: number): boolean },
+): ResumePlan {
+  const plan: ResumePlan = { resume: [], discard: [] };
+  for (const [key, value] of Object.entries(stored)) {
+    const tabId = tabIdFromReconnectKey(key);
+    if (tabId === null) continue;
+    if (ctx.cancelledSince(tabId)) continue;
+    const state = parseStoredReconnectState(value);
+    if (state && isReconnectStateFresh(state.updatedAt, now) && !ctx.isLive(tabId)) {
+      plan.resume.push({ tabId, attempt: state.attempt, delayMs: resumeDelayMs(state, now) });
+    } else {
+      plan.discard.push(tabId);
+    }
+  }
+  return plan;
+}
+
 /** Outcome of one reconnect attempt, as reported by the injected `attempt`
  * callback: 'connected' and 'stop' both end the cycle (success vs. "the
  * tab is gone, nothing to reconnect"), 'retry' arms the next backoff step. */
@@ -227,8 +269,17 @@ export interface ReconnectScheduler {
   schedule(tabId: number, startAttempt?: number, firstDelayMs?: number): boolean;
   /** Abort the tab's pending cycle, if any — explicit disconnect, explicit
    * popup Connect, and tab removal all route here. Safe mid-attempt: an
-   * in-flight `attempt` whose cycle was cancelled never re-arms. */
+   * in-flight `attempt` whose cycle was cancelled never re-arms. ALWAYS
+   * clears persisted state (returns false when nothing was pending in
+   * memory): a freshly woken worker has not repopulated memory yet, and the
+   * stored entry must not outlive a disconnect. */
   cancel(tabId: number): boolean;
+  /** Monotonic cancellation counter. Take it BEFORE an asynchronous read of
+   * persisted state, then ask `wasCancelledSince` after the await. */
+  epoch(): number;
+  /** Whether `cancel(tabId)` ran after `epoch` was taken — even if nothing
+   * was pending in memory at the time. */
+  wasCancelledSince(tabId: number, epoch: number): boolean;
   /** Whether a reconnect cycle (timer armed or attempt in flight) is
    * pending for this tab — what the popup's "Reconnecting" state reads. */
   isPending(tabId: number): boolean;
@@ -250,6 +301,8 @@ export function createReconnectScheduler(options: ReconnectSchedulerOptions): Re
       clearTimeout(handle as number);
     });
   const pending = new Map<number, PendingEntry>();
+  let cancelSeq = 0;
+  const cancelledAt = new Map<number, number>();
 
   const notify = (tabId: number, state: { attempt: number; delayMs: number } | null): void => {
     options.onStateChange?.(tabId, state);
@@ -305,12 +358,18 @@ export function createReconnectScheduler(options: ReconnectSchedulerOptions): Re
       return arm(tabId, entry, startAttempt, firstDelayMs);
     },
     cancel(tabId: number): boolean {
+      cancelledAt.set(tabId, ++cancelSeq);
       const entry = pending.get(tabId);
-      if (!entry) return false;
-      if (entry.timer !== undefined) clearTimer(entry.timer);
+      if (entry?.timer !== undefined) clearTimer(entry.timer);
       pending.delete(tabId);
       notify(tabId, null);
-      return true;
+      return entry !== undefined;
+    },
+    epoch(): number {
+      return cancelSeq;
+    },
+    wasCancelledSince(tabId: number, epoch: number): boolean {
+      return (cancelledAt.get(tabId) ?? 0) > epoch;
     },
     isPending(tabId: number): boolean {
       return pending.has(tabId);

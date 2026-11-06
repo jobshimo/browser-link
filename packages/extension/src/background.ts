@@ -99,10 +99,8 @@ import {
   CONNECT_IN_PROGRESS_ERROR,
   createReconnectScheduler,
   isInvoluntaryClose,
-  isReconnectStateFresh,
-  parseStoredReconnectState,
+  planResume,
   reconnectStorageKey,
-  resumeDelayMs,
   tabIdFromReconnectKey,
 } from './reconnect-policy.js';
 
@@ -2970,24 +2968,24 @@ const reconnectScheduler = createReconnectScheduler({
  * survives worker restarts but not browser restarts, which is exactly the
  * lifetime the retry budget should have. */
 async function resumePendingReconnects(): Promise<void> {
+  // Take the cancellation epoch BEFORE the async read: a disconnect / manual
+  // Connect / tab removal landing while the get is in flight leaves the
+  // snapshot holding a stale entry, and planResume skips any tab cancelled
+  // since (see ReconnectScheduler.cancel, which also always clears storage).
+  const epoch = reconnectScheduler.epoch();
   let stored: Record<string, unknown>;
   try {
     stored = await chrome.storage.session.get(null);
   } catch {
     return;
   }
-  const now = Date.now();
-  for (const [key, value] of Object.entries(stored)) {
-    const tabId = tabIdFromReconnectKey(key);
-    if (tabId === null) continue;
-    const state = parseStoredReconnectState(value);
-    if (state && isReconnectStateFresh(state.updatedAt, now) && !tabStates.has(tabId)) {
-      // Wait only what was left of the pending step (0 = due already).
-      reconnectScheduler.schedule(tabId, state.attempt, resumeDelayMs(state, now));
-    } else {
-      void clearReconnectState(tabId);
-    }
-  }
+  const plan = planResume(stored, Date.now(), {
+    isLive: (tabId) => tabStates.has(tabId),
+    cancelledSince: (tabId) => reconnectScheduler.wasCancelledSince(tabId, epoch),
+  });
+  // Wait only what was left of the pending step (0 = due already).
+  for (const r of plan.resume) reconnectScheduler.schedule(r.tabId, r.attempt, r.delayMs);
+  for (const tabId of plan.discard) void clearReconnectState(tabId);
 }
 
 void resumePendingReconnects();

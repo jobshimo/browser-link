@@ -6,6 +6,7 @@ import {
   RECONNECT_STATE_TTL_MS,
   RECONNECT_STORAGE_PREFIX,
   buildReconnectDelays,
+  planResume,
   createReconnectScheduler,
   isInvoluntaryClose,
   isReconnectStateFresh,
@@ -455,5 +456,81 @@ describe('reconnect storage keys + stored state', () => {
     expect(isReconnectStateFresh(NOW - RECONNECT_STATE_TTL_MS, NOW)).toBe(false);
     // Clock went backwards → err on the quiet side.
     expect(isReconnectStateFresh(NOW + 1, NOW)).toBe(false);
+  });
+});
+
+describe('cancel vs. asynchronous resume (resurrection race)', () => {
+  test('cancel with nothing pending in memory still clears persisted state', () => {
+    // A freshly woken worker has not repopulated memory yet; a disconnect
+    // arriving now must still wipe the stored entry + alarm.
+    const { scheduler, stateChanges } = makeScheduler([]);
+    expect(scheduler.cancel(21)).toBe(false);
+    expect(stateChanges).toEqual([[21, null]]);
+  });
+
+  test('wasCancelledSince is true only for a cancel AFTER the epoch was taken', () => {
+    const { scheduler } = makeScheduler([]);
+    scheduler.cancel(1); // before the read began
+    const epoch = scheduler.epoch();
+    expect(scheduler.wasCancelledSince(1, epoch)).toBe(false);
+    scheduler.cancel(2); // while the read was in flight
+    expect(scheduler.wasCancelledSince(2, epoch)).toBe(true);
+    expect(scheduler.wasCancelledSince(3, epoch)).toBe(false);
+  });
+
+  test('interleaving A: disconnect lands while storage.get is in flight', () => {
+    const { scheduler, timers } = makeScheduler([]);
+    const epoch = scheduler.epoch(); // resume starts its storage.get
+    scheduler.cancel(7); // human clicks Disconnect; get still holds the stale entry
+    const plan = planResume(
+      { 'pendingReconnect:7': { attempt: 3, updatedAt: 1000, dueAt: 2000 } },
+      1500,
+      { isLive: () => false, cancelledSince: (id) => scheduler.wasCancelledSince(id, epoch) },
+    );
+    expect(plan.resume).toEqual([]);
+    expect(plan.discard).toEqual([]);
+    expect(timers.pending.size).toBe(0);
+  });
+
+  test('interleaving B: disconnect lands before resume repopulated memory', () => {
+    const { scheduler, stateChanges } = makeScheduler([]);
+    scheduler.cancel(7); // returns false (nothing pending) but must clear storage
+    expect(stateChanges).toEqual([[7, null]]);
+    const epoch = scheduler.epoch(); // resume reads AFTER the clear: entry is gone
+    const plan = planResume({}, 1500, {
+      isLive: () => false,
+      cancelledSince: (id) => scheduler.wasCancelledSince(id, epoch),
+    });
+    expect(plan.resume).toEqual([]);
+  });
+});
+
+describe('planResume', () => {
+  const ctx = { isLive: () => false, cancelledSince: () => false };
+
+  test('resumes a fresh entry with the remaining delay', () => {
+    const plan = planResume(
+      { 'pendingReconnect:4': { attempt: 2, updatedAt: 1000, dueAt: 9000 } },
+      4000,
+      ctx,
+    );
+    expect(plan.resume).toEqual([{ tabId: 4, attempt: 2, delayMs: 5000 }]);
+    expect(plan.discard).toEqual([]);
+  });
+
+  test('discards stale, malformed and already-live entries; ignores foreign keys', () => {
+    const now = 10 * RECONNECT_STATE_TTL_MS;
+    const plan = planResume(
+      {
+        'pendingReconnect:1': { attempt: 0, updatedAt: 0 },
+        'pendingReconnect:2': 'junk',
+        'pendingReconnect:3': { attempt: 0, updatedAt: now },
+        'prevTabId:9': { x: 1 },
+      },
+      now,
+      { isLive: (id) => id === 3, cancelledSince: () => false },
+    );
+    expect(plan.resume).toEqual([]);
+    expect(plan.discard.sort()).toEqual([1, 2, 3]);
   });
 });
