@@ -75,6 +75,9 @@ export type ToolResponseMessage =
 export interface ToolCancelMessage {
   kind: 'tool.cancel';
   flow_id: string;
+  /** `expired` when the SERVER gives up on a flow that outlived its bridge
+   * timeout (a time-out, not a human stop). Absent for a plain cancel. */
+  reason?: 'expired';
 }
 
 /**

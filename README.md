@@ -558,6 +558,26 @@ Three things are worth knowing before you rely on it:
   if the stop landed part-way through an iteration, that iteration's
   steps are reported separately as `partial_iteration` rather than
   counted as complete.
+- **A flow that runs out of time returns its partial state, not an
+  error.** The server computes the worst-case budget from the real
+  per-action cost — each click / type / press is charged its
+  `settle_timeout_ms` (default 2 000 ms, accepted on flow steps), never
+  `settle_ms`; a repeat multiplies by `max_iterations` and adds
+  `delay_ms` — and gives the runner a deadline 3 s shorter than the
+  bridge timeout. At the next step or iteration boundary after it, the
+  runner returns `{ ok: true, stopped_by: "timeout", steps_completed: N,
+results: [...] }` (a `repeat` adds `iterations_completed` and, for an
+  interrupted iteration, `partial_iteration`). Unlike a human stop, a
+  timeout is not a decision: the agent may continue the remaining work,
+  but must not blindly relaunch steps that already completed if they are
+  irreversible — resume from the counts. If the runner is wedged inside
+  a single step and cannot answer, the server cancels it and recovers
+  what the flow registry knows (`steps_completed`, `iterations_completed`,
+  `flow_id`, `results_available: false` — the per-step results are lost
+  in that case). In that recovered case `steps_completed` can also be
+  **one lower** than what really ran — the step in flight when the
+  cancel landed is not counted — so verify the page state of the first
+  step to re-run instead of blindly repeating it. A detached flow has its own 30-minute ceiling instead.
 - **Worst-case latency is one step.** Cancelling means the runner declines
   to dispatch step N+1 — it does not interrupt a CDP command already in
   flight, because nothing can. The flag is checked before every top-level

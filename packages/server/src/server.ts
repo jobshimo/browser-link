@@ -174,8 +174,8 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
     callBrowserTool: buildCallBrowserTool(tabs, pendingRequests),
-    cancelFlow: (tabId, flowId) => {
-      sendToolCancel(tabs, tabId, flowId);
+    cancelFlow: (tabId, flowId, reason) => {
+      sendToolCancel(tabs, tabId, flowId, reason);
     },
     recentEvents: (opts) => events.recent(opts),
     subscribeEvents: (fn, options) => events.subscribe(fn, options),

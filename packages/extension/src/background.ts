@@ -2066,10 +2066,24 @@ async function handleFlow(
   // `expired` the first time the deadline has passed, so the outcome
   // distinguishes "ran out of time" from "someone pressed Stop".
   const shouldCancel = (): boolean => flowRegistry.shouldStop(flowId, Date.now());
+  // The server's time budget for a FOREGROUND flow, as a relative
+  // duration (no shared clock). A detached flow has its own ceiling, so
+  // the field is ignored there.
+  const deadlineAt =
+    !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
+      ? Date.now() + Math.max(0, p.deadline_ms)
+      : undefined;
+  // A `wait_for` poll loop only knows this one flag, so it must also
+  // trip at the deadline or a 30s wait would sail past the bridge timeout.
+  // The runner itself keeps the two causes apart (`shouldCancel` alone is
+  // a human stop; the deadline is `deadlineAt`).
+  const stopWaiting = (): boolean =>
+    shouldCancel() || (deadlineAt !== undefined && Date.now() >= deadlineAt);
   const run = (): Promise<FlowResult> =>
     runFlow(rawSteps as FlowStep[], {
-      ...buildFlowDeps(tabId, state, shouldCancel),
+      ...buildFlowDeps(tabId, state, stopWaiting),
       shouldCancel,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
       onProgress: (progress) => {
         entry.progress = progress;
       },
@@ -3140,7 +3154,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // very much using this tab, and letting the idle sweeper close
             // the bridge underneath it would be perverse.
             state.lastActivityAt = Date.now();
-            flowRegistry.cancel(msg.flow_id);
+            flowRegistry.cancel(msg.flow_id, msg.reason === 'expired' ? 'expired' : undefined);
             return;
           }
           // Both activity replies settle the same way — a purge is just a

@@ -340,6 +340,17 @@ describe('flow-recorded is not spoofable via the extension bridge.event channel'
  * built on.
  */
 describe('sendToolCancel', () => {
+  test('carries an optional reason on the frame', () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    expect(sendToolCancel(tabs, 'tab_1', 'flow_abc', 'expired')).toBe(true);
+    expect(JSON.parse(a.sent[0])).toEqual({
+      kind: 'tool.cancel',
+      flow_id: 'flow_abc',
+      reason: 'expired',
+    });
+  });
+
   test('sends a tool.cancel frame naming the flow, and nothing else', () => {
     const a = fakeSession('tab_1', WebSocket.OPEN);
     const b = fakeSession('tab_2', WebSocket.OPEN);

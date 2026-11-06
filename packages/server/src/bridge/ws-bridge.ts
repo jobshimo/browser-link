@@ -572,10 +572,15 @@ export function sendToolCancel(
   tabs: Map<string, TabSession>,
   tabId: string,
   flowId: string,
+  reason?: 'expired',
 ): boolean {
   const session = tabs.get(tabId);
   if (!session || session.ws.readyState !== WebSocket.OPEN) return false;
-  send(session.ws, { kind: 'tool.cancel', flow_id: flowId });
+  send(session.ws, {
+    kind: 'tool.cancel',
+    flow_id: flowId,
+    ...(reason === undefined ? {} : { reason }),
+  });
   return true;
 }
 
