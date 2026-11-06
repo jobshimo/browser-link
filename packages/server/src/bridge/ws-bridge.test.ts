@@ -7,6 +7,7 @@ import {
   MAX_FLOW_DESCRIPTION_LENGTH,
   MAX_FLOW_NAME_LENGTH,
   buildRegisterSettingsUpdate,
+  buildTabDisconnectedData,
   handleFlowRecordedMessage,
   pushSettingsToAllTabs,
   sendToolCancel,
@@ -386,5 +387,19 @@ describe('sendToolCancel', () => {
     const returned: unknown = sendToolCancel(tabs, 'tab_1', 'flow_abc');
     expect(returned).toBe(true);
     expect(returned).not.toBeInstanceOf(Promise);
+  });
+});
+
+describe('buildTabDisconnectedData', () => {
+  test('1006 (abnormal closure: process/socket died) is recorded as unclean', () => {
+    expect(buildTabDisconnectedData('tab_1', 1006)).toEqual({
+      tabId: 'tab_1',
+      code: 1006,
+      clean: false,
+    });
+  });
+
+  test.each([1000, 1001, 1005])('close code %i is recorded as clean', (code) => {
+    expect(buildTabDisconnectedData('tab_1', code)).toMatchObject({ clean: true, code });
   });
 });

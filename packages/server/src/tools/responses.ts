@@ -44,6 +44,17 @@ export function imageToolResponse(data: unknown): ToolResponse {
   };
 }
 
+/**
+ * Same payload as `toolResponse`, plus a SECOND text block `hint: <text>`.
+ * The first block stays byte-for-byte what a plain response would be, so
+ * clients that parse it (a bare JSON array for `browser.list_tabs`) are
+ * unaffected; the hint is purely additive for readers of the extra block.
+ */
+export function hintToolResponse(data: unknown, hint: string): ToolResponse {
+  const base = toolResponse(data);
+  return { content: [...base.content, { type: 'text', text: `hint: ${hint}` }] };
+}
+
 export function toolError(message: string): ToolResponse {
   return {
     content: [{ type: 'text', text: `Error: ${message}` }],

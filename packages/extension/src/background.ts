@@ -95,11 +95,11 @@ import {
   toFlowStep,
 } from './recording.js';
 import {
+  ALARM_MIN_DELAY_MS,
   CONNECT_IN_PROGRESS_ERROR,
   createReconnectScheduler,
   isInvoluntaryClose,
-  isReconnectStateFresh,
-  parseStoredReconnectState,
+  planResume,
   reconnectStorageKey,
   tabIdFromReconnectKey,
 } from './reconnect-policy.js';
@@ -2873,7 +2873,7 @@ async function forgetTabId(chromeTabId: number): Promise<void> {
   }
 }
 
-/* Auto-reconnect after an involuntary WS close.
+/* Auto-reconnect after an involuntary WS close (retried for up to 10 minutes).
  *
  * When a REGISTERED tab's WebSocket dies under us (unclean close — the
  * primary MCP server crashed or restarted), the scheduler below retries
@@ -2894,20 +2894,40 @@ async function forgetTabId(chromeTabId: number): Promise<void> {
  * touches chrome.* APIs which resets the idle clock — but if the worker is
  * killed anyway, `resumePendingReconnects` below picks the budget back up
  * on the next wake, and entries older than RECONNECT_STATE_TTL_MS are
- * discarded rather than surprising the user minutes later. */
-async function storeReconnectState(tabId: number, attempt: number): Promise<void> {
+ * discarded rather than surprising the user long after they moved on. A
+ * `chrome.alarms` safety net (same key) wakes the worker for the long 30s
+ * steps, and a resumed attempt waits only the time that was left. */
+async function storeReconnectState(tabId: number, attempt: number, delayMs: number): Promise<void> {
+  const now = Date.now();
+  const dueAt = now + delayMs;
   try {
     await chrome.storage.session.set({
-      [reconnectStorageKey(tabId)]: { attempt, updatedAt: Date.now() },
+      [reconnectStorageKey(tabId)]: { attempt, updatedAt: now, dueAt },
     });
   } catch {
     /* non-fatal — worst case a killed service worker cannot resume this retry */
+  }
+  // Safety net for the 30s plateau: Chrome may tear the worker down between
+  // attempts, and a plain timer dies with it. The alarm (keyed like the
+  // storage entry) wakes the worker, which resumes from storage. Re-creating
+  // an alarm with the same name replaces it, so each arm moves it forward.
+  try {
+    await chrome.alarms.create(reconnectStorageKey(tabId), {
+      when: Math.max(dueAt, now + ALARM_MIN_DELAY_MS),
+    });
+  } catch {
+    /* non-fatal — the in-worker timer still runs while the worker lives */
   }
 }
 
 async function clearReconnectState(tabId: number): Promise<void> {
   try {
     await chrome.storage.session.remove(reconnectStorageKey(tabId));
+  } catch {
+    /* ignore */
+  }
+  try {
+    await chrome.alarms.clear(reconnectStorageKey(tabId));
   } catch {
     /* ignore */
   }
@@ -2938,7 +2958,7 @@ const reconnectScheduler = createReconnectScheduler({
     }
   },
   onStateChange: (tabId, state) => {
-    if (state) void storeReconnectState(tabId, state.attempt);
+    if (state) void storeReconnectState(tabId, state.attempt, state.delayMs);
     else void clearReconnectState(tabId);
   },
 });
@@ -2948,26 +2968,33 @@ const reconnectScheduler = createReconnectScheduler({
  * survives worker restarts but not browser restarts, which is exactly the
  * lifetime the retry budget should have. */
 async function resumePendingReconnects(): Promise<void> {
+  // Take the cancellation epoch BEFORE the async read: a disconnect / manual
+  // Connect / tab removal landing while the get is in flight leaves the
+  // snapshot holding a stale entry, and planResume skips any tab cancelled
+  // since (see ReconnectScheduler.cancel, which also always clears storage).
+  const epoch = reconnectScheduler.epoch();
   let stored: Record<string, unknown>;
   try {
     stored = await chrome.storage.session.get(null);
   } catch {
     return;
   }
-  const now = Date.now();
-  for (const [key, value] of Object.entries(stored)) {
-    const tabId = tabIdFromReconnectKey(key);
-    if (tabId === null) continue;
-    const state = parseStoredReconnectState(value);
-    if (state && isReconnectStateFresh(state.updatedAt, now) && !tabStates.has(tabId)) {
-      reconnectScheduler.schedule(tabId, state.attempt);
-    } else {
-      void clearReconnectState(tabId);
-    }
-  }
+  const plan = planResume(stored, Date.now(), {
+    isLive: (tabId) => tabStates.has(tabId),
+    cancelledSince: (tabId) => reconnectScheduler.wasCancelledSince(tabId, epoch),
+  });
+  // Wait only what was left of the pending step (0 = due already).
+  for (const r of plan.resume) reconnectScheduler.schedule(r.tabId, r.attempt, r.delayMs);
+  for (const tabId of plan.discard) void clearReconnectState(tabId);
 }
 
 void resumePendingReconnects();
+// The alarm that wakes a sleeping worker mid-window. Registered at top level
+// (MV3 requires listeners to be added synchronously on worker start). Tabs
+// whose cycle is already live in this worker are skipped by `schedule`.
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (tabIdFromReconnectKey(alarm.name) !== null) void resumePendingReconnects();
+});
 // Same worker-start slot, same rationale: `chrome.storage.session` outlives
 // the service worker but not the browser, which is exactly the lifetime a
 // detached flow's record should have. See `recoverDetachedFlows`.

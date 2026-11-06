@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.33.0](https://github.com/jobshimo/browser-link/compare/v0.32.0...v0.33.0) (2026-11-06)
+
+### Features
+
+- **reconnect:** the extension keeps reconnecting a dropped tab for up to 10 minutes while the Chrome tab stays open: 1 s, 2 s, 4 s, 8 s, 15 s, then every 30 s. It used to give up after 4 attempts in about 15 s, which left the agent locked out whenever an outage needed any diagnosis.
+- **reconnect:** new `alarms` extension permission, so a retry survives the MV3 service worker sleeping between attempts. A closed tab or a manual Disconnect still never reconnects, including when the Disconnect races a pending retry.
+- **list_tabs:** an empty `browser.list_tabs` keeps returning `[]` as its first content block and adds a second `hint:` text block. It says whether no tab ever connected, a tab dropped and is still being retried, the user disconnected or closed it, or the bridge restarted, and whether to wait or ask the user to press Connect.
+- **events:** `tab-disconnected` events carry the WebSocket close `code` and whether the close was `clean`.
+
 ## [0.32.0](https://github.com/jobshimo/browser-link/compare/v0.31.0...v0.32.0) (2026-11-06)
 
 ### Features
