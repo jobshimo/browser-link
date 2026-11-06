@@ -3,6 +3,7 @@ import {
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
+  buildExpectProbeJs,
   buildFindJs,
   buildFocusJs,
   buildSettleJs,
@@ -1058,5 +1059,108 @@ describe('buildElementRectJs', () => {
     expect(res.ok).toBe(true);
     expect(res.x).toBe(107);
     expect(res.y).toBe(209);
+  });
+});
+
+describe('buildExpectProbeJs', () => {
+  interface Probe {
+    url: string;
+    selector_appears?: boolean;
+    selector_disappears?: boolean;
+    text_appears?: boolean;
+    invalid_selector?: string;
+  }
+  const probe = (opts: Parameters<typeof buildExpectProbeJs>[0]): Probe =>
+    evalExpr<Probe>(buildExpectProbeJs(opts));
+
+  test('always reports the current url and nothing else when no condition is asked', () => {
+    const out = probe({});
+    expect(out.url).toBe(location.href);
+    expect(out).not.toHaveProperty('selector_appears');
+    expect(out).not.toHaveProperty('text_appears');
+  });
+
+  test('selector_appears is true only for a VISIBLE match', () => {
+    document.body.innerHTML = '<div id="hidden"></div><div id="shown"></div>';
+    makeVisible(document.getElementById('shown')!);
+    expect(probe({ selector_appears: '#shown' }).selector_appears).toBe(true);
+    expect(probe({ selector_appears: '#hidden' }).selector_appears).toBe(false);
+    expect(probe({ selector_appears: '#missing' }).selector_appears).toBe(false);
+  });
+
+  test('selector_disappears is true when no visible match remains', () => {
+    document.body.innerHTML = '<div id="hidden"></div><div id="shown"></div>';
+    makeVisible(document.getElementById('shown')!);
+    expect(probe({ selector_disappears: '#shown' }).selector_disappears).toBe(false);
+    expect(probe({ selector_disappears: '#hidden' }).selector_disappears).toBe(true);
+    expect(probe({ selector_disappears: '#missing' }).selector_disappears).toBe(true);
+  });
+
+  test('selector conditions pierce open shadow roots', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<button id="deep"></button>';
+    makeVisible(root.getElementById('deep')!);
+    expect(probe({ selector_appears: '#deep' }).selector_appears).toBe(true);
+  });
+
+  test('an invalid selector is reported instead of silently counting as absent', () => {
+    const out = probe({ selector_disappears: '##bad[' });
+    expect(out.invalid_selector).toBe('selector_disappears');
+    expect(out).not.toHaveProperty('selector_disappears');
+  });
+
+  test('text_appears matches case-insensitively with collapsed whitespace', () => {
+    document.body.innerHTML = '<p>Lesson   <b>Complete</b></p>';
+    // jsdom has no layout engine and no innerText: stub it like a browser would render it.
+    Object.defineProperty(document.body, 'innerText', {
+      value: 'Lesson Complete',
+      configurable: true,
+    });
+    expect(probe({ text_appears: 'lesson complete' }).text_appears).toBe(true);
+    expect(probe({ text_appears: 'nothing here' }).text_appears).toBe(false);
+  });
+
+  test('text_appears reads a shadow root only when its host and child are visible', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<p id="msg">Shadow secret</p>';
+    const msg = root.getElementById('msg')!;
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(false);
+    makeVisible(host);
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(false);
+    makeVisible(msg);
+    expect(probe({ text_appears: 'shadow secret' }).text_appears).toBe(true);
+  });
+
+  test('text_appears skips style/script/template children of a visible shadow root', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    makeVisible(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML =
+      '<style id="s">.k{content:"cssonly"}</style><script id="j">var x="jsonly"</script><template id="t">tmplonly</template>';
+    for (const id of ['s', 'j', 't']) makeVisible(root.getElementById(id)!);
+    expect(probe({ text_appears: 'cssonly' }).text_appears).toBe(false);
+    expect(probe({ text_appears: 'jsonly' }).text_appears).toBe(false);
+    expect(probe({ text_appears: 'tmplonly' }).text_appears).toBe(false);
+  });
+
+  test('text_appears reads a same-origin iframe body only when the iframe is visible', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.textContent = 'Frame secret';
+    expect(probe({ text_appears: 'frame secret' }).text_appears).toBe(false);
+    makeVisible(frame);
+    expect(probe({ text_appears: 'frame secret' }).text_appears).toBe(true);
+  });
+
+  test('text_appears prefers rendered innerText over textContent when innerText is a string', () => {
+    document.body.innerHTML = '<p>hidden words</p>';
+    // A real browser omits non-rendered text from innerText; textContent would still hold it.
+    Object.defineProperty(document.body, 'innerText', { value: '', configurable: true });
+    expect(probe({ text_appears: 'hidden words' }).text_appears).toBe(false);
   });
 });

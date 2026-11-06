@@ -97,6 +97,14 @@ describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => 
     expect(srv).toContain('export async function settleSafely');
   });
 
+  test('expect.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_ROOT, 'expect.ts')));
+    const srv = stripHeader(read(join(SRV_ROOT, 'expect.ts')));
+    expect(srv).toBe(ext);
+    expect(srv).toContain('export const MAX_EXPECT_TIMEOUT_MS');
+    expect(srv).toContain('export async function verifyExpect');
+  });
+
   test('keymap.ts body is byte-identical to the extension original', () => {
     const ext = stripHeader(read(join(EXT_ROOT, 'keymap.ts')));
     const srv = stripHeader(read(join(SRV_ROOT, 'keymap.ts')));

@@ -292,6 +292,86 @@ describe('callCdpTool — tool dispatch', () => {
       callCdpTool(`cdp:${targetId}`, 'press', { key: 'this-is-not-a-real-key-name' }),
     ).rejects.toThrow(/unrecognized key/i);
   });
+
+  /* `expect`: the page is faked at the Runtime.evaluate boundary. Every
+   * expression (baseline, post-action probe, recovery snapshot) returns `probe()`. */
+  function expectPage(probe: () => Record<string, unknown>) {
+    return { 'Runtime.evaluate': () => ({ result: { value: probe() } }) };
+  }
+
+  test('a condition that already held before the action rejects without waiting', async () => {
+    const { port, targetId } = await startFakeTarget(
+      expectPage(() => ({ url: 'u', selector_appears: true })),
+    );
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'press', {
+        key: 'a',
+        settle_ms: 0,
+        expect: { selector_appears: '[role=dialog]', timeout_ms: 5000 },
+      }),
+    ).rejects.toThrow(/selector_appears "\[role=dialog\]" was already present before the action/);
+  });
+
+  test('press with an unmet expect rejects with "expectation not met" and the window', async () => {
+    const { port, targetId } = await startFakeTarget(
+      expectPage(() => ({ url: 'https://example.com/a' })),
+    );
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'press', {
+        key: 'a',
+        settle_ms: 0,
+        expect: { url_changed: true, timeout_ms: 150 },
+      }),
+    ).rejects.toThrow(/^expectation not met: url_changed after \d+ms/);
+  });
+
+  test('click with a met expect succeeds and reports expect.met + elapsed_ms', async () => {
+    let probes = 0;
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params: unknown) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes("reason: 'invalid-selector'")) {
+          return { result: { value: { ok: true, x: 5, y: 6, tag: 'a' } } };
+        }
+        probes += 1;
+        return { result: { value: { url: 'u', selector_appears: probes > 1 } } };
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      selector: '#next',
+      settle_ms: 0,
+      expect: { selector_appears: '#done', timeout_ms: 2000 },
+    });
+    expect(result).toMatchObject({
+      clicked: '#next',
+      expect: { met: true, elapsed_ms: expect.any(Number) },
+    });
+  });
+
+  test('type without expect is unchanged (no expect key in the result)', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'type', { text: 'hi', settle_ms: 0 });
+    expect(result).toEqual({ typed: 2 });
+  });
+
+  test('a flow step with an unmet expect fails fast at that step', async () => {
+    const { port, targetId } = await startFakeTarget(
+      expectPage(() => ({ url: 'https://example.com/a' })),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [
+        { press: { key: 'a', settle_ms: 0, expect: { url_changed: true, timeout_ms: 150 } } },
+        { press: { key: 'b', settle_ms: 0 } },
+      ],
+    });
+    expect(result).toMatchObject({ ok: false, failed_step: 0, step_kind: 'press' });
+    expect((result as { error: string }).error).toMatch(/expectation not met: url_changed/);
+  });
 });
 
 /*

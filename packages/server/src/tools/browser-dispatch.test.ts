@@ -814,6 +814,145 @@ describe('action-tool claim enforcement', () => {
     expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'click', expect.any(Object), 15_000);
   });
 
+  describe('expect', () => {
+    const EXPECT = { url_changed: true, selector_appears: '#done', timeout_ms: 4000 };
+
+    test('click forwards expect to the extension and leaves the 15s floor for a short window', async () => {
+      const deps = makeDepsWithClaims();
+      await handleBrowserTool(
+        'browser.click',
+        { tab_id: 'tab_1', selector: '#go', expect: EXPECT },
+        deps,
+        A,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'click',
+        expect.objectContaining({ expect: EXPECT }),
+        // default settle 2s + 4s expect + 5s overhead = 11s -> floor
+        15_000,
+      );
+    });
+
+    test('the bridge timeout covers the worst-case settle PLUS the expect window', async () => {
+      const deps = makeDepsWithClaims();
+      await handleBrowserTool(
+        'browser.click',
+        {
+          tab_id: 'tab_1',
+          selector: '#go',
+          settle_timeout_ms: 10_000,
+          expect: { url_changed: true, timeout_ms: 10_000 },
+        },
+        deps,
+        A,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'click',
+        expect.any(Object),
+        10_000 + 10_000 + 5_000,
+      );
+    });
+
+    test('type and press forward expect too', async () => {
+      const deps = makeDeps();
+      await handleBrowserTool(
+        'browser.type',
+        { tab_id: 'tab_1', selector: '#x', text: 'hi', expect: { text_appears: 'hi' } },
+        deps,
+        TEST_CALLER,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'type',
+        expect.objectContaining({ expect: { text_appears: 'hi' } }),
+        expect.any(Number),
+      );
+      await handleBrowserTool(
+        'browser.press',
+        { tab_id: 'tab_1', key: 'Enter', expect: { selector_disappears: '.modal' } },
+        deps,
+        TEST_CALLER,
+      );
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'press',
+        expect.objectContaining({ expect: { selector_disappears: '.modal' } }),
+        expect.any(Number),
+      );
+    });
+
+    test.each([
+      ['a non-object', 'nope', /expect must be an object/],
+      ['an array', [], /expect must be an object/],
+      ['an empty object', {}, /at least one of url_changed \| selector_appears/],
+      ['only url_changed:false', { url_changed: false }, /at least one of/],
+      [
+        'a non-boolean url_changed',
+        { url_changed: 'yes' },
+        /expect\.url_changed must be a boolean/,
+      ],
+      [
+        'an empty selector',
+        { selector_appears: '' },
+        /expect\.selector_appears must be a non-empty string/,
+      ],
+      [
+        'a numeric selector_disappears',
+        { selector_disappears: 3 },
+        /expect\.selector_disappears must be a non-empty string/,
+      ],
+      [
+        'a non-string text_appears',
+        { text_appears: false },
+        /expect\.text_appears must be a non-empty string/,
+      ],
+      [
+        'a zero timeout',
+        { url_changed: true, timeout_ms: 0 },
+        /expect\.timeout_ms must be a number between 1 and 10000/,
+      ],
+      [
+        'an oversized timeout',
+        { url_changed: true, timeout_ms: 10_001 },
+        /expect\.timeout_ms must be a number between 1 and 10000/,
+      ],
+      ['an unknown key', { url_changed: true, bogus: 1 }, /expect\.bogus is not a known key/],
+    ])('click rejects %s without calling the bridge', async (_label, bad, message) => {
+      const deps = makeDepsWithClaims();
+      await expect(
+        handleBrowserTool(
+          'browser.click',
+          { tab_id: 'tab_1', selector: '#go', expect: bad },
+          deps,
+          A,
+        ),
+      ).rejects.toThrow(message);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    });
+
+    test('press and type reject a malformed expect with their own prefix', async () => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.press',
+          { tab_id: 'tab_1', key: 'Enter', expect: {} },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/^browser\.press: expect/);
+      await expect(
+        handleBrowserTool(
+          'browser.type',
+          { tab_id: 'tab_1', selector: '#x', text: 'a', expect: 5 },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/^browser\.type: expect/);
+    });
+  });
+
   test('click is rejected when another agent already owns the tab, and the bridge is never called', async () => {
     const deps = makeDepsWithClaims();
     await handleBrowserTool('browser.claim_tab', { tab_id: 'tab_1' }, deps, A);
@@ -1674,6 +1813,73 @@ describe('browser.flow dispatch', () => {
         expect.any(Object),
         15_000,
       );
+    });
+
+    test('an action step with expect adds its expect window to the budget', async () => {
+      const deps = makeDeps();
+      // 2_000 + 4 * (2_000 + 500 + 10_000) = 52_000 — the expect window is
+      // charged in full, like a wait_for, because an unmet expectation
+      // spends all of it.
+      const steps = Array.from({ length: 4 }, () => ({
+        click: { selector: '#next', expect: { url_changed: true, timeout_ms: 10_000 } },
+      }));
+      await handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER);
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        52_000,
+      );
+    });
+
+    test('REJECTS up front a flow whose expect windows push the budget past the ceiling', async () => {
+      const deps = makeDeps();
+      const steps = Array.from({ length: 5 }, () => ({
+        click: { selector: '#next', expect: { url_changed: true, timeout_ms: 10_000 } },
+      }));
+      await expect(
+        handleBrowserTool('browser.flow', { tab_id: 'tab_1', steps }, deps, TEST_CALLER),
+      ).rejects.toThrow(/worst-case budget 65s exceeds the 60s ceiling/);
+    });
+
+    test('default expect window (3s) is charged when timeout_ms is omitted', async () => {
+      const deps = makeDeps();
+      // 2_000 + (2_000 + 500 + 3_000) = 7_500 -> floored
+      await handleBrowserTool(
+        'browser.flow',
+        {
+          tab_id: 'tab_1',
+          steps: Array.from({ length: 8 }, () => ({
+            press: { key: 'a', expect: { text_appears: 'x' } },
+          })),
+        },
+        deps,
+        TEST_CALLER,
+      );
+      // 2_000 + 8 * 5_500 = 46_000
+      expect(deps.callBrowserTool).toHaveBeenCalledWith(
+        'tab_1',
+        'flow',
+        expect.any(Object),
+        46_000,
+      );
+    });
+
+    test.each([
+      ['click', { selector: '#a', expect: {} }],
+      ['type', { text: 'a', expect: { url_changed: 'x' } }],
+      ['press', { key: 'a', expect: { timeout_ms: 5, url_changed: true, extra: 1 } }],
+    ])('a malformed expect on a %s step is rejected with the step index', async (kind, body) => {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool(
+          'browser.flow',
+          { tab_id: 'tab_1', steps: [{ press: { key: 'Tab' } }, { [kind]: body }] },
+          deps,
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(new RegExp(`step 1: ${kind}\\.expect`));
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
     });
 
     test('wait_for steps contribute their own timeout_ms + slack to the sum', async () => {

@@ -260,6 +260,77 @@ const MAX_SETTLE_TIMEOUT_MS = 10_000;
 /** Matches the extension's DEFAULT_SETTLE_TIMEOUT_MS. */
 const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
 
+/** Window of an action's optional `expect` — mirrors
+ * DEFAULT_EXPECT_TIMEOUT_MS / MAX_EXPECT_TIMEOUT_MS in the extension's
+ * `expect.ts` (and its `cdp/expect.ts` copy); kept in sync manually. */
+const DEFAULT_EXPECT_TIMEOUT_MS = 3_000;
+const MAX_EXPECT_TIMEOUT_MS = 10_000;
+const EXPECT_CONDITION_KEYS = [
+  'url_changed',
+  'selector_appears',
+  'selector_disappears',
+  'text_appears',
+] as const;
+const EXPECT_KEYS = new Set<string>([...EXPECT_CONDITION_KEYS, 'timeout_ms']);
+
+/**
+ * Validate an action's optional `expect` argument. Returns an error
+ * message that starts with `expect` (callers prefix it with the tool or
+ * flow-step name), or null when `raw` is absent or well-formed. Rejects
+ * rather than clamps an out-of-range window: an expectation that silently
+ * waited less than asked would report a failure the caller never earned.
+ */
+function expectArgError(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return 'expect must be an object';
+  }
+  const e = raw as Record<string, unknown>;
+  for (const key of Object.keys(e)) {
+    if (!EXPECT_KEYS.has(key)) {
+      return `expect.${key} is not a known key (url_changed | selector_appears | selector_disappears | text_appears | timeout_ms)`;
+    }
+  }
+  if (e.url_changed !== undefined && typeof e.url_changed !== 'boolean') {
+    return 'expect.url_changed must be a boolean';
+  }
+  for (const key of ['selector_appears', 'selector_disappears', 'text_appears'] as const) {
+    if (e[key] !== undefined && (typeof e[key] !== 'string' || e[key].length === 0)) {
+      return `expect.${key} must be a non-empty string`;
+    }
+  }
+  if (
+    e.timeout_ms !== undefined &&
+    (typeof e.timeout_ms !== 'number' ||
+      !Number.isFinite(e.timeout_ms) ||
+      e.timeout_ms < 1 ||
+      e.timeout_ms > MAX_EXPECT_TIMEOUT_MS)
+  ) {
+    return `expect.timeout_ms must be a number between 1 and ${MAX_EXPECT_TIMEOUT_MS}`;
+  }
+  if (
+    e.url_changed !== true &&
+    !EXPECT_CONDITION_KEYS.some((k) => k !== 'url_changed' && e[k] !== undefined)
+  ) {
+    return 'expect needs at least one of url_changed | selector_appears | selector_disappears | text_appears';
+  }
+  return null;
+}
+
+/** Throwing wrapper for the standalone click/type/press dispatchers. */
+function requireValidExpect(tool: string, raw: unknown): void {
+  const error = expectArgError(raw);
+  if (error) throw new Error(`${tool}: ${error}`);
+}
+
+/** Window the bridge must additionally wait out for a valid `expect`
+ * (0 when absent). Only called after validation. */
+function expectWindowMs(raw: unknown): number {
+  if (typeof raw !== 'object' || raw === null) return 0;
+  const t = (raw as Record<string, unknown>).timeout_ms;
+  return typeof t === 'number' ? Math.min(t, MAX_EXPECT_TIMEOUT_MS) : DEFAULT_EXPECT_TIMEOUT_MS;
+}
+
 const PRESS_MODIFIERS = new Set(['Alt', 'Control', 'Meta', 'Shift']);
 
 /** Roles `browser.find` accepts — shared by the standalone find dispatcher
@@ -297,13 +368,13 @@ function isModifierArray(value: unknown): value is string[] {
  * that this function starts returning larger budgets — both are fine,
  * a settle wait silently outliving the bridge timeout is not.
  */
-function actionTimeoutWithSettle(settleTimeoutMs: unknown): number {
+function actionTimeoutWithSettle(settleTimeoutMs: unknown, expectRaw?: unknown): number {
   const requested =
     typeof settleTimeoutMs === 'number' && Number.isFinite(settleTimeoutMs) && settleTimeoutMs >= 0
       ? settleTimeoutMs
       : DEFAULT_SETTLE_TIMEOUT_MS;
   const clamped = Math.min(requested, MAX_SETTLE_TIMEOUT_MS);
-  return Math.max(ACTION_TIMEOUT_FLOOR_MS, clamped + 5_000);
+  return Math.max(ACTION_TIMEOUT_FLOOR_MS, clamped + expectWindowMs(expectRaw) + 5_000);
 }
 
 /** Hard ceiling on `browser.evaluate`'s optional `timeout_ms` — the same
@@ -518,6 +589,10 @@ export function validateFlowSteps(
       return { ok: false, error: `step ${i}: "${kind}" must be an object` };
     }
     const bodyRecord = body as Record<string, unknown>;
+    if (kind === 'click' || kind === 'type' || kind === 'press') {
+      const expectError = expectArgError(bodyRecord.expect);
+      if (expectError) return { ok: false, error: `step ${i}: ${kind}.${expectError}` };
+    }
     if (kind === 'find') {
       if (typeof bodyRecord.text !== 'string' || bodyRecord.text.length === 0) {
         return { ok: false, error: `step ${i}: find.text is required` };
@@ -812,7 +887,11 @@ function requireFlowId(args: unknown, tool: string): string {
 
 function flowActionBudgetMs(body: Record<string, unknown>): number {
   const settleDisabled = body.settle_ms === 0;
-  return (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) + FLOW_STEP_SLACK_MS;
+  return (
+    (settleDisabled ? 0 : FLOW_ACTION_SETTLE_WORST_MS) +
+    (body.expect === undefined ? 0 : expectWindowMs(body.expect)) +
+    FLOW_STEP_SLACK_MS
+  );
 }
 
 /** Worst case for one drag step: its clamped `duration_ms` (default 1500,
@@ -1451,19 +1530,22 @@ async function dispatchBrowserTool(
         force = false,
         settle_ms,
         settle_timeout_ms,
+        expect: expectArg,
       } = args as {
         selector: string;
         force?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
+        expect?: unknown;
       };
+      requireValidExpect('browser.click', expectArg);
       return runAction(
         'click',
         requireTabId(args),
-        { selector, force, settle_ms, settle_timeout_ms },
+        { selector, force, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
-        actionTimeoutWithSettle(settle_timeout_ms),
+        actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
     }
     case 'browser.type': {
@@ -1473,29 +1555,40 @@ async function dispatchBrowserTool(
         clear = false,
         settle_ms,
         settle_timeout_ms,
+        expect: expectArg,
       } = args as {
         selector: string;
         text: string;
         clear?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
+        expect?: unknown;
       };
+      requireValidExpect('browser.type', expectArg);
       return runAction(
         'type',
         requireTabId(args),
-        { selector, text, clear, settle_ms, settle_timeout_ms },
+        { selector, text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
-        actionTimeoutWithSettle(settle_timeout_ms),
+        actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
     }
     case 'browser.press': {
-      const { key, modifiers, selector, settle_ms, settle_timeout_ms } = (args ?? {}) as {
+      const {
+        key,
+        modifiers,
+        selector,
+        settle_ms,
+        settle_timeout_ms,
+        expect: expectArg,
+      } = (args ?? {}) as {
         key?: unknown;
         modifiers?: unknown;
         selector?: unknown;
         settle_ms?: number;
         settle_timeout_ms?: number;
+        expect?: unknown;
       };
       if (typeof key !== 'string' || key.length === 0) {
         throw new Error('browser.press: key required');
@@ -1512,13 +1605,21 @@ async function dispatchBrowserTool(
       if (selector !== undefined && typeof selector !== 'string') {
         throw new Error('browser.press: selector must be a string when provided');
       }
+      requireValidExpect('browser.press', expectArg);
       return runAction(
         'press',
         requireTabId(args),
-        { key, modifiers: normalizedModifiers, selector, settle_ms, settle_timeout_ms },
+        {
+          key,
+          modifiers: normalizedModifiers,
+          selector,
+          settle_ms,
+          settle_timeout_ms,
+          expect: expectArg,
+        },
         deps,
         caller,
-        actionTimeoutWithSettle(settle_timeout_ms),
+        actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
     }
     case 'browser.drag': {

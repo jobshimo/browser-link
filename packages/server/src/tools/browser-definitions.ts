@@ -40,6 +40,48 @@ const SETTLE_SCHEMA_PROPERTIES = {
   },
 } as const;
 
+/**
+ * Shared `expect` schema for click / type / press and the matching
+ * browser.flow steps. Defined once so the wording cannot drift.
+ */
+const EXPECT_SCHEMA = {
+  type: 'object',
+  description:
+    'Assert the EFFECT of the action, not just that the page went quiet. After the action dispatches (and settles), the page is polled until every listed condition holds or `timeout_ms` elapses. Unmet: ok:false with `expectation not met: <which> after <ms>ms` plus the settle info (inside a browser.flow it fails that step fail-fast like any other failure). Met: the result carries `expect: { met: true, elapsed_ms }`. Provide at least one condition; all given conditions must hold. appears/disappears conditions are TRANSITIONS from the state sampled right before the action; one that already held beforehand fails immediately.',
+  properties: {
+    url_changed: {
+      type: 'boolean',
+      description:
+        'location.href differs from its value captured right before the action was dispatched.',
+    },
+    selector_appears: {
+      type: 'string',
+      description:
+        'A VISIBLE element matching this CSS selector exists (pierces open Shadow DOM and same-origin iframes, like click/find).',
+    },
+    selector_disappears: {
+      type: 'string',
+      description: 'No VISIBLE element matching this CSS selector remains (same deep search).',
+    },
+    text_appears: {
+      type: 'string',
+      description:
+        'This text is visible somewhere on the page (case-insensitive, whitespace-collapsed, deep search).',
+    },
+    timeout_ms: {
+      type: 'number',
+      minimum: 1,
+      maximum: 10000,
+      description:
+        'Expectation window in ms. Default 3000, hard ceiling 10000 (out-of-range is rejected).',
+    },
+  },
+  additionalProperties: false,
+} as const;
+
+const EXPECT_GOTCHA =
+  'Settle proves QUIET, not EFFECT: a click whose handler never fired returns ok:true with settle { mutation_count: 0, settled: true }, indistinguishable from success until a later step fails. When you are counting on a specific effect (navigation, a dialog opening/closing, a result appearing), pass `expect` — e.g. { url_changed: true } or { selector_appears: "[role=dialog]" } — so a no-op action fails HERE with `expectation not met` instead of costing a timeout later. `expect` asserts a TRANSITION: the page is sampled right before the action, `selector_appears` / `text_appears` must be absent beforehand and present afterwards, `selector_disappears` must be present beforehand and gone afterwards, and a condition that already held before the action fails immediately (e.g. `selector_appears "[role=dialog]" was already present before the action`) because it cannot prove the action did anything. `url_changed` compares against the URL sampled right before THIS action, so a navigation still pending from a PREVIOUS step can satisfy it: when chaining navigations, confirm the earlier one landed (an `expect` on that step or a browser.wait_for) first. Prefer `expect` over a following browser.wait_for for the action\'s own consequence; it also works over cdp-direct tabs.';
+
 export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.list_tabs',
@@ -744,6 +786,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
             'Skip the occlusion guard and dispatch the click even if another element currently covers the click point. Escape hatch for cases where the "covering" element is intentional (e.g. a transparent hit-target layer) or the guard produces a false positive. Default false.',
         },
         ...SETTLE_SCHEMA_PROPERTIES,
+        expect: EXPECT_SCHEMA,
       },
       required: ['tab_id', 'selector'],
       additionalProperties: false,
@@ -761,7 +804,10 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
         'The result carries a compact `settle` object (`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason? }`) unless `settle_ms:0`. `settled:false` means the page never went quiet within `settle_timeout_ms` — not necessarily an error, some pages never stop mutating (tickers, spinners). When the settle wait itself could not run to completion, `settled:false` comes with `reason`: "context-destroyed" (the action navigated the page, destroying the observer\'s execution context — the action still succeeded, and this is itself a strong navigation signal) or "settle-error" (any other settle-side failure). With settle on, a separate browser.wait_for right after a click is usually unnecessary.',
         'The error message distinguishes a malformed selector ("Invalid selector …") from a well-formed selector that matches nothing ("Element not found …") — a syntax error means fix the selector string itself, not retry against a fresher snapshot.',
+        EXPECT_GOTCHA,
       ],
+      example:
+        'browser.click({ tab_id: "tab_1", selector: "a.next-lesson-link", expect: { url_changed: true, timeout_ms: 5000 } })',
     },
   },
   {
@@ -776,6 +822,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         text: { type: 'string' },
         clear: { type: 'boolean', default: false },
         ...SETTLE_SCHEMA_PROPERTIES,
+        expect: EXPECT_SCHEMA,
       },
       required: ['tab_id', 'selector', 'text'],
       additionalProperties: false,
@@ -791,6 +838,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
         'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
         'Same error distinction as browser.click: "Invalid selector …" (malformed CSS) vs "Element not found …" (well-formed, no match).',
+        'Optional `expect` asserts the effect of typing, e.g. { selector_appears: ".autocomplete-option" }. ' +
+          EXPECT_GOTCHA,
       ],
     },
   },
@@ -819,6 +868,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
             'Optional. Focus this element (resolved via the same deep Shadow DOM / iframe search as browser.click) before dispatching the key. Omit to send the key to the currently focused element.',
         },
         ...SETTLE_SCHEMA_PROPERTIES,
+        expect: EXPECT_SCHEMA,
       },
       required: ['tab_id', 'key'],
       additionalProperties: false,
@@ -837,8 +887,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',
         'CLOSED shadow roots and cross-origin iframes are unreachable for the optional `selector`, same as browser.click.',
         'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+        'Optional `expect` asserts the effect of the key, e.g. Enter submitting a form: { url_changed: true }. ' +
+          EXPECT_GOTCHA,
       ],
-      example: 'browser.press({ tab_id: "tab_1", key: "Enter" })',
+      example:
+        'browser.press({ tab_id: "tab_1", key: "Enter", expect: { selector_appears: ".results" } })',
     },
   },
   {
@@ -907,7 +960,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.flow',
     description:
-      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep/repeat) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?}` for an action/wait_for step, or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. Every response also carries `flow_id`, the opaque id of this run. A flow can additionally come back `{ ok: true, stopped_by: "cancelled", steps_completed, results }`: the HUMAN stopped it from the extension popup (or, on a cdp: tab, revoked the cdp-direct grant). That is a success carrying the partial work that really happened — do NOT relaunch it, and do NOT treat it as a transient failure to retry; report what completed and ask the user what they want instead. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
+      'Run a declarative sequence of steps (find/click/type/press/wait_for/drag/sleep/repeat) in ONE round trip instead of one MCP call per step. Steps execute strictly in order and STOP at the first failure (fail-fast) — there is no branching. A `find` step\'s resolved selector becomes the IMPLICIT TARGET for the very next click/type/press step that omits its own `selector` (an explicit `selector` on that step always overrides it and leaves the implicit target untouched for a later step). `type` and `press` steps that end up with no selector at all — no explicit one, no implicit one — act on whatever currently has focus, same as standalone browser.press; only `click` requires a resolved target and fails the flow if none is available. A `drag` step runs a full drag-and-drop gesture with the SAME params as standalone browser.drag (each endpoint a CSS selector or a viewport x/y coordinate pair, plus duration_ms/hold options) — its endpoints are ALWAYS explicit: it neither consumes nor sets the implicit target, which survives a drag step untouched for a later click/type/press. Drag steps work on extension tabs only: on a cdp: tab_id the flow fails fast at the drag step with the same "not supported over cdp-direct" error standalone browser.drag returns there. `click`/`type`/`press` default `settle_ms` to 150 exactly like the standalone tools, unless a step overrides it. They also accept the standalone `expect` (`url_changed` / `selector_appears` / `selector_disappears` / `text_appears` / `timeout_ms`): settle proves QUIET, not EFFECT, so put `expect` on the step whose effect the next steps depend on, and a click that did nothing fails THAT step (`expectation not met: ... after Nms`, with the usual recovery_snapshot) instead of timing out several steps later. Example: `{ click: { selector: "a.next-lesson-link", expect: { url_changed: true } } }`. Example (GIF picker): `{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }` — 5 steps, 1 round trip. On success returns `{ ok: true, steps_completed, results }` where each entry is `{selector}` for a find step, `{ok, settle?, expect?}` for an action/wait_for step (`expect: { met: true, elapsed_ms }` appears only on a step that set `expect`), or `{ok, drag_mode}` for a drag step (`drag_mode: "html5"|"pointer"` — the same silently-failing-drop diagnostic standalone browser.drag returns) — a click step\'s entry additionally carries `hit_element` exactly like standalone browser.click: present only when the dispatched click landed on a different element than the resolved target, omitted when the click hit the target itself. On failure returns `{ ok: false, failed_step, step_kind, error, steps_completed, recovery_snapshot }` — `error` is the same message the standalone tool would have returned for that failure, and `recovery_snapshot` is a focused `browser.snapshot({only_interactive:true, max_interactive:40})` of the page as it stands, so you see where the flow stopped without a follow-up call. Every response also carries `flow_id`, the opaque id of this run. A flow can additionally come back `{ ok: true, stopped_by: "cancelled", steps_completed, results }`: the HUMAN stopped it from the extension popup (or, on a cdp: tab, revoked the cdp-direct grant). That is a success carrying the partial work that really happened — do NOT relaunch it, and do NOT treat it as a transient failure to retry; report what completed and ask the user what they want instead. `evaluate` and `navigate` are intentionally NOT flow steps in v1 — arbitrary JS inside a flow raises permission-model questions this tool does not solve yet, and a navigation mid-flow can tear down the very document later steps expect to act on; use standalone browser.navigate before a flow, or browser.evaluate after one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -955,6 +1008,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                       },
                       force: { type: 'boolean' },
                       settle_ms: { type: 'number' },
+                      expect: EXPECT_SCHEMA,
                     },
                     additionalProperties: false,
                   },
@@ -976,6 +1030,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                       text: { type: 'string' },
                       clear: { type: 'boolean' },
                       settle_ms: { type: 'number' },
+                      expect: EXPECT_SCHEMA,
                     },
                     required: ['text'],
                     additionalProperties: false,
@@ -1001,6 +1056,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                           'Optional — omit to use the implicit target, or to send the key to whatever currently has focus.',
                       },
                       settle_ms: { type: 'number' },
+                      expect: EXPECT_SCHEMA,
                     },
                     required: ['key'],
                     additionalProperties: false,
@@ -1174,7 +1230,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         "A `drag` step's endpoints are ALWAYS explicit (selector or viewport coords) — drag neither consumes nor sets the find implicit target, and a pending implicit target survives a drag step for a later click/type/press. Both endpoints must be visible in the viewport at once, same as standalone browser.drag.",
         'Drag steps are extension-transport only: a flow containing a drag step run on a cdp: tab fails fast at that step with the same "not supported over cdp-direct" error standalone browser.drag returns — the earlier steps HAVE already executed by then.',
         'A `sleep` step is NOT the same as `settle_ms`. settle_ms is a quiet-PERIOD wait that returns as soon as the page stops mutating, so on an already-idle page it collapses to nothing — it can never throttle anything. `sleep` is a fixed pause that is always spent in full, and it counts its full ms against the flow budget. Out-of-range ms (outside 1..30000) is REJECTED, never clamped: silently halving a throttle would hit a rate-limited backend at twice the intended rate. A sleep step names no element, so it neither consumes nor sets the find implicit target.',
-        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), each sleep step its full ms, plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms or sleep.ms values, or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
+        'Worst-case time budget, hard ceiling 60 seconds: each wait_for step contributes its (clamped, max 30s) timeout_ms, each action step its settle ceiling (~2.5s; ~0.5s with settle_ms:0) plus its `expect` window when set (timeout_ms, default 3s, max 10s), each drag step its duration_ms (default 1.5s, clamped at 60s) plus any holds (clamped at 10s each), each sleep step its full ms, plus fixed overhead. A flow whose worst case exceeds 60s is REJECTED up front with the computed budget — reduce wait_for timeout_ms or sleep.ms values, or split the flow. A full 20-step flow of action steps with default settle fits comfortably.',
         'evaluate and navigate steps are NOT supported in v1 — see the tool description for why. Navigate before the flow; evaluate after it.',
         '`repeat` is BOUNDED by construction: `max_iterations` is required, repeats do not nest, and inner steps count against the same 20-step ceiling. That is what keeps the worst case computable — the budget is max_iterations × (inner steps + delay_ms + a while_found probe), and a repeat that projects over 60s is rejected up front like any other flow. Lower max_iterations, shorten the body, or drop delay_ms.',
         'A repeat iteration starts with a FRESH implicit target, and none escapes: a `find` inside the body cannot feed a click after the repeat, and a `find` before the repeat cannot feed one inside it. Put the find inside the body.',

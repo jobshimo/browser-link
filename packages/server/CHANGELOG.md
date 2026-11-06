@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.31.0](https://github.com/jobshimo/browser-link/compare/v0.30.0...v0.31.0) (2026-11-06)
+
+### Features
+
+- **expect:** `browser.click`, `browser.type`, `browser.press` and the matching `browser.flow` steps accept an optional `expect` that asserts the action's EFFECT. `settle` only proves the page went quiet, so a click on an inert element used to come back `ok: true`.
+- **expect:** conditions are `url_changed`, `selector_appears`, `selector_disappears` and `text_appears`, with `timeout_ms` (default 3000, max 10000). They are transitions: an `*_appears` condition that already held before the action, or a `selector_disappears` target that was never there, fails immediately instead of passing a no-op.
+- **expect:** an unmet expectation returns `expectation not met: <which> after <ms>ms` with the settle report, and fails a flow step fail-fast with the usual `recovery_snapshot`. A met one adds `expect: { met: true, elapsed_ms }`.
+- **expect:** `text_appears` only reads visible text: hidden shadow roots and iframes, and `style`/`script`/`template` content, are skipped. Selectors use the same deep Shadow DOM and same-origin iframe search as click and find.
+- **expect:** works on cdp-direct tabs. The bridge timeout and the flow budget include the expect window.
+
 ## [0.30.0](https://github.com/jobshimo/browser-link/compare/v0.29.0...v0.30.0) (2026-11-05)
 
 ### Features

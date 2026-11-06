@@ -108,6 +108,71 @@ describe('runFlow — happy path', () => {
     expect(result.results).toEqual([{ ok: true, settle: { settled: true, duration_ms: 5 } }]);
   });
 
+  test('expect is forwarded to click/type/press and its met result survives compaction', async () => {
+    const met = { met: true as const, elapsed_ms: 120 };
+    const deps = makeDeps({
+      performClick: vi.fn(async () => ({
+        ok: true,
+        result: { clicked: '#x', tag: 'a', expect: met },
+      })) as FlowDeps['performClick'],
+      performType: vi.fn(async () => ({
+        ok: true,
+        result: { typed: 1, expect: met },
+      })) as FlowDeps['performType'],
+      performPress: vi.fn(async () => ({
+        ok: true,
+        result: { key: 'Enter', modifiers: [], expect: met },
+      })) as FlowDeps['performPress'],
+    });
+    const expectation = { url_changed: true, timeout_ms: 500 };
+    const result = await runFlow(
+      [
+        { click: { selector: '#x', expect: expectation } },
+        { type: { selector: '#i', text: 'a', expect: expectation } },
+        { press: { key: 'Enter', expect: expectation } },
+      ],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([
+      { ok: true, expect: met },
+      { ok: true, expect: met },
+      { ok: true, expect: met },
+    ]);
+    expect(deps.performClick).toHaveBeenCalledWith(
+      expect.objectContaining({ expect: expectation }),
+    );
+    expect(deps.performType).toHaveBeenCalledWith(expect.objectContaining({ expect: expectation }));
+    expect(deps.performPress).toHaveBeenCalledWith(
+      expect.objectContaining({ expect: expectation }),
+    );
+  });
+
+  test('an unmet expectation fails the step fail-fast, with a recovery_snapshot', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(async () => ({
+        ok: false,
+        error: 'expectation not met: url_changed after 3000ms; settle: {"settled":true}',
+      })) as FlowDeps['performClick'],
+    });
+    const result = await runFlow(
+      [
+        { click: { selector: '#next', expect: { url_changed: true } } },
+        { click: { selector: '#never-reached' } },
+      ],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(0);
+    expect(result.step_kind).toBe('click');
+    expect(result.error).toContain('expectation not met: url_changed after 3000ms');
+    expect(result.steps_completed).toBe(0);
+    expect(result.recovery_snapshot).toEqual({ title: 'recovered', interactive: [] });
+    expect(deps.performClick).toHaveBeenCalledTimes(1);
+  });
+
   test('hit_element on a click result survives compaction, omitted when absent', async () => {
     const deps = makeDeps({
       performClick: vi.fn(
