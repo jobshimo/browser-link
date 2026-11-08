@@ -67,6 +67,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     bridgeTools: [
       '  browser.list_tabs         list connected tabs',
       '  browser.my_tabs           list tabs claimed by the calling agent',
+      '  browser.manual            read the agent manual: index, one tool or one topic (no tab)',
       '  browser.ping              check the bridge to a tab',
       '  browser.snapshot          dump title, url, text and interactive elements (filterable)',
       '  browser.find              locate an element by visible text — selector + coords',
@@ -80,7 +81,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
       '  browser.wait_for_tab      wait for a popup/window.open tab and auto-claim it',
       '  browser.events            bridge lifecycle log (tab renamed/registered/claimed, …)',
       '  browser.navigate          change the tab URL',
-      '  browser.click             click an element by CSS selector (occlusion-checked)',
+      '  browser.click             click an element by CSS selector or ref (occlusion-checked)',
       '  browser.type              type into an input',
       '  browser.press             press a key (trusted CDP input, not synthetic)',
       '  browser.drag              drag an element to another element or coordinate',
@@ -186,6 +187,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     bridgeTools: [
       '  browser.list_tabs         listar pestañas conectadas',
       '  browser.my_tabs           listar pestañas reclamadas por el agente que llama',
+      '  browser.manual            leer el manual del agente: índice, una herramienta o un tema (sin pestaña)',
       '  browser.ping              comprobar el puente a una pestaña',
       '  browser.snapshot          volcar título, url, texto y elementos interactivos (filtrable)',
       '  browser.find              localizar un elemento por texto visible — selector + coords',
@@ -199,7 +201,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
       '  browser.wait_for_tab      esperar una pestaña emergente (window.open) y reclamarla',
       '  browser.events            log de eventos del puente (pestaña renombrada/registrada/…)',
       '  browser.navigate          cambiar la URL de la pestaña',
-      '  browser.click             hacer click en un elemento por CSS selector (con chequeo de oclusión)',
+      '  browser.click             hacer click en un elemento por CSS selector o ref (con chequeo de oclusión)',
       '  browser.type              escribir en un input',
       '  browser.press             presionar una tecla (input CDP confiable, no sintético)',
       '  browser.drag              arrastrar un elemento hacia otro elemento o coordenada',

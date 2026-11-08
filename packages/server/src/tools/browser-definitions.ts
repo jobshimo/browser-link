@@ -380,7 +380,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Find one interactive element by its visible text and return a stable selector plus viewport coordinates.',
+        'Find one interactive element by its visible text, a ref or a semantic key and return a stable selector plus viewport coordinates.',
       when_to_use: [
         'When `browser.snapshot` returned no `data-testid` and the agent only knows the user-facing label of the element it wants to act on.',
         'Before `browser.click` / `browser.type` on a page whose markup lacks stable selectors — `find` does the visibility + ARIA + role-aware lookup once and returns a selector reusable by the action tool.',
@@ -664,7 +664,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Block until a selector matches a condition, a JS expression is truthy, or a network request URL completes.',
+        'Block until a selector or ref matches a condition, a JS expression is truthy, or a network request URL completes.',
       when_to_use: [
         'After clicking a button that triggers an async load — wait for the spinner to disappear or the result element to appear.',
         'Before snapshot/click on a SPA route that mounts content after navigation.',
@@ -889,7 +889,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
     doc: {
-      purpose: 'Click an element identified by a CSS selector.',
+      purpose: 'Click an element identified by a CSS selector or a ref.',
       when_to_use: [
         'After browser.snapshot returned a selector for the element the user asked you to interact with.',
       ],
@@ -930,7 +930,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
     doc: {
-      purpose: 'Focus an input element by selector and type text into it.',
+      purpose: 'Focus an input element by selector or ref and type text into it.',
       when_to_use: [
         'After browser.snapshot returned a selector for the input the user wants filled.',
       ],
