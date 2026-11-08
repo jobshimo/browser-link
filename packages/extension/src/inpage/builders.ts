@@ -367,17 +367,31 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
  *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
  *
- * `ref` and `doc_id` are present only when the page observer is installed
- * (see `PAGE_OBSERVER_JS`).
+ * `ref`, `semantic_key` and `doc_id` are present only when the page observer
+ * is installed (see `PAGE_OBSERVER_JS`). `semantic_key` is the observer's
+ * `semanticKeyFor(el)` (`{ role, name, path }`) and is carried by single
+ * matches only — candidates and near-misses stay small.
  *
  * With `ref` (spec v4 §6.3) the text scan is skipped: `text`, `role` and
  * `exact` are ignored and the result describes the element the ref resolves
  * to, in the single-match shape plus `reresolved: true` when the node was
  * just re-resolved by its semantic key —
- *   { matched: true, selector, ref, coords, tag, text, ambiguous?, frame?, reresolved?, doc_id }
+ *   { matched: true, selector, ref, coords, tag, text, ambiguous?, frame?, reresolved?, semantic_key, doc_id }
  *   { matched: false, reason: 'ref-stale', ref, doc_id }
  *   { matched: false, reason: 'observer-unavailable', ref }
  * The element is reported as is (no click-target gate): the caller named it.
+ *
+ * With `key` (`{ role, name, path? }`, the shape `semantic_key` and the map's
+ * stored key carry) the text scan is skipped too: candidates are the
+ * elements whose semantic key has the same `role` AND `name`. With `path`,
+ * only candidates with the identical tag sequence count and the unique
+ * smallest summed sibling-index distance wins (the observer's re-resolution
+ * rule); without it, exactly one role + name candidate must exist. A unique
+ * match answers in the single-match shape; otherwise
+ *   { matched: false, reason: 'not-found', error?, doc_id }
+ * where `error` starts with `key: <N> candidates share role and name` when
+ * N > 0, and `{ matched: false, reason: 'observer-unavailable' }` without
+ * the observer. No click-target gate, as for `ref`.
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
@@ -406,12 +420,32 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  * first-match-wins silently. Documented on the tool as: hints for the
  * next `find`, never click targets.
  */
+/** A semantic key to find by: the observer's `semanticKeyFor` shape, with
+ * `path` optional (see `buildFindJs`). */
+export interface FindKey {
+  role: string;
+  name: string;
+  path?: Array<{ tag: string; index: number }>;
+}
+
 export interface FindOpts {
-  /** Required unless `ref` is given. */
+  /** Required unless `ref` or `key` is given. */
   text?: string;
   role?: string;
   exact?: boolean;
   ref?: string;
+  key?: FindKey;
+}
+
+/** Only the documented key fields reach the built source, as JSON data. */
+function findKeyJson(key: FindKey): FindKey {
+  return Array.isArray(key.path)
+    ? {
+        role: key.role,
+        name: key.name,
+        path: key.path.map((step) => ({ tag: step.tag, index: step.index })),
+      }
+    : { role: key.role, name: key.name };
 }
 
 export function buildFindJs(opts: FindOpts): string {
@@ -422,6 +456,7 @@ export function buildFindJs(opts: FindOpts): string {
     candidateLimit: 5,
     nearMissLimit: 3,
     ...(typeof opts.ref === 'string' && opts.ref.length > 0 ? { ref: opts.ref } : {}),
+    ...(opts.key ? { key: findKeyJson(opts.key) } : {}),
   });
   return `
 (() => {
@@ -430,24 +465,94 @@ export function buildFindJs(opts: FindOpts): string {
   ${PAGE_OBSERVER_JS}
   ${typeof opts.ref === 'string' && opts.ref.length > 0 ? RESOLVE_TARGET_JS : ''}
   const opts = ${optsJson};
+  function semanticKeyOf(el) {
+    if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') return null;
+    try {
+      const key = pageObserver.semanticKeyFor(el);
+      return key && typeof key === 'object' ? key : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function singleMatch(el, ref, reresolved) {
+    const center = viewportCenterOf(el);
+    const selInfo = genSelectorInfo(el);
+    const result = { matched: true, selector: selInfo.selector };
+    if (ref) result.ref = ref;
+    result.coords = {
+      x: Math.round(center.x),
+      y: Math.round(center.y),
+    };
+    result.tag = el.tagName.toLowerCase();
+    result.text = shortText(el);
+    if (selInfo.ambiguous) result.ambiguous = true;
+    const frame = frameSelectorFor(el);
+    if (frame) result.frame = frame;
+    if (reresolved) result.reresolved = true;
+    const key = semanticKeyOf(el);
+    if (key) result.semantic_key = key;
+    return withDocId(result);
+  }
   if (typeof opts.ref === 'string') {
     const target = resolveTarget(opts);
     if (!target.ok) {
       const failure = { matched: false, reason: target.reason, ref: opts.ref };
       return withDocId(failure);
     }
-    const el = target.el;
-    const center = viewportCenterOf(el);
-    const selInfo = genSelectorInfo(el);
-    const result = { matched: true, selector: selInfo.selector, ref: opts.ref };
-    result.coords = { x: Math.round(center.x), y: Math.round(center.y) };
-    result.tag = el.tagName.toLowerCase();
-    result.text = shortText(el);
-    if (selInfo.ambiguous) result.ambiguous = true;
-    const frame = frameSelectorFor(el);
-    if (frame) result.frame = frame;
-    if (target.reresolved) result.reresolved = true;
-    return withDocId(result);
+    return singleMatch(target.el, opts.ref, target.reresolved);
+  }
+  if (opts.key) {
+    if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') {
+      return { matched: false, reason: 'observer-unavailable' };
+    }
+    const wanted = opts.key;
+    const candidates = [];
+    for (const el of deepQueryAll('*')) {
+      const key = semanticKeyOf(el);
+      if (key && key.role === wanted.role && key.name === wanted.name) {
+        candidates.push({ el: el, path: Array.isArray(key.path) ? key.path : [] });
+      }
+    }
+    const count = candidates.length;
+    const shared = 'key: ' + count + ' candidates share role and name; ';
+    let picked = null;
+    let error = count > 1 ? shared + 'pass path to disambiguate' : null;
+    if (!Array.isArray(wanted.path)) {
+      if (count === 1) picked = candidates[0].el;
+    } else {
+      // Same rule as the observer's re-resolution (lab 10): identical tag
+      // path, unique smallest summed sibling-index distance, ties refused.
+      let bestDistance = Infinity;
+      let tie = false;
+      let sameTags = 0;
+      for (const c of candidates) {
+        if (c.path.length !== wanted.path.length) continue;
+        let distance = 0;
+        for (let i = 0; i < c.path.length && distance !== Infinity; i++) {
+          if (c.path[i].tag !== wanted.path[i].tag) distance = Infinity;
+          else distance += Math.abs(c.path[i].index - wanted.path[i].index);
+        }
+        if (distance === Infinity) continue;
+        sameTags++;
+        if (distance < bestDistance) {
+          picked = c.el;
+          bestDistance = distance;
+          tie = false;
+        } else if (distance === bestDistance) {
+          tie = true;
+        }
+      }
+      if (tie) {
+        picked = null;
+        error = shared + sameTags + ' with the same tag path tie on distance';
+      } else if (!picked && count > 0) {
+        error = shared + 'none has the same tag path';
+      }
+    }
+    if (picked) return singleMatch(picked, refOf(picked), false);
+    const failure = { matched: false, reason: 'not-found' };
+    if (error) failure.error = error;
+    return withDocId(failure);
   }
   const needle = opts.text.toLowerCase();
   const needleTokens = needle.split(/[^a-z0-9]+/).filter(Boolean);
@@ -567,21 +672,7 @@ export function buildFindJs(opts: FindOpts): string {
     });
   }
   const el = matches[0];
-  const center = viewportCenterOf(el);
-  const selInfo = genSelectorInfo(el);
-  const result = { matched: true, selector: selInfo.selector };
-  const ref = refOf(el);
-  if (ref) result.ref = ref;
-  result.coords = {
-    x: Math.round(center.x),
-    y: Math.round(center.y),
-  };
-  result.tag = el.tagName.toLowerCase();
-  result.text = shortText(el);
-  if (selInfo.ambiguous) result.ambiguous = true;
-  const frame = frameSelectorFor(el);
-  if (frame) result.frame = frame;
-  return withDocId(result);
+  return singleMatch(el, refOf(el), false);
 })()
 `;
 }

@@ -1318,3 +1318,33 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     expect(result).toEqual({ clicked: '#go', tag: 'a' });
   });
 });
+
+describe('callCdpTool — find by semantic key (spec v4 §6.3, S3)', () => {
+  test('find by key reaches the built JS with the key as data and returns the result', async () => {
+    const seen: string[] = [];
+    const match = {
+      matched: true,
+      selector: '#b',
+      ref: 'e3',
+      tag: 'button',
+      text: 'Beta',
+      semantic_key: { role: 'button', name: 'Beta', path: [{ tag: 'body', index: 1 }] },
+    };
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"key":{"role":"button","name":"Beta"')) {
+          seen.push(expression);
+          return { result: { value: match } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    const key = { role: 'button', name: 'Beta', path: [{ tag: 'body', index: 1 }] };
+    expect(await callCdpTool(`cdp:${targetId}`, 'find', { key })).toEqual(match);
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toContain('"path":[{"tag":"body","index":1}]');
+    expect(seen[0]).toContain('function semanticKeyOf');
+  });
+});

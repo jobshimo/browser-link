@@ -289,7 +289,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.find',
     description:
-      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are never returned as matches, though they can still surface as `near_misses` hints. The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses?, doc_id? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, ref?, text, tag}], doc_id? }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, ref?, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying. `ref` and `doc_id` are additive, ignorable fields present only when the page observer is running in the tab: `ref` is the same per-document element handle `e<N>` that browser.snapshot reports for that element, valid only for the `doc_id` that issued it. Pass `ref` instead of `text` to describe that element directly (single-match shape plus `reresolved: true` when its node was replaced and re-found by its semantic key); a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`.',
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are never returned as matches, though they can still surface as `near_misses` hints. The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses?, doc_id? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, ref?, text, tag}], doc_id? }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, ref?, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying. `ref` and `doc_id` are additive, ignorable fields present only when the page observer is running in the tab: `ref` is the same per-document element handle `e<N>` that browser.snapshot reports for that element, valid only for the `doc_id` that issued it. Pass `ref` instead of `text` to describe that element directly (single-match shape plus `reresolved: true` when its node was replaced and re-found by its semantic key); a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`. With the observer running, a single match also carries `semantic_key` (`{ role, name, path }`: role, accessible name and the ancestor tag path with sibling indices); pass it back as `key` instead of `text` / `ref` to find that element again by role and name (with `path`, the unique closest same-tag-path candidate wins; several role + name candidates without `path` give `not-found` with `key: <N> candidates share role and name; pass path to disambiguate`).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -297,7 +297,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         text: {
           type: 'string',
           description:
-            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default. Required unless `ref` is given.',
+            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default. Required unless `ref` or `key` is given.',
         },
         ref: {
           type: 'string',
@@ -305,6 +305,31 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           maxLength: 64,
           description:
             'Element ref (`e<N>`) from browser.snapshot / find / state for the current document. When given, `text`, `role` and `exact` are ignored.',
+        },
+        key: {
+          type: 'object',
+          description:
+            'Semantic key (`semantic_key` from a previous find, or from a browser.map.recall entry payload): finds the element with this role and accessible name, disambiguated by `path` when given. Not combinable with `text` or `ref`.',
+          properties: {
+            role: { type: 'string', minLength: 1, maxLength: 200 },
+            name: { type: 'string', maxLength: 200 },
+            path: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 8,
+              items: {
+                type: 'object',
+                properties: {
+                  tag: { type: 'string', minLength: 1, maxLength: 200 },
+                  index: { type: 'integer', minimum: 0 },
+                },
+                required: ['tag', 'index'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['role', 'name'],
+          additionalProperties: false,
         },
         role: {
           type: 'string',

@@ -3687,3 +3687,80 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
     });
   });
 });
+
+describe('find by semantic key (spec v4 §6.3, S3) — dispatch validation', () => {
+  const tab = { tab_id: 'tab_1' };
+  const call = (name: string, args: Record<string, unknown>, deps = makeDeps()) =>
+    handleBrowserTool(name, { ...tab, ...args }, deps, TEST_CALLER);
+  const forwarded = (deps: BrowserToolDeps): Record<string, unknown> =>
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<string, unknown>;
+  const KEY = {
+    role: 'button',
+    name: 'Save',
+    path: [
+      { tag: 'body', index: 1 },
+      { tag: 'button', index: 2 },
+    ],
+  };
+
+  test('a valid key is forwarded alone, with or without path', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { key: KEY }, deps);
+    expect(forwarded(deps)).toEqual({ key: KEY });
+    const bare = makeDeps();
+    await call('browser.find', { key: { role: 'button', name: 'Save' } }, bare);
+    expect(forwarded(bare)).toEqual({ key: { role: 'button', name: 'Save' } });
+  });
+
+  test('key is exclusive with text and ref', async () => {
+    for (const extra of [{ text: 'Save' }, { ref: 'e3' }]) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { key: KEY, ...extra }, deps)).rejects.toThrow(
+        'browser.find needs exactly one of text, ref or key',
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([
+    ['not an object', 'button'],
+    ['missing role', { name: 'Save' }],
+    ['empty role', { role: '', name: 'Save' }],
+    ['missing name', { role: 'button' }],
+    ['a name over 200 chars', { role: 'button', name: 'x'.repeat(201) }],
+    ['an empty path', { role: 'button', name: 'Save', path: [] }],
+    [
+      'a path of 9 steps',
+      {
+        role: 'button',
+        name: 'Save',
+        path: Array.from({ length: 9 }, () => ({ tag: 'div', index: 1 })),
+      },
+    ],
+    ['a step without tag', { role: 'button', name: 'Save', path: [{ index: 1 }] }],
+    ['a fractional index', { role: 'button', name: 'Save', path: [{ tag: 'div', index: 1.5 }] }],
+    ['an unknown field', { role: 'button', name: 'Save', extra: 1 }],
+  ])('a malformed key (%s) is rejected before the bridge', async (_label, key) => {
+    const deps = makeDeps();
+    await expect(call('browser.find', { key }, deps)).rejects.toThrow(/^browser\.find: key /);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('text mode and ref mode forward exactly what they did before', async () => {
+    const byText = makeDeps();
+    await call('browser.find', { text: 'Save', role: 'button' }, byText);
+    expect(forwarded(byText)).toEqual({ text: 'Save', role: 'button', exact: false });
+    const byRef = makeDeps();
+    await call('browser.find', { ref: 'e6' }, byRef);
+    expect(forwarded(byRef)).toEqual({ ref: 'e6' });
+    await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
+  });
+
+  test('the find schema declares key with role and name required', () => {
+    const find = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.find')!;
+    const props = (find.inputSchema as { properties: Record<string, Record<string, unknown>> })
+      .properties;
+    expect(props.key).toMatchObject({ type: 'object', required: ['role', 'name'] });
+    expect(find.description).toContain('`key`');
+  });
+});

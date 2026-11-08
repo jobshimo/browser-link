@@ -1438,7 +1438,8 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
       if (value && typeof value === 'object') {
         const out: Json = {};
         for (const [k, v] of Object.entries(value)) {
-          if (k === 'ref' || k === 'doc_id' || k === 'snapshot_id') continue;
+          if (k === 'ref' || k === 'doc_id' || k === 'snapshot_id' || k === 'semantic_key')
+            continue;
           out[k] = strip(v);
         }
         return out;
@@ -1919,6 +1920,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       coords: { x: 0, y: 0 },
       tag: 'button',
       text: 'Beta',
+      semantic_key: expect.objectContaining({ role: 'button', name: 'Beta' }),
       doc_id: docId,
     });
     expect(Object.keys(found)).toEqual([
@@ -1928,6 +1930,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       'coords',
       'tag',
       'text',
+      'semantic_key',
       'doc_id',
     ]);
     expect(document.querySelector(found.selector as string)).toBe(second());
@@ -1952,5 +1955,152 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       reason: 'observer-unavailable',
       ref: 'e1',
     });
+  });
+});
+
+/**
+ * Semantic keys on `find` (spec v4 §6.3, S3): a third targeting mode by
+ * `key` (`{ role, name, path? }`, the observer's `semanticKeyFor` shape) and
+ * `semantic_key` on every single-match result while the observer is present.
+ */
+describe('find by semantic key and semantic_key on find results', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const LIST =
+    '<li><button>Alpha</button></li><li><button>Beta</button></li><li><button>Beta</button></li>';
+  interface KeyedObserver extends ObserverHandle {
+    semanticKeyFor(el: Element): { role: string; name: string; path: Json[] } | null;
+  }
+  const observer = (): KeyedObserver => win[OBSERVER_GLOBAL] as KeyedObserver;
+  const item = (i: number): HTMLElement =>
+    document.querySelectorAll<HTMLElement>('#list li')[i].firstElementChild as HTMLElement;
+  let docId = '';
+
+  function install(): void {
+    document.body.innerHTML = '<ul id="list">' + LIST + '</ul>';
+    document.querySelectorAll('button').forEach(makeVisible);
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = observer().doc_id;
+  }
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  test('find by key with path gives the single-match shape with ref and semantic_key', () => {
+    install();
+    const key = observer().semanticKeyFor(item(1))!;
+    expect(key).toEqual({
+      role: 'button',
+      name: 'Beta',
+      path: [
+        { tag: 'body', index: 1 },
+        { tag: 'ul', index: 1 },
+        { tag: 'li', index: 2 },
+        { tag: 'button', index: 1 },
+      ],
+    });
+    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(Object.keys(found)).toEqual([
+      'matched',
+      'selector',
+      'ref',
+      'coords',
+      'tag',
+      'text',
+      'semantic_key',
+      'doc_id',
+    ]);
+    expect(found.matched).toBe(true);
+    expect(found.ref).toBe(observer().refFor(item(1)));
+    expect(found.semantic_key).toEqual(key);
+    expect(found.tag).toBe('button');
+    expect(found.text).toBe('Beta');
+    expect(found.doc_id).toBe(docId);
+    expect(document.querySelector(found.selector as string)).toBe(item(1));
+  });
+
+  test('with path, the closest same-tag-path candidate wins (the third item)', () => {
+    install();
+    const key = observer().semanticKeyFor(item(2))!;
+    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(found.matched).toBe(true);
+    expect(document.querySelector(found.selector as string)).toBe(item(2));
+  });
+
+  test('two candidates with the same role and name and no path: not-found naming the count', () => {
+    install();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Beta' } }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      error: 'key: 2 candidates share role and name; pass path to disambiguate',
+      doc_id: docId,
+    });
+  });
+
+  test('a unique role and name matches without path', () => {
+    install();
+    const found = evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Alpha' } }));
+    expect(found.matched).toBe(true);
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
+  });
+
+  test('a key for a missing element is a plain not-found', () => {
+    install();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Gamma' } }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      doc_id: docId,
+    });
+  });
+
+  test('a path whose tags differ from every candidate is not-found', () => {
+    install();
+    const key = {
+      role: 'button',
+      name: 'Beta',
+      path: [
+        { tag: 'body', index: 1 },
+        { tag: 'div', index: 1 },
+        { tag: 'button', index: 1 },
+      ],
+    };
+    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(found.matched).toBe(false);
+    expect(found.reason).toBe('not-found');
+    expect(found.error).toBe('key: 2 candidates share role and name; none has the same tag path');
+  });
+
+  test('without the observer, find by key is observer-unavailable', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST + '</ul>';
+    expect(win[OBSERVER_GLOBAL]).toBeUndefined();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Alpha' } }))).toEqual({
+      matched: false,
+      reason: 'observer-unavailable',
+    });
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+  });
+
+  test('text-mode and ref-mode single matches carry semantic_key; candidates do not', () => {
+    install();
+    const byText = evalExpr<Json>(buildFindJs({ text: 'Alpha' }));
+    expect(byText.semantic_key).toEqual(observer().semanticKeyFor(item(0)));
+    const ref = observer().refFor(item(1))!;
+    const byRef = evalExpr<Json>(buildFindJs({ ref }));
+    expect(byRef.semantic_key).toEqual(observer().semanticKeyFor(item(1)));
+    const multi = evalExpr<{ candidates: Json[] }>(buildFindJs({ text: 'Beta' }));
+    expect(multi.candidates.length).toBe(2);
+    for (const c of multi.candidates) expect(c).not.toHaveProperty('semantic_key');
+    const miss = evalExpr<{ near_misses?: Json[] }>(buildFindJs({ text: 'Alphabet' }));
+    for (const nm of miss.near_misses ?? []) expect(nm).not.toHaveProperty('semantic_key');
+  });
+
+  test('a snapshot entry does not carry semantic_key', () => {
+    install();
+    const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    expect(snapshot.interactive.length).toBe(3);
+    for (const e of snapshot.interactive) expect(e).not.toHaveProperty('semantic_key');
   });
 });

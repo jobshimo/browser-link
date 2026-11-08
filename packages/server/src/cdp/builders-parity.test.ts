@@ -36,6 +36,10 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     const opts = { text: 'Save changes', role: 'button', exact: true };
     expect(srv.buildFindJs(opts)).toBe(ext.buildFindJs(opts));
     expect(srv.buildFindJs({ ref: 'e7' })).toBe(ext.buildFindJs({ ref: 'e7' }));
+    const key = { role: 'button', name: 'Save', path: [{ tag: 'body', index: 1 }] };
+    expect(srv.buildFindJs({ key })).toBe(ext.buildFindJs({ key }));
+    const bare = { key: { role: 'link', name: 'Docs' } };
+    expect(srv.buildFindJs(bare)).toBe(ext.buildFindJs(bare));
   });
 
   test('buildClickResolveJs', () => {

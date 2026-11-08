@@ -32,6 +32,7 @@ import {
   buildTypeResolveJs,
   buildWaitForSelectorJs,
   type ClickResolveOpts,
+  type FindKey,
   type FindOpts,
   type SnapshotOpts,
   type TypeResolveOpts,
@@ -521,9 +522,13 @@ type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
 
 async function performFind(
   client: CdpClient,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string },
+  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
+    if (params.key !== undefined) {
+      const value = await evaluateInTab<FindStepResult>(client, buildFindJs({ key: params.key }));
+      return { ok: true, result: value };
+    }
     if (params.ref !== undefined) {
       const ref = params.ref;
       const found = await evaluateInTab<FindStepResult>(client, buildFindJs({ ref }));
@@ -1017,6 +1022,7 @@ export async function callCdpTool(
         role: typeof p.role === 'string' ? p.role : undefined,
         exact: p.exact === true,
         ref: typeof p.ref === 'string' ? p.ref : undefined,
+        key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
       });
       if (!outcome.ok) throw new Error(outcome.error);
       return outcome.result;

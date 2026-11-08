@@ -15,6 +15,7 @@ import {
   buildDragProbeJs,
   buildElementRectJs,
   buildWaitForSelectorJs,
+  type FindKey,
   type WaitForSelectorCondition,
 } from './inpage/builders.js';
 import {
@@ -1447,10 +1448,14 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
 
 async function performFind(
   tabId: number,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string },
+  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
+    if (params.key !== undefined) {
+      const value = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ key: params.key }));
+      return { ok: true, result: value };
+    }
     if (ref !== undefined) {
       const found = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ ref }));
       const refError = found.matched ? null : refFailureMessage(found, ref);
@@ -2915,10 +2920,11 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'find': {
         const outcome = await performFind(tabId, {
-          text: optStr('ref') !== undefined ? optStr('text') : str('text'),
+          text: optStr('ref') !== undefined || p.key !== undefined ? optStr('text') : str('text'),
           role: optStr('role'),
           exact: p.exact === true,
           ref: optStr('ref'),
+          key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };

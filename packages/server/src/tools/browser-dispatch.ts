@@ -573,6 +573,70 @@ function requireValidRef(tool: string, ref: unknown): void {
   if (ref !== undefined && !isElementRef(ref)) throw new Error(`${tool}: ${REF_SHAPE_ERROR}`);
 }
 
+/** Bounds of a semantic key (spec v4 §5.6): the observer's `semanticKeyFor`
+ * path holds at most 8 steps, and no stored or sent string exceeds 200
+ * characters. */
+const SEMANTIC_KEY_MAX_PATH_STEPS = 8;
+const SEMANTIC_KEY_MAX_STRING = 200;
+const SEMANTIC_KEY_FIELDS = new Set(['role', 'name', 'path']);
+const SEMANTIC_KEY_STEP_FIELDS = new Set(['tag', 'index']);
+
+export interface SemanticKey {
+  role: string;
+  name: string;
+  path?: Array<{ tag: string; index: number }>;
+}
+
+/**
+ * Shape check for a semantic key `{ role, name, path }` — the observer's
+ * `semanticKeyFor` output, `find`'s `key` mode and the map's stored
+ * `semantic_key`. `role` is a non-empty string, `name` a string (an element
+ * can have an empty name), both at most 200 characters; `path`, when present
+ * (required with `requirePath`), is 1–8 `{ tag, index }` steps with a
+ * non-empty tag of at most 200 characters and a non-negative integer index
+ * (`#shadow` steps use 0). No other field is accepted. Returns the problem
+ * as a phrase to append after `key ` / `semantic_key `, or `null`.
+ */
+export function semanticKeyProblem(
+  value: unknown,
+  opts: { requirePath?: boolean } = {},
+): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be an object { role, name, path? }';
+  }
+  const key = value as Record<string, unknown>;
+  const unknownField = Object.keys(key).find((f) => !SEMANTIC_KEY_FIELDS.has(f));
+  if (unknownField !== undefined) return `has an unknown field "${unknownField}"`;
+  const max = SEMANTIC_KEY_MAX_STRING;
+  if (typeof key.role !== 'string' || key.role.length === 0 || key.role.length > max) {
+    return `role must be a non-empty string of at most ${max} characters`;
+  }
+  if (typeof key.name !== 'string' || key.name.length > max) {
+    return `name must be a string of at most ${max} characters`;
+  }
+  if (key.path === undefined) return opts.requirePath ? 'path is required' : null;
+  const steps = SEMANTIC_KEY_MAX_PATH_STEPS;
+  if (!Array.isArray(key.path) || key.path.length === 0 || key.path.length > steps) {
+    return `path must be an array of 1 to ${steps} { tag, index } steps`;
+  }
+  for (const step of key.path as unknown[]) {
+    if (typeof step !== 'object' || step === null || Array.isArray(step)) {
+      return 'path steps must be { tag, index } objects';
+    }
+    const s = step as Record<string, unknown>;
+    if (Object.keys(s).some((f) => !SEMANTIC_KEY_STEP_FIELDS.has(f))) {
+      return 'path steps accept only tag and index';
+    }
+    if (typeof s.tag !== 'string' || s.tag.length === 0 || s.tag.length > max) {
+      return `path step tag must be a non-empty string of at most ${max} characters`;
+    }
+    if (typeof s.index !== 'number' || !Number.isInteger(s.index) || s.index < 0) {
+      return 'path step index must be a non-negative integer';
+    }
+  }
+  return null;
+}
+
 /** `{ ref }` when given, else nothing — so a selector call forwards exactly
  * the parameters it always did. */
 function refArg(ref: string | undefined): { ref?: string } {
@@ -1546,13 +1610,24 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.find': {
-      const { text, role, exact, ref } = (args ?? {}) as {
+      const { text, role, exact, ref, key } = (args ?? {}) as {
         text?: unknown;
         role?: unknown;
         exact?: unknown;
         ref?: unknown;
+        key?: unknown;
       };
       requireValidRef('browser.find', ref);
+      if (key !== undefined) {
+        // `ref` with `text` keeps its documented behaviour (text ignored);
+        // a key names its own target, so it combines with neither.
+        if (text !== undefined || ref !== undefined) {
+          throw new Error('browser.find needs exactly one of text, ref or key');
+        }
+        const problem = semanticKeyProblem(key);
+        if (problem !== null) throw new Error(`browser.find: key ${problem}`);
+        return routeToolCall('find', requireTabId(args), { key: key as SemanticKey }, deps);
+      }
       if (ref !== undefined) {
         // With a ref, find describes that element; text/role/exact do not
         // apply (see buildFindJs).
