@@ -32,6 +32,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'List tabs currently claimed by the calling agent',
   },
   {
+    name: 'browser.manual',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Read the agent manual: index, one tool in full, or one topic (no tab)',
+  },
+  {
     name: 'browser.events',
     family: 'bridge',
     category: 'read',

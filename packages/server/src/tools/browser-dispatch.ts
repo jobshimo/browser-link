@@ -45,6 +45,7 @@ import {
   type FetchDownloadOutcome,
 } from '../downloads.js';
 import type { MapHint } from '../map/queries.js';
+import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ActivityInput } from '../activity/types.js';
 import { buildRow } from '../activity/extract.js';
 import {
@@ -198,6 +199,10 @@ export interface BrowserToolDeps {
    * used by `browser.download` for `download-started`/`download-finished`;
    * absent in unit tests that do not care. */
   emitEvent?(kind: BridgeEventKind, data: Record<string, unknown>): void;
+  /** Instructions-block status per client for the `browser.manual` index.
+   * Optional: absent, the handler detects it live (read-only). Tests inject a
+   * fixed list so the output does not depend on the machine's home files. */
+  instructionsStatus?(): readonly ClientInstructionsStatus[];
 }
 
 /** Closed set of browser tool names. Used both as the discriminant in
@@ -209,6 +214,7 @@ const BROWSER_TOOL_NAMES = [
   'browser.claim_tab',
   'browser.release_tab',
   'browser.my_tabs',
+  'browser.manual',
   'browser.ping',
   'browser.navigate',
   'browser.snapshot',
@@ -1299,6 +1305,21 @@ function handleReleaseTab(args: unknown, deps: BrowserToolDeps, caller: AgentCal
   return payload;
 }
 
+/**
+ * `browser.manual` — server-only: never routes to a tab, never needs a claim.
+ * Loaded lazily so the manual (and the map tool definitions it lists) stay
+ * out of this module's static import graph.
+ */
+async function handleManual(args: unknown, deps: BrowserToolDeps): Promise<string> {
+  const [{ renderManual }, { detectInstructionsStatus }] = await Promise.all([
+    import('../manual/tool.js'),
+    import('../manual/status.js'),
+  ]);
+  return renderManual(args, {
+    statuses: () => deps.instructionsStatus?.() ?? detectInstructionsStatus(),
+  });
+}
+
 function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: PublicClaim[] } {
   if (!deps.tabClaims) return { claims: [] };
   return { claims: deps.tabClaims.myTabs(caller).map(toPublicClaim) };
@@ -1573,6 +1594,8 @@ async function dispatchBrowserTool(
       return handleReleaseTab(args, deps, caller);
     case 'browser.my_tabs':
       return handleMyTabs(deps, caller);
+    case 'browser.manual':
+      return handleManual(args, deps);
     case 'browser.ping':
       return routeToolCall('ping', requireTabId(args), {}, deps);
     case 'browser.navigate': {

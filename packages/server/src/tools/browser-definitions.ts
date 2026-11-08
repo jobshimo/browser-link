@@ -187,6 +187,35 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.manual',
+    description:
+      'The browser-link manual on demand; needs no tab. No arguments: the index (server version, the instructions-block status per client, one line per tool, the topic list). { tool: "browser.click" }: that tool\'s full doc (purpose, when to use, gotchas, example) plus one line per parameter. { topic: "downloads" }: one hand-written topic. Pass at most one of tool or topic; an unknown name fails listing the valid ones.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: {
+          type: 'string',
+          description: 'A tool name, e.g. "browser.click". Mutually exclusive with topic.',
+        },
+        topic: {
+          type: 'string',
+          description:
+            'A topic name: downloads, canvas, screenshot, flows, map, token-efficiency, multi-agent, cdp-direct. Mutually exclusive with tool.',
+        },
+      },
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Read the browser-link manual: the index, one tool in full, or one topic.',
+      when_to_use: [
+        'Before using a tool for the first time in a session, or when a result surprises you: `browser.manual({ tool })`.',
+        'For cross-cutting how-tos (downloads, canvas, flows, map, token-efficient patterns): `browser.manual({ topic })`.',
+        'To check whether the installed instructions block is current: `browser.manual()`.',
+      ],
+      example: 'browser.manual({ tool: "browser.click" })',
+    },
+  },
+  {
     name: 'browser.ping',
     description: 'Verify the bridge to a tab. Returns its current title and url.',
     inputSchema: {

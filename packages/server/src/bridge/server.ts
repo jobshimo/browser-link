@@ -95,6 +95,11 @@ export interface IpcServerOptions {
    * production wiring is in `server.ts`'s `runPrimary`.
    */
   pushSettings?: (settings: SettingsPushPayload) => number;
+  /** The `initialize.instructions` text proxies receive. The primary passes
+   * the text it built at start (with the outdated-block notice when one
+   * applies) so a proxied agent reads the same text as the primary's own
+   * client. Defaults to `SERVER_INSTRUCTIONS`. */
+  instructions?: string;
 }
 
 export class IpcServer {
@@ -420,7 +425,7 @@ export class IpcServer {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
             serverInfo: { name: 'browser-link', version: VERSION },
-            instructions: SERVER_INSTRUCTIONS,
+            instructions: this.options.instructions ?? SERVER_INSTRUCTIONS,
           };
           return { jsonrpc: '2.0', id, result };
         }

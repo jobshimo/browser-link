@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
 import { MAP_TOOL_DEFINITIONS } from '../map/tools.js';
-import { SERVER_INSTRUCTIONS, buildServerInstructions } from './server-instructions.js';
+import {
+  SERVER_INSTRUCTIONS,
+  buildServerInstructions,
+  buildStartInstructions,
+} from './server-instructions.js';
+import type { InstructionsInstaller } from '../agent-instructions/index.js';
+import { VERSION } from '../version.js';
 import { renderCore } from '../manual/core.js';
 import { renderTopic } from '../manual/topics.js';
 
@@ -53,7 +59,7 @@ describe('buildServerInstructions', () => {
     const core = renderCore({});
     expect(core).toContain('### Success is not proof');
     expect(core).toContain('`hit_element` on `click`');
-    expect(core).toContain('the click missed: do not proceed');
+    expect(core).toContain('the click missed → do not proceed');
   });
 
   test('the core carries the multi-agent claim and cdp-direct gate lines', () => {
@@ -187,5 +193,28 @@ describe('buildServerInstructions', () => {
       // The example block opens with ``` and the example body, then closes with ```.
       expect(out).toContain(`**Example:**\n\`\`\`\n${def.doc!.example!}\n\`\`\``);
     }
+  });
+});
+
+describe('start-time instructions (outdated-block notice)', () => {
+  const installer = (kind: string, version?: string) =>
+    ({
+      id: 'claude',
+      displayName: 'Claude Code',
+      detect: () => ({ filePath: 'x', state: { kind, version } }),
+    }) as unknown as InstructionsInstaller;
+
+  test('an installed-outdated block puts the notice first', () => {
+    const { text, statuses } = buildStartInstructions([installer('installed-outdated', '0.1.0')]);
+    expect(statuses).toHaveLength(1);
+    expect(text.split('\n')[0]).toMatch(
+      /^Your browser-link instructions block is installed-outdated \(installed v0\.1\.0, server v[^)]+\): run `browser-link instructions install` and restart the client\.$/,
+    );
+    expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+  });
+
+  test('an up-to-date block leaves the text identical to SERVER_INSTRUCTIONS', () => {
+    const { text } = buildStartInstructions([installer('installed', VERSION)]);
+    expect(text).toBe(SERVER_INSTRUCTIONS);
   });
 });

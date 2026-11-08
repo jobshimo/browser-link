@@ -78,7 +78,8 @@ describe('agent-instructions block — reflex protocol shape', () => {
   });
 
   test('hit_element guidance is in the core of the block', () => {
-    expect(block()).toContain('If it is not your target or inside it, the click missed');
+    expect(block()).toContain('if it is not your target or inside it, the click missed');
+    expect(block()).toContain('`retargeted` error on `click`');
   });
 
   test('token-efficiency topic names the dedicated tools and the evaluate fallbacks', () => {

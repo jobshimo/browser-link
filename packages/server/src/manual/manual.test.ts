@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest';
 import { renderCore } from './core.js';
 import { renderInstallBody, renderServerInstructions } from './render.js';
 import { TOPICS, TOPIC_NAMES, renderTopic } from './topics.js';
+import { detectInstructionsStatus, formatClientStatus, instructionsNotice } from './status.js';
+import type { InstructionsInstaller, InstructionsState } from '../agent-instructions/index.js';
 
 /**
  * The manual is one source rendered three ways: the MCP connect-time text
@@ -174,5 +176,109 @@ describe('topics', () => {
         expect(core.includes(sentence), `${name}: ${sentence}`).toBe(false);
       }
     }
+  });
+});
+
+describe('manual core after the retargeted click failure', () => {
+  test('names the retargeted click error and its way out', () => {
+    const core = renderCore({});
+    expect(core).toContain('`retargeted` error on `click`');
+    expect(core).toMatch(/retargeted[^\n]*ancestor of your target[^\n]*`force: true`/);
+  });
+
+  test('scopes hit_element to the cases that still succeed', () => {
+    const line = renderCore({})
+      .split('\n')
+      .find((l) => l.startsWith('- `hit_element`'));
+    expect(line).toBeDefined();
+    expect(line).toContain('`pointer-events: none`');
+    expect(line).toContain('`force: true`');
+    expect(line).toContain('the click missed');
+  });
+});
+
+describe('instructions-block status and notice', () => {
+  const VERSION = '0.38.0';
+  const st = (kind: string, version?: string | null) =>
+    ({ kind, ...(version === undefined ? {} : { version }) }) as InstructionsState;
+  const entry = (displayName: string, state: InstructionsState) => ({
+    id: 'claude' as const,
+    displayName,
+    state,
+  });
+
+  test('no notice when every block is installed or the file is absent', () => {
+    expect(
+      instructionsNotice(
+        [entry('Claude Code', st('installed', '0.38.0')), entry('OpenCode', st('no-file'))],
+        VERSION,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('an outdated block yields the installed-outdated notice with both versions', () => {
+    expect(
+      instructionsNotice(
+        [
+          entry('Claude Code', st('not-installed')),
+          entry('OpenCode', st('installed-outdated', '0.36.0')),
+        ],
+        VERSION,
+      ),
+    ).toBe(
+      'Your browser-link instructions block is installed-outdated (installed v0.36.0, server v0.38.0): run `browser-link instructions install` and restart the client.',
+    );
+  });
+
+  test('a client without a block is a choice: not-installed, no-file and corrupt never yield a notice', () => {
+    expect(
+      instructionsNotice(
+        [
+          entry('Claude Code', st('not-installed')),
+          entry('OpenCode', st('no-file')),
+          entry('GitHub Copilot CLI', { kind: 'corrupt', reason: 'multiple-begin-markers' }),
+        ],
+        VERSION,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('the realistic notice sits first and core + notice stays within the budget', () => {
+    const notice = instructionsNotice(
+      [entry('Claude Code', st('installed-outdated', '0.37.0'))],
+      '0.38.0',
+    )!;
+    const core = renderCore({ notice });
+    expect(core.startsWith(`${notice}\n\n## browser-link — reflex protocol`)).toBe(true);
+    expect(core.length).toBeLessThanOrEqual(CORE_WITH_NOTICE_LIMIT);
+  });
+
+  test('status lines per state', () => {
+    expect(formatClientStatus(entry('A', st('installed', '0.38.0')), VERSION)).toBe(
+      'A: installed v0.38.0',
+    );
+    expect(formatClientStatus(entry('A', st('installed-outdated', '0.36.0')), VERSION)).toBe(
+      'A: installed-outdated v0.36.0 → v0.38.0: run browser-link instructions install',
+    );
+    expect(formatClientStatus(entry('A', st('not-installed')), VERSION)).toBe('A: not-installed');
+    expect(formatClientStatus(entry('A', st('no-file')), VERSION)).toBe('A: no-file');
+  });
+
+  test('detection reads every installer and skips one that throws', () => {
+    const ok = {
+      id: 'claude',
+      displayName: 'Claude Code',
+      detect: () => ({ filePath: 'x', state: st('installed', '0.38.0') }),
+    } as unknown as InstructionsInstaller;
+    const broken = {
+      id: 'opencode',
+      displayName: 'OpenCode',
+      detect: () => {
+        throw new Error('EACCES');
+      },
+    } as unknown as InstructionsInstaller;
+    expect(detectInstructionsStatus([ok, broken])).toEqual([
+      { id: 'claude', displayName: 'Claude Code', state: st('installed', '0.38.0') },
+    ]);
   });
 });

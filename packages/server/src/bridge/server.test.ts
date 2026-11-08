@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { connect, type Socket } from 'node:net';
 import * as paths from '../map/paths.js';
 import { IpcServer } from './server.js';
+import { SERVER_INSTRUCTIONS } from '../tools/server-instructions.js';
 import { IPC_PROTOCOL_VERSION, encodeFrame, parseFrame, type Frame } from './protocol.js';
 import { readToken } from './token.js';
 import type { DispatchDeps } from './dispatch.js';
@@ -245,6 +246,55 @@ describe('IpcServer MCP dispatch', () => {
     expect(response).toBeDefined();
     expect(response!.payload.result.serverInfo.name).toBe('browser-link');
     expect(response!.payload.result.instructions).toBeTruthy();
+  });
+
+  test('initialize returns the instructions the primary built at start (notice included)', async () => {
+    const notice =
+      'Your browser-link instructions block is installed-outdated (installed v0.1.0, server v9.9.9): run `browser-link instructions install` and restart the client.';
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      instructions: [notice, '', 'rest'].join('\n'),
+    });
+    await server.start();
+    const s = await dial(server.boundAddress());
+    s.write(
+      encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+    );
+    await readNFrames(s, 1);
+    s.write(
+      encodeFrame({
+        kind: 'mcp.request',
+        requestId: 2,
+        payload: { jsonrpc: '2.0', id: 101, method: 'initialize', params: {} },
+      }),
+    );
+    const frames = await readNFrames(s, 5, 1500);
+    const response = frames.find(
+      (f) => f.kind === 'mcp.response' && (f as { requestId: number }).requestId === 2,
+    ) as { payload: { result: { instructions?: string } } } | undefined;
+    expect(response!.payload.result.instructions!.split('\n')[0]).toBe(notice);
+  });
+
+  test('initialize without an injected text returns SERVER_INSTRUCTIONS', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    s.write(
+      encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+    );
+    await readNFrames(s, 1);
+    s.write(
+      encodeFrame({
+        kind: 'mcp.request',
+        requestId: 3,
+        payload: { jsonrpc: '2.0', id: 102, method: 'initialize', params: {} },
+      }),
+    );
+    const frames = await readNFrames(s, 5, 1500);
+    const response = frames.find(
+      (f) => f.kind === 'mcp.response' && (f as { requestId: number }).requestId === 3,
+    ) as { payload: { result: { instructions?: string } } } | undefined;
+    expect(response!.payload.result.instructions).toBe(SERVER_INSTRUCTIONS);
   });
 
   test('returns method-not-found for unknown methods', async () => {
