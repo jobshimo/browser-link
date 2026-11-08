@@ -14,14 +14,14 @@ import {
   type InsightKind,
   type InsightRow,
 } from './queries.js';
-import { validateFlowSteps } from '../tools/browser-dispatch.js';
+import { semanticKeyProblem, validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { ToolDefinition } from '../tools/types.js';
 
 export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.recall',
     description:
-      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response sections, in order: `pitfalls` (what does NOT work — read these first), `mechanisms` (how the app behaves underneath), `entries`, `flows`. `flows` are named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow.',
+      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response sections, in order: `pitfalls` (what does NOT work — read these first), `mechanisms` (how the app behaves underneath), `entries`, `flows`. `flows` are named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow. A selector entry whose payload carries `semantic_key` (`{ role, name, path }`) AND whose stored selector is a structural `:nth-of-type(` fallback is returned with `prefer: "semantic_key"` (computed at recall, never stored): target it with browser.find({ key: payload.semantic_key }) rather than the brittle selector.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -57,7 +57,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.save',
     description:
-      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). The entry fields (url_pattern, kind, purpose, payload) are optional AS A GROUP: pass all four, or omit all four to save only `flows`, `mechanisms` or `pitfalls` (no throwaway entry needed); a partial entry or a call carrying nothing to save is rejected. Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall. Also optionally pass `mechanisms` (`{ key, description }`: how the app behaves underneath) and `pitfalls` (`{ key, description, symptom? }`: what does NOT work) — behaviour, never content.',
+      'Persist something learned about a browser app. Three entry kinds are supported: "selector" (a CSS selector tied to a purpose), "flow" (a free-form note about a multi-step path), and "gotcha" (a free-form note). The entry fields (url_pattern, kind, purpose, payload) are optional AS A GROUP: pass all four, or omit all four to save only `flows`, `mechanisms` or `pitfalls` (no throwaway entry needed); a partial entry or a call carrying nothing to save is rejected. Saving auto-creates the app row if needed (app_key is derived from title when not provided). Upsert on (app, url_pattern, kind, purpose). Marks verified_at = now and clears failed_at. Never save selectors or flows you have not just successfully executed. Optionally pass `flows`: an array of NAMED, REPLAYABLE flow recipes (`{ name, description?, steps }`) — `steps` must follow the EXACT browser.flow step grammar and is validated with the same rules browser.flow itself enforces. Upserts on (app, name); saving an existing name replaces its steps/description. Distinct from the "flow" entry kind above: that is a free-form note, this is a structured, browser.flow-replayable recipe returned by browser.map.recall. Also optionally pass `mechanisms` (`{ key, description }`: how the app behaves underneath) and `pitfalls` (`{ key, description, symptom? }`: what does NOT work) — behaviour, never content. A "selector" entry payload may also carry `semantic_key` (`{ role, name, path }`, the value a browser.find single match returned for that element) next to the selector: save it when the selector is a structural `:nth-of-type(` fallback, never for an `ambiguous: true` entry (refused); browser.map.recall then marks such an entry `prefer: "semantic_key"`. Never save a `ref`: refs die with the document.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -84,7 +84,7 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         payload: {
           description:
-            'Kind-specific payload. selector: { selector: string, evidence?: string }. flow: { steps: array<{action,...}>}. gotcha: { body: string }.',
+            'Kind-specific payload. selector: { selector: string, evidence?: string, semantic_key?: { role: string, name: string, path: array<{ tag: string, index: number }> } } — `semantic_key` is the `semantic_key` a browser.find single match returned for that element (path 1-8 steps, strings at most 200 chars); it is refused on an `ambiguous: true` entry. flow: { steps: array<{action,...}>}. gotcha: { body: string }.',
         },
         notes: { type: 'string' },
         flows: {
@@ -384,6 +384,27 @@ interface RenameArgs {
   new_app_key: string;
 }
 
+/**
+ * An entry payload may carry `semantic_key: { role, name, path }` next to its
+ * selector (spec v4 §6.3) — additive, inside the free-form JSON payload. When
+ * present it must have the full key shape (`semanticKeyProblem` with `path`
+ * required), and it is refused on an `ambiguous: true` entry: that selector
+ * resolves first-match-wins across identical twins, so no key saved with it
+ * could name one element either.
+ */
+function validatePayloadSemanticKey(payload: unknown, purpose: unknown, urlPattern: unknown): void {
+  if (typeof payload !== 'object' || payload === null || !('semantic_key' in payload)) return;
+  const p = payload as { semantic_key?: unknown; ambiguous?: unknown };
+  const entry = `entry "${String(purpose)}" (${String(urlPattern)})`;
+  if (p.ambiguous === true) {
+    throw new Error(
+      `browser.map.save: ${entry} has ambiguous: true and cannot store a semantic_key`,
+    );
+  }
+  const problem = semanticKeyProblem(p.semantic_key, { requirePath: true });
+  if (problem !== null) throw new Error(`browser.map.save: ${entry}: semantic_key ${problem}`);
+}
+
 export function isMapTool(name: string): boolean {
   return name.startsWith('browser.map.');
 }
@@ -443,6 +464,7 @@ export function handleMapTool(name: string, args: unknown): unknown {
       if (hasEntry && !ENTRY_KINDS.includes(a.kind as EntryKind)) {
         throw new Error(`browser.map.save: kind must be one of ${ENTRY_KINDS.join(' | ')}`);
       }
+      if (hasEntry) validatePayloadSemanticKey(a.payload, a.purpose, a.url_pattern);
       if (
         !hasEntry &&
         validatedFlows.length + validatedMechanisms.length + validatedPitfalls.length === 0

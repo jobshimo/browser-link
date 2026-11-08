@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.37.0](https://github.com/jobshimo/browser-link/compare/v0.36.0...v0.37.0) (2026-11-08)
+
+### Features
+
+- **click, type, press, find, wait_for:** accept `ref` (the element handle from the latest `snapshot`, `find` or `state` of the current document) instead of a CSS selector, on the extension, on cdp-direct and in `browser.flow` steps. Exactly one of `selector` or `ref` on `click`/`type`; `press` takes at most one; `wait_for` takes one of `selector`, `ref`, `expression`, `network_url`; `find` takes one of `text`, `ref`, `key` (`role` and `exact` apply to `text` only). The selector path is unchanged.
+- **identity:** a live `ref` resolves directly; a node that a re-render replaced is re-resolved by its semantic key (same role, same accessible name, identical ancestor tag path) only when exactly one candidate matches, and the result carries `reresolved: true`. Otherwise the call fails with `ref-stale: <ref> not found in document <doc_id>` (take a fresh snapshot) or `observer-unavailable` when the page observer is not in the tab. Identical rows tie and are refused, never guessed. Refs are now `<doc_tag>:e<N>` (the first 6 characters of `doc_id`), so a ref from an earlier document is always stale; the bare `e<N>` form that 0.36.0 returned as an informational field is rejected as malformed.
+- **find:** single matches carry `semantic_key { role, name, path: [{ tag, index }] }`; `find({ key })` locates an element by role and accessible name (optionally its ancestor path), returning the usual single match or a not-found that counts the candidates.
+- **map:** selector entries may store `semantic_key` next to the selector inside the existing JSON payload (no migration; old rows read unchanged); `browser.map.save` validates it and refuses it on an `ambiguous: true` entry; `browser.map.recall` adds `prefer: "semantic_key"` at read time when the stored selector is a structural `:nth-of-type` fallback; export and import carry the field.
+- **observer:** in-page protocol version 3 (semantic keys, re-resolution); a version 2 instance is replaced on reinstall. Measured on Home Assistant (Lit) and GitHub (React) list re-renders: zero wrong re-resolutions across seven scenarios; ambiguous per-row buttons are refused.
+
 ## [0.36.0](https://github.com/jobshimo/browser-link/compare/v0.35.0...v0.36.0) (2026-11-08)
 
 ### Features

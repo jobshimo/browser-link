@@ -1188,3 +1188,175 @@ describe('callCdpTool — wait_for', () => {
     ).rejects.toThrow(/network_url mode is not supported over cdp-direct/);
   });
 });
+
+describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
+  /** Answers every `Runtime.evaluate` whose source carries the ref as data
+   * (`"ref":"k3x9ab:e7"`) with `answer`, and anything else (settle, observer
+   * probes) with `true`. Records the ref-carrying expressions. */
+  function refPage(answer: unknown, seen: string[]): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"ref":"k3x9ab:e7"')) {
+          seen.push(expression);
+          return { result: { value: answer } };
+        }
+        return { result: { value: true } };
+      },
+    };
+  }
+  const STALE = { ok: false, reason: 'ref-stale', ref: 'k3x9ab:e7', doc_id: 'doc-1' };
+  const UNAVAILABLE = { ok: false, reason: 'observer-unavailable' };
+
+  test('click by ref reaches the built JS and reports ref and reresolved', async () => {
+    const seen: string[] = [];
+    const { port, targetId } = await startFakeTarget(
+      refPage({ ok: true, x: 5, y: 6, tag: 'button', reresolved: true }, seen),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      ref: 'k3x9ab:e7',
+      settle_ms: 0,
+    });
+    expect(result).toEqual({
+      clicked: 'k3x9ab:e7',
+      tag: 'button',
+      ref: 'k3x9ab:e7',
+      reresolved: true,
+    });
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toContain('function resolveTarget');
+  });
+
+  test('click by a stale ref rejects with the ref-stale error naming the doc_id', async () => {
+    const { port, targetId } = await startFakeTarget(refPage(STALE, []));
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'click', { ref: 'k3x9ab:e7' })).rejects.toThrow(
+      'ref-stale: k3x9ab:e7 not found in document doc-1',
+    );
+  });
+
+  test('type by ref without the observer rejects with observer-unavailable', async () => {
+    const { port, targetId } = await startFakeTarget(refPage(UNAVAILABLE, []));
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'type', { ref: 'k3x9ab:e7', text: 'hi' }),
+    ).rejects.toThrow(
+      'observer-unavailable: ref k3x9ab:e7 cannot be resolved without the page observer',
+    );
+  });
+
+  test('type by ref types and reports the ref (no selector key)', async () => {
+    const { port, targetId } = await startFakeTarget(refPage({ ok: true }, []));
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'type', {
+      ref: 'k3x9ab:e7',
+      text: 'hi',
+      settle_ms: 0,
+    });
+    expect(result).toEqual({ typed: 2, ref: 'k3x9ab:e7' });
+  });
+
+  test('press by ref focuses through the ref and reports it', async () => {
+    const seen: string[] = [];
+    const { port, targetId } = await startFakeTarget(refPage({ ok: true }, seen));
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'press', {
+      key: 'Enter',
+      ref: 'k3x9ab:e7',
+      settle_ms: 0,
+    });
+    expect(result).toEqual({ key: 'Enter', modifiers: [], ref: 'k3x9ab:e7' });
+    expect(seen.length).toBe(1);
+  });
+
+  test('press by a stale ref rejects with ref-stale', async () => {
+    const { port, targetId } = await startFakeTarget(refPage(STALE, []));
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'press', { key: 'Enter', ref: 'k3x9ab:e7' }),
+    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+  });
+
+  test('find by ref returns the match; a stale ref rejects', async () => {
+    const match = { matched: true, selector: '#b', ref: 'k3x9ab:e7', tag: 'button', text: 'Beta' };
+    const ok = await startFakeTarget(refPage(match, []));
+    grantAccess(ok.port);
+    expect(await callCdpTool(`cdp:${ok.targetId}`, 'find', { ref: 'k3x9ab:e7' })).toEqual(match);
+    resetConnectionsForTest();
+    wss?.close();
+    const stale = await startFakeTarget(
+      refPage({ matched: false, reason: 'ref-stale', ref: 'k3x9ab:e7', doc_id: 'doc-1' }, []),
+    );
+    grantAccess(stale.port);
+    await expect(
+      callCdpTool(`cdp:${stale.targetId}`, 'find', { ref: 'k3x9ab:e7' }),
+    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+  });
+
+  test('wait_for by ref polls the ref probe; without the observer it rejects', async () => {
+    const seen: string[] = [];
+    const ok = await startFakeTarget(refPage(true, seen));
+    grantAccess(ok.port);
+    const result = await callCdpTool(`cdp:${ok.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'detached',
+    });
+    expect(result).toMatchObject({ matched: true, checks: 1 });
+    expect(seen[0]).toContain('"condition":"detached"');
+    resetConnectionsForTest();
+    wss?.close();
+    const none = await startFakeTarget(refPage(UNAVAILABLE, []));
+    grantAccess(none.port);
+    await expect(
+      callCdpTool(`cdp:${none.targetId}`, 'wait_for', { ref: 'k3x9ab:e7', timeout_ms: 1000 }),
+    ).rejects.toThrow(
+      'observer-unavailable: ref k3x9ab:e7 cannot be resolved without the page observer',
+    );
+  });
+
+  test('click by selector is unchanged (no ref or reresolved key)', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"selector":"#go"')) {
+          return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 });
+    expect(result).toEqual({ clicked: '#go', tag: 'a' });
+  });
+});
+
+describe('callCdpTool — find by semantic key (spec v4 §6.3, S3)', () => {
+  test('find by key reaches the built JS with the key as data and returns the result', async () => {
+    const seen: string[] = [];
+    const match = {
+      matched: true,
+      selector: '#b',
+      ref: 'k3x9ab:e3',
+      tag: 'button',
+      text: 'Beta',
+      semantic_key: { role: 'button', name: 'Beta', path: [{ tag: 'body', index: 1 }] },
+    };
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"key":{"role":"button","name":"Beta"')) {
+          seen.push(expression);
+          return { result: { value: match } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    const key = { role: 'button', name: 'Beta', path: [{ tag: 'body', index: 1 }] };
+    expect(await callCdpTool(`cdp:${targetId}`, 'find', { key })).toEqual(match);
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toContain('"path":[{"tag":"body","index":1}]');
+    expect(seen[0]).toContain('function semanticKeyOf');
+  });
+});

@@ -15,7 +15,7 @@ import { OBSERVER_GLOBAL } from './observer.js';
  * injected verbatim into `buildSnapshotJs`, `buildFindJs` and `buildStateJs`.
  * The observer global is looked up ONCE per evaluation and used only when it
  * is present, not torn down, and exposes `refFor`:
- *   - `refOf(el)` returns the observer's `e<N>` ref for `el`, or `null`;
+ *   - `refOf(el)` returns the observer's `<doc_tag>:e<N>` ref for `el`, or `null`;
  *   - `withDocId(result)` adds `doc_id` to `result` and returns it;
  *   - `snapshotStore()` returns the observer when it keeps snapshot records
  *     (`recordSnapshot` / `getSnapshot`, used by `snapshot({ since })`), else
@@ -55,6 +55,62 @@ export const PAGE_OBSERVER_JS = `
     return null;
   }
 `;
+
+/**
+ * In-page action-target resolution (spec v4 §6.3), injected after
+ * `DEEP_QUERY_JS` and `PAGE_OBSERVER_JS` into the builders that take a
+ * `selector` or a `ref` (click, type, focus, element rect, `wait_for` by
+ * ref, `find` by ref):
+ * `resolveTarget(opts)` with a non-empty `opts.ref` asks the observer
+ * (`resolveRefDetailed`, which re-resolves a replaced node by its semantic
+ * key) and answers `{ ok: true, el, reresolved }`, `{ ok: false, reason:
+ * 'ref-stale', ref, doc_id }` or `{ ok: false, reason: 'observer-unavailable'
+ * }`; otherwise it resolves `opts.selector` exactly as the selector builders
+ * always did (`invalid-selector` checked against `document` first, then
+ * `deepQueryFirst`, `not-found`). Kept out of `PAGE_OBSERVER_JS` so the
+ * snapshot and state sources do not carry code they never call.
+ */
+export const RESOLVE_TARGET_JS = `
+  function resolveTarget(opts) {
+    if (typeof opts.ref === 'string' && opts.ref.length > 0) {
+      if (!pageObserver || typeof pageObserver.resolveRefDetailed !== 'function') {
+        return { ok: false, reason: 'observer-unavailable' };
+      }
+      let found = null;
+      try {
+        found = pageObserver.resolveRefDetailed(opts.ref);
+      } catch (e) {
+        found = null;
+      }
+      if (!found || !found.el) return withDocId({ ok: false, reason: 'ref-stale', ref: opts.ref });
+      return { ok: true, el: found.el, reresolved: found.reresolved === true };
+    }
+    try {
+      document.querySelector(opts.selector);
+    } catch (e) {
+      return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
+    }
+    const el = deepQueryFirst(opts.selector);
+    if (!el) return { ok: false, reason: 'not-found' };
+    return { ok: true, el: el, reresolved: false };
+  }
+`;
+
+/** The target of an action builder: exactly one of a CSS `selector` or an
+ * observer `ref` (`<doc_tag>:e<N>`, from `snapshot` / `find` / `state`). */
+export interface TargetOpts {
+  selector?: string;
+  ref?: string;
+}
+
+/** JSON for the `selector` / `ref` pair, embedded as data in the built
+ * source; `ref` is included only when given so a selector build keeps the
+ * same options object as before. */
+function targetJson(opts: TargetOpts): Record<string, string | undefined> {
+  return typeof opts.ref === 'string' && opts.ref.length > 0
+    ? { selector: opts.selector, ref: opts.ref }
+    : { selector: opts.selector };
+}
 
 /**
  * Build the snapshot expression. Filters are applied INSIDE the page so the
@@ -311,8 +367,33 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
  *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
  *
- * `ref` and `doc_id` are present only when the page observer is installed
- * (see `PAGE_OBSERVER_JS`).
+ * `ref`, `semantic_key` and `doc_id` are present only when the page observer
+ * is installed (see `PAGE_OBSERVER_JS`). `semantic_key` is the observer's
+ * `semanticKeyFor(el)` (`{ role, name, path }`) and is carried by single
+ * matches only — candidates and near-misses stay small.
+ *
+ * With `ref` (spec v4 §6.3) the text scan is skipped: `text`, `role` and
+ * `exact` are ignored and the result describes the element the ref resolves
+ * to, in the single-match shape plus `reresolved: true` when the node was
+ * just re-resolved by its semantic key —
+ *   { matched: true, selector, ref, coords, tag, text, ambiguous?, frame?, reresolved?, semantic_key, doc_id }
+ *   { matched: false, reason: 'ref-stale', ref, doc_id }
+ *   { matched: false, reason: 'observer-unavailable', ref }
+ * The element is reported as is (no click-target gate): the caller named it.
+ *
+ * With `key` (`{ role, name, path? }`, the shape `semantic_key` and the map's
+ * stored key carry) the text scan is skipped too: candidates are the
+ * elements whose semantic key has the same `role` AND `name`. With `path`,
+ * only candidates with the identical tag sequence count and exactly one must
+ * exist (the observer's re-resolution rule; sibling indices select nothing);
+ * without it, exactly one role + name candidate must exist. A unique match
+ * answers in the single-match shape; otherwise
+ *   { matched: false, reason: 'not-found', error?, doc_id }
+ * where `error` is `key: <N> candidates share role, name and tag path` when
+ * several share the tag path, else starts with `key: <N> candidates share
+ * role and name` when N > 0, and `{ matched: false, reason:
+ * 'observer-unavailable' }` without the observer. No click-target gate, as
+ * for `ref`.
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
@@ -341,10 +422,32 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  * first-match-wins silently. Documented on the tool as: hints for the
  * next `find`, never click targets.
  */
+/** A semantic key to find by: the observer's `semanticKeyFor` shape, with
+ * `path` optional (see `buildFindJs`). */
+export interface FindKey {
+  role: string;
+  name: string;
+  path?: Array<{ tag: string; index: number }>;
+}
+
 export interface FindOpts {
-  text: string;
+  /** Required unless `ref` or `key` is given. */
+  text?: string;
   role?: string;
   exact?: boolean;
+  ref?: string;
+  key?: FindKey;
+}
+
+/** Only the documented key fields reach the built source, as JSON data. */
+function findKeyJson(key: FindKey): FindKey {
+  return Array.isArray(key.path)
+    ? {
+        role: key.role,
+        name: key.name,
+        path: key.path.map((step) => ({ tag: step.tag, index: step.index })),
+      }
+    : { role: key.role, name: key.name };
 }
 
 export function buildFindJs(opts: FindOpts): string {
@@ -354,13 +457,98 @@ export function buildFindJs(opts: FindOpts): string {
     exact: opts.exact === true,
     candidateLimit: 5,
     nearMissLimit: 3,
+    ...(typeof opts.ref === 'string' && opts.ref.length > 0 ? { ref: opts.ref } : {}),
+    ...(opts.key ? { key: findKeyJson(opts.key) } : {}),
   });
   return `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
+  ${typeof opts.ref === 'string' && opts.ref.length > 0 ? RESOLVE_TARGET_JS : ''}
   const opts = ${optsJson};
+  function semanticKeyOf(el) {
+    if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') return null;
+    try {
+      const key = pageObserver.semanticKeyFor(el);
+      return key && typeof key === 'object' ? key : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function singleMatch(el, ref, reresolved) {
+    const center = viewportCenterOf(el);
+    const selInfo = genSelectorInfo(el);
+    const result = { matched: true, selector: selInfo.selector };
+    if (ref) result.ref = ref;
+    result.coords = {
+      x: Math.round(center.x),
+      y: Math.round(center.y),
+    };
+    result.tag = el.tagName.toLowerCase();
+    result.text = shortText(el);
+    if (selInfo.ambiguous) result.ambiguous = true;
+    const frame = frameSelectorFor(el);
+    if (frame) result.frame = frame;
+    if (reresolved) result.reresolved = true;
+    const key = semanticKeyOf(el);
+    if (key) result.semantic_key = key;
+    return withDocId(result);
+  }
+  if (typeof opts.ref === 'string') {
+    const target = resolveTarget(opts);
+    if (!target.ok) {
+      const failure = { matched: false, reason: target.reason, ref: opts.ref };
+      return withDocId(failure);
+    }
+    return singleMatch(target.el, opts.ref, target.reresolved);
+  }
+  if (opts.key) {
+    if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') {
+      return { matched: false, reason: 'observer-unavailable' };
+    }
+    const wanted = opts.key;
+    const candidates = [];
+    for (const el of deepQueryAll('*')) {
+      const key = semanticKeyOf(el);
+      if (key && key.role === wanted.role && key.name === wanted.name) {
+        candidates.push({ el: el, path: Array.isArray(key.path) ? key.path : [] });
+      }
+    }
+    const count = candidates.length;
+    const shared = 'key: ' + count + ' candidates share role and name; ';
+    let picked = null;
+    let error = count > 1 ? shared + 'pass path to disambiguate' : null;
+    if (!Array.isArray(wanted.path)) {
+      if (count === 1) picked = candidates[0].el;
+    } else {
+      // Same rule as the observer's re-resolution: identical tag path and
+      // exactly one such candidate; identical rows are refused, never guessed.
+      let sameTags = 0;
+      let only = null;
+      for (const c of candidates) {
+        if (c.path.length !== wanted.path.length) continue;
+        let same = true;
+        for (let i = 0; i < c.path.length && same; i++) {
+          if (c.path[i].tag !== wanted.path[i].tag) same = false;
+        }
+        if (!same) continue;
+        sameTags++;
+        only = c.el;
+      }
+      if (sameTags === 1) {
+        picked = only;
+      } else if (sameTags > 1) {
+        error = 'key: ' + sameTags + ' candidates share role, name and tag path';
+      } else if (count > 0) {
+        error = shared + 'none has the same tag path';
+      }
+    }
+    if (picked) return singleMatch(picked, refOf(picked), false);
+    const failure = { matched: false, reason: 'not-found' };
+    if (error) failure.error = error;
+    return withDocId(failure);
+  }
   const needle = opts.text.toLowerCase();
   const needleTokens = needle.split(/[^a-z0-9]+/).filter(Boolean);
   const ROLE_SELECTORS = {
@@ -479,21 +667,7 @@ export function buildFindJs(opts: FindOpts): string {
     });
   }
   const el = matches[0];
-  const center = viewportCenterOf(el);
-  const selInfo = genSelectorInfo(el);
-  const result = { matched: true, selector: selInfo.selector };
-  const ref = refOf(el);
-  if (ref) result.ref = ref;
-  result.coords = {
-    x: Math.round(center.x),
-    y: Math.round(center.y),
-  };
-  result.tag = el.tagName.toLowerCase();
-  result.text = shortText(el);
-  if (selInfo.ambiguous) result.ambiguous = true;
-  const frame = frameSelectorFor(el);
-  if (frame) result.frame = frame;
-  return withDocId(result);
+  return singleMatch(el, refOf(el), false);
 })()
 `;
 }
@@ -504,10 +678,16 @@ export function buildFindJs(opts: FindOpts): string {
  * view, computes the TOP-LEVEL viewport click point, and — unless `force`
  * is set — hit-tests that point before returning it, so a covering overlay
  * is caught before background.ts dispatches CDP mouse events. Returns:
- *   { ok: true, x, y, tag, hit_element? }
+ *   { ok: true, x, y, tag, hit_element?, reresolved? }
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
  *   { ok: false, reason: 'occluded', blocker }
+ *   { ok: false, reason: 'ref-stale', ref, doc_id }
+ *   { ok: false, reason: 'observer-unavailable' }
+ *
+ * The target is `selector` or `ref` (see `resolveTarget` in
+ * `PAGE_OBSERVER_JS`); `reresolved: true` is present only when a `ref`'s
+ * node was gone and was just re-resolved by its semantic key.
  *
  * `hit_element` is present ONLY when the dispatched click will land on a
  * DIFFERENT element than the resolved target (neither the target nor a
@@ -524,24 +704,21 @@ export function buildFindJs(opts: FindOpts): string {
  * `document` up front separates "the selector text is broken" from "the
  * selector is valid but nothing on the page matches it".
  */
-export interface ClickResolveOpts {
-  selector: string;
+export interface ClickResolveOpts extends TargetOpts {
   force: boolean;
 }
 
 export function buildClickResolveJs(opts: ClickResolveOpts): string {
-  const optsJson = JSON.stringify({ selector: opts.selector, force: opts.force });
+  const optsJson = JSON.stringify({ ...targetJson(opts), force: opts.force });
   return `
 (() => {
   ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
   const opts = ${optsJson};
-  try {
-    document.querySelector(opts.selector);
-  } catch (e) {
-    return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
-  }
-  const el = deepQueryFirst(opts.selector);
-  if (!el) return { ok: false, reason: 'not-found' };
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
   const chain = frameElementChain(el);
   for (const fe of chain) {
     if (fe.scrollIntoView) fe.scrollIntoView({ block: 'center', inline: 'center' });
@@ -556,6 +733,7 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   const result = { ok: true, x: center.x, y: center.y, tag };
   const hit = occlusion.allowed ? occlusion.hit : occlusion.blocker;
   if (hit) result.hit_element = hit;
+  if (target.reresolved) result.reresolved = true;
   return result;
 })()
 `;
@@ -568,34 +746,33 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
  * (which types into whatever currently has focus at the browser level —
  * works the same whether that focus target lives in the top document, a
  * shadow root, or a same-origin iframe). Returns:
- *   { ok: true }
+ *   { ok: true, reresolved? }
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
+ *   { ok: false, reason: 'ref-stale', ref, doc_id }
+ *   { ok: false, reason: 'observer-unavailable' }
  *
- * Same invalid-selector pre-check as `buildClickResolveJs` — see its doc
- * comment for why the check has to run before `deepQueryFirst`.
+ * Same invalid-selector pre-check and `selector` / `ref` target as
+ * `buildClickResolveJs` — see its doc comment.
  */
-export interface TypeResolveOpts {
-  selector: string;
+export interface TypeResolveOpts extends TargetOpts {
   clear: boolean;
 }
 
 export function buildTypeResolveJs(opts: TypeResolveOpts): string {
-  const optsJson = JSON.stringify({ selector: opts.selector });
+  const optsJson = JSON.stringify(targetJson(opts));
   return `
 (() => {
   ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
   const opts = ${optsJson};
-  try {
-    document.querySelector(opts.selector);
-  } catch (e) {
-    return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
-  }
-  const el = deepQueryFirst(opts.selector);
-  if (!el) return { ok: false, reason: 'not-found' };
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
   el.focus();
   ${opts.clear ? "if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }" : ''}
-  return { ok: true };
+  return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
 }
 
@@ -607,21 +784,30 @@ export function buildTypeResolveJs(opts: TypeResolveOpts): string {
  * whatever currently has focus at the browser level). Intentionally
  * separate from `buildTypeResolveJs`: press never clears a value, and
  * naming it distinctly keeps the press code path readable on its own.
+ *
+ * The return shape depends on the target. With `selector` it stays a
+ * boolean (`true` focused, `false` not found — a malformed selector is
+ * also `false`, as before). With `ref` it is an object, so the caller can
+ * tell a stale ref from a missing selector without a second evaluation:
+ * `{ ok: true, reresolved? }`, `{ ok: false, reason: 'ref-stale', ref,
+ * doc_id }` or `{ ok: false, reason: 'observer-unavailable' }`.
  */
-export interface FocusResolveOpts {
-  selector: string;
-}
+export type FocusResolveOpts = TargetOpts;
 
 export function buildFocusJs(opts: FocusResolveOpts): string {
-  const optsJson = JSON.stringify({ selector: opts.selector });
+  const optsJson = JSON.stringify(targetJson(opts));
   return `
 (() => {
   ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
   const opts = ${optsJson};
-  const el = deepQueryFirst(opts.selector);
-  if (!el) return false;
-  el.focus();
-  return true;
+  const target = resolveTarget(opts);
+  const byRef = typeof opts.ref === 'string';
+  if (!target.ok) return byRef ? target : false;
+  target.el.focus();
+  if (!byRef) return true;
+  return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
 }
 
@@ -640,13 +826,37 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
  * once against `document`, before the deep search swallows the error per
  * root), so the caller's poll counts it as "not matched" for every
  * condition, as before.
+ *
+ * `target` is a selector string (the source built for it is unchanged) or
+ * `{ ref }` (spec v4 §6.3). A ref resolves through the page observer on
+ * every tick, re-resolving a replaced node by its semantic key; a stale ref
+ * counts as a MISSING element (`attached` false, `detached` true, `hidden`
+ * true, `visible` false), so waiting for a row to disappear by its ref
+ * works. Without the observer a ref can never resolve, so the probe answers
+ * `{ ok: false, reason: 'observer-unavailable' }` instead of a boolean and
+ * the caller fails the wait rather than reporting a misleading match.
  */
 export type WaitForSelectorCondition = 'visible' | 'hidden' | 'attached' | 'detached';
 
 export function buildWaitForSelectorJs(
-  selector: string,
+  target: string | { ref: string },
   condition: WaitForSelectorCondition,
 ): string {
+  if (typeof target !== 'string') {
+    const refOptsJson = JSON.stringify({ ref: target.ref, condition });
+    return `
+(() => {
+  ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
+  const opts = ${refOptsJson};
+  const target = resolveTarget(opts);
+  if (!target.ok && target.reason === 'observer-unavailable') return target;
+  const el = target.ok ? target.el : null;
+  ${WAIT_FOR_CONDITION_JS}
+})()`;
+  }
+  const selector = target;
   const optsJson = JSON.stringify({ selector, condition });
   return `
 (() => {
@@ -654,7 +864,13 @@ export function buildWaitForSelectorJs(
   const opts = ${optsJson};
   document.querySelector(opts.selector);
   const el = deepQueryFirst(opts.selector);
-  if (opts.condition === 'attached') return Boolean(el);
+  ${WAIT_FOR_CONDITION_JS}
+})()`;
+}
+
+/** The condition check shared by both `wait_for` probe targets; `el` is
+ * the resolved element or `null`. */
+const WAIT_FOR_CONDITION_JS = `if (opts.condition === 'attached') return Boolean(el);
   if (opts.condition === 'detached') return !el;
   const wantHidden = opts.condition === 'hidden';
   if (!el) return wantHidden;
@@ -663,9 +879,7 @@ export function buildWaitForSelectorJs(
   if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return wantHidden;
   const r = el.getBoundingClientRect();
   const shown = r.width > 0 && r.height > 0;
-  return wantHidden ? !shown : shown;
-})()`;
-}
+  return wantHidden ? !shown : shown;`;
 
 /**
  * Build the element-rect probe for `browser.screenshot`'s element mode.
@@ -674,27 +888,27 @@ export function buildWaitForSelectorJs(
  * TOP-document page coordinates (viewport rect + accumulated iframe content
  * origins + top-window scroll) — the space `Page.captureScreenshot`'s
  * `clip` expects. Returns:
- *   { ok: true, x, y, width, height }
+ *   { ok: true, x, y, width, height, reresolved? }
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
+ *   { ok: false, reason: 'ref-stale', ref, doc_id }
+ *   { ok: false, reason: 'observer-unavailable' }
+ *
+ * The target is `selector` or `ref`, as for `buildClickResolveJs`.
  */
-export interface ElementRectOpts {
-  selector: string;
-}
+export type ElementRectOpts = TargetOpts;
 
 export function buildElementRectJs(opts: ElementRectOpts): string {
-  const optsJson = JSON.stringify({ selector: opts.selector });
+  const optsJson = JSON.stringify(targetJson(opts));
   return `
 (() => {
   ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
   const opts = ${optsJson};
-  try {
-    document.querySelector(opts.selector);
-  } catch (e) {
-    return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
-  }
-  const el = deepQueryFirst(opts.selector);
-  if (!el) return { ok: false, reason: 'not-found' };
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
   const chain = frameElementChain(el);
   // behavior 'instant' overrides CSS scroll-behavior: smooth, which would
   // leave the rect below stale while the scroll is still animating.
@@ -719,13 +933,15 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
     scrollX = top.scrollX || 0;
     scrollY = top.scrollY || 0;
   } catch (_) {}
-  return {
+  const result = {
     ok: true,
     x: offsetX + rect.left + scrollX,
     y: offsetY + rect.top + scrollY,
     width: rect.width,
     height: rect.height,
   };
+  if (target.reresolved) result.reresolved = true;
+  return result;
 })()`;
 }
 

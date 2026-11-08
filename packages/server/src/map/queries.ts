@@ -25,6 +25,8 @@ export interface EntryRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  /** Set by `recall()` only (never stored): see `withPreference`. */
+  prefer?: 'semantic_key';
 }
 
 interface RawEntryRow extends Omit<EntryRow, 'payload'> {
@@ -312,9 +314,29 @@ export function recall(input: RecallInput): RecallResult {
     app,
     pitfalls: listInsights(app.id, 'pitfall'),
     mechanisms: listInsights(app.id, 'mechanism'),
-    entries: rows.map(hydrate),
+    entries: rows.map((row) => withPreference(hydrate(row))),
     flows: listFlows(app.id),
   };
+}
+
+/** A generated selector is a structural fallback when it had to address the
+ * element by position (see `buildStructuralSelector` in the extension's
+ * dom-helpers): such a selector breaks on the first list re-render. */
+const STRUCTURAL_SELECTOR_MARK = ':nth-of-type(';
+
+/**
+ * "Prefers it when the selector is a structural fallback" (spec v4 §6.3): a
+ * selector entry whose payload carries a `semantic_key` and whose selector
+ * is structural is recalled with `prefer: 'semantic_key'`. Computed here,
+ * never stored, so old rows and rows without a key read exactly as before.
+ */
+function withPreference(entry: EntryRow): EntryRow {
+  if (entry.kind !== 'selector') return entry;
+  const payload = entry.payload as { selector?: unknown; semantic_key?: unknown } | null;
+  if (typeof payload !== 'object' || payload === null) return entry;
+  if (typeof payload.selector !== 'string' || payload.semantic_key === undefined) return entry;
+  if (!payload.selector.includes(STRUCTURAL_SELECTOR_MARK)) return entry;
+  return { ...entry, prefer: 'semantic_key' };
 }
 
 function extractPathname(url: string): string {

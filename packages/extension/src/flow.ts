@@ -59,6 +59,26 @@ import type { ExpectMet, ExpectParams } from './expect.js';
  * shape, so the two call paths can never drift. */
 export type ActionOutcome<T> = { ok: true; result: T } | { ok: false; error: string };
 
+/** The error text for an action target given as an observer `ref` (spec v4
+ * §6.3) that could not be resolved, shared by both transports' perform*
+ * functions so the extension and cdp-direct report the same string.
+ * `failure` is the in-page `resolveTarget` result (see `PAGE_OBSERVER_JS`
+ * in `inpage/builders.ts`). The `ref-stale:` prefix is a stable contract.
+ * Returns `null` for any other reason, which the caller reports as it
+ * always did. */
+export function refFailureMessage(
+  failure: { reason?: string; doc_id?: string },
+  ref: string,
+): string | null {
+  if (failure.reason === 'ref-stale') {
+    return `ref-stale: ${ref} not found in document ${failure.doc_id ?? 'unknown'}`;
+  }
+  if (failure.reason === 'observer-unavailable') {
+    return `observer-unavailable: ref ${ref} cannot be resolved without the page observer`;
+  }
+  return null;
+}
+
 /** Hard cap on steps per flow — mirrors the `maxItems: 20` on the MCP
  * schema (`browser-definitions.ts`) and the server-side validation
  * (`browser-dispatch.ts`). Enforced again here so neither the extension
@@ -86,6 +106,12 @@ export interface FindStepResult {
    * when `role` excluded matches that existed under a broader scan. */
   error?: string;
   selector?: string;
+  /** The observer ref of the matched element (present when the page
+   * observer is installed). The implicit target a find step leaves stays
+   * its `selector`. */
+  ref?: string;
+  /** Set when a find by `ref` re-resolved a replaced node. */
+  reresolved?: boolean;
   ambiguous?: boolean;
   tag?: string;
   text?: string;
@@ -95,6 +121,9 @@ export interface FindStepResult {
 
 export interface ClickStepParams {
   selector?: string;
+  /** Observer ref (`<doc_tag>:e<N>`) as the target instead of `selector`; exactly one
+   * of the two. A step ref beats the implicit target of a preceding find. */
+  ref?: string;
   force?: boolean;
   settle_ms?: number;
   /** Cap on the settle wait; the worst case a step can spend settling. */
@@ -103,8 +132,14 @@ export interface ClickStepParams {
 }
 
 export interface ClickStepResult {
+  /** The selector, or the ref, the click was asked for. */
   clicked: string;
   tag: string;
+  /** Present when the target was given as a ref. */
+  ref?: string;
+  /** Present (true) only when the ref's node was gone and was re-resolved
+   * by its semantic key. */
+  reresolved?: boolean;
   /** Descriptor of the element that actually receives the dispatched
    * click, present ONLY when it differs from the resolved target: a
    * pointer-events:none target whose real hit-target sibling takes the
@@ -118,6 +153,7 @@ export interface ClickStepResult {
 
 export interface TypeStepParams {
   selector?: string;
+  ref?: string;
   text: string;
   clear?: boolean;
   settle_ms?: number;
@@ -128,6 +164,8 @@ export interface TypeStepParams {
 export interface TypeStepResult {
   typed: number;
   selector?: string;
+  ref?: string;
+  reresolved?: boolean;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
@@ -136,6 +174,7 @@ export interface PressStepParams {
   key: string;
   modifiers?: string[];
   selector?: string;
+  ref?: string;
   settle_ms?: number;
   settle_timeout_ms?: number;
   expect?: ExpectParams;
@@ -144,12 +183,16 @@ export interface PressStepParams {
 export interface PressStepResult {
   key: string;
   modifiers: string[];
+  ref?: string;
+  reresolved?: boolean;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
 
 export interface WaitForStepParams {
   selector?: string;
+  /** Observer ref instead of `selector`; `condition` applies to both. */
+  ref?: string;
   expression?: string;
   network_url?: string;
   condition?: string;
@@ -329,9 +372,8 @@ function stepKind(step: unknown): StepKind | null {
  * follow-up round trip. */
 export interface FlowDeps {
   performFind(params: FindStepParams): Promise<ActionOutcome<FindStepResult>>;
-  performClick(
-    params: ClickStepParams & { selector: string },
-  ): Promise<ActionOutcome<ClickStepResult>>;
+  /** Called with exactly one of `selector` / `ref` set. */
+  performClick(params: ClickStepParams): Promise<ActionOutcome<ClickStepResult>>;
   performType(params: TypeStepParams): Promise<ActionOutcome<TypeStepResult>>;
   performPress(params: PressStepParams): Promise<ActionOutcome<PressStepResult>>;
   performWaitFor(params: WaitForStepParams): Promise<ActionOutcome<WaitForStepResult>>;
@@ -482,17 +524,32 @@ async function withRecoverySnapshot(
   };
 }
 
-/** Resolve a click/type/press step's target: an explicit `selector` always
- * wins; otherwise fall back to the implicit target left by a preceding
- * `find` step. `consumed` is true only when the implicit target was the
- * one actually used — a step providing its own selector leaves the
- * implicit target untouched for a LATER step to pick up. */
+/** Resolve a click/type/press step's target: an explicit `selector` or
+ * `ref` always wins (a step carrying both is an error); otherwise fall back
+ * to the implicit target — a selector — left by a preceding `find` step.
+ * `consumed` is true only when the implicit target was the one actually
+ * used — a step providing its own selector or ref leaves the implicit
+ * target untouched for a LATER step to pick up. */
 function resolveTarget(
-  explicit: string | undefined,
+  kind: string,
+  params: { selector?: string; ref?: string },
   implicit: string | undefined,
-): { resolved: string | undefined; consumed: boolean } {
-  if (explicit !== undefined) return { resolved: explicit, consumed: false };
-  return { resolved: implicit, consumed: implicit !== undefined };
+):
+  | { ok: true; selector: string | undefined; ref: string | undefined; consumed: boolean }
+  | { ok: false; error: string } {
+  if (params.selector !== undefined && params.ref !== undefined) {
+    return { ok: false, error: `${kind}: selector and ref are mutually exclusive` };
+  }
+  if (params.selector !== undefined || params.ref !== undefined) {
+    return { ok: true, selector: params.selector, ref: params.ref, consumed: false };
+  }
+  return { ok: true, selector: implicit, ref: undefined, consumed: implicit !== undefined };
+}
+
+/** `{ ref }` when the step targets a ref, else nothing — so a selector
+ * step's perform* call keeps exactly the parameters it always had. */
+function refParam(ref: string | undefined): { ref?: string } {
+  return ref !== undefined ? { ref } : {};
 }
 
 /** Appended to a step failure when the PREVIOUS step's settle wait reported
@@ -666,9 +723,10 @@ async function executeLeafStep(
 
   if (kind === 'click') {
     const params = stepRecord.click as ClickStepParams;
-    const { resolved, consumed } = resolveTarget(params.selector, state.implicitTarget);
-    if (consumed) state.implicitTarget = undefined;
-    if (resolved === undefined) {
+    const target = resolveTarget('click', params, state.implicitTarget);
+    if (!target.ok) return { ok: false, error: target.error };
+    if (target.consumed) state.implicitTarget = undefined;
+    if (target.selector === undefined && target.ref === undefined) {
       return {
         ok: false,
         error: 'click: no selector provided and no implicit target from a preceding find',
@@ -679,7 +737,8 @@ async function executeLeafStep(
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
       expect: params.expect,
-      selector: resolved,
+      selector: target.selector,
+      ...refParam(target.ref),
     });
     if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
     state.lastSettleReason = outcome.result.settle?.reason;
@@ -688,15 +747,17 @@ async function executeLeafStep(
 
   if (kind === 'type') {
     const params = stepRecord.type as TypeStepParams;
-    const { resolved, consumed } = resolveTarget(params.selector, state.implicitTarget);
-    if (consumed) state.implicitTarget = undefined;
+    const target = resolveTarget('type', params, state.implicitTarget);
+    if (!target.ok) return { ok: false, error: target.error };
+    if (target.consumed) state.implicitTarget = undefined;
     const outcome = await deps.performType({
       text: params.text,
       clear: params.clear,
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
       expect: params.expect,
-      selector: resolved,
+      selector: target.selector,
+      ...refParam(target.ref),
     });
     if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
     state.lastSettleReason = outcome.result.settle?.reason;
@@ -705,15 +766,17 @@ async function executeLeafStep(
 
   // press — the only kind left after the checks above.
   const params = stepRecord.press as PressStepParams;
-  const { resolved, consumed } = resolveTarget(params.selector, state.implicitTarget);
-  if (consumed) state.implicitTarget = undefined;
+  const target = resolveTarget('press', params, state.implicitTarget);
+  if (!target.ok) return { ok: false, error: target.error };
+  if (target.consumed) state.implicitTarget = undefined;
   const outcome = await deps.performPress({
     key: params.key,
     modifiers: params.modifiers,
     settle_ms: params.settle_ms,
     settle_timeout_ms: params.settle_timeout_ms,
     expect: params.expect,
-    selector: resolved,
+    selector: target.selector,
+    ...refParam(target.ref),
   });
   if (!outcome.ok) return { ok: false, error: outcome.error + raceHint() };
   state.lastSettleReason = outcome.result.settle?.reason;

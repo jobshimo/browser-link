@@ -7,6 +7,7 @@ import {
   buildObserverInstallJs,
   buildObserverMarkJs,
   buildObserverRefResolveJs,
+  buildObserverSemanticKeyJs,
   buildObserverTeardownJs,
 } from './observer.js';
 
@@ -298,10 +299,21 @@ describe('page observer: mark and changes', () => {
   });
 });
 
+interface PathStep {
+  tag: string;
+  index: number;
+}
+interface SemanticKey {
+  role: string;
+  name: string;
+  path: PathStep[];
+}
 interface RefInstance {
   doc_id: string;
   refFor(el: Element): string | null;
   resolveRef(ref: string): Element | null;
+  resolveRefDetailed(ref: string): { el: Element; reresolved: boolean } | null;
+  semanticKeyFor(el: Element): SemanticKey | null;
   nextSnapshotId(): string | null;
   recordSnapshot(id: string, record: unknown): void;
   getSnapshot(id: string): unknown;
@@ -309,6 +321,9 @@ interface RefInstance {
 }
 const instance = (): RefInstance =>
   (window as unknown as Record<string, RefInstance>)[OBSERVER_GLOBAL];
+/** The ref the current instance issues for its N-th element: `<doc_tag>:e<N>`. */
+const tagged = (n: number): string => instance().doc_id.slice(0, 6) + ':e' + n;
+const REF_FORMAT = /^[a-z0-9]{1,6}:e\d+$/;
 
 describe('page observer: element refs', () => {
   test('the same element gets the same ref across calls', () => {
@@ -316,7 +331,8 @@ describe('page observer: element refs', () => {
     evalExpr(buildObserverInstallJs());
     const go = document.getElementById('go')!;
     const first = instance().refFor(go);
-    expect(first).toBe('e1');
+    expect(first).toBe(tagged(1));
+    expect(first).toMatch(REF_FORMAT);
     expect(instance().refFor(go)).toBe(first);
     expect(instance().resolveRef(first!)).toBe(go);
   });
@@ -325,10 +341,10 @@ describe('page observer: element refs', () => {
     document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
     evalExpr(buildObserverInstallJs());
     const g = instance();
-    expect(g.refFor(document.getElementById('b')!)).toBe('e1');
-    expect(g.refFor(document.getElementById('a')!)).toBe('e2');
-    expect(g.resolveRef('e1')).toBe(document.getElementById('b'));
-    expect(g.resolveRef('e2')).toBe(document.getElementById('a'));
+    expect(g.refFor(document.getElementById('b')!)).toBe(tagged(1));
+    expect(g.refFor(document.getElementById('a')!)).toBe(tagged(2));
+    expect(g.resolveRef(tagged(1))).toBe(document.getElementById('b'));
+    expect(g.resolveRef(tagged(2))).toBe(document.getElementById('a'));
   });
 
   test('a detached element resolves to null and its ref id is never reissued', () => {
@@ -343,7 +359,7 @@ describe('page observer: element refs', () => {
     document.getElementById('list')!.appendChild(other);
     const next = g.refFor(other);
     expect(next).not.toBe(ref);
-    expect(next).toBe('e2');
+    expect(next).toBe(tagged(2));
     expect(g.resolveRef(ref)).toBeNull();
   });
 
@@ -353,10 +369,48 @@ describe('page observer: element refs', () => {
     expect(g.refFor(null as unknown as Element)).toBeNull();
     expect(g.refFor(document.createTextNode('x') as unknown as Element)).toBeNull();
     expect(g.resolveRef(undefined as unknown as string)).toBeNull();
-    expect(g.resolveRef('e999')).toBeNull();
+    expect(g.resolveRef(tagged(999))).toBeNull();
   });
 
-  test('a new install on a fresh document instance restarts at e1', () => {
+  test('a bare e<N> without a document tag is stale even when this document issued that number', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.refFor(document.getElementById('go')!)).toBe(tagged(1));
+    expect(g.resolveRef('e1')).toBeNull();
+    expect(g.resolveRefDetailed('e1')).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs('e1'))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverSemanticKeyJs('e1'))).toEqual({ ok: true, key: null });
+  });
+
+  test('a ref from a torn-down instance is stale even when the new instance issued the same number', () => {
+    document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
+    evalExpr(buildObserverInstallJs());
+    const oldRef = instance().refFor(document.getElementById('a')!)!;
+    expect(oldRef).toBe(tagged(1));
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    const newRef = instance().refFor(document.getElementById('b')!)!;
+    expect(newRef).toBe(tagged(1));
+    expect(newRef).not.toBe(oldRef);
+    expect(instance().resolveRef(oldRef)).toBeNull();
+    expect(instance().resolveRefDetailed(oldRef)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(oldRef))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverSemanticKeyJs(oldRef))).toEqual({ ok: true, key: null });
+    expect(instance().resolveRef(newRef)).toBe(document.getElementById('b'));
+  });
+
+  test('a ref carrying another document tag is stale', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    const ref = g.refFor(document.getElementById('go')!)!;
+    const otherTag = g.doc_id.slice(0, 6) === 'zzzzzz' ? 'yyyyyy' : 'zzzzzz';
+    expect(g.resolveRef(otherTag + ':e1')).toBeNull();
+    expect(g.resolveRef(ref)).toBe(document.getElementById('go'));
+  });
+
+  test('a new install on a fresh document instance restarts the number at e1 under its own tag', () => {
     document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
     evalExpr(buildObserverInstallJs());
     instance().refFor(document.getElementById('a')!);
@@ -364,7 +418,7 @@ describe('page observer: element refs', () => {
     evalExpr(buildObserverTeardownJs());
     evalExpr(buildObserverInstallJs());
     expect(instance().doc_id).not.toBe(firstDoc);
-    expect(instance().refFor(document.getElementById('b')!)).toBe('e1');
+    expect(instance().refFor(document.getElementById('b')!)).toBe(tagged(1));
   });
 
   test('teardown clears the registries', () => {
@@ -436,27 +490,28 @@ describe('page observer: snapshot store', () => {
     expect(g.getSnapshot('s2')).toBeNull();
   });
 });
-describe('page observer: version 2 install rule', () => {
-  test('OBSERVER_VERSION is 2', () => {
-    expect(OBSERVER_VERSION).toBe(2);
+describe('page observer: version 3 install rule', () => {
+  test('OBSERVER_VERSION is 3', () => {
+    expect(OBSERVER_VERSION).toBe(3);
   });
 
-  test('an installed version 1 instance is torn down and replaced by version 2', () => {
+  test('an installed version 2 instance is torn down and replaced by version 3', () => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
-      version: 1,
+      version: 2,
       doc_id: 'old-doc',
       coverage: 'full',
       teardown,
     };
     const result = evalExpr(buildObserverInstallJs());
     expect(teardown).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ ok: true, installed: true, version: 2 });
+    expect(result).toMatchObject({ ok: true, installed: true, version: 3 });
     expect(instance().doc_id).not.toBe('old-doc');
     expect(typeof instance().refFor).toBe('function');
+    expect(typeof instance().resolveRefDetailed).toBe('function');
   });
 
-  test.each([2, 3])('an installed version %i instance is left alone', (version) => {
+  test.each([3, 4])('an installed version %i instance is left alone', (version) => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
       version,
@@ -476,12 +531,12 @@ describe('page observer: version 2 install rule', () => {
     expect(pushed.filter((m) => m.type === 'doc_start')).toHaveLength(0);
   });
 
-  test('doc_start keeps its exact payload shape with version 2', () => {
+  test('doc_start keeps its exact payload shape with version 3', () => {
     evalExpr(buildObserverInstallJs());
     const starts = pushed.filter((m) => m.type === 'doc_start');
     expect(starts).toHaveLength(1);
     expect(Object.keys(starts[0]).sort()).toEqual(['coverage', 'doc_id', 'type', 'url', 'version']);
-    expect(starts[0]).toMatchObject({ version: 2, coverage: 'full', url: location.href });
+    expect(starts[0]).toMatchObject({ version: 3, coverage: 'full', url: location.href });
   });
 
   test('mark and changes keep their exact result shapes alongside refs', () => {
@@ -528,11 +583,11 @@ describe('page observer: buildObserverRefResolveJs', () => {
     const ref = instance().refFor(go)!;
     go.remove();
     expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({ ok: true, found: false });
-    expect(evalExpr(buildObserverRefResolveJs('e42'))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverRefResolveJs(tagged(42)))).toEqual({ ok: true, found: false });
   });
 
   test('without an instance it reports observer-unavailable', () => {
-    expect(evalExpr<Failure>(buildObserverRefResolveJs('e1'))).toEqual({
+    expect(evalExpr<Failure>(buildObserverRefResolveJs('k3x9ab:e1'))).toEqual({
       ok: false,
       reason: 'observer-unavailable',
     });
@@ -555,5 +610,322 @@ describe('page observer: builders embed strings safely in JS source', () => {
     const js = buildObserverChangesJs(0, 'd </script>');
     expect(js).not.toContain(' ');
     expect(js).not.toContain('</script>');
+  });
+});
+
+const LIST_ITEMS = '<li><button>Alpha</button></li><li><button>Beta</button></li>';
+
+describe('page observer: semantic key', () => {
+  test('explicit and implicit roles', () => {
+    document.body.innerHTML = [
+      '<div id="r" role="tab">Tab</div>',
+      '<a id="link" href="/x">Home</a>',
+      '<a id="anchor">Plain</a>',
+      '<input id="cb" type="checkbox">',
+      '<input id="rd" type="radio">',
+      '<input id="sub" type="submit" value="Send">',
+      '<input id="txt">',
+      '<textarea id="ta"></textarea>',
+      '<div id="ce" contenteditable="true">Edit</div>',
+      '<select id="sel"></select>',
+      '<summary id="sum">More</summary>',
+      '<section id="sec">S</section>',
+    ].join('');
+    evalExpr(buildObserverInstallJs());
+    const role = (id: string) => instance().semanticKeyFor(document.getElementById(id)!)!.role;
+    expect(role('r')).toBe('tab');
+    expect(role('link')).toBe('link');
+    expect(role('anchor')).toBe('a');
+    expect(role('cb')).toBe('checkbox');
+    expect(role('rd')).toBe('radio');
+    expect(role('sub')).toBe('button');
+    expect(role('txt')).toBe('textbox');
+    expect(role('ta')).toBe('textbox');
+    expect(role('ce')).toBe('textbox');
+    expect(role('sel')).toBe('combobox');
+    expect(role('sum')).toBe('button');
+    expect(role('sec')).toBe('section');
+  });
+
+  test('name precedence: aria-label, aria-labelledby, label, text, placeholder, title, value', () => {
+    document.body.innerHTML = [
+      '<button id="aria" aria-label="Close dialog">X</button>',
+      '<span id="lbl1">Search</span><span id="lbl2">site</span>',
+      '<button id="by" aria-labelledby="lbl1 lbl2">Go</button>',
+      '<label for="email">Email address</label><input id="email" placeholder="you@example.com">',
+      '<label>Remember <input id="wrapped" type="checkbox"></label>',
+      '<input id="ph" placeholder="Filter" title="T">',
+      '<input id="tt" title="Only title">',
+      '<input id="val" type="button" value="Press me">',
+      '<div id="none"></div>',
+      '<p id="long">' + 'word '.repeat(40) + '</p>',
+      '<p id="ws">  many\n   spaces\there  </p>',
+    ].join('');
+    evalExpr(buildObserverInstallJs());
+    const name = (id: string) => instance().semanticKeyFor(document.getElementById(id)!)!.name;
+    expect(name('aria')).toBe('Close dialog');
+    expect(name('by')).toBe('Search site');
+    expect(name('email')).toBe('Email address');
+    expect(name('wrapped')).toBe('Remember');
+    expect(name('ph')).toBe('Filter');
+    expect(name('tt')).toBe('Only title');
+    expect(name('val')).toBe('Press me');
+    expect(name('none')).toBe('');
+    expect(name('long')).toBe('word '.repeat(40).trim().slice(0, 80));
+    expect(name('long')).toHaveLength(80);
+    expect(name('ws')).toBe('many spaces here');
+  });
+
+  test('path: up to 8 steps from the outermost, 1-based same-tag sibling index', () => {
+    document.body.innerHTML =
+      '<ul id="list"><li>a</li><p>p</p><li>b</li><li><span>x</span><span id="t">y</span></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    expect(instance().semanticKeyFor(document.getElementById('t')!)!.path).toEqual([
+      { tag: 'body', index: 1 },
+      { tag: 'ul', index: 1 },
+      { tag: 'li', index: 3 },
+      { tag: 'span', index: 2 },
+    ]);
+    let deep = '<b id="deep">d</b>';
+    for (let i = 0; i < 10; i++) deep = '<div>' + deep + '</div>';
+    document.body.innerHTML = deep;
+    const path = instance().semanticKeyFor(document.getElementById('deep')!)!.path;
+    expect(path).toHaveLength(8);
+    expect(path[7]).toEqual({ tag: 'b', index: 1 });
+  });
+
+  test('a button inside an open shadow root crosses the boundary as #shadow', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const root = document.getElementById('host')!.attachShadow({ mode: 'open' });
+    root.innerHTML = '<div class="bar"><button>Save</button></div>';
+    evalExpr(buildObserverInstallJs());
+    expect(instance().semanticKeyFor(root.querySelector('button')!)).toEqual({
+      role: 'button',
+      name: 'Save',
+      path: [
+        { tag: 'body', index: 1 },
+        { tag: 'div', index: 1 },
+        { tag: '#shadow', index: 0 },
+        { tag: 'div', index: 1 },
+        { tag: 'button', index: 1 },
+      ],
+    });
+  });
+
+  test('semanticKeyFor never throws on bad input', () => {
+    evalExpr(buildObserverInstallJs());
+    expect(instance().semanticKeyFor(null as unknown as Element)).toBeNull();
+    const text = document.createTextNode('x') as unknown as Element;
+    expect(instance().semanticKeyFor(text)).toBeNull();
+  });
+});
+
+describe('page observer: semantic re-resolution', () => {
+  test('a list re-rendered with the same nodes keeps the ref on the same element', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST_ITEMS + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const alpha = list.querySelector('button')!;
+    const ref = instance().refFor(alpha)!;
+    list.appendChild(list.firstElementChild!);
+    alpha.setAttribute('data-churn', '1');
+    list.setAttribute('class', 'reordered');
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: alpha, reresolved: false });
+    expect(instance().resolveRef(ref)).toBe(alpha);
+  });
+
+  test('a re-render that replaces the nodes rebinds the ref to the new node', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST_ITEMS + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const old = list.querySelectorAll('button')[1];
+    const ref = instance().refFor(old)!;
+    list.innerHTML = LIST_ITEMS;
+    const fresh = list.querySelectorAll('button')[1];
+    expect(fresh).not.toBe(old);
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: true });
+    expect(instance().resolveRef(ref)).toBe(fresh);
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: false });
+    expect(instance().refFor(fresh)).toBe(ref);
+  });
+
+  test('resolveRef alone re-resolves a replaced node', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST_ITEMS + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelector('button')!)!;
+    list.innerHTML = LIST_ITEMS;
+    expect(instance().resolveRef(ref)).toBe(list.querySelector('button'));
+  });
+
+  test('a changed name invalidates the ref', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST_ITEMS + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelector('button')!)!;
+    list.innerHTML = '<li><button>Alpha renamed</button></li><li><button>Beta</button></li>';
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(instance().resolveRef(ref)).toBeNull();
+  });
+
+  test('two candidates with the same tag path resolve to null', () => {
+    document.body.innerHTML =
+      '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelectorAll('button')[1])!;
+    list.innerHTML =
+      '<li><button>Go</button></li><li><button>Y</button></li><li><button>Go</button></li>';
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('sibling-index distance never picks among candidates with the same tag path', () => {
+    document.body.innerHTML =
+      '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelectorAll('button')[1])!;
+    list.innerHTML =
+      '<li><button>Y</button></li><li><button>Go</button></li>' +
+      '<li><button>Z</button></li><li><button>Go</button></li>';
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('a removed row never rebinds its ref to the identically named button of the next row', () => {
+    document.body.innerHTML =
+      '<ul id="rows">' +
+      ['r1', 'r2', 'r3', 'r4'].map((id) => `<li id="${id}"><button>Delete</button></li>`).join('') +
+      '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(document.querySelector('#r3 button')!)!;
+    document.getElementById('r3')!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(instance().resolveRef(ref)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({ ok: true, found: false });
+  });
+
+  test('a unique same-named button in a rebuilt list is re-resolved at another index', () => {
+    document.body.innerHTML =
+      '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelectorAll('button')[1])!;
+    list.innerHTML =
+      '<li><button>Y</button></li><li><button>Z</button></li><li><button>Go</button></li>';
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: list.querySelectorAll('button')[2],
+      reresolved: true,
+    });
+  });
+
+  test('the same role and name under a different tag path resolves to null', () => {
+    document.body.innerHTML = '<div id="c"><span><button>Go</button></span></div>';
+    evalExpr(buildObserverInstallJs());
+    const c = document.getElementById('c')!;
+    const ref = instance().refFor(c.querySelector('button')!)!;
+    c.innerHTML = '<p><button>Go</button></p>';
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('a node replaced inside an open shadow root is re-resolved', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const root = document.getElementById('host')!.attachShadow({ mode: 'open' });
+    root.innerHTML = '<div class="bar"><button>Save</button></div>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(root.querySelector('button')!)!;
+    root.innerHTML = '<div class="bar"><button>Save</button></div>';
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: root.querySelector('button'),
+      reresolved: true,
+    });
+  });
+
+  test('a node replaced inside a closed shadow root created after install is re-resolved', () => {
+    evalExpr(buildObserverInstallJs());
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'closed' });
+    root.innerHTML = '<button>Save</button>';
+    const ref = instance().refFor(root.querySelector('button')!)!;
+    root.innerHTML = '<button>Save</button>';
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: root.querySelector('button'),
+      reresolved: true,
+    });
+  });
+
+  test('resolveRefDetailed never throws and is null for unknown refs and after teardown', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.resolveRefDetailed(undefined as unknown as string)).toBeNull();
+    expect(g.resolveRefDetailed(tagged(999))).toBeNull();
+    const ref = g.refFor(document.getElementById('go')!)!;
+    g.teardown();
+    expect(g.resolveRefDetailed(ref)).toBeNull();
+  });
+});
+
+describe('page observer: semantic builders', () => {
+  test('buildObserverRefResolveJs reports reresolved exactly once after a replacing re-render', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST_ITEMS + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelector('button')!)!;
+    list.innerHTML = LIST_ITEMS;
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({
+      ok: true,
+      found: true,
+      tag: 'button',
+      reresolved: true,
+    });
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({
+      ok: true,
+      found: true,
+      tag: 'button',
+    });
+  });
+
+  test('buildObserverSemanticKeyJs returns the stored key, or null for an unknown ref', () => {
+    document.body.innerHTML = '<button id="go" aria-label="Start">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(document.getElementById('go')!)!;
+    expect(evalExpr(buildObserverSemanticKeyJs(ref))).toEqual({
+      ok: true,
+      key: {
+        role: 'button',
+        name: 'Start',
+        path: [
+          { tag: 'body', index: 1 },
+          { tag: 'button', index: 1 },
+        ],
+      },
+    });
+    expect(evalExpr(buildObserverSemanticKeyJs(tagged(42)))).toEqual({ ok: true, key: null });
+  });
+
+  test('without an instance both builders report observer-unavailable', () => {
+    const unavailable = { ok: false, reason: 'observer-unavailable' };
+    expect(evalExpr(buildObserverRefResolveJs('k3x9ab:e1'))).toEqual(unavailable);
+    expect(evalExpr(buildObserverSemanticKeyJs('k3x9ab:e1'))).toEqual(unavailable);
+  });
+
+  test('teardown clears the key registry', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(document.getElementById('go')!)!;
+    expect(evalExpr<{ key: unknown }>(buildObserverSemanticKeyJs(ref)).key).not.toBeNull();
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    expect(evalExpr(buildObserverSemanticKeyJs(ref))).toEqual({ ok: true, key: null });
+  });
+
+  test('a hostile ref is embedded safely in the semantic key expression', () => {
+    const hostile = 'e1' + String.fromCharCode(0x2028, 0x2029) + '</script>';
+    const js = buildObserverSemanticKeyJs(hostile);
+    expect(js).not.toContain(String.fromCharCode(0x2028));
+    expect(js).not.toContain(String.fromCharCode(0x2029));
+    expect(js).not.toContain('</script>');
+    expect(evalExpr(js)).toEqual({ ok: false, reason: 'observer-unavailable' });
   });
 });

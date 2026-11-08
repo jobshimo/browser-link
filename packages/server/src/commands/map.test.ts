@@ -914,3 +914,67 @@ describe('plural i18n branches (n > 1)', () => {
     expect(dupSummaryEs).toMatch(/\(2 duplicadas omitidas\)/);
   });
 });
+
+describe('semantic_key in entry payloads (spec v4 §6.3, S3)', () => {
+  const KEY = {
+    role: 'button',
+    name: 'Save',
+    path: [
+      { tag: 'body', index: 1 },
+      { tag: 'button', index: 2 },
+    ],
+  };
+  const PAYLOAD = { selector: 'body > button:nth-of-type(2)', semantic_key: KEY };
+
+  test('export → import into a fresh DB carries semantic_key untouched', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'save',
+      payload: PAYLOAD,
+    });
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'plain',
+      payload: { selector: '#a' },
+    });
+    const exported = runMapCommand(['export']);
+    const parsed = JSON.parse(exported) as { apps: { entries: { payload: unknown }[] }[] };
+    expect(parsed.apps[0]!.entries.map((e) => e.payload)).toEqual(
+      expect.arrayContaining([PAYLOAD, { selector: '#a' }]),
+    );
+    closeDb();
+
+    const freshDir = mkdtempSync(join(tmpdir(), 'browser-link-map-cmd-semantic-key-'));
+    process.env.BROWSER_LINK_DATA_DIR = freshDir;
+    try {
+      const file = join(freshDir, 'in.json');
+      writeFileSync(file, exported, 'utf8');
+      runMapCommand(['import', file]);
+      const restored = listEntries(listApps()[0]!.id);
+      expect(restored.find((e) => e.purpose === 'save')!.payload).toEqual(PAYLOAD);
+      expect(restored.find((e) => e.purpose === 'plain')!.payload).toEqual({ selector: '#a' });
+    } finally {
+      closeDb();
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test('map show prints the payload with its semantic_key', () => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/a',
+      kind: 'selector',
+      purpose: 'save',
+      payload: { selector: '#s', semantic_key: { role: 'button', name: 'Save', path: [] } },
+    });
+    const out = runMapCommand(['show', 'my-app']);
+    expect(out).toContain('{"selector":"#s","semantic_key":{"role":"button","name":"Save"');
+  });
+});

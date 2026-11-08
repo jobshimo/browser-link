@@ -18,6 +18,19 @@ import {
   MAX_DOWNLOAD_TIMEOUT_MS,
 } from '../downloads.js';
 
+/** Shape of an element ref, `<doc_tag>:e<N>` (spec v4 §6.3); the dispatcher
+ * enforces the same pattern and names the tool in its error. */
+const REF_PATTERN_SOURCE = '^[a-z0-9]{1,16}:e[0-9]+$';
+
+/** An element ref (`<doc_tag>:e<N>`) as an action target (spec v4 §6.3). */
+const REF_SCHEMA = {
+  type: 'string',
+  pattern: REF_PATTERN_SOURCE,
+  maxLength: 64,
+  description:
+    'Element ref (`<doc_tag>:e<N>`, like `k3x9ab:e12`) from browser.snapshot / find / state for the current document, instead of selector. Exactly one of selector or ref.',
+};
+
 /**
  * Shared `settle_ms` / `settle_timeout_ms` schema properties for
  * click / type / press. Identical wording and semantics across all three —
@@ -215,7 +228,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.snapshot',
     description:
-      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are excluded from the interactive list, though their text still contributes to headings/text; a descendant that re-enables itself with `pointer-events:auto` is still listed. The scan pierces OPEN Shadow DOM roots and same-origin iframes (nested arbitrarily) — a web component internal or an in-page iframe shows up without extra steps. An entry for an element living inside an iframe carries an extra `frame` field (the CSS selector of the innermost hosting iframe) so you know it is framed; entries in the top document or in Shadow DOM omit it. An entry whose selector could not be made unique across all roots (structurally-identical component twins) carries `ambiguous: true` — that selector resolves first-match-wins, so use it immediately and do NOT store it in the persistent map. Optional filters keep the response small: `within_selector` restricts the scan to a subtree (also deep-search-aware — it can target a subtree inside a shadow root or iframe); `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key. When the page observer is running in the tab, each interactive entry also carries `ref` (right after `selector`): a per-document element handle `e<N>` issued by the page observer, stable for the same element across snapshot/find/state calls and valid only for the `doc_id` that issued it; unlike `ambiguous` (a selector-level warning), a `ref` names exactly one element of the current document. The result then also carries `doc_id` (the document instance that issued the refs; it changes on every new document) and `snapshot_id` (`<doc_id>:s<N>`, one per snapshot call in that document). All three are additive and ignorable, and are absent when the observer is not in the page. Pass `since: <snapshot_id>` to get a diff instead of the whole page: `{ title, url, doc_id, snapshot_id, since, added, removed, changed, overflow? }`, where `added` and `changed` are full entries (added first) and `removed` is `{ ref, tag, text? }`. `max_interactive` applies after diffing to `added` + `changed` and `overflow` (count dropped) appears only when above 0; `headings` and `text` appear in a diff only when `only_interactive` is false and they changed. When no diff can be made the result is the full snapshot plus `since` and `since_status`: `doc-changed` (the `since` prefix is not the current `doc_id`, or it has no `:`), `evicted` (same document, but not among the last 4 snapshots or never issued) or `observer-unavailable`. An invalid `since` (not a string, or over 64 characters) is dropped and a plain full snapshot is returned; a `within_selector` miss ignores `since`.',
+      'Snapshot of the tab: title, url, visible text (truncated) and a list of interactive elements (buttons, links, inputs, selects, textareas) with a CSS selector and labels. Use this to understand page state before clicking or typing. Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are excluded from the interactive list, though their text still contributes to headings/text; a descendant that re-enables itself with `pointer-events:auto` is still listed. The scan pierces OPEN Shadow DOM roots and same-origin iframes (nested arbitrarily) — a web component internal or an in-page iframe shows up without extra steps. An entry for an element living inside an iframe carries an extra `frame` field (the CSS selector of the innermost hosting iframe) so you know it is framed; entries in the top document or in Shadow DOM omit it. An entry whose selector could not be made unique across all roots (structurally-identical component twins) carries `ambiguous: true` — that selector resolves first-match-wins, so use it immediately and do NOT store it in the persistent map. Optional filters keep the response small: `within_selector` restricts the scan to a subtree (also deep-search-aware — it can target a subtree inside a shadow root or iframe); `only_interactive` skips headings and the text dump; `exclude` drops landmarks like nav/footer; `max_interactive` overrides the default cap of 120. The per-entry serializer omits empty-string fields, so the same call returns a leaner payload than before — no behavior change for clients that read by key. When the page observer is running in the tab, each interactive entry also carries `ref` (right after `selector`): a per-document element handle `<doc_tag>:e<N>` (like `k3x9ab:e12`; `doc_tag` is the first 6 characters of `doc_id`) issued by the page observer, stable for the same element across snapshot/find/state calls and valid only for the document that issued it; unlike `ambiguous` (a selector-level warning), a `ref` names exactly one element of the current document. The result then also carries `doc_id` (the document instance that issued the refs; it changes on every new document) and `snapshot_id` (`<doc_id>:s<N>`, one per snapshot call in that document). All three are additive and ignorable, and are absent when the observer is not in the page. Pass `since: <snapshot_id>` to get a diff instead of the whole page: `{ title, url, doc_id, snapshot_id, since, added, removed, changed, overflow? }`, where `added` and `changed` are full entries (added first) and `removed` is `{ ref, tag, text? }`. `max_interactive` applies after diffing to `added` + `changed` and `overflow` (count dropped) appears only when above 0; `headings` and `text` appear in a diff only when `only_interactive` is false and they changed. When no diff can be made the result is the full snapshot plus `since` and `since_status`: `doc-changed` (the `since` prefix is not the current `doc_id`, or it has no `:`), `evicted` (same document, but not among the last 4 snapshots or never issued) or `observer-unavailable`. An invalid `since` (not a string, or over 64 characters) is dropped and a plain full snapshot is returned; a `within_selector` miss ignores `since`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -267,7 +280,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Empty-string fields (`placeholder`, `aria_label`, etc.) are omitted from each entry. Read by key with optional-chaining or fall back to "".',
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable from any CDP-based tool — there is no workaround. Cross-origin iframes are also unreachable (same-origin policy); their content is invisible to this scan.',
         'Two structurally-identical component instances in different roots (e.g. twin web components with byte-identical internals) cannot be told apart by any CSS selector — no syntax scopes a selector to one shadow root. Affected entries carry `ambiguous: true`; their selector resolves to the FIRST match in a deterministic traversal order. Use it right away, never cache it.',
-        '`ref`, `doc_id` and `snapshot_id` appear only when the page observer is running in the tab. A `ref` dies with its document: compare `doc_id` before trusting a ref from an earlier call, and never store refs in the persistent map. `ref` is informational for now: it is not yet accepted as an action target.',
+        '`ref`, `doc_id` and `snapshot_id` appear only when the page observer is running in the tab. A `ref` dies with its document: compare `doc_id` before trusting a ref from an earlier call, and never store refs in the persistent map. A `ref` is accepted as an action target on click, type, press, find and wait_for for the current document: a replaced node is re-found by its semantic key (`reresolved: true`), otherwise the call fails with `ref-stale: <ref> not found in document <doc_id>` and you take a fresh snapshot.',
         'With `since`, a `since_status` of `doc-changed`, `evicted` or `observer-unavailable` means you already received the full snapshot: keep its new `snapshot_id` for the next `since`. Do not diff against the old id again.',
         'The structural selector adds `:nth-of-type` only when siblings force it, so inserting a sibling can change the selector of a neighbour and list that neighbour in `changed`. The selector did change: use the current one, not the one from the earlier snapshot.',
         'A diff covers at most the first 500 interactive entries of each snapshot, and `removed` is capped at 500.',
@@ -279,7 +292,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.find',
     description:
-      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are never returned as matches, though they can still surface as `near_misses` hints. The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses?, doc_id? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, ref?, text, tag}], doc_id? }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, ref?, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying. `ref` and `doc_id` are additive, ignorable fields present only when the page observer is running in the tab: `ref` is the same per-document element handle `e<N>` that browser.snapshot reports for that element, valid only for the `doc_id` that issued it.',
+      'Locate ONE interactive element by its visible text and return a stable selector plus viewport coordinates. The match is case-insensitive substring by default (set `exact:true` for full-string equality). Pass `role` to narrow to a specific ARIA role (`button`, `link`, `textbox`, `checkbox`, `tab`, `menuitem`) — without it the scan covers buttons, links, inputs, role-bearing elements, contenteditable nodes, and `[onclick]` divs (the "peruvian markup" case). Elements whose computed `pointer-events` is `none` (invisible accessibility layers that can never receive a real click) are never returned as matches, though they can still surface as `near_misses` hints. The scan pierces OPEN Shadow DOM roots and same-origin iframes, same as browser.snapshot. Returns `{ matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }` on a unique hit, `{ matched: false, reason: "not-found", error?, near_misses?, doc_id? }` when nothing matches, or `{ matched: false, reason: "multiple-matches", candidates: [{selector, ref?, text, tag}], doc_id? }` (up to 5) when several elements match — pick one and try again with `exact:true` or a longer text. On `not-found`, `near_misses` carries up to 3 VISIBLE candidates (`{text, selector, ref?, role?}`) ranked by substring containment then token overlap — omitted entirely when nothing plausible exists. When `role` excluded matches that the text DID find elsewhere, `error` names it explicitly (e.g. `text matched 2 elements but none with role "button" — closest: <div onclick> "GIF picker"`). `frame`, when present, is the CSS selector of the innermost iframe hosting the match. `ambiguous: true`, when present, means the selector could not be made unique across all roots (structurally-identical twins) and resolves first-match-wins — use it immediately, never cache it. `coords` are already mapped to TOP-LEVEL viewport coordinates even when the match lives inside an iframe. The returned `selector` uses the same heuristic as `browser.snapshot` (id → data-testid → aria-label → name → positional fallback, each verified unique across the full deep search scope), so a subsequent `browser.click` / `browser.type` works without re-querying. `ref` and `doc_id` are additive, ignorable fields present only when the page observer is running in the tab: `ref` is the same per-document element handle `<doc_tag>:e<N>` that browser.snapshot reports for that element, valid only for the document that issued it. Give exactly one of `text`, `ref` or `key`; `role` and `exact` apply to `text` only, and any other combination is rejected. Pass `ref` alone to describe that element directly (single-match shape plus `reresolved: true` when its node was replaced and re-found by its semantic key); a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`. With the observer running, a single match also carries `semantic_key` (`{ role, name, path }`: role, accessible name and the ancestor tag path with sibling indices); pass it back as `key` alone to find that element again by role and name (with `path`, exactly one candidate with the same tag path must exist, else `not-found` with `key: <N> candidates share role, name and tag path`; several role + name candidates without `path` give `not-found` with `key: <N> candidates share role and name; pass path to disambiguate`).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -287,21 +300,53 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         text: {
           type: 'string',
           description:
-            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default.',
+            'Visible text to match. Matched against innerText, aria-label, value, placeholder, or title — whichever the element exposes first. Case-insensitive substring by default. Required unless `ref` or `key` is given.',
+        },
+        ref: {
+          type: 'string',
+          pattern: REF_PATTERN_SOURCE,
+          maxLength: 64,
+          description:
+            'Element ref (`<doc_tag>:e<N>`) from browser.snapshot / find / state for the current document. Not combinable with `text`, `role`, `exact` or `key`.',
+        },
+        key: {
+          type: 'object',
+          description:
+            'Semantic key (`semantic_key` from a previous find, or from a browser.map.recall entry payload): finds the element with this role and accessible name, disambiguated by `path` when given. Not combinable with `text`, `ref`, `role` or `exact`.',
+          properties: {
+            role: { type: 'string', minLength: 1, maxLength: 200 },
+            name: { type: 'string', maxLength: 200 },
+            path: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 8,
+              items: {
+                type: 'object',
+                properties: {
+                  tag: { type: 'string', minLength: 1, maxLength: 200 },
+                  index: { type: 'integer', minimum: 0 },
+                },
+                required: ['tag', 'index'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['role', 'name'],
+          additionalProperties: false,
         },
         role: {
           type: 'string',
           enum: ['button', 'link', 'textbox', 'checkbox', 'tab', 'menuitem'],
           description:
-            'Optional ARIA role to narrow the scan. Without role the scan covers all common interactive elements including [onclick] divs.',
+            'Optional ARIA role to narrow the scan (text mode only). Without role the scan covers all common interactive elements including [onclick] divs.',
         },
         exact: {
           type: 'boolean',
           description:
-            'When true, the visible text must equal the needle (case-insensitive). Default false (substring).',
+            'When true, the visible text must equal the needle (case-insensitive). Default false (substring). Text mode only.',
         },
       },
-      required: ['tab_id', 'text'],
+      required: ['tab_id'],
       additionalProperties: false,
     },
     doc: {
@@ -313,6 +358,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'When the agent would otherwise write a hand-rolled `browser.evaluate` to grep textContent — `find` encapsulates the silently-failing patterns (missing visibility checks, `<div onclick>` not matching `button`, multi-match ambiguity).',
       ],
       gotchas: [
+        '`ref` mode returns `ref-stale: <ref> not found in document <doc_id>` (an error) when the node is gone and no unique role + name + tag-path match exists; take a fresh snapshot. A re-found node comes back with `reresolved: true`.',
+        '`semantic_key` is on single matches only (text, ref and key modes), never on `candidates`, `near_misses` or snapshot entries. `key` mode returns a unique match or a counted `not-found`; with `path`, identical rows (same role, name and tag path) are refused rather than guessed. It never crosses documents.',
         'A `<div onclick>` IS considered clickable here — the broad selector set (`[onclick]`, `[role]`, `[tabindex]`, `[contenteditable]`) is the whole point. A naive `querySelectorAll("button")` misses these silently.',
         'On `multiple-matches`, the response includes up to 5 candidates with their selectors and snippets so the agent can disambiguate without another round-trip. Retry with `exact:true` or a longer/unique substring.',
         '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
@@ -327,7 +374,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.state',
     description:
-      'Compact orientation snapshot — cheaper than a full browser.snapshot when the agent only needs to know where it is. Returns { url, title, viewport:{w,h}, focused?, dialogs?, scroll? }. `focused` is the innermost actually-focused element (descending through open Shadow DOM roots and same-origin iframes past `document.activeElement`, which by itself only reports a shadow host or an <iframe> element) as `{ selector, ref?, tag, ambiguous? }`. `dialogs` lists visible `[role=dialog]`, `[role=alertdialog]` and open `<dialog>` elements as `{ selector, role, label? }`, `label` best-effort from aria-label / aria-labelledby / the first heading inside. `scroll` is `{x,y}` and is omitted when the page is at its default (0,0) position. Every optional field is omitted when there is nothing to report. When the page observer is running in the tab, `focused.ref` is the same per-document element handle `e<N>` that browser.snapshot reports for that element and the result carries `doc_id`; both are additive, ignorable, valid only for that `doc_id`, and absent when the observer is not in the page.',
+      'Compact orientation snapshot — cheaper than a full browser.snapshot when the agent only needs to know where it is. Returns { url, title, viewport:{w,h}, focused?, dialogs?, scroll? }. `focused` is the innermost actually-focused element (descending through open Shadow DOM roots and same-origin iframes past `document.activeElement`, which by itself only reports a shadow host or an <iframe> element) as `{ selector, ref?, tag, ambiguous? }`. `dialogs` lists visible `[role=dialog]`, `[role=alertdialog]` and open `<dialog>` elements as `{ selector, role, label? }`, `label` best-effort from aria-label / aria-labelledby / the first heading inside. `scroll` is `{x,y}` and is omitted when the page is at its default (0,0) position. Every optional field is omitted when there is nothing to report. When the page observer is running in the tab, `focused.ref` is the same per-document element handle `<doc_tag>:e<N>` that browser.snapshot reports for that element and the result carries `doc_id`; both are additive, ignorable, valid only for that `doc_id`, and absent when the observer is not in the page.',
     inputSchema: {
       type: 'object',
       properties: { tab_id: { type: 'string' } },
@@ -540,7 +587,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.wait_for',
     description:
-      'Wait for a condition to become true on the page before continuing. Pick exactly ONE target: (a) `selector` plus an optional `condition` of visible|hidden|attached|detached (default visible), (b) `expression` — any JS that should become truthy, or (c) `network_url` — a substring that a completed network request URL must contain. Returns { matched, elapsed_ms, checks, reason? }. `matched: false` is NOT an error — the caller decides whether to proceed or branch. Polls every `poll_interval_ms` (default 100, range 50–1000) until `timeout_ms` (default 5000, capped at 30000). This is a read tool and does not require a claim — multiple agents can wait on the same tab in parallel.',
+      'Wait for a condition to become true on the page before continuing. Pick exactly ONE target: (a) `selector` — or `ref`, an element ref from browser.snapshot / find / state, where a ref that no longer resolves counts as a missing element — plus an optional `condition` of visible|hidden|attached|detached (default visible), (b) `expression` — any JS that should become truthy, or (c) `network_url` — a substring that a completed network request URL must contain. Returns { matched, elapsed_ms, checks, reason? }. `matched: false` is NOT an error — the caller decides whether to proceed or branch. Polls every `poll_interval_ms` (default 100, range 50–1000) until `timeout_ms` (default 5000, capped at 30000). This is a read tool and does not require a claim — multiple agents can wait on the same tab in parallel.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -550,11 +597,18 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'CSS selector. Use with condition. Mutually exclusive with expression and network_url. Resolved like browser.find / browser.click: open Shadow DOM roots and same-origin iframes are searched too.',
         },
+        ref: {
+          type: 'string',
+          pattern: REF_PATTERN_SOURCE,
+          maxLength: 64,
+          description:
+            'Element ref (`<doc_tag>:e<N>`) instead of selector; use with condition. A replaced node is re-found by its semantic key; a ref that no longer resolves counts as missing (attached false, detached true). Without the page observer the wait fails with observer-unavailable.',
+        },
         condition: {
           type: 'string',
           enum: ['visible', 'hidden', 'attached', 'detached'],
           description:
-            'For selector mode. visible = exists + non-zero box + opacity > 0; hidden = inverse; attached = exists in DOM; detached = does not exist. Default visible.',
+            'For selector or ref mode. visible = exists + non-zero box + opacity > 0; hidden = inverse; attached = exists in DOM; detached = does not exist. Default visible.',
         },
         expression: {
           type: 'string',
@@ -588,6 +642,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'When you depend on a backend response — wait for the network request URL to land before reading the DOM.',
       ],
       gotchas: [
+        'In `ref` mode a ref that no longer resolves counts as a missing element, not an error: `attached` stays false and `detached` is true. A re-found node is used silently. Without the page observer the call fails with `observer-unavailable`.',
         'matched: false is not an error. Read it and decide — many flows have a plan B when the condition does not happen.',
         'expression mode runs arbitrary JS via Runtime.evaluate. Subject to the same disabled-list as browser.evaluate would be if you want to gate it.',
         'network_url matches against the rolling buffer of recent requests (last 200). If the request happened before wait_for started, it still counts as matched — wait_for has no concept of "fresh" requests.',
@@ -785,12 +840,13 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.click',
     description:
-      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. A target whose computed `pointer-events` is `none` (an invisible accessibility layer over the real control) is NOT treated as covered: the click proceeds at the same point — that is what a real user click does — and the result carries `hit_element` naming the element that actually receives it. `hit_element` (same compact descriptor format as occlusion blockers) is present on ANY click whose dispatched event lands on a different element than the resolved selector — retargeted pointer-events case, an ancestor wrapper, or a `force:true` click landing on whatever covers the point — and omitted when the click hits the resolved element itself. Optionally waits for the page to settle after the click — see `settle_ms`.',
+      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. A target whose computed `pointer-events` is `none` (an invisible accessibility layer over the real control) is NOT treated as covered: the click proceeds at the same point — that is what a real user click does — and the result carries `hit_element` naming the element that actually receives it. `hit_element` (same compact descriptor format as occlusion blockers) is present on ANY click whose dispatched event lands on a different element than the resolved selector — retargeted pointer-events case, an ancestor wrapper, or a `force:true` click landing on whatever covers the point — and omitted when the click hits the resolved element itself. Optionally waits for the page to settle after the click — see `settle_ms`. Give exactly one of `selector` or `ref` (an element ref from browser.snapshot / find / state); a ref whose node was replaced is re-found by its semantic key and the result carries `reresolved: true`, and a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`.',
     inputSchema: {
       type: 'object',
       properties: {
         tab_id: { type: 'string' },
-        selector: { type: 'string' },
+        selector: { type: 'string', description: 'CSS selector. Exactly one of selector or ref.' },
+        ref: REF_SCHEMA,
         force: {
           type: 'boolean',
           default: false,
@@ -800,7 +856,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         ...SETTLE_SCHEMA_PROPERTIES,
         expect: EXPECT_SCHEMA,
       },
-      required: ['tab_id', 'selector'],
+      required: ['tab_id'],
       additionalProperties: false,
     },
     doc: {
@@ -809,6 +865,9 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'After browser.snapshot returned a selector for the element the user asked you to interact with.',
       ],
       gotchas: [
+        'With `ref`, a failure `ref-stale: <ref> not found in document <doc_id>` means the node is gone and could not be re-found (or the ref came from another document): take a fresh `browser.snapshot` or `browser.find` and use the new `ref`. Do not retry the same ref.',
+        '`reresolved: true` in the result means the node behind the ref had been replaced and the observer re-found it by role, accessible name and ancestor tag path in the same document. Check that the action hit the element you meant.',
+        'Re-resolution needs a unique candidate: identical rows (same role, name and tag path) fail with `ref-stale` instead of being guessed. It never crosses documents (a ref carries its document tag), and a changed accessible name invalidates the ref.',
         'Never click a selector you have not just verified via browser.snapshot or browser.map.recall — speculating wastes a turn.',
         'Auto-claims the tab on first use in multi-agent mode.',
         'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
@@ -825,18 +884,19 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.type',
     description:
-      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click. Optionally waits for the page to settle after typing — see `settle_ms`.',
+      'Focus an input by CSS selector and type text into it. If clear=true, clears the current value first. The lookup pierces open Shadow DOM roots and same-origin iframes, same as browser.click. Optionally waits for the page to settle after typing — see `settle_ms`. Give exactly one of `selector` or `ref` (an element ref from browser.snapshot / find / state), with the same `reresolved` / `ref-stale` behaviour as browser.click.',
     inputSchema: {
       type: 'object',
       properties: {
         tab_id: { type: 'string' },
-        selector: { type: 'string' },
+        selector: { type: 'string', description: 'CSS selector. Exactly one of selector or ref.' },
+        ref: REF_SCHEMA,
         text: { type: 'string' },
         clear: { type: 'boolean', default: false },
         ...SETTLE_SCHEMA_PROPERTIES,
         expect: EXPECT_SCHEMA,
       },
-      required: ['tab_id', 'selector', 'text'],
+      required: ['tab_id', 'text'],
       additionalProperties: false,
     },
     doc: {
@@ -845,6 +905,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'After browser.snapshot returned a selector for the input the user wants filled.',
       ],
       gotchas: [
+        '`ref` follows the same rules as browser.click: `reresolved: true` after a re-found node, `ref-stale: <ref> not found in document <doc_id>` when it cannot be found (take a fresh snapshot), `observer-unavailable` when the page observer is not in the tab.',
         'Pass clear:true when you need to replace the current value instead of appending to it.',
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
         'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
@@ -858,7 +919,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.press',
     description:
-      'Press a single key, optionally with modifiers, using a TRUSTED CDP `Input.dispatchKeyEvent` sequence (`isTrusted: true`) — not a synthetic `KeyboardEvent` dispatched via `browser.evaluate`, which many rich text editors, autocompletes, and non-DOM runtimes (Qt-WASM, WebGL — see browser.canvas_screenshot) silently ignore. `key` accepts a human name (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`), case-insensitive, or a single printable character, case-sensitive (`"a"` vs `"A"`, `"@"`). `modifiers` combines with the key for shortcuts (`Ctrl+A` = `{ key: "a", modifiers: ["Control"] }`). Pass `selector` to focus an element first (same deep Shadow DOM / iframe search as click/type/find); omit it to send the key to whatever currently has focus. Optionally waits for the page to settle after the key press — see `settle_ms`.',
+      'Press a single key, optionally with modifiers, using a TRUSTED CDP `Input.dispatchKeyEvent` sequence (`isTrusted: true`) — not a synthetic `KeyboardEvent` dispatched via `browser.evaluate`, which many rich text editors, autocompletes, and non-DOM runtimes (Qt-WASM, WebGL — see browser.canvas_screenshot) silently ignore. `key` accepts a human name (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`), case-insensitive, or a single printable character, case-sensitive (`"a"` vs `"A"`, `"@"`). `modifiers` combines with the key for shortcuts (`Ctrl+A` = `{ key: "a", modifiers: ["Control"] }`). Pass `selector` to focus an element first (same deep Shadow DOM / iframe search as click/type/find); omit it to send the key to whatever currently has focus. `ref` (an element ref from browser.snapshot / find / state) focuses that element instead of `selector`, with the same `reresolved` / `ref-stale` behaviour as browser.click. Optionally waits for the page to settle after the key press — see `settle_ms`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -879,6 +940,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'Optional. Focus this element (resolved via the same deep Shadow DOM / iframe search as browser.click) before dispatching the key. Omit to send the key to the currently focused element.',
         },
+        ref: { ...REF_SCHEMA, description: 'Optional element ref to focus instead of selector.' },
         ...SETTLE_SCHEMA_PROPERTIES,
         expect: EXPECT_SCHEMA,
       },
@@ -894,6 +956,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'A rich text editor, autocomplete widget, or non-DOM runtime (Qt-WASM, WebGL) that discards synthetic input dispatched via browser.evaluate and needs a REAL, isTrusted:true keystroke.',
       ],
       gotchas: [
+        '`ref` follows the same rules as browser.click (`reresolved`, `ref-stale`, `observer-unavailable`). Without `selector` or `ref` the key goes to whatever has focus; giving both is an error.',
         'For typing normal text into an input, use browser.type instead — it goes through the native value setter and is far cheaper per character than one browser.press call per keystroke.',
         'For anything not covered by the named keys or a single character, browser.evaluate is the escape hatch — but note it produces isTrusted:false events, which some pages ignore.',
         'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',
@@ -1018,6 +1081,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                         description:
                           'Optional — omit to use the implicit target from a preceding find step.',
                       },
+                      ref: { ...REF_SCHEMA, description: 'Element ref instead of selector.' },
                       force: { type: 'boolean' },
                       settle_ms: { type: 'number' },
                       settle_timeout_ms: { type: 'number' },
@@ -1040,6 +1104,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                         description:
                           'Optional — omit to use the implicit target, or to type into whatever currently has focus.',
                       },
+                      ref: { ...REF_SCHEMA, description: 'Element ref instead of selector.' },
                       text: { type: 'string' },
                       clear: { type: 'boolean' },
                       settle_ms: { type: 'number' },
@@ -1069,6 +1134,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                         description:
                           'Optional — omit to use the implicit target, or to send the key to whatever currently has focus.',
                       },
+                      ref: { ...REF_SCHEMA, description: 'Element ref instead of selector.' },
                       settle_ms: { type: 'number' },
                       settle_timeout_ms: { type: 'number' },
                       expect: EXPECT_SCHEMA,
@@ -1087,6 +1153,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                     type: 'object',
                     properties: {
                       selector: { type: 'string' },
+                      ref: REF_SCHEMA,
                       condition: {
                         type: 'string',
                         enum: ['visible', 'hidden', 'attached', 'detached'],
@@ -1098,9 +1165,10 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
                     },
                     additionalProperties: false,
                     description:
-                      'Exactly one of selector | expression | network_url is required — same contract as standalone browser.wait_for.',
+                      'Exactly one of selector | ref | expression | network_url is required — same contract as standalone browser.wait_for.',
                     oneOf: [
                       { required: ['selector'] },
+                      { required: ['ref'] },
                       { required: ['expression'] },
                       { required: ['network_url'] },
                     ],

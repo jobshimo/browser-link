@@ -552,6 +552,98 @@ export type FlowValidationResult =
  * — a steps array `browser.flow` would reject must be rejected here too,
  * never a second, slightly-different copy of this logic.
  */
+/** Longest `ref` accepted as an action target. Observer refs are
+ * `<doc_tag>:e<N>` (a 6-character document tag and a per-document counter),
+ * so 64 characters is far beyond any real ref and only bounds what a caller
+ * can push into the page. */
+const MAX_REF_LENGTH = 64;
+const REF_PATTERN = /^[a-z0-9]{1,16}:e[0-9]+$/;
+const REF_SHAPE_ERROR =
+  'ref must be an element ref like "k3x9ab:e12" (a document tag of 1-16 lowercase letters or digits, ":e" and digits, at most 64 characters)';
+
+/** Whether `ref` is a well-formed observer element ref (`<doc_tag>:e<digits>`,
+ * from `snapshot` / `find` / `state`). Only the shape is checked here;
+ * whether it names an element of the current document (its tag is that
+ * document's) is decided in the page (`ref-stale`). */
+function isElementRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && ref.length <= MAX_REF_LENGTH && REF_PATTERN.test(ref);
+}
+
+/** Throw the tool-prefixed shape error when `ref` is present but malformed. */
+function requireValidRef(tool: string, ref: unknown): void {
+  if (ref !== undefined && !isElementRef(ref)) throw new Error(`${tool}: ${REF_SHAPE_ERROR}`);
+}
+
+/** Bounds of a semantic key (spec v4 §5.6): the observer's `semanticKeyFor`
+ * path holds at most 8 steps, and no stored or sent string exceeds 200
+ * characters. */
+const SEMANTIC_KEY_MAX_PATH_STEPS = 8;
+const SEMANTIC_KEY_MAX_STRING = 200;
+const SEMANTIC_KEY_FIELDS = new Set(['role', 'name', 'path']);
+const SEMANTIC_KEY_STEP_FIELDS = new Set(['tag', 'index']);
+
+export interface SemanticKey {
+  role: string;
+  name: string;
+  path?: Array<{ tag: string; index: number }>;
+}
+
+/**
+ * Shape check for a semantic key `{ role, name, path }` — the observer's
+ * `semanticKeyFor` output, `find`'s `key` mode and the map's stored
+ * `semantic_key`. `role` is a non-empty string, `name` a string (an element
+ * can have an empty name), both at most 200 characters; `path`, when present
+ * (required with `requirePath`), is 1–8 `{ tag, index }` steps with a
+ * non-empty tag of at most 200 characters and a non-negative integer index
+ * (`#shadow` steps use 0). No other field is accepted. Returns the problem
+ * as a phrase to append after `key ` / `semantic_key `, or `null`.
+ */
+export function semanticKeyProblem(
+  value: unknown,
+  opts: { requirePath?: boolean } = {},
+): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be an object { role, name, path? }';
+  }
+  const key = value as Record<string, unknown>;
+  const unknownField = Object.keys(key).find((f) => !SEMANTIC_KEY_FIELDS.has(f));
+  if (unknownField !== undefined) return `has an unknown field "${unknownField}"`;
+  const max = SEMANTIC_KEY_MAX_STRING;
+  if (typeof key.role !== 'string' || key.role.length === 0 || key.role.length > max) {
+    return `role must be a non-empty string of at most ${max} characters`;
+  }
+  if (typeof key.name !== 'string' || key.name.length > max) {
+    return `name must be a string of at most ${max} characters`;
+  }
+  if (key.path === undefined) return opts.requirePath ? 'path is required' : null;
+  const steps = SEMANTIC_KEY_MAX_PATH_STEPS;
+  if (!Array.isArray(key.path) || key.path.length === 0 || key.path.length > steps) {
+    return `path must be an array of 1 to ${steps} { tag, index } steps`;
+  }
+  for (const step of key.path as unknown[]) {
+    if (typeof step !== 'object' || step === null || Array.isArray(step)) {
+      return 'path steps must be { tag, index } objects';
+    }
+    const s = step as Record<string, unknown>;
+    if (Object.keys(s).some((f) => !SEMANTIC_KEY_STEP_FIELDS.has(f))) {
+      return 'path steps accept only tag and index';
+    }
+    if (typeof s.tag !== 'string' || s.tag.length === 0 || s.tag.length > max) {
+      return `path step tag must be a non-empty string of at most ${max} characters`;
+    }
+    if (typeof s.index !== 'number' || !Number.isInteger(s.index) || s.index < 0) {
+      return 'path step index must be a non-negative integer';
+    }
+  }
+  return null;
+}
+
+/** `{ ref }` when given, else nothing — so a selector call forwards exactly
+ * the parameters it always did. */
+function refArg(ref: string | undefined): { ref?: string } {
+  return ref !== undefined ? { ref } : {};
+}
+
 export function validateFlowSteps(
   input: unknown,
   opts: { allowRepeat?: boolean; maxBudgetMs?: number } = {},
@@ -599,7 +691,17 @@ export function validateFlowSteps(
       return { ok: false, error: `step ${i}: "${kind}" must be an object` };
     }
     const bodyRecord = body as Record<string, unknown>;
+    if (
+      (kind === 'click' || kind === 'type' || kind === 'press' || kind === 'wait_for') &&
+      bodyRecord.ref !== undefined &&
+      !isElementRef(bodyRecord.ref)
+    ) {
+      return { ok: false, error: `step ${i}: ${kind}.${REF_SHAPE_ERROR}` };
+    }
     if (kind === 'click' || kind === 'type' || kind === 'press') {
+      if (bodyRecord.selector !== undefined && bodyRecord.ref !== undefined) {
+        return { ok: false, error: `step ${i}: ${kind} accepts at most one of selector or ref` };
+      }
       const expectError = expectArgError(bodyRecord.expect);
       if (expectError) return { ok: false, error: `step ${i}: ${kind}.${expectError}` };
       const settleTimeout = bodyRecord.settle_timeout_ms;
@@ -617,6 +719,11 @@ export function validateFlowSteps(
       }
     }
     if (kind === 'find') {
+      // A flow find only searches by text: its result feeds the next step's
+      // implicit selector target.
+      if (bodyRecord.ref !== undefined || bodyRecord.key !== undefined) {
+        return { ok: false, error: `step ${i}: find steps take text (and role, exact) only` };
+      }
       if (typeof bodyRecord.text !== 'string' || bodyRecord.text.length === 0) {
         return { ok: false, error: `step ${i}: find.text is required` };
       }
@@ -642,7 +749,7 @@ export function validateFlowSteps(
       }
       budgetMs += flowActionBudgetMs(bodyRecord);
     } else if (kind === 'click') {
-      if (bodyRecord.selector === undefined && !hasTarget) {
+      if (bodyRecord.selector === undefined && bodyRecord.ref === undefined && !hasTarget) {
         return {
           ok: false,
           error: `step ${i}: click has no selector and no preceding find to supply an implicit target`,
@@ -775,13 +882,16 @@ export function validateFlowSteps(
       // wait_for — mirror the standalone dispatcher's contract checks so a
       // bad step fails HERE with a clear message instead of in-page with a
       // misleading "condition not met within timeout (0ms, 0 checks)".
-      const modes = [bodyRecord.selector, bodyRecord.expression, bodyRecord.network_url].filter(
-        (v) => v !== undefined,
-      );
+      const modes = [
+        bodyRecord.selector,
+        bodyRecord.expression,
+        bodyRecord.network_url,
+        bodyRecord.ref,
+      ].filter((v) => v !== undefined);
       if (modes.length !== 1) {
         return {
           ok: false,
-          error: `step ${i}: wait_for requires exactly one of selector | expression | network_url`,
+          error: `step ${i}: wait_for requires exactly one of selector | expression | network_url | ref`,
         };
       }
       for (const key of ['selector', 'expression', 'network_url'] as const) {
@@ -1506,11 +1616,30 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.find': {
-      const { text, role, exact } = (args ?? {}) as {
+      const { text, role, exact, ref, key } = (args ?? {}) as {
         text?: unknown;
         role?: unknown;
         exact?: unknown;
+        ref?: unknown;
+        key?: unknown;
       };
+      requireValidRef('browser.find', ref);
+      // The three modes are strictly exclusive, and role/exact only refine a
+      // text search: an option a mode would ignore is rejected, never dropped.
+      const modes = [text, ref, key].filter((mode) => mode !== undefined).length;
+      if (modes > 1) throw new Error('browser.find needs exactly one of text, ref or key');
+      if ((ref !== undefined || key !== undefined) && (role !== undefined || exact !== undefined)) {
+        throw new Error('browser.find: role and exact apply to text mode only');
+      }
+      if (key !== undefined) {
+        const problem = semanticKeyProblem(key);
+        if (problem !== null) throw new Error(`browser.find: key ${problem}`);
+        return routeToolCall('find', requireTabId(args), { key: key as SemanticKey }, deps);
+      }
+      if (ref !== undefined) {
+        // With a ref, find describes that element (see buildFindJs).
+        return routeToolCall('find', requireTabId(args), { ref: ref as string }, deps);
+      }
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error('browser.find: text required');
       }
@@ -1633,22 +1762,28 @@ async function dispatchBrowserTool(
     case 'browser.click': {
       const {
         selector,
+        ref,
         force = false,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
       } = args as {
-        selector: string;
+        selector?: string;
+        ref?: string;
         force?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
       };
+      if ((selector === undefined) === (ref === undefined)) {
+        throw new Error('browser.click needs exactly one of selector or ref');
+      }
+      requireValidRef('browser.click', ref);
       requireValidExpect('browser.click', expectArg);
       return runAction(
         'click',
         requireTabId(args),
-        { selector, force, settle_ms, settle_timeout_ms, expect: expectArg },
+        { selector, ...refArg(ref), force, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
@@ -1657,24 +1792,30 @@ async function dispatchBrowserTool(
     case 'browser.type': {
       const {
         selector,
+        ref,
         text,
         clear = false,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
       } = args as {
-        selector: string;
+        selector?: string;
+        ref?: string;
         text: string;
         clear?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
       };
+      if ((selector === undefined) === (ref === undefined)) {
+        throw new Error('browser.type needs exactly one of selector or ref');
+      }
+      requireValidRef('browser.type', ref);
       requireValidExpect('browser.type', expectArg);
       return runAction(
         'type',
         requireTabId(args),
-        { selector, text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
+        { selector, ...refArg(ref), text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
@@ -1685,6 +1826,7 @@ async function dispatchBrowserTool(
         key,
         modifiers,
         selector,
+        ref,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
@@ -1692,6 +1834,7 @@ async function dispatchBrowserTool(
         key?: unknown;
         modifiers?: unknown;
         selector?: unknown;
+        ref?: unknown;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
@@ -1711,6 +1854,10 @@ async function dispatchBrowserTool(
       if (selector !== undefined && typeof selector !== 'string') {
         throw new Error('browser.press: selector must be a string when provided');
       }
+      requireValidRef('browser.press', ref);
+      if (selector !== undefined && ref !== undefined) {
+        throw new Error('browser.press accepts at most one of selector or ref');
+      }
       requireValidExpect('browser.press', expectArg);
       return runAction(
         'press',
@@ -1719,6 +1866,7 @@ async function dispatchBrowserTool(
           key,
           modifiers: normalizedModifiers,
           selector,
+          ...refArg(ref as string | undefined),
           settle_ms,
           settle_timeout_ms,
           expect: expectArg,
@@ -2044,22 +2192,24 @@ async function dispatchBrowserTool(
     case 'browser.download':
       return handleDownload(args, deps, caller);
     case 'browser.wait_for': {
-      const { selector, expression, network_url, condition, timeout_ms, poll_interval_ms } =
+      const { selector, ref, expression, network_url, condition, timeout_ms, poll_interval_ms } =
         (args ?? {}) as {
           selector?: string;
+          ref?: string;
           expression?: string;
           network_url?: string;
           condition?: string;
           timeout_ms?: number;
           poll_interval_ms?: number;
         };
-      const modes = [selector, expression, network_url].filter((v) => v !== undefined);
+      const modes = [selector, expression, network_url, ref].filter((v) => v !== undefined);
       if (modes.length !== 1) {
         throw new Error(
-          'browser.wait_for: provide exactly one of selector, expression, network_url',
+          'browser.wait_for: provide exactly one of selector, expression, network_url, ref',
         );
       }
-      if (selector !== undefined && condition !== undefined) {
+      requireValidRef('browser.wait_for', ref);
+      if ((selector !== undefined || ref !== undefined) && condition !== undefined) {
         const ok = ['visible', 'hidden', 'attached', 'detached'].includes(condition);
         if (!ok) {
           throw new Error(
@@ -2074,7 +2224,15 @@ async function dispatchBrowserTool(
       return routeToolCall(
         'wait_for',
         requireTabId(args),
-        { selector, expression, network_url, condition, timeout_ms, poll_interval_ms },
+        {
+          selector,
+          ...refArg(ref),
+          expression,
+          network_url,
+          condition,
+          timeout_ms,
+          poll_interval_ms,
+        },
         deps,
         requestTimeoutMs,
       );

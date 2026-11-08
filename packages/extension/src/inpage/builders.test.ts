@@ -1328,7 +1328,7 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
     delete win[OBSERVER_BINDING];
   });
 
-  const refPattern = /^e\d+$/;
+  const refPattern = /^[a-z0-9]{1,6}:e\d+$/;
 
   test('snapshot entries carry a ref right after selector, shadow-root entries included', () => {
     buildBaselinePage();
@@ -1438,7 +1438,8 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
       if (value && typeof value === 'object') {
         const out: Json = {};
         for (const [k, v] of Object.entries(value)) {
-          if (k === 'ref' || k === 'doc_id' || k === 'snapshot_id') continue;
+          if (k === 'ref' || k === 'doc_id' || k === 'snapshot_id' || k === 'semantic_key')
+            continue;
           out[k] = strip(v);
         }
         return out;
@@ -1678,5 +1679,468 @@ describe('buildSnapshotJs — since diff', () => {
       notice: 'within_selector did not match any element',
       doc_id: docId,
     });
+  });
+});
+
+/**
+ * `ref` as a target (spec v4 §6.3): the selector-taking builders also accept
+ * an observer ref. A live ref resolves to its node; a node replaced by a
+ * re-render is re-resolved by its semantic key (`reresolved: true`); a ref
+ * with no unique candidate is `ref-stale` and names the `doc_id`; without
+ * the observer the ref cannot be resolved at all (`observer-unavailable`).
+ */
+describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const BUTTONS = '<li><button>Alpha</button></li><li><button>Beta</button></li>';
+  const INPUTS = '<li><input aria-label="Alpha" /></li><li><input aria-label="Beta" /></li>';
+  let docId = '';
+
+  function install(items: string): void {
+    document.body.innerHTML = '<ul id="list">' + items + '</ul>';
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    // jsdom has no hit-testing; null fails the occlusion check open.
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
+      null;
+  }
+  const second = (): HTMLElement =>
+    document.querySelectorAll<HTMLElement>('#list li')[1].firstElementChild as HTMLElement;
+  const refOfSecond = (): string => (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(second())!;
+  const rerender = (items: string): void => {
+    document.getElementById('list')!.innerHTML = items;
+  };
+  const removeSecond = (): void => {
+    document.querySelectorAll('#list li')[1].remove();
+  };
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  test('click by a live ref gives the same result as by selector and targets that node', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const bySelector = evalExpr<Json>(
+      buildClickResolveJs({ selector: '#list li:nth-of-type(2) button', force: false }),
+    );
+    let scrolled: Element | null = null;
+    second().scrollIntoView = function (this: Element) {
+      scrolled = this;
+    };
+    const byRef = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
+    expect(byRef).toEqual(bySelector);
+    expect(byRef.reresolved).toBeUndefined();
+    expect(scrolled).toBe(second());
+  });
+
+  test('click by ref after a replacing re-render resolves the new node with reresolved', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const old = second();
+    rerender(BUTTONS);
+    const fresh = second();
+    expect(fresh).not.toBe(old);
+    let scrolled: Element | null = null;
+    fresh.scrollIntoView = function (this: Element) {
+      scrolled = this;
+    };
+    const resolved = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
+    expect(resolved).toEqual({ ok: true, x: 0, y: 0, tag: 'button', reresolved: true });
+    expect(scrolled).toBe(fresh);
+    // The rebind is done: the next resolution is a plain live hit.
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false })).reresolved).toBeUndefined();
+  });
+
+  test('click by a stale ref is ref-stale and names the doc_id', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    removeSecond();
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    const unknown = docId.slice(0, 6) + ':e999';
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: unknown, force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: unknown,
+      doc_id: docId,
+    });
+  });
+
+  test('click by a ref from a torn-down document is ref-stale although the new one issued the same number', () => {
+    install(BUTTONS);
+    const first = document.querySelector<HTMLElement>('#list button')!;
+    const oldRef = (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(first)!;
+    const oldDoc = docId;
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    expect(docId).not.toBe(oldDoc);
+    const newRef = refOfSecond();
+    expect(newRef.slice(newRef.indexOf(':'))).toBe(oldRef.slice(oldRef.indexOf(':')));
+    expect(newRef).not.toBe(oldRef);
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: oldRef, force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: oldRef,
+      doc_id: docId,
+    });
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: 'e1', force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: 'e1',
+      doc_id: docId,
+    });
+  });
+
+  test('click by ref without the observer is observer-unavailable', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('type by ref focuses the node, clears it, and re-resolves after a re-render', () => {
+    install(INPUTS);
+    const ref = refOfSecond();
+    (second() as HTMLInputElement).value = 'old';
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: true }))).toEqual({ ok: true });
+    expect(document.activeElement).toBe(second());
+    expect((second() as HTMLInputElement).value).toBe('');
+    rerender(INPUTS);
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: true,
+      reresolved: true,
+    });
+    expect(document.activeElement).toBe(second());
+    removeSecond();
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('focus by ref answers an object (selector mode keeps its boolean)', () => {
+    install(INPUTS);
+    const ref = refOfSecond();
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({ ok: true });
+    expect(document.activeElement).toBe(second());
+    (document.activeElement as HTMLElement).blur();
+    rerender(INPUTS);
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({ ok: true, reresolved: true });
+    expect(document.activeElement).toBe(second());
+    removeSecond();
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    expect(evalExpr<boolean>(buildFocusJs({ selector: '#list input' }))).toBe(true);
+    expect(evalExpr<boolean>(buildFocusJs({ selector: '#nope' }))).toBe(false);
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('element rect by ref equals the selector rect; stale ref is ref-stale', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const bySelector = evalExpr<Json>(
+      buildElementRectJs({ selector: '#list li:nth-of-type(2) button' }),
+    );
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual(bySelector);
+    rerender(BUTTONS);
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual({
+      ...bySelector,
+      reresolved: true,
+    });
+    removeSecond();
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+  });
+
+  test('wait_for by ref: live, re-resolved and stale semantics per condition', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const wait = (condition: 'visible' | 'hidden' | 'attached' | 'detached'): unknown =>
+      evalExpr(buildWaitForSelectorJs({ ref }, condition));
+    const giveSize = (el: Element): void => {
+      el.getBoundingClientRect = () =>
+        ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 10,
+          bottom: 10,
+          width: 10,
+          height: 10,
+          toJSON() {},
+        }) as DOMRect;
+    };
+    giveSize(second());
+    expect(wait('attached')).toBe(true);
+    expect(wait('detached')).toBe(false);
+    expect(wait('visible')).toBe(true);
+    expect(wait('hidden')).toBe(false);
+    rerender(BUTTONS);
+    expect(wait('attached')).toBe(true);
+    // The fresh node has no box yet: hidden, not visible.
+    expect(wait('visible')).toBe(false);
+    expect(wait('hidden')).toBe(true);
+    removeSecond();
+    expect(wait('attached')).toBe(false);
+    expect(wait('detached')).toBe(true);
+    expect(wait('hidden')).toBe(true);
+    expect(wait('visible')).toBe(false);
+  });
+
+  test('wait_for by ref without the observer answers observer-unavailable, never a boolean', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    evalExpr(buildObserverTeardownJs());
+    for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref }, condition))).toEqual({
+        ok: false,
+        reason: 'observer-unavailable',
+      });
+    }
+  });
+
+  test('wait_for with a selector string builds the selector-only source (no observer code)', () => {
+    const source = buildWaitForSelectorJs('#panel .row', 'visible');
+    expect(source).not.toContain('resolveTarget');
+    expect(source).not.toContain(OBSERVER_GLOBAL);
+  });
+
+  test('find by ref gives the single-match shape for that element', () => {
+    install(BUTTONS);
+    makeVisible(second());
+    const ref = refOfSecond();
+    const found = evalExpr<Json>(buildFindJs({ ref }));
+    expect(found).toEqual({
+      matched: true,
+      selector: expect.any(String),
+      ref,
+      coords: { x: 0, y: 0 },
+      tag: 'button',
+      text: 'Beta',
+      semantic_key: expect.objectContaining({ role: 'button', name: 'Beta' }),
+      doc_id: docId,
+    });
+    expect(Object.keys(found)).toEqual([
+      'matched',
+      'selector',
+      'ref',
+      'coords',
+      'tag',
+      'text',
+      'semantic_key',
+      'doc_id',
+    ]);
+    expect(document.querySelector(found.selector as string)).toBe(second());
+    rerender(BUTTONS);
+    const again = evalExpr<Json>(buildFindJs({ ref }));
+    expect(again.reresolved).toBe(true);
+    expect(again.ref).toBe(ref);
+    expect(document.querySelector(again.selector as string)).toBe(second());
+  });
+
+  test('find by an unknown ref is ref-stale; without the observer it is observer-unavailable', () => {
+    install(BUTTONS);
+    const unknown = docId.slice(0, 6) + ':e999';
+    expect(evalExpr<Json>(buildFindJs({ ref: unknown }))).toEqual({
+      matched: false,
+      reason: 'ref-stale',
+      ref: unknown,
+      doc_id: docId,
+    });
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildFindJs({ ref: 'k3x9ab:e1' }))).toEqual({
+      matched: false,
+      reason: 'observer-unavailable',
+      ref: 'k3x9ab:e1',
+    });
+  });
+});
+
+/**
+ * Semantic keys on `find` (spec v4 §6.3, S3): a third targeting mode by
+ * `key` (`{ role, name, path? }`, the observer's `semanticKeyFor` shape) and
+ * `semantic_key` on every single-match result while the observer is present.
+ */
+describe('find by semantic key and semantic_key on find results', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const LIST =
+    '<li><button>Alpha</button></li><li><button>Beta</button></li><li><button>Beta</button></li>';
+  interface KeyedObserver extends ObserverHandle {
+    semanticKeyFor(el: Element): { role: string; name: string; path: Json[] } | null;
+  }
+  const observer = (): KeyedObserver => win[OBSERVER_GLOBAL] as KeyedObserver;
+  const item = (i: number): HTMLElement =>
+    document.querySelectorAll<HTMLElement>('#list li')[i].firstElementChild as HTMLElement;
+  let docId = '';
+
+  function install(): void {
+    document.body.innerHTML = '<ul id="list">' + LIST + '</ul>';
+    document.querySelectorAll('button').forEach(makeVisible);
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = observer().doc_id;
+  }
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  test('find by key with path gives the single-match shape with ref and semantic_key', () => {
+    install();
+    const key = observer().semanticKeyFor(item(0))!;
+    expect(key).toEqual({
+      role: 'button',
+      name: 'Alpha',
+      path: [
+        { tag: 'body', index: 1 },
+        { tag: 'ul', index: 1 },
+        { tag: 'li', index: 1 },
+        { tag: 'button', index: 1 },
+      ],
+    });
+    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(Object.keys(found)).toEqual([
+      'matched',
+      'selector',
+      'ref',
+      'coords',
+      'tag',
+      'text',
+      'semantic_key',
+      'doc_id',
+    ]);
+    expect(found.matched).toBe(true);
+    expect(found.ref).toBe(observer().refFor(item(0)));
+    expect(found.semantic_key).toEqual(key);
+    expect(found.tag).toBe('button');
+    expect(found.text).toBe('Alpha');
+    expect(found.doc_id).toBe(docId);
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
+  });
+
+  test('with path, two identical rows (same role, name and tag path) are not-found with the count', () => {
+    install();
+    const key = observer().semanticKeyFor(item(2))!;
+    expect(evalExpr<Json>(buildFindJs({ key }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      error: 'key: 2 candidates share role, name and tag path',
+      doc_id: docId,
+    });
+  });
+
+  test('with path, a unique same-tag-path candidate matches whatever its sibling indices', () => {
+    install();
+    const key = observer().semanticKeyFor(item(0))!;
+    const moved = { ...key, path: key.path.map((step) => ({ ...step, index: 7 })) };
+    const found = evalExpr<Json>(buildFindJs({ key: moved }));
+    expect(found.matched).toBe(true);
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
+  });
+
+  test('two candidates with the same role and name and no path: not-found naming the count', () => {
+    install();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Beta' } }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      error: 'key: 2 candidates share role and name; pass path to disambiguate',
+      doc_id: docId,
+    });
+  });
+
+  test('a unique role and name matches without path', () => {
+    install();
+    const found = evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Alpha' } }));
+    expect(found.matched).toBe(true);
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
+  });
+
+  test('a key for a missing element is a plain not-found', () => {
+    install();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Gamma' } }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      doc_id: docId,
+    });
+  });
+
+  test('a path whose tags differ from every candidate is not-found', () => {
+    install();
+    const key = {
+      role: 'button',
+      name: 'Beta',
+      path: [
+        { tag: 'body', index: 1 },
+        { tag: 'div', index: 1 },
+        { tag: 'button', index: 1 },
+      ],
+    };
+    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(found.matched).toBe(false);
+    expect(found.reason).toBe('not-found');
+    expect(found.error).toBe('key: 2 candidates share role and name; none has the same tag path');
+  });
+
+  test('without the observer, find by key is observer-unavailable', () => {
+    document.body.innerHTML = '<ul id="list">' + LIST + '</ul>';
+    expect(win[OBSERVER_GLOBAL]).toBeUndefined();
+    expect(evalExpr<Json>(buildFindJs({ key: { role: 'button', name: 'Alpha' } }))).toEqual({
+      matched: false,
+      reason: 'observer-unavailable',
+    });
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+  });
+
+  test('text-mode and ref-mode single matches carry semantic_key; candidates do not', () => {
+    install();
+    const byText = evalExpr<Json>(buildFindJs({ text: 'Alpha' }));
+    expect(byText.semantic_key).toEqual(observer().semanticKeyFor(item(0)));
+    const ref = observer().refFor(item(1))!;
+    const byRef = evalExpr<Json>(buildFindJs({ ref }));
+    expect(byRef.semantic_key).toEqual(observer().semanticKeyFor(item(1)));
+    const multi = evalExpr<{ candidates: Json[] }>(buildFindJs({ text: 'Beta' }));
+    expect(multi.candidates.length).toBe(2);
+    for (const c of multi.candidates) expect(c).not.toHaveProperty('semantic_key');
+    const miss = evalExpr<{ near_misses?: Json[] }>(buildFindJs({ text: 'Alphabet' }));
+    for (const nm of miss.near_misses ?? []) expect(nm).not.toHaveProperty('semantic_key');
+  });
+
+  test('a snapshot entry does not carry semantic_key', () => {
+    install();
+    const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    expect(snapshot.interactive.length).toBe(3);
+    for (const e of snapshot.interactive) expect(e).not.toHaveProperty('semantic_key');
   });
 });

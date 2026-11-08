@@ -23,7 +23,7 @@
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */
-export const OBSERVER_VERSION = 2;
+export const OBSERVER_VERSION = 3;
 
 /** Name of the `Runtime.addBinding` function the observer pushes messages through. */
 export const OBSERVER_BINDING = '__blPageObserverPush';
@@ -59,10 +59,30 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * `{ ok: true, installed, version, doc_id, coverage }`.
  *
  * The instance also owns element identity (spec v4 §5.6): `refFor(el)` issues
- * `e<N>` (monotonic per document instance, from `e1`) the first time an
- * element is seen and reuses it while the node lives; `resolveRef(ref)`
- * returns the element while it is connected, else `null`. Refs are only valid
- * for the `doc_id` that issued them. Neither method throws. `nextSnapshotId()`
+ * `<doc_tag>:e<N>` (`doc_tag` = the first 6 characters of `doc_id`, N
+ * monotonic per document instance, from 1) the first time an element is seen
+ * and reuses it while the node lives; `resolveRef(ref)` returns the element
+ * while it is connected, else `null`. Refs are only valid for the document
+ * instance that issued them: a ref whose tag is not this instance's tag, or a
+ * bare `e<N>` with no tag, is `null` everywhere (resolve, re-resolve, key)
+ * without consulting the registries. Neither method throws.
+ *
+ * Secondary identity (spec v4 §5.6, decided by lab 10): `semanticKeyFor(el)`
+ * returns `{ role, name, path }` — role from the `role` attribute or a small
+ * implicit table, accessible-ish name (aria-label, aria-labelledby, associated
+ * label, text ≤ 80 chars, placeholder, title, button-like input value) and up
+ * to 8 `{ tag, index }` ancestor steps (1-based same-tag sibling index, a
+ * shadow boundary as `{ tag: '#shadow', index: 0 }`). `refFor` stores the key
+ * when it issues a ref. `resolveRefDetailed(ref)` returns `{ el, reresolved }`:
+ * the live node with `reresolved: false`, else the element with the same role,
+ * name and tag-only path when exactly one exists, rebinding the ref to it
+ * (`reresolved: true`); zero or several candidates give `null` (sibling
+ * indices are kept in the key as data but never pick among candidates). Candidates come from the document, every open shadow root reachable
+ * from it, and every root the `attachShadow` patch observed (closed ones
+ * included); closed roots attached before install are not reachable.
+ * `resolveRef(ref)` is `resolveRefDetailed(ref)?.el ?? null`. `keyForRef(ref)`
+ * returns a copy of the stored key or `null`. None of these throws.
+ * `nextSnapshotId()`
  * issues `<doc_id>:s<N>` (N monotonic per document instance, from 1) for each
  * `snapshot` result and returns `null` once the instance is torn down; the
  * `doc_id` prefix lets a stale id from another document be rejected.
@@ -114,7 +134,14 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const observed = new WeakSet();
   let refs = new WeakMap();
   const refNodes = new Map();
+  // Semantic key captured when each ref is issued; kept while the ref lives so
+  // a replaced node can be found again (spec v4 §5.6 secondary identity).
+  const refKeys = new Map();
   let refSeq = 0;
+  // Every ref carries the issuing document's tag, so a ref from another
+  // document instance (or a bare e<N>) never reaches the registries.
+  const refPrefix = g.doc_id.slice(0, 6) + ':e';
+  const ownsRef = (ref) => typeof ref === 'string' && ref.startsWith(refPrefix);
   let snapshotSeq = 0;
   // Last SNAPSHOT_KEEP snapshot records (opaque to the observer; the snapshot
   // builder owns their shape), keyed by snapshot_id in insertion order.
@@ -242,7 +269,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     try {
       const mo = new MutationObserver(onRecords(kind));
       mo.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
-      observers.push({ mo: mo, kind: kind });
+      observers.push({ mo: mo, kind: kind, root: root });
       g.roots++;
     } catch (e) {}
   }
@@ -310,13 +337,179 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
 
   g.flush = flush;
 
+  const KEY_PATH_STEPS = 8;
+  const KEY_TEXT_CAP = 80;
+  // Elements an HTML <label> can be associated with.
+  const LABELABLE = ['button', 'input', 'meter', 'output', 'progress', 'select', 'textarea'];
+  const BUTTON_INPUT_TYPES = ['button', 'submit', 'reset'];
+
+  function tagOf(el) {
+    return el.localName || String(el.nodeName).toLowerCase();
+  }
+
+  function collapse(text) {
+    return String(text || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  function inputType(el) {
+    return (el.getAttribute('type') || 'text').toLowerCase();
+  }
+
+  function roleOf(el) {
+    const explicit = (el.getAttribute('role') || '').trim();
+    if (explicit) return explicit;
+    const tag = tagOf(el);
+    if (tag === 'a' && el.hasAttribute('href')) return 'link';
+    if (tag === 'button' || tag === 'summary') return 'button';
+    if (tag === 'input') {
+      const type = inputType(el);
+      if (type === 'checkbox' || type === 'radio') return type;
+      if (BUTTON_INPUT_TYPES.indexOf(type) >= 0) return 'button';
+      return 'textbox';
+    }
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'select') return 'combobox';
+    if (el.hasAttribute('contenteditable') && el.getAttribute('contenteditable') !== 'false') return 'textbox';
+    return tag;
+  }
+
+  function labelTextOf(el, root) {
+    if (LABELABLE.indexOf(tagOf(el)) < 0) return '';
+    const id = el.getAttribute('id');
+    if (id && root && typeof root.querySelectorAll === 'function') {
+      for (const label of root.querySelectorAll('label')) {
+        if (label.getAttribute('for') !== id) continue;
+        const text = collapse(label.textContent);
+        if (text) return text;
+      }
+    }
+    const wrapping = typeof el.closest === 'function' ? el.closest('label') : null;
+    return wrapping ? collapse(wrapping.textContent) : '';
+  }
+
+  function nameOf(el) {
+    const ariaLabel = collapse(el.getAttribute('aria-label'));
+    if (ariaLabel) return ariaLabel;
+    const root = typeof el.getRootNode === 'function' ? el.getRootNode() : document;
+    const labelledBy = collapse(el.getAttribute('aria-labelledby'));
+    if (labelledBy && root && typeof root.getElementById === 'function') {
+      const parts = [];
+      for (const id of labelledBy.split(' ')) {
+        const target = root.getElementById(id);
+        const text = target ? collapse(target.textContent) : '';
+        if (text) parts.push(text);
+      }
+      if (parts.length > 0) return parts.join(' ');
+    }
+    const label = labelTextOf(el, root);
+    if (label) return label;
+    const text = collapse(el.textContent).slice(0, KEY_TEXT_CAP);
+    if (text) return text;
+    const placeholder = collapse(el.getAttribute('placeholder'));
+    if (placeholder) return placeholder;
+    const title = collapse(el.getAttribute('title'));
+    if (title) return title;
+    if (tagOf(el) === 'input' && BUTTON_INPUT_TYPES.indexOf(inputType(el)) >= 0) return collapse(el.value);
+    return '';
+  }
+
+  function sameTagIndex(el) {
+    const tag = el.localName;
+    let index = 1;
+    for (let s = el.previousElementSibling; s; s = s.previousElementSibling) {
+      if (s.localName === tag) index++;
+    }
+    return index;
+  }
+
+  // Unlike pathOf (descriptors, pinned settle output), this path carries the
+  // same-tag sibling index: role + name alone collides (spec v4 §4.6).
+  function keyPathOf(el) {
+    const steps = [];
+    let n = el;
+    while (n && steps.length < KEY_PATH_STEPS) {
+      if (n.nodeType === 1) {
+        if (n === document.documentElement) break;
+        steps.unshift({ tag: tagOf(n), index: sameTagIndex(n) });
+        n = n.parentNode;
+      } else if (n.nodeType === 11 && n.host) {
+        steps.unshift({ tag: '#shadow', index: 0 });
+        n = n.host;
+      } else {
+        break;
+      }
+    }
+    return steps;
+  }
+
+  function semanticKeyFor(el) {
+    try {
+      if (!el || el.nodeType !== 1) return null;
+      return { role: roleOf(el), name: nameOf(el), path: keyPathOf(el) };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The document, every open shadow root reachable from it, and every root the
+  // attachShadow patch observed (closed ones included) whose host is connected.
+  function searchRoots() {
+    const roots = [document];
+    const seen = new Set(roots);
+    const add = (root) => {
+      if (!root || seen.has(root)) return;
+      if (root.nodeType === 11 && !(root.host && root.host.isConnected)) return;
+      seen.add(root);
+      roots.push(root);
+    };
+    for (const o of observers) add(o.root);
+    for (let i = 0; i < roots.length; i++) {
+      let all;
+      try { all = roots[i].querySelectorAll('*'); } catch (e) { continue; }
+      for (const el of all) {
+        if (el.shadowRoot) add(el.shadowRoot);
+      }
+    }
+    return roots;
+  }
+
+  // Same role and name and an identical tag-only path, and exactly one such
+  // element: identical rows are refused, never guessed, so a ref never jumps
+  // across rows. Sibling indices stay in the key but select nothing.
+  function findByKey(key) {
+    const last = key.path[key.path.length - 1];
+    if (!last) return null;
+    let found = null;
+    for (const root of searchRoots()) {
+      let all;
+      try { all = root.querySelectorAll('*'); } catch (e) { continue; }
+      for (const el of all) {
+        if (tagOf(el) !== last.tag || roleOf(el) !== key.role || nameOf(el) !== key.name) continue;
+        const path = keyPathOf(el);
+        if (path.length !== key.path.length) continue;
+        let same = true;
+        for (let i = 0; i < path.length && same; i++) {
+          if (path[i].tag !== key.path[i].tag) same = false;
+        }
+        if (!same) continue;
+        if (found) return null;
+        found = el;
+      }
+    }
+    return found;
+  }
+
+  g.semanticKeyFor = semanticKeyFor;
+
   g.refFor = function (el) {
     try {
       if (g.dead || !el || el.nodeType !== 1) return null;
       let ref = refs.get(el);
       if (!ref) {
-        ref = 'e' + ++refSeq;
+        ref = refPrefix + ++refSeq;
         refs.set(el, ref);
+        const key = semanticKeyFor(el);
+        if (key) refKeys.set(ref, key);
       }
       // Same node, same ref: re-register one pruned while it was detached.
       if (!refNodes.has(ref)) refNodes.set(ref, holdWeakly(el));
@@ -326,18 +519,38 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     }
   };
 
-  g.resolveRef = function (ref) {
+  g.resolveRefDetailed = function (ref) {
     try {
-      if (typeof ref !== 'string') return null;
+      if (g.dead || !ownsRef(ref)) return null;
       const held = refNodes.get(ref);
-      if (!held) return null;
-      const el = held.deref();
-      if (el && el.isConnected) return el;
+      const old = held ? held.deref() : null;
+      if (old && old.isConnected) return { el: old, reresolved: false };
       refNodes.delete(ref);
-      return null;
+      const key = refKeys.get(ref);
+      if (!key) return null;
+      const el = findByKey(key);
+      if (!el) return null;
+      if (old && refs.get(old) === ref) refs.delete(old);
+      // A node that already has its own ref keeps it for refFor; this ref
+      // still resolves to it through refNodes.
+      if (!refs.has(el)) refs.set(el, ref);
+      refNodes.set(ref, holdWeakly(el));
+      return { el: el, reresolved: true };
     } catch (e) {
       return null;
     }
+  };
+
+  g.resolveRef = function (ref) {
+    const result = g.resolveRefDetailed(ref);
+    return result ? result.el : null;
+  };
+
+  g.keyForRef = function (ref) {
+    if (g.dead || !ownsRef(ref)) return null;
+    const key = refKeys.get(ref);
+    if (!key) return null;
+    return { role: key.role, name: key.name, path: key.path.map((s) => ({ tag: s.tag, index: s.index })) };
   };
 
   g.nextSnapshotId = function () {
@@ -439,6 +652,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     g.baselines.clear();
     refs = new WeakMap();
     refNodes.clear();
+    refKeys.clear();
     snapshotSeq = 0;
     snapshots.clear();
     if (window[opts.key] === g) {
@@ -513,14 +727,27 @@ function jsStringLiteral(value: string): string {
 /**
  * Build the ref-resolve expression, for tests and debugging. Evaluates to
  * `{ ok: true, found: true, tag }` when `ref` names an element of the current
- * document that is still connected, `{ ok: true, found: false }` when it is
- * unknown or stale, or `{ ok: false, reason: 'observer-unavailable' }`.
+ * document that is still connected — plus `reresolved: true` when the node was
+ * gone and the ref was just rebound by its semantic key —
+ * `{ ok: true, found: false }` when it is unknown or stale, or
+ * `{ ok: false, reason: 'observer-unavailable' }`.
  */
 export function buildObserverRefResolveJs(ref: string): string {
   const refJson = jsStringLiteral(typeof ref === 'string' ? ref : '');
   return callInstance(
-    `((el) => el ? { ok: true, found: true, tag: el.localName || String(el.nodeName).toLowerCase() } : { ok: true, found: false })(g.resolveRef(${refJson}))`,
+    `((r) => { if (!r) return { ok: true, found: false }; const tag = r.el.localName || String(r.el.nodeName).toLowerCase(); return r.reresolved ? { ok: true, found: true, tag: tag, reresolved: true } : { ok: true, found: true, tag: tag }; })(g.resolveRefDetailed(${refJson}))`,
   );
+}
+
+/**
+ * Build the semantic-key read expression. Evaluates to `{ ok: true, key }`
+ * with the `{ role, name, path }` stored when `ref` was issued, `{ ok: true,
+ * key: null }` for a ref this document instance does not know, or
+ * `{ ok: false, reason: 'observer-unavailable' }`.
+ */
+export function buildObserverSemanticKeyJs(ref: string): string {
+  const refJson = jsStringLiteral(typeof ref === 'string' ? ref : '');
+  return callInstance(`({ ok: true, key: g.keyForRef(${refJson}) })`);
 }
 
 /**

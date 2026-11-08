@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
+import {
+  type BrowserToolDeps,
+  handleBrowserTool,
+  isBrowserTool,
+  validateFlowSteps,
+} from './browser-dispatch.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
@@ -2249,6 +2254,7 @@ describe('browser.flow schema shape', () => {
     expect(body.oneOf!.map((c) => c.required[0]).sort()).toEqual([
       'expression',
       'network_url',
+      'ref',
       'selector',
     ]);
   });
@@ -3543,5 +3549,274 @@ describe('browser.download', () => {
       ),
     ).rejects.toThrow(/not supported over cdp-direct/);
     expect(callCdpTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
+  const tab = { tab_id: 'tab_1' };
+  const call = (name: string, args: Record<string, unknown>, deps = makeDeps()) =>
+    handleBrowserTool(name, { ...tab, ...args }, deps, TEST_CALLER);
+  const forwarded = (deps: BrowserToolDeps): Record<string, unknown> =>
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<string, unknown>;
+
+  test('click forwards ref and needs exactly one of selector or ref', async () => {
+    const deps = makeDeps();
+    await call('browser.click', { ref: 'k3x9ab:e12' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e12' });
+    expect(forwarded(deps).selector).toBeUndefined();
+    await expect(call('browser.click', {})).rejects.toThrow(
+      'browser.click needs exactly one of selector or ref',
+    );
+    await expect(call('browser.click', { selector: '#a', ref: 'k3x9ab:e1' })).rejects.toThrow(
+      'browser.click needs exactly one of selector or ref',
+    );
+  });
+
+  test('click by selector still forwards no ref key', async () => {
+    const deps = makeDeps();
+    await call('browser.click', { selector: '#go' }, deps);
+    expect(forwarded(deps)).toMatchObject({ selector: '#go', force: false });
+    expect(forwarded(deps)).not.toHaveProperty('ref');
+  });
+
+  test('type forwards ref and needs exactly one of selector or ref', async () => {
+    const deps = makeDeps();
+    await call('browser.type', { ref: 'k3x9ab:e3', text: 'hi' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e3', text: 'hi' });
+    await expect(call('browser.type', { text: 'hi' })).rejects.toThrow(
+      'browser.type needs exactly one of selector or ref',
+    );
+    await expect(
+      call('browser.type', { selector: '#a', ref: 'k3x9ab:e1', text: 'hi' }),
+    ).rejects.toThrow('browser.type needs exactly one of selector or ref');
+    const bySelector = makeDeps();
+    await call('browser.type', { selector: '#q', text: 'hi' }, bySelector);
+    expect(forwarded(bySelector)).not.toHaveProperty('ref');
+  });
+
+  test('press forwards ref; ref and selector are exclusive', async () => {
+    const deps = makeDeps();
+    await call('browser.press', { key: 'Enter', ref: 'k3x9ab:e4' }, deps);
+    expect(forwarded(deps)).toMatchObject({ key: 'Enter', ref: 'k3x9ab:e4' });
+    await expect(
+      call('browser.press', { key: 'Enter', ref: 'k3x9ab:e4', selector: '#a' }),
+    ).rejects.toThrow('browser.press accepts at most one of selector or ref');
+  });
+
+  test('wait_for accepts ref as a mode, with condition', async () => {
+    const deps = makeDeps();
+    await call('browser.wait_for', { ref: 'k3x9ab:e5', condition: 'detached' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e5', condition: 'detached' });
+    await expect(call('browser.wait_for', { ref: 'k3x9ab:e5', selector: '#a' })).rejects.toThrow(
+      /exactly one of selector, expression, network_url, ref/,
+    );
+    await expect(call('browser.wait_for', { ref: 'k3x9ab:e5', condition: 'gone' })).rejects.toThrow(
+      /condition must be one of visible \| hidden \| attached \| detached/,
+    );
+  });
+
+  test('find needs text unless ref is given, and forwards ref', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { ref: 'k3x9ab:e6' }, deps);
+    expect(forwarded(deps)).toEqual({ ref: 'k3x9ab:e6' });
+    await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
+    const byText = makeDeps();
+    await call('browser.find', { text: 'Save' }, byText);
+    expect(forwarded(byText)).toEqual({ text: 'Save', role: undefined, exact: false });
+  });
+
+  test.each([
+    ['browser.click', {}],
+    ['browser.type', { text: 'x' }],
+    ['browser.press', { key: 'Enter' }],
+    ['browser.wait_for', {}],
+    ['browser.find', {}],
+  ])('%s rejects a ref that is not <doc_tag>:e<digits> or too long', async (name, extra) => {
+    for (const ref of [
+      '12',
+      'e',
+      'e12',
+      'e1x',
+      'E1',
+      '',
+      7,
+      ':e1',
+      'k3x9ab:e',
+      'k3x9ab:E1',
+      'K3X9AB:e1',
+      'k3x9ab-e1',
+      'k3x9ab:e1x',
+      'a'.repeat(17) + ':e1',
+      'k3x9ab:e' + '1'.repeat(64),
+    ]) {
+      await expect(call(name, { ...extra, ref })).rejects.toThrow(
+        `${name}: ref must be an element ref like "k3x9ab:e12"`,
+      );
+    }
+  });
+
+  test('find rejects a ref combined with text, role or exact', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ text: 'Save' }, 'browser.find needs exactly one of text, ref or key'],
+      [{ role: 'button' }, 'browser.find: role and exact apply to text mode only'],
+      [{ exact: true }, 'browser.find: role and exact apply to text mode only'],
+    ];
+    for (const [extra, error] of cases) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { ref: 'k3x9ab:e6', ...extra }, deps)).rejects.toThrow(
+        error,
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test('find forwards text with role and exact', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { text: 'Save', role: 'button', exact: true }, deps);
+    expect(forwarded(deps)).toEqual({ text: 'Save', role: 'button', exact: true });
+  });
+
+  describe('validateFlowSteps', () => {
+    test('click, type, press and wait_for steps accept ref', () => {
+      expect(
+        validateFlowSteps([
+          { click: { ref: 'k3x9ab:e1' } },
+          { type: { ref: 'k3x9ab:e2', text: 'x' } },
+          { press: { ref: 'k3x9ab:e2', key: 'Enter' } },
+          { wait_for: { ref: 'k3x9ab:e1', condition: 'detached' } },
+        ]).ok,
+      ).toBe(true);
+    });
+
+    test('a step with both selector and ref is rejected', () => {
+      for (const step of [
+        { click: { selector: '#a', ref: 'k3x9ab:e1' } },
+        { type: { selector: '#a', ref: 'k3x9ab:e1', text: 'x' } },
+        { press: { selector: '#a', ref: 'k3x9ab:e1', key: 'Enter' } },
+      ]) {
+        const kind = Object.keys(step)[0];
+        expect(validateFlowSteps([step])).toEqual({
+          ok: false,
+          error: `step 0: ${kind} accepts at most one of selector or ref`,
+        });
+      }
+      expect(validateFlowSteps([{ wait_for: { selector: '#a', ref: 'k3x9ab:e1' } }])).toEqual({
+        ok: false,
+        error: 'step 0: wait_for requires exactly one of selector | expression | network_url | ref',
+      });
+    });
+
+    test('a malformed step ref is rejected', () => {
+      expect(validateFlowSteps([{ click: { ref: 'button' } }])).toEqual({
+        ok: false,
+        error:
+          'step 0: click.ref must be an element ref like "k3x9ab:e12" (a document tag of 1-16 lowercase letters or digits, ":e" and digits, at most 64 characters)',
+      });
+    });
+
+    test('a find step carrying ref or key is rejected', () => {
+      for (const extra of [{ ref: 'k3x9ab:e1' }, { key: { role: 'button', name: 'Go' } }]) {
+        expect(validateFlowSteps([{ find: { text: 'Go', ...extra } }, { click: {} }])).toEqual({
+          ok: false,
+          error: 'step 0: find steps take text (and role, exact) only',
+        });
+      }
+    });
+
+    test('selector-only steps validate exactly as before', () => {
+      expect(validateFlowSteps([{ find: { text: 'Go' } }, { click: {} }]).ok).toBe(true);
+      expect(validateFlowSteps([{ click: { selector: '#a' } }]).ok).toBe(true);
+      expect(validateFlowSteps([{ click: {} }])).toEqual({
+        ok: false,
+        error: 'step 0: click has no selector and no preceding find to supply an implicit target',
+      });
+    });
+  });
+});
+
+describe('find by semantic key (spec v4 §6.3, S3) — dispatch validation', () => {
+  const tab = { tab_id: 'tab_1' };
+  const call = (name: string, args: Record<string, unknown>, deps = makeDeps()) =>
+    handleBrowserTool(name, { ...tab, ...args }, deps, TEST_CALLER);
+  const forwarded = (deps: BrowserToolDeps): Record<string, unknown> =>
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<string, unknown>;
+  const KEY = {
+    role: 'button',
+    name: 'Save',
+    path: [
+      { tag: 'body', index: 1 },
+      { tag: 'button', index: 2 },
+    ],
+  };
+
+  test('a valid key is forwarded alone, with or without path', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { key: KEY }, deps);
+    expect(forwarded(deps)).toEqual({ key: KEY });
+    const bare = makeDeps();
+    await call('browser.find', { key: { role: 'button', name: 'Save' } }, bare);
+    expect(forwarded(bare)).toEqual({ key: { role: 'button', name: 'Save' } });
+  });
+
+  test('key rejects role and exact', async () => {
+    for (const extra of [{ role: 'button' }, { exact: true }]) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { key: KEY, ...extra }, deps)).rejects.toThrow(
+        'browser.find: role and exact apply to text mode only',
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test('key is exclusive with text and ref', async () => {
+    for (const extra of [{ text: 'Save' }, { ref: 'k3x9ab:e3' }]) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { key: KEY, ...extra }, deps)).rejects.toThrow(
+        'browser.find needs exactly one of text, ref or key',
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([
+    ['not an object', 'button'],
+    ['missing role', { name: 'Save' }],
+    ['empty role', { role: '', name: 'Save' }],
+    ['missing name', { role: 'button' }],
+    ['a name over 200 chars', { role: 'button', name: 'x'.repeat(201) }],
+    ['an empty path', { role: 'button', name: 'Save', path: [] }],
+    [
+      'a path of 9 steps',
+      {
+        role: 'button',
+        name: 'Save',
+        path: Array.from({ length: 9 }, () => ({ tag: 'div', index: 1 })),
+      },
+    ],
+    ['a step without tag', { role: 'button', name: 'Save', path: [{ index: 1 }] }],
+    ['a fractional index', { role: 'button', name: 'Save', path: [{ tag: 'div', index: 1.5 }] }],
+    ['an unknown field', { role: 'button', name: 'Save', extra: 1 }],
+  ])('a malformed key (%s) is rejected before the bridge', async (_label, key) => {
+    const deps = makeDeps();
+    await expect(call('browser.find', { key }, deps)).rejects.toThrow(/^browser\.find: key /);
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('text mode and ref mode forward exactly what they did before', async () => {
+    const byText = makeDeps();
+    await call('browser.find', { text: 'Save', role: 'button' }, byText);
+    expect(forwarded(byText)).toEqual({ text: 'Save', role: 'button', exact: false });
+    const byRef = makeDeps();
+    await call('browser.find', { ref: 'k3x9ab:e6' }, byRef);
+    expect(forwarded(byRef)).toEqual({ ref: 'k3x9ab:e6' });
+    await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
+  });
+
+  test('the find schema declares key with role and name required', () => {
+    const find = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.find')!;
+    const props = (find.inputSchema as { properties: Record<string, Record<string, unknown>> })
+      .properties;
+    expect(props.key).toMatchObject({ type: 'object', required: ['role', 'name'] });
+    expect(find.description).toContain('`key`');
   });
 });
