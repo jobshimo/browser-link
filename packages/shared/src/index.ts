@@ -272,3 +272,87 @@ export interface PingResult {
   title: string;
   url: string;
 }
+
+/** Per-kind MutationRecord counts reported by the page observer. */
+export interface PageObserverKinds {
+  childList: number;
+  attributes: number;
+  characterData: number;
+}
+
+/** Which kinds of root the counted records came from. `frame` is true when
+ * the observer runs in a child frame (`window !== window.top`). */
+export interface PageObserverRoots {
+  document: boolean;
+  shadow: boolean;
+  frame: boolean;
+}
+
+/** One mutated target, as described by the page observer. `path` is a short
+ * structural path such as `body>div#app>ul` (at most six element segments,
+ * no indexes), with a `#shadow` segment at each shadow-root boundary. A
+ * shadow root that was itself the mutation target is reported with tag
+ * `#shadow-root`. */
+export interface PageObserverDescriptor {
+  tag: string;
+  id?: string;
+  role?: string;
+  path: string;
+}
+
+/** One coalesced flush of the page observer: every MutationRecord seen
+ * since the previous flush, folded per target element. */
+export interface PageObserverSummary {
+  type: 'summary';
+  doc_id: string;
+  /** Monotonic per document, starting at 1. */
+  seq: number;
+  /** `performance.now()` at the first record and at the flush. */
+  t0: number;
+  t1: number;
+  records: number;
+  /** Distinct target elements in this flush. */
+  targets: number;
+  kinds: PageObserverKinds;
+  roots: PageObserverRoots;
+  /** Up to the descriptor cap, ordered by record count (highest first). */
+  descriptors: PageObserverDescriptor[];
+  /** Targets beyond the descriptor cap. */
+  overflow: number;
+}
+
+/** Pushed once when the page observer installs in a document. */
+export interface PageObserverDocStart {
+  type: 'doc_start';
+  doc_id: string;
+  url: string;
+  version: number;
+  /** `partial` when `attachShadow` could not be patched and the observer
+   * falls back to a periodic rescan for open shadow roots. */
+  coverage: 'full' | 'partial';
+}
+
+/** Pushed on `pushState`, `replaceState`, `popstate` and `hashchange`. */
+export interface PageObserverNav {
+  type: 'nav';
+  doc_id: string;
+  url: string;
+}
+
+/** Every message the page observer pushes through its binding (JSON). */
+export type PageObserverMessage = PageObserverSummary | PageObserverDocStart | PageObserverNav;
+
+/** What an action caused, aggregated from the page observer's summaries
+ * since the action mark; attached to settle results. `targets` sums the
+ * distinct targets of each flush, so an element touched in two flushes counts
+ * twice. `truncated` is set when the observer's ring no longer held every
+ * summary since the mark. */
+export interface SettleChanges {
+  records: number;
+  targets: number;
+  kinds: PageObserverKinds;
+  roots: PageObserverRoots;
+  descriptors: PageObserverDescriptor[];
+  overflow: number;
+  truncated?: true;
+}

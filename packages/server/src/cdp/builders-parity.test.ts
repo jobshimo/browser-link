@@ -7,6 +7,8 @@ import * as srv from './inpage/builders.js';
 // wrapper glue is not byte-compared. This test upgrades that to a full
 // OUTPUT-identity check for the shared builders the subset copy carries.
 import * as ext from '../../../extension/src/inpage/builders.js';
+import * as srvObserver from './inpage/observer.js';
+import * as extObserver from '../../../extension/src/inpage/observer.js';
 
 describe('cdp builders emit byte-identical output to the extension original', () => {
   test('buildSnapshotJs', () => {
@@ -61,5 +63,36 @@ describe('cdp builders emit byte-identical output to the extension original', ()
 
   test('buildStateJs', () => {
     expect(srv.buildStateJs()).toBe(ext.buildStateJs());
+  });
+
+  test('buildWaitForSelectorJs (every condition)', () => {
+    for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
+      expect(srv.buildWaitForSelectorJs('#panel .row', condition)).toBe(
+        ext.buildWaitForSelectorJs('#panel .row', condition),
+      );
+    }
+  });
+});
+
+describe('cdp page observer emits byte-identical output to the extension original', () => {
+  test('exported constants', () => {
+    expect(srvObserver.OBSERVER_VERSION).toBe(extObserver.OBSERVER_VERSION);
+    expect(srvObserver.OBSERVER_BINDING).toBe(extObserver.OBSERVER_BINDING);
+    expect(srvObserver.OBSERVER_GLOBAL).toBe(extObserver.OBSERVER_GLOBAL);
+  });
+
+  test('buildObserverInstallJs (defaults and explicit options)', () => {
+    expect(srvObserver.buildObserverInstallJs()).toBe(extObserver.buildObserverInstallJs());
+    const opts = { binding: '__custom', version: 7, descriptor_cap: 5, ring_size: 8 };
+    expect(srvObserver.buildObserverInstallJs(opts)).toBe(extObserver.buildObserverInstallJs(opts));
+  });
+
+  test('buildObserverMarkJs, buildObserverChangesJs and buildObserverTeardownJs', () => {
+    expect(srvObserver.buildObserverMarkJs()).toBe(extObserver.buildObserverMarkJs());
+    expect(srvObserver.buildObserverChangesJs(3)).toBe(extObserver.buildObserverChangesJs(3));
+    expect(srvObserver.buildObserverChangesJs(3, 'doc-1')).toBe(
+      extObserver.buildObserverChangesJs(3, 'doc-1'),
+    );
+    expect(srvObserver.buildObserverTeardownJs()).toBe(extObserver.buildObserverTeardownJs());
   });
 });

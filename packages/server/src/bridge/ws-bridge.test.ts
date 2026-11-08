@@ -7,6 +7,7 @@ import {
   MAX_FLOW_DESCRIPTION_LENGTH,
   MAX_FLOW_NAME_LENGTH,
   buildRegisterSettingsUpdate,
+  applyTabNavigated,
   buildTabDisconnectedData,
   handleFlowRecordedMessage,
   pushSettingsToAllTabs,
@@ -401,5 +402,82 @@ describe('buildTabDisconnectedData', () => {
 
   test.each([1000, 1001, 1005])('close code %i is recorded as clean', (code) => {
     expect(buildTabDisconnectedData('tab_1', code)).toMatchObject({ clean: true, code });
+  });
+});
+
+/*
+ * `tab-navigated` (spec v4 §5.5): the extension's page observer reports a
+ * top-document navigation, and the bridge keeps the registered
+ * `TabSession` — which `list_tabs` reads verbatim — on the current URL and
+ * title instead of the values captured at registration.
+ */
+describe('applyTabNavigated', () => {
+  function sessions(): { tabs: Map<string, TabSession>; mine: FakeWs; other: FakeWs } {
+    const mine = fakeSession('tab_1', WebSocket.OPEN);
+    const other = fakeSession('tab_2', WebSocket.OPEN);
+    const tabs = new Map<string, TabSession>([
+      ['tab_1', mine.session],
+      ['tab_2', other.session],
+    ]);
+    return { tabs, mine, other };
+  }
+
+  test('updates the url and title of the sending tab', () => {
+    const { tabs, mine } = sessions();
+    const outcome = applyTabNavigated(tabs, mine.session.ws, 'tab_1', 'tab_1', {
+      url: 'https://example.com/next',
+      title: 'Next page',
+    });
+    expect(outcome).toEqual({ ok: true, url: 'https://example.com/next', title: 'Next page' });
+    expect(tabs.get('tab_1')).toMatchObject({
+      tabId: 'tab_1',
+      url: 'https://example.com/next',
+      title: 'Next page',
+    });
+  });
+
+  test('keeps the previous title when the report carries an empty one', () => {
+    const { tabs, mine } = sessions();
+    const outcome = applyTabNavigated(tabs, mine.session.ws, 'tab_1', 'tab_1', {
+      url: 'https://example.com/loading',
+      title: '',
+    });
+    expect(outcome).toEqual({ ok: true, url: 'https://example.com/loading', title: 'tab_1' });
+    expect(tabs.get('tab_1')).toMatchObject({ url: 'https://example.com/loading', title: 'tab_1' });
+  });
+
+  test('ignores a report naming another tab than the connection registered', () => {
+    const { tabs, mine } = sessions();
+    const outcome = applyTabNavigated(tabs, mine.session.ws, 'tab_1', 'tab_2', {
+      url: 'https://evil.example/',
+      title: 'Spoofed',
+    });
+    expect(outcome).toEqual({ ok: false, reason: 'tab_id does not match this connection' });
+    expect(tabs.get('tab_2')).toMatchObject({ url: 'https://example.com/tab_2', title: 'tab_2' });
+    expect(tabs.get('tab_1')).toMatchObject({ url: 'https://example.com/tab_1', title: 'tab_1' });
+  });
+
+  test('ignores a report from a socket that no longer owns the session', () => {
+    const { tabs, other } = sessions();
+    const outcome = applyTabNavigated(tabs, other.session.ws, 'tab_1', 'tab_1', {
+      url: 'https://example.com/next',
+      title: 'Next',
+    });
+    expect(outcome.ok).toBe(false);
+    expect(tabs.get('tab_1')).toMatchObject({ url: 'https://example.com/tab_1' });
+  });
+
+  test('rejects a report before registration or with a malformed url', () => {
+    const { tabs, mine } = sessions();
+    expect(applyTabNavigated(tabs, mine.session.ws, null, 'tab_1', { url: 'https://x/' }).ok).toBe(
+      false,
+    );
+    for (const data of [{}, { url: '' }, { url: 42 }, { url: 'https://x/', title: 7 }]) {
+      expect(applyTabNavigated(tabs, mine.session.ws, 'tab_1', 'tab_1', data)).toEqual({
+        ok: false,
+        reason: 'malformed tab-navigated payload',
+      });
+    }
+    expect(tabs.get('tab_1')).toMatchObject({ url: 'https://example.com/tab_1', title: 'tab_1' });
   });
 });

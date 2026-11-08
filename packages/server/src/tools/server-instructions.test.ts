@@ -79,14 +79,18 @@ describe('buildServerInstructions', () => {
 
   test('preamble states the settle blind spot honestly — quiet, not effect', () => {
     // The honesty caveat must not silently disappear from the doc surface
-    // every connecting MCP client receives: settle cannot see mutations
-    // completing before the observer installs, nor async reactions after
-    // the quiet window, so mutation_count:0 must never be sold as proof
-    // the action had no effect.
+    // every connecting MCP client receives: settle reports what the action
+    // caused since a pre-dispatch mark (settle.changes), says so when the
+    // observer was unavailable (changes: null), and still cannot see
+    // reactions that start after the quiet window.
     const out = buildServerInstructions();
     expect(out).toContain('Settle proves QUIET, not EFFECT');
     // Wrap-independent: the preamble is manually line-wrapped prose.
-    expect(out).toMatch(/does\s+NOT mean the action did nothing/);
+    expect(out).toContain('settle.changes');
+    expect(out).toContain('changes: null');
+    expect(out).toContain('observer: "<reason>"');
+    expect(out).toMatch(/starts\s+after\s+the\s+quiet\s+window/);
+    expect(out).not.toMatch(/before\s+the\s+observer/);
   });
 
   test('browser.find appears as a documented tool section in the rendered instructions', () => {

@@ -10,6 +10,7 @@ import {
   buildSnapshotJs,
   buildStateJs,
   buildTypeResolveJs,
+  buildWaitForSelectorJs,
 } from './builders.js';
 
 /**
@@ -1162,5 +1163,78 @@ describe('buildExpectProbeJs', () => {
     // A real browser omits non-rendered text from innerText; textContent would still hold it.
     Object.defineProperty(document.body, 'innerText', { value: '', configurable: true });
     expect(probe({ text_appears: 'hidden words' }).text_appears).toBe(false);
+  });
+});
+
+describe('buildWaitForSelectorJs', () => {
+  /** jsdom reports a zero rect for everything; give the element a real size
+   * so the visible / hidden probe sees a rendered box. */
+  function giveSize(el: Element): void {
+    el.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 10,
+        bottom: 10,
+        width: 10,
+        height: 10,
+        toJSON() {},
+      }) as DOMRect;
+  }
+  const wait = (
+    selector: string,
+    condition: 'visible' | 'hidden' | 'attached' | 'detached',
+  ): boolean => evalExpr<boolean>(buildWaitForSelectorJs(selector, condition));
+
+  test('finds a selector inside an open shadow root as attached and visible', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<button id="deep">Go</button>';
+    giveSize(shadow.getElementById('deep')!);
+    expect(wait('#deep', 'attached')).toBe(true);
+    expect(wait('#deep', 'detached')).toBe(false);
+    expect(wait('#deep', 'visible')).toBe(true);
+    expect(wait('#deep', 'hidden')).toBe(false);
+  });
+
+  test('finds a selector inside a same-origin iframe', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML = '<p id="in-frame">x</p>';
+    expect(wait('#in-frame', 'attached')).toBe(true);
+  });
+
+  test('light-DOM attached / detached behave as before', () => {
+    document.body.innerHTML = '<div id="here"></div>';
+    expect(wait('#here', 'attached')).toBe(true);
+    expect(wait('#here', 'detached')).toBe(false);
+    expect(wait('#missing', 'attached')).toBe(false);
+    expect(wait('#missing', 'detached')).toBe(true);
+  });
+
+  test('light-DOM visible / hidden behave as before', () => {
+    document.body.innerHTML =
+      '<div id="shown"></div><div id="none" style="display:none"></div><div id="ghost" style="visibility:hidden"></div><div id="clear" style="opacity:0"></div><div id="empty"></div>';
+    for (const id of ['shown', 'none', 'ghost', 'clear']) giveSize(document.getElementById(id)!);
+    expect(wait('#shown', 'visible')).toBe(true);
+    expect(wait('#shown', 'hidden')).toBe(false);
+    for (const id of ['#none', '#ghost', '#clear', '#empty']) {
+      expect(wait(id, 'visible')).toBe(false);
+      expect(wait(id, 'hidden')).toBe(true);
+    }
+    expect(wait('#missing', 'visible')).toBe(false);
+    expect(wait('#missing', 'hidden')).toBe(true);
+    // <body> stays visible: the probe is computed style plus box size, not offsetParent.
+    giveSize(document.body);
+    expect(wait('body', 'visible')).toBe(true);
+  });
+
+  test('an invalid selector throws, so the poll never reports a match', () => {
+    for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
+      expect(() => wait('[[bad', condition)).toThrow();
+    }
   });
 });

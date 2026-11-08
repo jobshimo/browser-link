@@ -388,18 +388,45 @@ and fold the "wait, then re-check" round trip into the action call
 itself. The result carries a compact report:
 
 ```
-{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason? }
+{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason?, changes, observer? }
 ```
 
-- **Quiet is not effect.** Mutations that finish before the observer
-  installs, and async reactions that start after the quiet window, are
-  both invisible — `mutation_count: 0` with `settled: true` does NOT
-  prove the action had no effect.
+`changes` is what the action caused, measured from a mark taken right
+**before** the action dispatches. A page observer installed when the tab
+connects (and again in every new document) records every DOM mutation, so
+mutations the action causes synchronously are counted too:
+
+```
+changes: { records, targets, kinds: { childList, attributes, characterData },
+           roots: { document, shadow, frame }, descriptors: [{ tag, id?, role?, path }],
+           overflow, truncated? }
+```
+
+| Field                         | Meaning                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------- |
+| `records` / `kinds`           | mutation records since the mark, in total and per kind                                |
+| `targets`                     | mutated elements (an element touched in two flushes counts twice)                     |
+| `descriptors` / `overflow`    | the most-mutated targets (up to 20) and how many more there were                      |
+| `truncated`                   | `true` when the observer had already dropped older summaries                          |
+| `mutation_count`              | equals `changes.records`                                                              |
+| `url_changed` / `focus_moved` | compared with the URL and focused element at the mark, not at the end of the dispatch |
+
+- **Fallback.** When the observer could not report for this action,
+  `changes` is `null` and `observer` says why (`"observer-unavailable"`,
+  `"doc-changed"` when the action replaced the document, or
+  `"changes-error"`). The other fields then come from the quiet-window
+  watch alone, as before: it starts right after the dispatch, so
+  mutations that finish in that gap are invisible there.
+- **Quiet is not effect.** Async reactions that start after the quiet
+  window are invisible either way — `settled: true` proves the page went
+  quiet, not that every effect has happened.
 - **`reason: "context-destroyed"`** means the action navigated the page,
   destroying the observer's execution context. The action itself still
   succeeded — this is a strong navigation signal, not an error.
 - **Waiting for a specific expected condition** (an element appearing, a
-  request completing) is `browser.wait_for`'s job, not settle's.
+  request completing) is `expect`'s or `browser.wait_for`'s job, not
+  settle's. `browser.wait_for` by selector searches open Shadow DOM roots
+  and same-origin iframes, like `browser.find` and `browser.click`.
 - **Throttling is not settle's job either.** Settle returns as soon as
   the page stops mutating, so on an already-idle page it collapses to
   nothing. For a pause that is always spent in full — pacing repeated
