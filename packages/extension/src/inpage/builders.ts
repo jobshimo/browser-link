@@ -16,8 +16,11 @@ import { OBSERVER_GLOBAL } from './observer.js';
  * The observer global is looked up ONCE per evaluation and used only when it
  * is present, not torn down, and exposes `refFor`:
  *   - `refOf(el)` returns the observer's `e<N>` ref for `el`, or `null`;
- *   - `withDocId(result)` adds `doc_id` to `result` and returns it.
- * Without the observer (injection failed, pre-observer document) both are
+ *   - `withDocId(result)` adds `doc_id` to `result` and returns it;
+ *   - `snapshotStore()` returns the observer when it keeps snapshot records
+ *     (`recordSnapshot` / `getSnapshot`, used by `snapshot({ since })`), else
+ *     `null`.
+ * Without the observer (injection failed, pre-observer document) all are
  * no-ops, so every result is byte-identical to the pre-ref output.
  */
 export const PAGE_OBSERVER_JS = `
@@ -40,6 +43,16 @@ export const PAGE_OBSERVER_JS = `
   function withDocId(result) {
     if (pageObserver && typeof pageObserver.doc_id === 'string') result.doc_id = pageObserver.doc_id;
     return result;
+  }
+  function snapshotStore() {
+    if (
+      pageObserver &&
+      typeof pageObserver.recordSnapshot === 'function' &&
+      typeof pageObserver.getSnapshot === 'function'
+    ) {
+      return pageObserver;
+    }
+    return null;
   }
 `;
 
@@ -65,14 +78,38 @@ export const PAGE_OBSERVER_JS = `
  *
  * With the page observer installed (see `PAGE_OBSERVER_JS`), each
  * interactive entry carries `ref` right after `selector`, and the result
- * carries `doc_id` and `snapshot_id` (`s<N>`, one per call). Without it the
- * output is unchanged.
+ * carries `doc_id` and `snapshot_id` (`<doc_id>:s<N>`, one per call). Without
+ * it the output is unchanged.
+ *
+ * Every snapshot taken with the observer is recorded by it (the last 4 per
+ * document; the first 500 entries keyed by ref, each with a hash = the entry
+ * serialised without `ref`). `since: <snapshot_id>` then answers with a diff
+ * against that record instead of the full list:
+ *   { title, url, doc_id, snapshot_id, since, added, removed, changed,
+ *     overflow?, headings?, text? }
+ * `added` are entries whose ref is new, `removed` are `{ ref, tag, text? }`
+ * of refs gone (capped at 500), `changed` are current entries whose hash
+ * differs. `max_interactive` applies AFTER diffing to `added` then `changed`;
+ * `overflow` counts what it dropped. `headings` / `text` appear only when
+ * `only_interactive` is false and they differ from the recorded ones.
+ * When the diff cannot be made the result is the full snapshot plus `since`
+ * and `since_status`:
+ *   - `observer-unavailable`: no observer (no `doc_id` / `snapshot_id`);
+ *   - `doc-changed`: `snapshot_id` is `<doc_id>:s<N>`, and the part of
+ *     `since` before its LAST `:` is not the current `doc_id` (or `since` has
+ *     no `:`), so it came from another document; the store is not consulted;
+ *   - `evicted`: the prefix is the current `doc_id` but the id is not among
+ *     the last 4 records (evicted, or never issued).
+ * A `within_selector` miss ignores `since` and keeps the miss shape (plus
+ * `doc_id`).
  */
 export interface SnapshotOpts {
   within_selector?: string;
   only_interactive?: boolean;
   exclude?: string[];
   max_interactive?: number;
+  /** `snapshot_id` of an earlier snapshot of this document to diff against. */
+  since?: string;
 }
 
 export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
@@ -84,6 +121,7 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       typeof opts.max_interactive === 'number' && opts.max_interactive > 0
         ? Math.min(opts.max_interactive, 500)
         : 120,
+    since: typeof opts.since === 'string' ? opts.since : null,
   });
   return `
 (() => {
@@ -165,31 +203,105 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (frame) entry.frame = frame;
     interactive.push(entry);
   });
-  const result = {
-    title: document.title,
-    url: location.href,
-    interactive: interactive.slice(0, opts.maxInteractive),
-  };
+  let headings = null;
+  let visibleText = '';
   if (!opts.onlyInteractive) {
-    const headings = [];
+    const found = [];
     deepQueryAll('h1, h2, h3', root).forEach((h) => {
       if (!isVisible(h)) return;
       if (inExcludedLandmark(h)) return;
       const t = shortText(h);
-      if (t) headings.push({ level: h.tagName, text: t });
+      if (t) found.push({ level: h.tagName, text: t });
     });
-    result.headings = headings.slice(0, 30);
+    headings = found.slice(0, 30);
     const textRoot = (root === document) ? (document.body || document) : root;
-    const visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
+    visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
+  }
+  let snapshotId = null;
+  if (withDocId({}).doc_id && typeof pageObserver.nextSnapshotId === 'function') {
+    const issued = pageObserver.nextSnapshotId();
+    if (typeof issued === 'string') snapshotId = issued;
+  }
+  function fullResult() {
+    const result = {
+      title: document.title,
+      url: location.href,
+      interactive: interactive.slice(0, opts.maxInteractive),
+    };
+    if (headings) result.headings = headings;
     if (visibleText) result.text = visibleText;
+    if (notice) result.notice = notice;
+    withDocId(result);
+    if (snapshotId) result.snapshot_id = snapshotId;
+    return result;
   }
-  if (notice) result.notice = notice;
-  withDocId(result);
-  if (result.doc_id && typeof pageObserver.nextSnapshotId === 'function') {
-    const snapshotId = pageObserver.nextSnapshotId();
-    if (typeof snapshotId === 'string') result.snapshot_id = snapshotId;
+  // Record every snapshot (with or without since) so a later call can diff
+  // against it. Entries are keyed by ref; the hash is the entry serialised
+  // without its ref, in emission order. Capped at the first 500 entries.
+  const store = snapshotId ? snapshotStore() : null;
+  // A snapshot_id is \`<doc_id>:s<N>\`: a since whose prefix (before the LAST
+  // ':') is not this document's doc_id, or that has no ':', came from another
+  // document and is never looked up.
+  const sinceCut = opts.since === null ? -1 : opts.since.lastIndexOf(':');
+  const sinceSameDoc =
+    sinceCut >= 0 && withDocId({}).doc_id === opts.since.slice(0, sinceCut);
+  const previous = store && sinceSameDoc ? store.getSnapshot(opts.since) : null;
+  const current = new Map();
+  const headingsHash = headings ? JSON.stringify(headings) : null;
+  const textHash = opts.onlyInteractive ? null : visibleText;
+  if (store) {
+    for (const entry of interactive) {
+      if (current.size >= 500) break;
+      if (typeof entry.ref !== 'string') continue;
+      const copy = {};
+      for (const key of Object.keys(entry)) if (key !== 'ref') copy[key] = entry[key];
+      current.set(entry.ref, { hash: JSON.stringify(copy), entry });
+    }
+    store.recordSnapshot(snapshotId, { entries: current, headings_hash: headingsHash, text_hash: textHash });
   }
-  return result;
+  if (opts.since === null) return fullResult();
+  if (!store) {
+    const result = fullResult();
+    result.since = opts.since;
+    result.since_status = 'observer-unavailable';
+    return result;
+  }
+  if (!previous || !previous.entries || typeof previous.entries.get !== 'function') {
+    const result = fullResult();
+    result.since = opts.since;
+    result.since_status = sinceSameDoc ? 'evicted' : 'doc-changed';
+    return result;
+  }
+  const added = [];
+  const changed = [];
+  const removed = [];
+  current.forEach((item, ref) => {
+    const old = previous.entries.get(ref);
+    if (!old) added.push(item.entry);
+    else if (old.hash !== item.hash) changed.push(item.entry);
+  });
+  previous.entries.forEach((item, ref) => {
+    if (current.has(ref) || removed.length >= 500) return;
+    const gone = { ref, tag: item.entry.tag };
+    if (item.entry.text) gone.text = item.entry.text;
+    removed.push(gone);
+  });
+  // max_interactive applies after diffing (added first, then changed), so
+  // a window shift never masquerades as change.
+  const listed = added.concat(changed);
+  const kept = listed.slice(0, opts.maxInteractive);
+  const diff = withDocId({ title: document.title, url: location.href });
+  diff.snapshot_id = snapshotId;
+  diff.since = opts.since;
+  diff.added = kept.slice(0, Math.min(added.length, kept.length));
+  diff.removed = removed;
+  diff.changed = kept.slice(diff.added.length);
+  if (listed.length > kept.length) diff.overflow = listed.length - kept.length;
+  if (!opts.onlyInteractive) {
+    if (headingsHash !== previous.headings_hash) diff.headings = headings;
+    if (textHash !== previous.text_hash) diff.text = visibleText;
+  }
+  return diff;
 })()
 `;
 }

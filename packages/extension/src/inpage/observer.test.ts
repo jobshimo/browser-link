@@ -303,6 +303,8 @@ interface RefInstance {
   refFor(el: Element): string | null;
   resolveRef(ref: string): Element | null;
   nextSnapshotId(): string | null;
+  recordSnapshot(id: string, record: unknown): void;
+  getSnapshot(id: string): unknown;
   teardown(): void;
 }
 const instance = (): RefInstance =>
@@ -375,34 +377,65 @@ describe('page observer: element refs', () => {
     expect(g.refFor(document.getElementById('go')!)).toBeNull();
   });
 });
-
 describe('page observer: snapshot ids', () => {
-  test('nextSnapshotId increments per call from s1', () => {
+  test('nextSnapshotId issues <doc_id>:s<N> per call from s1', () => {
     evalExpr(buildObserverInstallJs());
     const g = instance();
-    expect(g.nextSnapshotId()).toBe('s1');
-    expect(g.nextSnapshotId()).toBe('s2');
-    expect(g.nextSnapshotId()).toBe('s3');
+    expect(g.nextSnapshotId()).toBe(g.doc_id + ':s1');
+    expect(g.nextSnapshotId()).toBe(g.doc_id + ':s2');
+    expect(g.nextSnapshotId()).toBe(g.doc_id + ':s3');
   });
 
-  test('a fresh install restarts at s1', () => {
+  test('a fresh install restarts at s1 under its own doc_id', () => {
     evalExpr(buildObserverInstallJs());
+    const oldDocId = instance().doc_id;
     instance().nextSnapshotId();
     instance().nextSnapshotId();
     evalExpr(buildObserverTeardownJs());
     evalExpr(buildObserverInstallJs());
-    expect(instance().nextSnapshotId()).toBe('s1');
+    const g = instance();
+    expect(g.doc_id).not.toBe(oldDocId);
+    expect(g.nextSnapshotId()).toBe(g.doc_id + ':s1');
   });
 
   test('nextSnapshotId returns null after teardown', () => {
     evalExpr(buildObserverInstallJs());
     const g = instance();
-    expect(g.nextSnapshotId()).toBe('s1');
+    expect(g.nextSnapshotId()).toBe(g.doc_id + ':s1');
     g.teardown();
     expect(g.nextSnapshotId()).toBeNull();
   });
 });
 
+describe('page observer: snapshot store', () => {
+  test('a recorded snapshot round-trips by id, unknown ids give null', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    const record = { entries: { e1: { hash: 'h', entry: { tag: 'button' } } }, text_hash: 't' };
+    g.recordSnapshot('s1', record);
+    expect(g.getSnapshot('s1')).toBe(record);
+    expect(g.getSnapshot('s2')).toBeNull();
+    expect(g.getSnapshot(42 as unknown as string)).toBeNull();
+  });
+
+  test('only the last 4 records are kept: the oldest is evicted by the fifth', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    for (let i = 1; i <= 5; i++) g.recordSnapshot('s' + i, { n: i });
+    expect(g.getSnapshot('s1')).toBeNull();
+    for (let i = 2; i <= 5; i++) expect(g.getSnapshot('s' + i)).toEqual({ n: i });
+  });
+
+  test('teardown clears the store and makes both methods inert', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    g.recordSnapshot('s1', { n: 1 });
+    g.teardown();
+    expect(g.getSnapshot('s1')).toBeNull();
+    g.recordSnapshot('s2', { n: 2 });
+    expect(g.getSnapshot('s2')).toBeNull();
+  });
+});
 describe('page observer: version 2 install rule', () => {
   test('OBSERVER_VERSION is 2', () => {
     expect(OBSERVER_VERSION).toBe(2);

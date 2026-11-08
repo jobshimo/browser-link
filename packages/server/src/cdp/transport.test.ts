@@ -205,6 +205,20 @@ describe('callCdpTool — tool dispatch', () => {
     expect(result).toBe('echo:1+1');
   });
 
+  test('snapshot forwards since into the evaluated snapshot expression', async () => {
+    const expressions: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        expressions.push((params as { expression: string }).expression);
+        return { result: { value: { interactive: [] } } };
+      },
+    });
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', { since: 's3' });
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', { since: 42 });
+    expect(expressions[0]).toContain('"since":"s3"');
+    expect(expressions[1]).toContain('"since":null');
+  });
   test('evaluate threads the dispatcher budget into the Runtime.evaluate per-command timeout', async () => {
     // The fake target swallows Runtime.evaluate, so only the per-command
     // timeout can settle the call — a reject naming the CALLER's budget

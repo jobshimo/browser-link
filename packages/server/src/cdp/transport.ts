@@ -902,6 +902,7 @@ export async function callCdpTool(
           ? p.exclude.filter((x): x is string => typeof x === 'string')
           : undefined,
         max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
+        since: typeof p.since === 'string' ? p.since : undefined,
       };
       return evaluateInTab(client, buildSnapshotJs(opts));
     }

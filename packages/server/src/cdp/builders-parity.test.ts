@@ -23,6 +23,9 @@ describe('cdp builders emit byte-identical output to the extension original', ()
       max_interactive: 40,
     };
     expect(srv.buildSnapshotJs(opts)).toBe(ext.buildSnapshotJs(opts));
+    expect(srv.buildSnapshotJs({ since: 'abc123:s1' })).toBe(
+      ext.buildSnapshotJs({ since: 'abc123:s1' }),
+    );
   });
 
   test('buildFindJs', () => {

@@ -1029,6 +1029,43 @@ describe('action-tool claim enforcement', () => {
     );
   });
 
+  test('snapshot forwards a string since to the bridge', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.snapshot',
+      { tab_id: 'tab_1', since: 's3', max_interactive: 20 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'snapshot',
+      expect.objectContaining({ since: 's3', max_interactive: 20 }),
+    );
+  });
+
+  test('snapshot drops a non-string or over-long since defensively, like exclude entries', async () => {
+    for (const since of [42, null, { id: 's1' }, 's'.repeat(65)]) {
+      const deps = makeDeps();
+      await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1', since }, deps, TEST_CALLER);
+      const forwarded = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock
+        .calls[0][2] as Record<string, unknown>;
+      expect(forwarded.since).toBeUndefined();
+    }
+    const deps = makeDeps();
+    const atLimit = 's'.repeat(64);
+    await handleBrowserTool(
+      'browser.snapshot',
+      { tab_id: 'tab_1', since: atLimit },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'snapshot',
+      expect.objectContaining({ since: atLimit }),
+    );
+  });
   test('snapshot with no args forwards undefined filters (legacy call site)', async () => {
     const deps = makeDeps();
     await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);

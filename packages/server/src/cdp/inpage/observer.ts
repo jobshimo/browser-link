@@ -52,8 +52,13 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * element is seen and reuses it while the node lives; `resolveRef(ref)`
  * returns the element while it is connected, else `null`. Refs are only valid
  * for the `doc_id` that issued them. Neither method throws. `nextSnapshotId()`
- * issues `s<N>` (monotonic per document instance, from `s1`) for each
- * `snapshot` result and returns `null` once the instance is torn down.
+ * issues `<doc_id>:s<N>` (N monotonic per document instance, from 1) for each
+ * `snapshot` result and returns `null` once the instance is torn down; the
+ * `doc_id` prefix lets a stale id from another document be rejected.
+ * `recordSnapshot(id, record)` keeps the last 4 snapshot records per document
+ * instance (oldest evicted first) for `snapshot({ since })`; `getSnapshot(id)`
+ * returns the record or `null` when unknown or evicted. The record is opaque
+ * here. Both are inert after teardown, which clears the store.
  */
 export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const optsJson = JSON.stringify({
@@ -100,6 +105,10 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const refNodes = new Map();
   let refSeq = 0;
   let snapshotSeq = 0;
+  // Last SNAPSHOT_KEEP snapshot records (opaque to the observer; the snapshot
+  // builder owns their shape), keyed by snapshot_id in insertion order.
+  const SNAPSHOT_KEEP = 4;
+  const snapshots = new Map();
   // WeakRef keeps the registry from pinning removed nodes; the fallback only
   // matters on engines without it (Chrome has it since 84).
   const holdWeakly =
@@ -322,7 +331,19 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
 
   g.nextSnapshotId = function () {
     if (g.dead) return null;
-    return 's' + ++snapshotSeq;
+    return g.doc_id + ':s' + ++snapshotSeq;
+  };
+  g.recordSnapshot = function (id, record) {
+    if (g.dead || typeof id !== 'string') return;
+    snapshots.delete(id);
+    snapshots.set(id, record);
+    while (snapshots.size > SNAPSHOT_KEEP) snapshots.delete(snapshots.keys().next().value);
+  };
+
+  g.getSnapshot = function (id) {
+    if (g.dead || typeof id !== 'string') return null;
+    const record = snapshots.get(id);
+    return record === undefined ? null : record;
   };
 
   g.mark = function () {
@@ -408,6 +429,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     refs = new WeakMap();
     refNodes.clear();
     snapshotSeq = 0;
+    snapshots.clear();
     if (window[opts.key] === g) {
       try { delete window[opts.key]; } catch (e) {}
     }

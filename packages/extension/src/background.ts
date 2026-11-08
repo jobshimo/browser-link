@@ -2069,6 +2069,7 @@ async function handleSnapshot(
         ? p.exclude.filter((x): x is string => typeof x === 'string')
         : undefined,
       max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
+      since: optStr('since'),
     }),
   );
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
