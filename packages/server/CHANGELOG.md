@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.38.0](https://github.com/jobshimo/browser-link/compare/v0.37.0...v0.38.0) (2026-11-09)
+
+### Features
+
+- **manual:** one source now renders the connect-time instructions, the installed block and every tool section. The connect-time core is 3,629 characters, under the roughly 4,090 that Claude Code shows of `initialize.instructions`, so the agent receives the rules that used to be cut off: the reflex triggers, the result fields that signal trouble inside a success (`hit_element`, `settled: false`, `since_status`, `reresolved`, `ref-stale`, `matched: false`) with the action to take, five habits, shared tabs and cdp-direct, and where the rest is.
+- **manual:** `browser.manual` returns the index (server version, instructions-block status per client, one line per tool, the topics), `browser.manual({ tool })` one tool in full with its parameters, `browser.manual({ topic })` one topic (downloads, canvas, screenshot, flows, map, token-efficiency, multi-agent, cdp-direct). Server-only, needs no tab.
+- **instructions:** when an installed instructions block is older than the server, the first line of the connect-time instructions says so and names `browser-link instructions install`, on both the MCP and the IPC `initialize` paths. A missing block never notifies, and the server never writes those files.
+- **instructions:** the installed block shrinks from about 27 KB to about 11.6 KB with each rule stated once: the core plus four topics (token-efficiency, downloads, flows, map). Rules that a tool's own doc already states are not repeated.
+- **click:** a click whose hit element is an ancestor of the target (the target is clipped or covered by its own container) now fails with `retargeted` and an error naming both elements instead of reporting `clicked`; `force: true` clicks there anyway. `hit_element` appears only for a `pointer-events: none` target passing the click on and for `force`.
+
 ## [0.37.0](https://github.com/jobshimo/browser-link/compare/v0.36.0...v0.37.0) (2026-11-08)
 
 ### Features
