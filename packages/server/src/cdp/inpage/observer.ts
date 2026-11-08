@@ -476,8 +476,27 @@ export function buildObserverMarkJs(): string {
  */
 export function buildObserverChangesJs(mark: number, docId?: string): string {
   const markJson = JSON.stringify(clampInt(mark, 0, 0, Number.MAX_SAFE_INTEGER));
-  const docJson = typeof docId === 'string' && docId.length > 0 ? JSON.stringify(docId) : 'null';
+  const docJson = typeof docId === 'string' && docId.length > 0 ? jsStringLiteral(docId) : 'null';
   return callInstance(`g.changes(${markJson}, ${docJson})`);
+}
+
+/**
+ * A string literal safe to embed in JS source. `JSON.stringify` alone leaves
+ * U+2028 / U+2029 (line terminators in older JS grammars) and `<` (which can
+ * close a surrounding `<script>`) unescaped; this escapes them as `\uXXXX`,
+ * which parses back to the same string.
+ */
+function jsStringLiteral(value: string): string {
+  // The two separators are written as char codes so this source file never
+  // carries them raw; the replacement is the six-character escape sequence.
+  const lineSeparator = String.fromCharCode(0x2028);
+  const paragraphSeparator = String.fromCharCode(0x2029);
+  return JSON.stringify(value)
+    .split(lineSeparator)
+    .join('\\u2028')
+    .split(paragraphSeparator)
+    .join('\\u2029')
+    .replace(/</g, '\\u003c');
 }
 
 /**
@@ -487,7 +506,7 @@ export function buildObserverChangesJs(mark: number, docId?: string): string {
  * unknown or stale, or `{ ok: false, reason: 'observer-unavailable' }`.
  */
 export function buildObserverRefResolveJs(ref: string): string {
-  const refJson = JSON.stringify(typeof ref === 'string' ? ref : '');
+  const refJson = jsStringLiteral(typeof ref === 'string' ? ref : '');
   return callInstance(
     `((el) => el ? { ok: true, found: true, tag: el.localName || String(el.nodeName).toLowerCase() } : { ok: true, found: false })(g.resolveRef(${refJson}))`,
   );

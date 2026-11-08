@@ -538,3 +538,22 @@ describe('page observer: buildObserverRefResolveJs', () => {
     });
   });
 });
+
+describe('page observer: builders embed strings safely in JS source', () => {
+  test('a ref with line terminators and a closing tag cannot break out of the expression', () => {
+    const hostile = 'e1  </script><script>';
+    const js = buildObserverRefResolveJs(hostile);
+    expect(js).not.toContain(' ');
+    expect(js).not.toContain(' ');
+    expect(js).not.toContain('</script>');
+    expect(js).not.toContain('<script>');
+    // The literal still evaluates to the same string once parsed.
+    expect(evalExpr<Failure>(js)).toEqual({ ok: false, reason: 'observer-unavailable' });
+  });
+
+  test('a docId with the same characters is embedded safely in the changes expression', () => {
+    const js = buildObserverChangesJs(0, 'd </script>');
+    expect(js).not.toContain(' ');
+    expect(js).not.toContain('</script>');
+  });
+});
