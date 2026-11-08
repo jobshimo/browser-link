@@ -82,7 +82,8 @@ type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string; hit_element?: string }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
-  | { ok: false; reason: 'occluded'; blocker: string };
+  | { ok: false; reason: 'occluded'; blocker: string }
+  | { ok: false; reason: 'retargeted'; hit_element: string };
 
 type TypeResolveResult =
   | { ok: true }
@@ -457,6 +458,82 @@ describe('buildClickResolveJs — occlusion guard', () => {
     expect(resolved.ok).toBe(true);
     if (resolved.ok) {
       expect(resolved.hit_element).toBe('div#hit-layer');
+    }
+  });
+
+  test('fails as retargeted when the hit-test lands on an ancestor of a clickable target (clipped by an overflow container)', () => {
+    // A button scrolled out of its overflow:hidden container's clip: its
+    // centre is painted over by the container itself, so a click there
+    // lands on the container and never reaches the button.
+    const scroller = document.createElement('div');
+    scroller.className = 'scroller';
+    scroller.style.overflow = 'hidden';
+    document.body.appendChild(scroller);
+    const target = document.createElement('button');
+    target.id = 'clipped-btn';
+    scroller.appendChild(target);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#clipped-btn', force: false }),
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'retargeted', hit_element: 'div.scroller' });
+  });
+
+  test('force:true dispatches a retargeted click anyway and reports the ancestor as hit_element', () => {
+    const scroller = document.createElement('div');
+    scroller.className = 'scroller';
+    scroller.style.overflow = 'hidden';
+    document.body.appendChild(scroller);
+    const target = document.createElement('button');
+    target.id = 'clipped-btn';
+    scroller.appendChild(target);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#clipped-btn', force: true }),
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.tag).toBe('button');
+      expect(resolved.hit_element).toBe('div.scroller');
+    }
+  });
+
+  test('keeps a pointer-events:none icon inside its button allowed: ok with the button as hit_element', () => {
+    const button = document.createElement('button');
+    button.id = 'save-btn';
+    document.body.appendChild(button);
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.style.pointerEvents = 'none';
+    button.appendChild(icon);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => button;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#save-btn .icon', force: false }),
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.hit_element).toBe('button#save-btn');
+    }
+  });
+
+  test('omits hit_element when the hit-test lands on a descendant of the target', () => {
+    const button = document.createElement('button');
+    button.id = 'save-btn';
+    document.body.appendChild(button);
+    const label = document.createElement('span');
+    label.textContent = 'Save';
+    button.appendChild(label);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => label;
+
+    const resolved = evalExpr<ClickResolveResult>(
+      buildClickResolveJs({ selector: '#save-btn', force: false }),
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.hit_element).toBeUndefined();
     }
   });
 
