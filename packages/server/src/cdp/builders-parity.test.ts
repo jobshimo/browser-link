@@ -111,4 +111,13 @@ describe('cdp page observer emits byte-identical output to the extension origina
       extObserver.buildObserverRefResolveJs('e"42'),
     );
   });
+
+  test('buildObserverSemanticKeyJs', () => {
+    expect(srvObserver.buildObserverSemanticKeyJs('e1')).toBe(
+      extObserver.buildObserverSemanticKeyJs('e1'),
+    );
+    expect(srvObserver.buildObserverSemanticKeyJs('e"42</script>')).toBe(
+      extObserver.buildObserverSemanticKeyJs('e"42</script>'),
+    );
+  });
 });
