@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   refFailureMessage,
+  retargetedClickMessage,
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
@@ -383,6 +384,28 @@ describe('runFlow — fail-fast', () => {
     expect(result.step_kind).toBe('click');
     expect(result.error).toBe('Element not found: #missing');
     expect(result.steps_completed).toBe(1);
+    expect(deps.performPress).not.toHaveBeenCalled();
+  });
+
+  test('a retargeted click step fails the flow with the shared retargeted message', async () => {
+    const message = retargetedClickMessage('div.scroller', '#clipped-btn');
+    expect(message).toBe(
+      'Click would land on div.scroller, not on #clipped-btn: scroll or expand its container, ' +
+        'or target the element that receives clicks; force: true clicks there anyway',
+    );
+    const deps = makeDeps({
+      performClick: vi.fn(async () => ({ ok: false, error: message })),
+    });
+    const result = await runFlow(
+      [{ click: { selector: '#clipped-btn' } }, { press: { key: 'Enter' } }],
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.failed_step).toBe(0);
+    expect(result.step_kind).toBe('click');
+    expect(result.error).toBe(message);
+    expect(result.steps_completed).toBe(0);
     expect(deps.performPress).not.toHaveBeenCalled();
   });
 

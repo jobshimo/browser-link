@@ -3820,3 +3820,106 @@ describe('find by semantic key (spec v4 §6.3, S3) — dispatch validation', () 
     expect(find.description).toContain('`key`');
   });
 });
+
+describe('browser.manual (server-only, never touches a tab)', () => {
+  const STATUSES = [
+    { id: 'claude', displayName: 'Claude Code', state: { kind: 'installed', version: '0.30.0' } },
+    {
+      id: 'opencode',
+      displayName: 'OpenCode',
+      state: { kind: 'installed-outdated', version: '0.29.0' },
+    },
+    { id: 'copilot', displayName: 'GitHub Copilot CLI', state: { kind: 'no-file' } },
+  ] as const;
+
+  function manualDeps(): BrowserToolDeps {
+    return makeDeps({
+      listTabs: vi.fn(() => {
+        throw new Error('browser.manual must not list tabs');
+      }),
+      callBrowserTool: vi.fn(() => Promise.reject(new Error('browser.manual must not route'))),
+      instructionsStatus: () => STATUSES.map((s) => ({ ...s, state: { ...s.state } })),
+    });
+  }
+
+  async function manual(args: unknown, deps = manualDeps()): Promise<string> {
+    const out = await handleBrowserTool('browser.manual', args, deps, TEST_CALLER);
+    expect(typeof out).toBe('string');
+    return out as string;
+  }
+
+  test('is a recognised browser tool with a definition and a doc', () => {
+    expect(isBrowserTool('browser.manual')).toBe(true);
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.manual');
+    expect(def?.doc?.purpose.length).toBeGreaterThan(0);
+    expect(def?.inputSchema).toMatchObject({ additionalProperties: false });
+  });
+
+  test('the index carries the version, the block status per client, every tool and every topic', async () => {
+    const { VERSION } = await import('../version.js');
+    const { MAP_TOOL_DEFINITIONS } = await import('../map/tools.js');
+    const { TOPIC_NAMES } = await import('../manual/topics.js');
+    const deps = manualDeps();
+    const index = await manual(undefined, deps);
+    expect(index.split('\n')[0]).toBe(`browser-link ${VERSION}`);
+    expect(index).toContain('Claude Code: installed v0.30.0');
+    expect(index).toContain(
+      `OpenCode: installed-outdated v0.29.0 → v${VERSION}: run browser-link instructions install`,
+    );
+    expect(index).toContain('GitHub Copilot CLI: no-file');
+    for (const def of [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS]) {
+      expect(index).toContain(`- ${def.name} — `);
+    }
+    for (const topic of TOPIC_NAMES) expect(index).toContain(`- ${topic} — `);
+    expect(deps.listTabs).not.toHaveBeenCalled();
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    // `{}` is the same as no arguments.
+    expect(await manual({}, deps)).toBe(index);
+  });
+
+  test('{ tool } renders the doc plus one line per inputSchema property', async () => {
+    const click = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.click')!;
+    const out = await manual({ tool: 'browser.click' });
+    expect(out).toContain('### browser.click');
+    expect(out).toContain(click.doc!.purpose);
+    expect(out).toContain('**Gotchas:**');
+    expect(out).toContain('**Parameters:**');
+    expect(out).toContain('- tab_id (string, required)');
+    expect(out).toContain('- selector (string, optional): CSS selector.');
+  });
+
+  test('{ tool } works for map tools too', async () => {
+    const out = await manual({ tool: 'browser.map.recall' });
+    expect(out).toContain('### browser.map.recall');
+  });
+
+  test('{ topic } returns that topic', async () => {
+    const { renderTopic } = await import('../manual/topics.js');
+    expect(await manual({ topic: 'downloads' })).toBe(renderTopic('downloads'));
+  });
+
+  test('an unknown tool fails listing the valid names', async () => {
+    await expect(manual({ tool: 'browser.nope' })).rejects.toThrow(
+      /Unknown tool "browser\.nope"[\s\S]*browser\.click[\s\S]*browser\.map\.recall/,
+    );
+  });
+
+  test('an unknown topic fails listing the valid topics', async () => {
+    await expect(manual({ topic: 'nope' })).rejects.toThrow(
+      /Unknown topic "nope"[\s\S]*downloads, canvas/,
+    );
+  });
+
+  test('tool and topic together fail naming both', async () => {
+    await expect(manual({ tool: 'browser.click', topic: 'downloads' })).rejects.toThrow(
+      /either `tool` or `topic`, not both/,
+    );
+  });
+
+  test('works with no connected tab and no claim registry', async () => {
+    const deps = makeDeps({ instructionsStatus: () => [] });
+    const out = (await handleBrowserTool('browser.manual', {}, deps, TEST_CALLER)) as string;
+    expect(out).toContain('browser.list_tabs');
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+});

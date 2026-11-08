@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
 import { MAP_TOOL_DEFINITIONS } from '../map/tools.js';
-import { SERVER_INSTRUCTIONS, buildServerInstructions } from './server-instructions.js';
+import {
+  SERVER_INSTRUCTIONS,
+  buildServerInstructions,
+  buildStartInstructions,
+} from './server-instructions.js';
+import type { InstructionsInstaller } from '../agent-instructions/index.js';
+import { VERSION } from '../version.js';
+import { renderCore } from '../manual/core.js';
+import { renderTopic } from '../manual/topics.js';
 
 /**
  * The MCP `initialize.instructions` string is generated from the per-tool
@@ -10,8 +18,8 @@ import { SERVER_INSTRUCTIONS, buildServerInstructions } from './server-instructi
  *  - every tool with a `doc` block surfaces its name in the generated string,
  *  - every tool with a `doc` block has non-empty `purpose` and `when_to_use`
  *    (structural completeness check — caught here instead of by reviewers),
- *  - the cross-cutting preamble is present (reflex protocol + claim layer
- *    + map preamble),
+ *  - the text starts with the manual core (reflex protocol, success is not
+ *    proof, habits), and the moved preamble sections live in topics,
  *  - `SERVER_INSTRUCTIONS` is the live result of `buildServerInstructions`,
  *  - structural sections (Gotchas, Example) only appear when the source
  *    block provides them — so a tool without gotchas never emits an empty
@@ -25,87 +33,90 @@ describe('buildServerInstructions', () => {
     expect(SERVER_INSTRUCTIONS).toBe(buildServerInstructions());
   });
 
-  test('preamble explains what the bridge is and the data dir story', () => {
+  test('starts with the manual core (the part hosts that truncate still show)', () => {
     const out = buildServerInstructions();
-    expect(out).toContain('browser-link bridges Claude Code');
-    expect(out).toContain('BROWSER_LINK_DATA_DIR');
-    expect(out).toContain('persistent UI map');
+    expect(out.startsWith(renderCore({}))).toBe(true);
+    expect(out.startsWith('## browser-link — reflex protocol (ALWAYS ACTIVE)')).toBe(true);
   });
 
-  test('reflex protocol section is intact in the preamble', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('Reflex protocol');
-    expect(out).toContain('browser.list_tabs');
-    expect(out).toContain('browser.snapshot');
-    expect(out).toContain('Tab not connected');
+  test('a notice becomes the first line', () => {
+    const notice = 'Your browser-link instructions block is not-installed.';
+    const out = buildServerInstructions({ notice });
+    expect(out.split('\n')[0]).toBe(notice);
+    expect(out.startsWith(renderCore({ notice }))).toBe(true);
   });
 
-  test('multi-agent / claim layer section is intact', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('claim_tab');
-    expect(out).toContain('release_tab');
-    expect(out).toContain('IPC session id');
+  test('reflex protocol is intact in the core', () => {
+    const core = renderCore({});
+    expect(core).toContain('browser.list_tabs');
+    expect(core).toContain('browser.snapshot');
+    expect(core).toContain('Tab not connected');
+    expect(core).toContain('`map` field');
+    expect(core).toContain('browser.map.recall` BEFORE');
   });
 
-  test('teaches recall-before-snapshot on a list_tabs map hint (v0.20.0)', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('map` hint');
-    expect(out).toContain('browser.map.recall` BEFORE');
+  test('the core carries hit_element guidance: off target means the click missed', () => {
+    const core = renderCore({});
+    expect(core).toContain('### Success is not proof');
+    expect(core).toContain('`hit_element` on `click`');
+    expect(core).toContain('the click missed → do not proceed');
   });
 
-  test('preamble teaches the token-efficient patterns introduced in v0.13.0', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('Token-efficient patterns');
-    expect(out).toContain('browser.find');
-    expect(out).toContain('within_selector');
-    expect(out).toContain('only_interactive');
-    expect(out).toContain('pane.scrollTop');
-    expect(out).toContain('latest_id');
+  test('the core carries the multi-agent claim and cdp-direct gate lines', () => {
+    const core = renderCore({});
+    expect(core).toContain('browser.claim_tab');
+    expect(core).toContain('browser.release_tab');
+    expect(core).toContain('do not spin-retry');
+    expect(core).toContain('browser-link config set cdp-direct.enabled true');
+    expect(core).toContain('browser-link cdp allow');
   });
 
-  test('preamble teaches one full snapshot per view, then since (snapshot diff)', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('take ONE full `browser.snapshot` per');
-    expect(out).toContain('pass it as `since` for every later');
+  test('the multi-agent topic keeps the claim layer details', () => {
+    const topic = renderTopic('multi-agent');
+    expect(topic).toContain('auto-claim');
+    expect(topic).toContain('IPC session id');
   });
 
-  test('preamble teaches ref as an action target, ref-stale recovery and semantic_key in the map', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('prefer its `ref` (like `k3x9ab:e12`)');
-    expect(out).toContain('On `ref-stale` (node gone, or ref from another');
-    expect(out).toContain('save that `semantic_key` in the payload next to it,');
-    expect(out).toContain('Never save a key for an `ambiguous` entry.');
-    expect(out).not.toContain('informational, not an action');
+  test('the map topic keeps the data dir story', () => {
+    const topic = renderTopic('map');
+    expect(topic).toContain('BROWSER_LINK_DATA_DIR');
+    expect(topic).toContain('browser.map.rename_app');
   });
 
-  test('preamble points special keys at browser.press instead of synthetic KeyboardEvent (v0.16.0)', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('browser.press');
-    expect(out).toContain('isTrusted:false');
-    expect(out).toContain('isTrusted:true');
+  test('the token-efficiency topic keeps the dedicated-tool patterns', () => {
+    const topic = renderTopic('token-efficiency');
+    expect(topic).toContain('### Token-efficient patterns');
+    expect(topic).toContain('within_selector');
+    expect(topic).toContain('only_interactive');
+    expect(topic).toContain('pane.scrollTop');
+    expect(topic).toContain('latest_id');
+    expect(topic).toContain('isTrusted:false');
+    expect(topic).toContain('isTrusted:true');
   });
 
-  test('preamble teaches the settle pattern for click/type/press (v0.16.0)', () => {
-    const out = buildServerInstructions();
-    expect(out).toContain('settle_ms');
-    expect(out).toContain('mutation_count');
-    expect(out).toContain('wait_for');
+  test('one full snapshot per view, then since, and ref over a copied selector are core habits', () => {
+    const core = renderCore({});
+    expect(core).toContain('One full `snapshot` per view, then `snapshot({ since: snapshot_id })`');
+    expect(core).toContain('Act on the `ref` from the last `snapshot`/`find`');
+    expect(core).toContain('never retry the same ref');
   });
 
-  test('preamble states the settle blind spot honestly — quiet, not effect', () => {
-    // The honesty caveat must not silently disappear from the doc surface
-    // every connecting MCP client receives: settle reports what the action
-    // caused since a pre-dispatch mark (settle.changes), says so when the
-    // observer was unavailable (changes: null), and still cannot see
-    // reactions that start after the quiet window.
-    const out = buildServerInstructions();
-    expect(out).toContain('Settle proves QUIET, not EFFECT');
-    // Wrap-independent: the preamble is manually line-wrapped prose.
-    expect(out).toContain('settle.changes');
-    expect(out).toContain('changes: null');
-    expect(out).toContain('observer: "<reason>"');
-    expect(out).toMatch(/starts\s+after\s+the\s+quiet\s+window/);
-    expect(out).not.toMatch(/before\s+the\s+observer/);
+  test('settle: quiet is not effect, with the observer caveats in the topic', () => {
+    expect(renderCore({})).toContain('quiet is not effect');
+    const topic = renderTopic('token-efficiency');
+    expect(topic).toContain('settle_ms');
+    expect(topic).toContain('Settle proves QUIET, not EFFECT');
+    expect(topic).toContain('settle.changes');
+    expect(topic).toContain('changes: null');
+    expect(topic).toContain('observer: "<reason>"');
+    expect(topic).toMatch(/starts\s+after\s+the\s+quiet\s+window/);
+    expect(topic).not.toMatch(/before\s+the\s+observer/);
+  });
+
+  test('semantic_key guidance lives in the map topic', () => {
+    const topic = renderTopic('map');
+    expect(topic).toContain('save that `semantic_key` in the payload next to it,');
+    expect(topic).toContain('Never save a key for an `ambiguous` entry.');
   });
 
   test('browser.find appears as a documented tool section in the rendered instructions', () => {
@@ -182,5 +193,28 @@ describe('buildServerInstructions', () => {
       // The example block opens with ``` and the example body, then closes with ```.
       expect(out).toContain(`**Example:**\n\`\`\`\n${def.doc!.example!}\n\`\`\``);
     }
+  });
+});
+
+describe('start-time instructions (outdated-block notice)', () => {
+  const installer = (kind: string, version?: string) =>
+    ({
+      id: 'claude',
+      displayName: 'Claude Code',
+      detect: () => ({ filePath: 'x', state: { kind, version } }),
+    }) as unknown as InstructionsInstaller;
+
+  test('an installed-outdated block puts the notice first', () => {
+    const { text, statuses } = buildStartInstructions([installer('installed-outdated', '0.1.0')]);
+    expect(statuses).toHaveLength(1);
+    expect(text.split('\n')[0]).toMatch(
+      /^Your browser-link instructions block is installed-outdated \(installed v0\.1\.0, server v[^)]+\): run `browser-link instructions install` and restart the client\.$/,
+    );
+    expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+  });
+
+  test('an up-to-date block leaves the text identical to SERVER_INSTRUCTIONS', () => {
+    const { text } = buildStartInstructions([installer('installed', VERSION)]);
+    expect(text).toBe(SERVER_INSTRUCTIONS);
   });
 });

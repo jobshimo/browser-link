@@ -187,6 +187,35 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'browser.manual',
+    description:
+      'The browser-link manual on demand; needs no tab. No arguments: the index (server version, the instructions-block status per client, one line per tool, the topic list). { tool: "browser.click" }: that tool\'s full doc (purpose, when to use, gotchas, example) plus one line per parameter. { topic: "downloads" }: one hand-written topic. Pass at most one of tool or topic; an unknown name fails listing the valid ones.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: {
+          type: 'string',
+          description: 'A tool name, e.g. "browser.click". Mutually exclusive with topic.',
+        },
+        topic: {
+          type: 'string',
+          description:
+            'A topic name: downloads, canvas, screenshot, flows, map, token-efficiency, multi-agent, cdp-direct. Mutually exclusive with tool.',
+        },
+      },
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Read the browser-link manual: the index, one tool in full, or one topic.',
+      when_to_use: [
+        'Before using a tool for the first time in a session, or when a result surprises you: `browser.manual({ tool })`.',
+        'For cross-cutting how-tos (downloads, canvas, flows, map, token-efficient patterns): `browser.manual({ topic })`.',
+        'To check whether the installed instructions block is current: `browser.manual()`.',
+      ],
+      example: 'browser.manual({ tool: "browser.click" })',
+    },
+  },
+  {
     name: 'browser.ping',
     description: 'Verify the bridge to a tab. Returns its current title and url.',
     inputSchema: {
@@ -351,7 +380,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Find one interactive element by its visible text and return a stable selector plus viewport coordinates.',
+        'Find one interactive element by its visible text, a ref or a semantic key and return a stable selector plus viewport coordinates.',
       when_to_use: [
         'When `browser.snapshot` returned no `data-testid` and the agent only knows the user-facing label of the element it wants to act on.',
         'Before `browser.click` / `browser.type` on a page whose markup lacks stable selectors — `find` does the visibility + ARIA + role-aware lookup once and returns a selector reusable by the action tool.',
@@ -635,7 +664,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     doc: {
       purpose:
-        'Block until a selector matches a condition, a JS expression is truthy, or a network request URL completes.',
+        'Block until a selector or ref matches a condition, a JS expression is truthy, or a network request URL completes.',
       when_to_use: [
         'After clicking a button that triggers an async load — wait for the spinner to disappear or the result element to appear.',
         'Before snapshot/click on a SPA route that mounts content after navigation.',
@@ -840,7 +869,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.click',
     description:
-      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. A target whose computed `pointer-events` is `none` (an invisible accessibility layer over the real control) is NOT treated as covered: the click proceeds at the same point — that is what a real user click does — and the result carries `hit_element` naming the element that actually receives it. `hit_element` (same compact descriptor format as occlusion blockers) is present on ANY click whose dispatched event lands on a different element than the resolved selector — retargeted pointer-events case, an ancestor wrapper, or a `force:true` click landing on whatever covers the point — and omitted when the click hits the resolved element itself. Optionally waits for the page to settle after the click — see `settle_ms`. Give exactly one of `selector` or `ref` (an element ref from browser.snapshot / find / state); a ref whose node was replaced is re-found by its semantic key and the result carries `reresolved: true`, and a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`.',
+      'Click an element by CSS selector in the connected tab. The selector usually comes from browser.snapshot or browser.find. The lookup pierces open Shadow DOM roots and same-origin iframes (nested arbitrarily), so a selector for a web-component internal or an in-page iframe works without extra steps. Before dispatching the click, the element is hit-tested at its own click point (starting from its own shadow root / iframe document) — if a different element covers that point, the call returns ok:false with a description of the blocker instead of clicking the wrong thing blindly. Pass `force:true` to skip that guard. A target whose computed `pointer-events` is `none` (an invisible accessibility layer over the real control) is NOT treated as covered: the click proceeds at the same point — that is what a real user click does — and the result carries `hit_element` naming the element that actually receives it. `hit_element` (same compact descriptor format as occlusion blockers) appears in an ok:true result only when the click proceeds onto a different element by design — the pointer-events:none case above (including an icon inside its button), or a `force:true` click landing on whatever covers the point — and is omitted when the click hits the resolved element itself or one of its descendants. When the hit-test lands on an ANCESTOR of a target that takes clicks (the target is clipped by an overflow container, zero-size, or covered by its own parent), the call fails with `Click would land on <hit_element>, not on <target>: …` instead of clicking the ancestor. Optionally waits for the page to settle after the click — see `settle_ms`. Give exactly one of `selector` or `ref` (an element ref from browser.snapshot / find / state); a ref whose node was replaced is re-found by its semantic key and the result carries `reresolved: true`, and a ref that no longer resolves fails with `ref-stale: <ref> not found in document <doc_id>`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -860,7 +889,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
     doc: {
-      purpose: 'Click an element identified by a CSS selector.',
+      purpose: 'Click an element identified by a CSS selector or a ref.',
       when_to_use: [
         'After browser.snapshot returned a selector for the element the user asked you to interact with.',
       ],
@@ -871,7 +900,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Never click a selector you have not just verified via browser.snapshot or browser.map.recall — speculating wastes a turn.',
         'Auto-claims the tab on first use in multi-agent mode.',
         'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
-        'A `hit_element` in an ok:true result is the truth about where the click landed. For a pointer-events:none target this is expected (the page routes clicks to that element by design); for a force:true click it may reveal the click went to an overlay, not your target — check it before assuming the action worked.',
+        'A `hit_element` in an ok:true result is the truth about where the click landed. It appears only for a pointer-events:none target (expected: the page routes clicks to that element by design) or a force:true click (it may reveal the click went to an overlay or an ancestor, not your target — check it before assuming the action worked). Any other landing elsewhere is a failure, not a result: "Element covered by …" or "Click would land on …".',
+        'ok:false with "Click would land on <hit_element>, not on <target>" means the target is painted but its own centre is not clickable (clipped by a scroll or overflow container, zero-size, or covered by its parent). Scroll or expand that container (or open the collapsed section) and retry, or target the element that actually receives clicks; use force:true only when clicking the ancestor is what you want.',
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable — there is no CDP-level workaround. Cross-origin iframes are also unreachable (same-origin policy).',
         'The result carries a compact `settle` object (`{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason?, changes, observer? }`) unless `settle_ms:0`. `changes` is what the page observer saw since a mark taken right before the action: `{ records, targets, kinds: { childList, attributes, characterData }, roots: { document, shadow, frame }, descriptors: [{ tag, id?, role?, path }], overflow, truncated? }` — `records` counts mutation records, `targets` the mutated elements (an element touched in two flushes counts twice), `descriptors` the most-mutated targets (up to 20; `overflow` counts the rest; `truncated: true` when older summaries were already dropped). `mutation_count` equals `changes.records`, and `url_changed` / `focus_moved` are measured against the mark, so a click that mutates synchronously no longer reports 0. `changes: null` with `observer` ("observer-unavailable", "doc-changed" when the action replaced the document, or "changes-error") means the observer could not report for this action: the other fields then come from the quiet-window watch alone, as before. A quiet window still cannot see effects that start after it — use `expect` or browser.wait_for for a specific condition. `settled:false` means the page never went quiet within `settle_timeout_ms` — not necessarily an error, some pages never stop mutating (tickers, spinners). When the settle wait itself could not run to completion, `settled:false` comes with `reason`: "context-destroyed" (the action navigated the page, destroying the observer\'s execution context — the action still succeeded, and this is itself a strong navigation signal) or "settle-error" (any other settle-side failure). With settle on, a separate browser.wait_for right after a click is usually unnecessary.',
         'The error message distinguishes a malformed selector ("Invalid selector …") from a well-formed selector that matches nothing ("Element not found …") — a syntax error means fix the selector string itself, not retry against a fresher snapshot.',
@@ -900,7 +930,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
     doc: {
-      purpose: 'Focus an input element by selector and type text into it.',
+      purpose: 'Focus an input element by selector or ref and type text into it.',
       when_to_use: [
         'After browser.snapshot returned a selector for the input the user wants filled.',
       ],

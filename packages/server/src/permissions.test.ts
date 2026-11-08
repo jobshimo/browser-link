@@ -22,10 +22,16 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  test('covers exactly the 35 tools currently exposed', () => {
+  test('covers exactly the 36 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(35);
+    expect(TOOL_CATALOGUE.length).toBe(36);
+  });
+
+  test('browser.manual is a read tool of the bridge family', () => {
+    const manual = TOOL_CATALOGUE.find((t) => t.name === 'browser.manual');
+    expect(manual?.family).toBe('bridge');
+    expect(manual?.category).toBe('read');
   });
 
   test('browser.download is an action (it clicks and writes a file to disk)', () => {

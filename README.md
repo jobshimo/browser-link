@@ -64,11 +64,11 @@ whole browser. Designed for the loop "user reports bug → agent reproduces
 it in the real UI → agent fixes the code → agent re-verifies in the same
 tab", not for unattended consumer automation.
 
-- ✅ **What it does** — exposes **32** `browser.*` MCP tools: 26 to drive
-  a connected tab (list_tabs, ping, snapshot, find, state,
+- ✅ **What it does** — exposes **37** MCP tools: 31 `browser.*` bridge tools
+  (list_tabs, ping, snapshot, find, state,
   canvas_screenshot, screenshot, click, type, press, drag, flow, navigate, evaluate,
   wait_for, wait_for_tab, dialog_respond, set_permission, download, console,
-  network, network_body, claim/release/my_tabs, events, reset) plus 6
+  network, network_body, claim/release/my_tabs, events, activity, reset, and `manual`, which needs no tab) and 6
   persistent-map tools, so the agent learns your apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.13 and Chrome / Chromium / Edge / Brave
   / Vivaldi. No accounts, no telemetry, no outbound calls except `npm`
@@ -301,9 +301,10 @@ state of your own setup instead of guessing.
 
 ## What the agent can do
 
-The MCP server registers two families of tools — 27 bridge tools that
-drive the connected tab (14 read, 13 action) and 6 persistent-map tools
-(2 read, 4 write). All 33 are individually toggle-able — see
+The MCP server registers two families of tools — 31 bridge tools that
+drive the connected tab, read the activity trail or read the manual, and 6
+persistent-map tools (2 read, 4 write): 37 in all. 36 are individually
+toggle-able (`browser.activity` is not) — see
 [Per-tool permissions](#per-tool-permissions).
 
 **Browser bridge — read-only** (no claim required, observation only):
@@ -333,7 +334,7 @@ two exceptions are footnoted):
 | Tool                     | Purpose                                                                                                                                                  |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                                |
-| `browser.click`          | Click an element by CSS selector or `ref`; hit-tests for occlusion first (`force:true` to bypass)                                                        |
+| `browser.click`          | Click an element by CSS selector or `ref`; hit-tests first and fails on occlusion or `retargeted` (`force:true` to bypass)                               |
 | `browser.type`           | Focus an input (by selector or `ref`) and type text via the native value setter                                                                          |
 | `browser.press`          | Trusted CDP key press (+ modifiers), optionally focusing a selector or `ref` first — real `isTrusted:true` input, for widgets synthetic events miss      |
 | `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                                     |
@@ -378,6 +379,17 @@ iframes, nested arbitrarily.
 | **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
 | **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                          |
 | **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                              |
+
+#### `retargeted` — a click that would land on an ancestor
+
+When the element at the click point is an **ancestor** of the target (a wrapper
+that would receive the click instead) and it does not have
+`pointer-events: none`, `browser.click` fails with `reason: "retargeted"` and
+an error naming both elements, instead of reporting `clicked` on the wrong
+node. Scroll or expand the container, or target the element that receives
+clicks; `force: true` clicks at that point anyway. `hit_element` now appears
+only on a successful click that passed through a `pointer-events: none`
+element, or on a `force` click.
 
 #### `snapshot({ since })` — diff instead of re-sending the page
 
@@ -1325,28 +1337,45 @@ A handful of knobs — some on by default, all reversible.
 ### Agent instructions
 
 Having the MCP tools registered is necessary but not sufficient. Agents
-reach for what their global instructions point at — and out of the box
-they have no reason to call `browser.snapshot` when you say "the button
-is broken". `browser-link instructions install` drops a fenced trigger
-block into the agent's **global** instructions markdown:
+reach for what their instructions point at — out of the box they have no
+reason to call `browser.snapshot` when you say "the button is broken". The
+manual reaches the agent through three channels, all rendered from one
+source in the server:
 
-| Client             | File                                                 |
-| ------------------ | ---------------------------------------------------- |
-| Claude Code        | `~/.claude/CLAUDE.md`                                |
-| OpenCode           | `~/.config/opencode/AGENTS.md`                       |
-| GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
+1. **Connect-time core** (`initialize.instructions`, at most 3,800
+   characters). Claude Code shows about 4,090 characters of it, so the core
+   holds only what must change behaviour from the first call: when to look
+   at the browser, the rules that avoid wasted calls, and where the rest is.
+2. **Installed block** (core plus four topics, about 11.6 KB).
+   `browser-link instructions install` writes it, fenced by HTML-comment
+   markers with a version stamp, into the agent's **global** instructions
+   markdown:
 
-The block is fenced by HTML-comment markers, so reinstall overwrites in
-place and uninstall removes exactly the span we manage. The version stamp
-in the begin marker lets future releases detect outdated blocks
-(`browser-link doctor` shows `⚠ outdated` until you re-run install).
+   | Client             | File                                                 |
+   | ------------------ | ---------------------------------------------------- |
+   | Claude Code        | `~/.claude/CLAUDE.md`                                |
+   | OpenCode           | `~/.config/opencode/AGENTS.md`                       |
+   | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
+
+   Reinstall overwrites in place and uninstall removes exactly the span we
+   manage. `browser-link doctor` shows `⚠ outdated` until you re-run install.
+
+3. **`browser.manual` on demand.** No arguments returns the index (server
+   version, the block status per client, one line per tool, the topic list);
+   `{ tool }` returns one tool in full; `{ topic }` returns one topic. It
+   needs no tab.
+
+**Outdated notice.** When an installed block is older than the server, the
+first line of the connect-time text says so and names the command to run.
+A missing block never triggers it: not installing is a choice. The server
+never writes those files; only `browser-link instructions install` does.
 
 ### Per-tool permissions
 
-`browser-link` exposes **33 MCP tools** — 27 bridge tools that drive the
-connected Chrome tab (14 read, 13 action) and 6 to read/write the
-persistent UI map (2 read, 4 write). **All 33 are individually
-toggle-able**, so you can narrow the surface per machine:
+`browser-link` exposes **37 MCP tools** — 31 bridge tools that drive the
+connected Chrome tab, read the activity trail or read the manual, and 6 to
+read/write the persistent UI map (2 read, 4 write). **36 are individually
+toggle-able** (every tool except `browser.activity`), so you can narrow the surface per machine:
 
 - **In the menu** → `Permissions`. Toggle individual tools with **Space**
   or apply a preset with **Enter** (`all` / `readonly` / `no-eval` /
@@ -1354,7 +1383,7 @@ toggle-able**, so you can narrow the surface per machine:
 - **From the shell**:
 
 ```bash
-browser-link tools                              # current state of all 33 tools
+browser-link tools                              # current state of all 36 toggle-able tools
 browser-link tools disable browser.evaluate     # block JS execution
 browser-link tools disable browser.reset        # block destructive soft-reset
 browser-link tools disable browser.set_permission   # block permission grants

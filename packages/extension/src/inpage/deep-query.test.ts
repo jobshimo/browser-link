@@ -338,7 +338,7 @@ describe('checkOcclusion', () => {
     expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true });
   });
 
-  test('allowed when the hit-tested element is an ancestor overlay containing the target, surfacing it as the true recipient', () => {
+  test('refused as retargeted when the hit-tested element is an ancestor of a clickable target', () => {
     const { checkOcclusion } = loadDeepQuery();
     const wrapper = document.createElement('div');
     const target = document.createElement('button');
@@ -346,9 +346,24 @@ describe('checkOcclusion', () => {
     document.body.appendChild(wrapper);
     withElementFromPoint(document, wrapper);
 
-    // The click will target the ancestor, never the element itself (events
-    // bubble upward, not down) — allowed as before, but `hit` names the
-    // real recipient so click results can report it.
+    // The click would land on the ancestor and never reach the element
+    // itself (events bubble upward, not down): the target is painted but
+    // not at its own centre, so it is refused as retargeted, and `hit`
+    // names where the click would have landed.
+    expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: false, retargeted: true, hit: 'div' });
+  });
+
+  test('allowed when a pointer-events:none target is hit through its ancestor, surfacing it as the true recipient', () => {
+    const { checkOcclusion } = loadDeepQuery();
+    const wrapper = document.createElement('div');
+    const target = document.createElement('span');
+    target.style.pointerEvents = 'none';
+    wrapper.appendChild(target);
+    document.body.appendChild(wrapper);
+    withElementFromPoint(document, wrapper);
+
+    // An icon inside its button: the ancestor IS what a real click
+    // activates, by the page's own design.
     expect(checkOcclusion(target, 5, 5)).toEqual({ allowed: true, hit: 'div' });
   });
 

@@ -317,6 +317,21 @@ describe('callCdpTool — tool dispatch', () => {
     );
   });
 
+  test('click rejects with the retargeted error when the hit lands on an ancestor', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({
+        result: { value: { ok: false, reason: 'retargeted', hit_element: 'div.scroller' } },
+      }),
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#clipped-btn' }),
+    ).rejects.toThrow(
+      'Click would land on div.scroller, not on #clipped-btn: scroll or expand its container, ' +
+        'or target the element that receives clicks; force: true clicks there anyway',
+    );
+  });
+
   test('press rejects on an unrecognized key', async () => {
     const { port, targetId } = await startFakeTarget({});
     grantAccess(port);

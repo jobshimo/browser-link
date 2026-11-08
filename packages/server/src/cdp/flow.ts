@@ -75,6 +75,20 @@ export function refFailureMessage(
   return null;
 }
 
+/** The error text for a click whose predicted hit lands on an ancestor of
+ * the target instead of the target itself (the in-page resolve reports
+ * `reason: 'retargeted'`, see `checkOcclusion` in `inpage/deep-query.ts`):
+ * the target is painted but not at its own centre — clipped by an overflow
+ * container, zero-size, or covered by its own parent. Shared by both
+ * transports' `performClick` so the standalone tool and a flow click step
+ * report the same string. `target` is the selector or ref as given. */
+export function retargetedClickMessage(hitElement: string, target: string): string {
+  return (
+    `Click would land on ${hitElement}, not on ${target}: scroll or expand its container, ` +
+    'or target the element that receives clicks; force: true clicks there anyway'
+  );
+}
+
 /** Hard cap on steps per flow — mirrors the `maxItems: 20` on the MCP
  * schema (`browser-definitions.ts`) and the server-side validation
  * (`browser-dispatch.ts`). Enforced again here so neither the extension

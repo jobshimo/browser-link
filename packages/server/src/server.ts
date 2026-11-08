@@ -6,8 +6,7 @@ import { closeDb } from './map/db.js';
 import { getMapHints } from './map/queries.js';
 import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
-import { SERVER_INSTRUCTIONS } from './tools/server-instructions.js';
-import { INSTRUCTIONS_INSTALLERS } from './agent-instructions/index.js';
+import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-instructions.js';
 import { loadConfig } from './config.js';
 import { resolveDownloadsDir, writeDownloadFile } from './downloads.js';
 import { getDataDir } from './map/paths.js';
@@ -284,18 +283,16 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // only inspect — never write — so existing installs are not mutated. Best
   // effort: a per-installer failure (filesystem permissions, EBADF) is logged
   // and skipped, never aborts the server start.
+  // The same detection feeds the instructions the agent receives: when a
+  // block is outdated or missing, the connect-time text starts with a
+  // one-line notice (never a write — the CLI stays the only writer).
+  let serverInstructions = SERVER_INSTRUCTIONS;
   try {
-    const outdated = INSTRUCTIONS_INSTALLERS.map((i) => {
-      try {
-        return { installer: i, detect: i.detect() };
-      } catch {
-        return null;
-      }
-    })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
-      .filter((x) => x.detect.state.kind === 'installed-outdated');
+    const start = buildStartInstructions();
+    serverInstructions = start.text;
+    const outdated = start.statuses.filter((s) => s.state.kind === 'installed-outdated');
     if (outdated.length > 0) {
-      const names = outdated.map((x) => x.installer.displayName).join(', ');
+      const names = outdated.map((s) => s.displayName).join(', ');
       log(
         `Agent instructions OUTDATED for ${outdated.length} client(s) — ${names}. Run \`browser-link instructions install\` to refresh the global .md blocks.`,
       );
@@ -319,7 +316,7 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // of per-tool callbacks.
   const mcpServer = new McpServer(
     { name: 'browser-link', version: '0.0.1' },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+    { capabilities: { tools: {} }, instructions: serverInstructions },
   );
 
   // The SDK's request-handler return types include task/streaming variants we
@@ -346,6 +343,7 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
       // tabs immediately instead of waiting for their next reconnect — see
       // ws-bridge.ts's pushSettingsToAllTabs and cli.ts's config command.
       pushSettings: (settings) => pushSettingsToAllTabs(tabs, settings),
+      instructions: serverInstructions,
     });
     try {
       await ipcServer.start();

@@ -48,6 +48,7 @@ import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } fro
 import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
   refFailureMessage,
+  retargetedClickMessage,
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
@@ -1369,6 +1370,7 @@ type ClickResolveResult =
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
   | { ok: false; reason: 'occluded'; blocker: string }
+  | { ok: false; reason: 'retargeted'; hit_element: string }
   | RefResolveFailure;
 
 /** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
@@ -1504,6 +1506,12 @@ async function performClick(
         return {
           ok: false,
           error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
+        };
+      }
+      if (resolved.reason === 'retargeted') {
+        return {
+          ok: false,
+          error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
         };
       }
       if (resolved.reason === 'invalid-selector') {

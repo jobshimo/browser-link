@@ -682,6 +682,7 @@ export function buildFindJs(opts: FindOpts): string {
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
  *   { ok: false, reason: 'occluded', blocker }
+ *   { ok: false, reason: 'retargeted', hit_element }
  *   { ok: false, reason: 'ref-stale', ref, doc_id }
  *   { ok: false, reason: 'observer-unavailable' }
  *
@@ -691,11 +692,13 @@ export function buildFindJs(opts: FindOpts): string {
  *
  * `hit_element` is present ONLY when the dispatched click will land on a
  * DIFFERENT element than the resolved target (neither the target nor a
- * descendant): a pointer-events:none target whose real hit-target sibling
- * takes the click (allowed, not 'occluded' — see checkOcclusion), an
- * ancestor wrapper, or a `force` click landing on whatever covers the
+ * descendant): a pointer-events:none target whose real hit-target (its
+ * own ancestor, or a sibling) takes the click (allowed, not 'occluded' —
+ * see checkOcclusion), or a `force` click landing on whatever covers the
  * point — the hit-test runs under `force` too, which skips the BLOCK,
- * not the truth-telling.
+ * not the truth-telling. Any other ancestor hit (the target is clipped by
+ * an overflow container, zero-size, or covered by its own parent) fails
+ * as 'retargeted' with the ancestor in `hit_element` unless `force`.
  *
  * The `invalid-selector` check runs BEFORE `deepQueryFirst` — a malformed
  * CSS selector throws the identical `SyntaxError` from every root's own
@@ -728,10 +731,13 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   const tag = el.tagName.toLowerCase();
   const occlusion = checkOcclusion(el, center.localX, center.localY);
   if (!occlusion.allowed && !opts.force) {
+    if (occlusion.retargeted) {
+      return { ok: false, reason: 'retargeted', hit_element: occlusion.hit };
+    }
     return { ok: false, reason: 'occluded', blocker: occlusion.blocker };
   }
   const result = { ok: true, x: center.x, y: center.y, tag };
-  const hit = occlusion.allowed ? occlusion.hit : occlusion.blocker;
+  const hit = occlusion.hit || occlusion.blocker;
   if (hit) result.hit_element = hit;
   if (target.reresolved) result.reresolved = true;
   return result;
