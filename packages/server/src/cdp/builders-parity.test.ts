@@ -11,6 +11,10 @@ import * as srvObserver from './inpage/observer.js';
 import * as extObserver from '../../../extension/src/inpage/observer.js';
 
 describe('cdp builders emit byte-identical output to the extension original', () => {
+  test('PAGE_OBSERVER_JS (the shared ref/doc_id helper)', () => {
+    expect(srv.PAGE_OBSERVER_JS).toBe(ext.PAGE_OBSERVER_JS);
+  });
+
   test('buildSnapshotJs', () => {
     const opts = {
       within_selector: '#panel',
@@ -19,6 +23,9 @@ describe('cdp builders emit byte-identical output to the extension original', ()
       max_interactive: 40,
     };
     expect(srv.buildSnapshotJs(opts)).toBe(ext.buildSnapshotJs(opts));
+    expect(srv.buildSnapshotJs({ since: 'abc123:s1' })).toBe(
+      ext.buildSnapshotJs({ since: 'abc123:s1' }),
+    );
   });
 
   test('buildFindJs', () => {
@@ -94,5 +101,14 @@ describe('cdp page observer emits byte-identical output to the extension origina
       extObserver.buildObserverChangesJs(3, 'doc-1'),
     );
     expect(srvObserver.buildObserverTeardownJs()).toBe(extObserver.buildObserverTeardownJs());
+  });
+
+  test('buildObserverRefResolveJs', () => {
+    expect(srvObserver.buildObserverRefResolveJs('e1')).toBe(
+      extObserver.buildObserverRefResolveJs('e1'),
+    );
+    expect(srvObserver.buildObserverRefResolveJs('e"42')).toBe(
+      extObserver.buildObserverRefResolveJs('e"42'),
+    );
   });
 });

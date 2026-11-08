@@ -265,6 +265,10 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
  * `expect.ts` (and its `cdp/expect.ts` copy); kept in sync manually. */
 const DEFAULT_EXPECT_TIMEOUT_MS = 3_000;
 const MAX_EXPECT_TIMEOUT_MS = 10_000;
+
+/** Longest `snapshot({ since })` id forwarded; matches the tool schema's maxLength. */
+const MAX_SNAPSHOT_SINCE_LENGTH = 64;
+
 const EXPECT_CONDITION_KEYS = [
   'url_changed',
   'selector_appears',
@@ -1473,19 +1477,31 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.snapshot': {
-      const { within_selector, only_interactive, exclude, max_interactive } = (args ?? {}) as {
+      const { within_selector, only_interactive, exclude, max_interactive, since } = (args ??
+        {}) as {
         within_selector?: string;
         only_interactive?: boolean;
         exclude?: unknown;
         max_interactive?: number;
+        since?: unknown;
       };
       const filterExclude = Array.isArray(exclude)
         ? exclude.filter((v): v is string => typeof v === 'string')
         : undefined;
+      // A snapshot_id is short (`<doc_id>:s<N>`); anything else is dropped defensively,
+      // like non-string exclude entries, and the call answers a full snapshot.
+      const sinceId =
+        typeof since === 'string' && since.length <= MAX_SNAPSHOT_SINCE_LENGTH ? since : undefined;
       return routeToolCall(
         'snapshot',
         requireTabId(args),
-        { within_selector, only_interactive, exclude: filterExclude, max_interactive },
+        {
+          within_selector,
+          only_interactive,
+          exclude: filterExclude,
+          max_interactive,
+          since: sinceId,
+        },
         deps,
       );
     }

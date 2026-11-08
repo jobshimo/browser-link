@@ -167,6 +167,16 @@ tokens AND more reliable than a hand-rolled expression.
   repeated landmarks, \`max_interactive\` overrides the cap of 120.
   Cuts token cost on the most-called tool; not hackeable from the
   client side (the filtering happens in-page).
+- **Looking at the same view again** → take ONE full \`browser.snapshot\` per
+  view, keep its \`snapshot_id\`, and pass it as \`since\` for every later
+  look: \`browser.snapshot({ since })\` returns only \`added\` / \`removed\` /
+  \`changed\` entries instead of the whole page. On
+  \`since_status: "doc-changed"\` (or \`evicted\`, \`observer-unavailable\`) you
+  already got the full snapshot back: keep its new \`snapshot_id\`. A changed
+  neighbour can be listed because its selector changed — use the current
+  one. \`ref\` (\`e<N>\`) on entries is an element handle valid only for the
+  \`doc_id\` that issued it; for now it is informational, not an action
+  target.
 - **Quick orientation without a full snapshot** → \`browser.state\`. Returns
   \`{ url, title, focused?, dialogs?, scroll?, viewport }\` — cheaper than
   \`browser.snapshot\` when you only need to know where you are (is a

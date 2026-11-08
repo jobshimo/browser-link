@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   buildClickResolveJs,
   buildDragProbeJs,
@@ -12,6 +12,13 @@ import {
   buildTypeResolveJs,
   buildWaitForSelectorJs,
 } from './builders.js';
+import {
+  OBSERVER_BINDING,
+  OBSERVER_GLOBAL,
+  buildObserverInstallJs,
+  buildObserverTeardownJs,
+} from './observer.js';
+import baselineFixture from './builders.baseline.fixture.json';
 
 /**
  * End-to-end tests for the actual expression strings background.ts ships to
@@ -1236,5 +1243,440 @@ describe('buildWaitForSelectorJs', () => {
     for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
       expect(() => wait('[[bad', condition)).toThrow();
     }
+  });
+});
+
+/**
+ * Baseline pin for S2 of the snapshot-diff slice: when the page observer is
+ * NOT installed, `snapshot`, `find` and `state` must produce exactly the
+ * output they produced before refs existed. The fixture JSON was captured
+ * once from the pre-ref builders on this same page; it is held literally so
+ * this test never reads git history.
+ */
+function buildBaselinePage(): void {
+  document.title = 'Baseline fixture';
+  document.body.innerHTML = `
+    <nav><a id="home" href="/home">Home</a></nav>
+    <main id="main">
+      <h1>Fixture heading</h1>
+      <p>Some plain text for the dump.</p>
+      <button id="save">Save changes</button>
+      <button>Save draft</button>
+      <a href="/docs">Docs link</a>
+      <input name="q" type="search" placeholder="Search" aria-label="Search box" />
+      <div id="host"></div>
+    </main>`;
+  const shadow = document.getElementById('host')!.attachShadow({ mode: 'open' });
+  shadow.innerHTML = '<button id="inner">Shadow action</button>';
+  document.querySelectorAll('nav, main, h1, p, button, a, input, #host').forEach(makeVisible);
+  makeVisible(shadow.getElementById('inner')!);
+}
+
+const baseline = baselineFixture as Record<string, unknown>;
+
+function captureBaselineOutputs(): Record<string, unknown> {
+  buildBaselinePage();
+  const out: Record<string, unknown> = {};
+  out.snapshot = evalExpr(buildSnapshotJs({}));
+  out.snapshot_only_interactive = evalExpr(buildSnapshotJs({ only_interactive: true }));
+  out.snapshot_exclude_nav = evalExpr(buildSnapshotJs({ exclude: ['nav'] }));
+  out.snapshot_within = evalExpr(buildSnapshotJs({ within_selector: '#main' }));
+  out.snapshot_within_miss = evalExpr(buildSnapshotJs({ within_selector: '#nope' }));
+  out.snapshot_max_interactive = evalExpr(buildSnapshotJs({ max_interactive: 2 }));
+  out.find_single = evalExpr(buildFindJs({ text: 'Docs link' }));
+  out.find_shadow = evalExpr(buildFindJs({ text: 'Shadow action' }));
+  out.find_multi = evalExpr(buildFindJs({ text: 'Save' }));
+  out.find_not_found = evalExpr(buildFindJs({ text: 'save settings' }));
+  out.find_role_excluded = evalExpr(buildFindJs({ text: 'Docs', role: 'button' }));
+  out.state_unfocused = evalExpr(buildStateJs());
+  (document.querySelector('input[name="q"]') as HTMLInputElement).focus();
+  out.state_focused = evalExpr(buildStateJs());
+  (document.activeElement as HTMLElement | null)?.blur();
+  return out;
+}
+
+describe('snapshot, find and state without the page observer (baseline pin)', () => {
+  test('every result is byte-identical to the pre-ref output', () => {
+    expect((window as unknown as Record<string, unknown>).__blPageObserver).toBeUndefined();
+    const actual = captureBaselineOutputs();
+    expect(Object.keys(actual)).toEqual(Object.keys(baseline));
+    for (const name of Object.keys(baseline)) {
+      // JSON.stringify keeps key order, so this pins field order too.
+      expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+    }
+  });
+});
+
+interface ObserverHandle {
+  doc_id: string;
+  refFor(el: Element): string | null;
+}
+type Json = Record<string, unknown>;
+
+describe('snapshot, find and state with the page observer (refs, doc_id, snapshot_id)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  let docId = '';
+
+  beforeEach(() => {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+  });
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  const refPattern = /^e\d+$/;
+
+  test('snapshot entries carry a ref right after selector, shadow-root entries included', () => {
+    buildBaselinePage();
+    const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    expect(snapshot.interactive.length).toBe(6);
+    for (const entry of snapshot.interactive) {
+      expect(entry.ref).toMatch(refPattern);
+      const keys = Object.keys(entry);
+      expect(keys[keys.indexOf('selector') + 1]).toBe('ref');
+    }
+    const shadowEntry = snapshot.interactive.find((e) => e.text === 'Shadow action')!;
+    const inner = document.getElementById('host')!.shadowRoot!.getElementById('inner')!;
+    expect(shadowEntry.ref).toBe((win[OBSERVER_GLOBAL] as ObserverHandle).refFor(inner));
+  });
+
+  test('the same element keeps the same ref across two snapshots', () => {
+    buildBaselinePage();
+    const first = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    const second = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    expect(second.interactive.map((e) => e.ref)).toEqual(first.interactive.map((e) => e.ref));
+    expect(new Set(first.interactive.map((e) => e.ref)).size).toBe(first.interactive.length);
+  });
+
+  test('snapshot results carry doc_id and a snapshot_id that increments per call', () => {
+    buildBaselinePage();
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    const second = evalExpr<Json>(buildSnapshotJs({ only_interactive: true }));
+    expect(first.doc_id).toBe(docId);
+    expect(first.snapshot_id).toBe(docId + ':s1');
+    expect(second.doc_id).toBe(docId);
+    expect(second.snapshot_id).toBe(docId + ':s2');
+  });
+
+  test('find single match, candidates and near_misses carry ref; find carries doc_id only', () => {
+    buildBaselinePage();
+    const single = evalExpr<Json>(buildFindJs({ text: 'Docs link' }));
+    expect(single.ref).toMatch(refPattern);
+    expect(Object.keys(single).slice(0, 3)).toEqual(['matched', 'selector', 'ref']);
+    expect(single.doc_id).toBe(docId);
+    expect(single.snapshot_id).toBeUndefined();
+
+    const multi = evalExpr<{ candidates: Json[]; doc_id: string }>(buildFindJs({ text: 'Save' }));
+    expect(multi.candidates.map((c) => Object.keys(c))).toEqual([
+      ['selector', 'ref', 'text', 'tag'],
+      ['selector', 'ref', 'text', 'tag'],
+    ]);
+    expect(multi.doc_id).toBe(docId);
+
+    const miss = evalExpr<{ near_misses: Json[]; doc_id: string }>(
+      buildFindJs({ text: 'save settings' }),
+    );
+    expect(miss.near_misses.length).toBe(2);
+    for (const nm of miss.near_misses) {
+      expect(nm.ref).toMatch(refPattern);
+      expect(Object.keys(nm).slice(0, 3)).toEqual(['text', 'selector', 'ref']);
+    }
+    expect(miss.doc_id).toBe(docId);
+
+    // The same element answers with the same ref from find and snapshot.
+    const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    const docsEntry = snapshot.interactive.find((e) => e.text === 'Docs link')!;
+    expect(docsEntry.ref).toBe(single.ref);
+  });
+
+  test('state.focused carries ref and the state result carries doc_id', () => {
+    buildBaselinePage();
+    const input = document.querySelector('input[name="q"]') as HTMLInputElement;
+    input.focus();
+    const state = evalExpr<{ focused: Json; doc_id: string }>(buildStateJs());
+    expect(Object.keys(state.focused)).toEqual(['selector', 'ref', 'tag']);
+    expect(state.focused.ref).toBe((win[OBSERVER_GLOBAL] as ObserverHandle).refFor(input));
+    expect(state.doc_id).toBe(docId);
+    input.blur();
+  });
+
+  test('a ref of null leaves the entry without a ref key', () => {
+    buildBaselinePage();
+    const g = win[OBSERVER_GLOBAL] as ObserverHandle;
+    const original = g.refFor;
+    g.refFor = () => null;
+    try {
+      const snapshot = evalExpr<{ interactive: Json[]; doc_id: string }>(buildSnapshotJs({}));
+      expect(snapshot.interactive.every((e) => !('ref' in e))).toBe(true);
+      expect(snapshot.doc_id).toBe(docId);
+    } finally {
+      g.refFor = original;
+    }
+  });
+
+  test('a dead observer adds nothing: output equals the baseline', () => {
+    const g = win[OBSERVER_GLOBAL] as ObserverHandle & { dead: boolean };
+    g.dead = true;
+    try {
+      const actual = captureBaselineOutputs();
+      for (const name of Object.keys(baseline)) {
+        expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+      }
+    } finally {
+      g.dead = false;
+    }
+  });
+
+  test('filters and max_interactive behave as before: stripping the new fields gives the baseline', () => {
+    const actual = captureBaselineOutputs();
+    const strip = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(strip);
+      if (value && typeof value === 'object') {
+        const out: Json = {};
+        for (const [k, v] of Object.entries(value)) {
+          if (k === 'ref' || k === 'doc_id' || k === 'snapshot_id') continue;
+          out[k] = strip(v);
+        }
+        return out;
+      }
+      return value;
+    };
+    for (const name of Object.keys(baseline)) {
+      expect(JSON.stringify(strip(actual[name])), name).toBe(JSON.stringify(baseline[name]));
+    }
+    const capped = actual.snapshot_max_interactive as { interactive: Json[] };
+    expect(capped.interactive.length).toBe(2);
+    expect(capped.interactive.every((e) => refPattern.test(String(e.ref)))).toBe(true);
+  });
+});
+
+/**
+ * `snapshot({ since })` (spec v4 §6.2): the observer keeps the last 4
+ * snapshot records per document, and a `since` call answers with the
+ * entries added, removed and changed by ref against that record.
+ */
+describe('buildSnapshotJs — since diff', () => {
+  const win = window as unknown as Record<string, unknown>;
+  let docId = '';
+  const sid = (n: number): string => docId + ':s' + n;
+
+  function buildDiffPage(): void {
+    document.title = 'Diff fixture';
+    document.body.innerHTML = `
+      <main id="main">
+        <h1 id="title">Inbox</h1>
+        <button id="a">Alpha</button>
+        <button id="b">Beta</button>
+        <ul id="list"></ul>
+      </main>`;
+    document.querySelectorAll('main, h1, button').forEach(makeVisible);
+  }
+
+  function addButton(id: string, text: string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.id = id;
+    btn.textContent = text;
+    document.getElementById('list')!.appendChild(btn);
+    makeVisible(btn);
+    return btn;
+  }
+
+  function install(): void {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+  }
+
+  beforeEach(() => {
+    install();
+    buildDiffPage();
+  });
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  test('two snapshots of an idle page diff to empty', () => {
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: first.snapshot_id as string }));
+    expect(diff).toEqual({
+      title: 'Diff fixture',
+      url: location.href,
+      doc_id: docId,
+      snapshot_id: sid(2),
+      since: sid(1),
+      added: [],
+      removed: [],
+      changed: [],
+    });
+    expect(Object.keys(diff)).toEqual([
+      'title',
+      'url',
+      'doc_id',
+      'snapshot_id',
+      'since',
+      'added',
+      'removed',
+      'changed',
+    ]);
+  });
+
+  test('an inserted button is reported as exactly one added entry with its ref', () => {
+    evalExpr(buildSnapshotJs({}));
+    const btn = addButton('c', 'Gamma');
+    const diff = evalExpr<{ added: Json[]; removed: Json[]; changed: Json[] }>(
+      buildSnapshotJs({ since: sid(1) }),
+    );
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+    expect(diff.added).toEqual([
+      {
+        tag: 'button',
+        role: 'button',
+        selector: '#c',
+        ref: (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(btn),
+        text: 'Gamma',
+      },
+    ]);
+  });
+
+  test('a changed text is one changed entry with the current text', () => {
+    evalExpr(buildSnapshotJs({}));
+    document.getElementById('b')!.textContent = 'Beta two';
+    const diff = evalExpr<{ added: Json[]; removed: Json[]; changed: Json[] }>(
+      buildSnapshotJs({ since: sid(1) }),
+    );
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toHaveLength(1);
+    expect(diff.changed[0]).toMatchObject({ selector: '#b', text: 'Beta two' });
+  });
+
+  test('a removed button is one removed entry with its old ref, tag and text', () => {
+    const first = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
+    const oldRef = first.interactive.find((e) => e.selector === '#b')!.ref;
+    document.getElementById('b')!.remove();
+    const diff = evalExpr<{ added: Json[]; removed: Json[]; changed: Json[] }>(
+      buildSnapshotJs({ since: sid(1) }),
+    );
+    expect(diff.added).toEqual([]);
+    expect(diff.changed).toEqual([]);
+    expect(diff.removed).toEqual([{ ref: oldRef, tag: 'button', text: 'Beta' }]);
+  });
+
+  test('a since from a previous document gives a full snapshot with since_status doc-changed', () => {
+    evalExpr(buildSnapshotJs({}));
+    const old = evalExpr<Json>(buildSnapshotJs({})).snapshot_id as string;
+    evalExpr(buildObserverTeardownJs());
+    install();
+    const result = evalExpr<Json>(buildSnapshotJs({ since: old }));
+    expect(Array.isArray(result.interactive)).toBe(true);
+    expect((result.interactive as Json[]).length).toBe(2);
+    expect(result.doc_id).toBe(docId);
+    expect(result.snapshot_id).toBe(sid(1));
+    expect(result.since).toBe(old);
+    expect(result.since_status).toBe('doc-changed');
+    expect(result.added).toBeUndefined();
+  });
+
+  test('a since with the current doc_id but an unknown number gives since_status evicted', () => {
+    evalExpr(buildSnapshotJs({}));
+    const result = evalExpr<Json>(buildSnapshotJs({ since: sid(99) }));
+    expect((result.interactive as Json[]).length).toBe(2);
+    expect(result.doc_id).toBe(docId);
+    expect(result.snapshot_id).toBe(sid(2));
+    expect(result.since).toBe(sid(99));
+    expect(result.since_status).toBe('evicted');
+  });
+
+  test('a since without a doc_id prefix is treated as another document', () => {
+    evalExpr(buildSnapshotJs({}));
+    const result = evalExpr<Json>(buildSnapshotJs({ since: 's1' }));
+    expect(result.doc_id).toBe(docId);
+    expect(result.since).toBe('s1');
+    expect(result.since_status).toBe('doc-changed');
+  });
+  test('an evicted id gives a full snapshot with since_status evicted', () => {
+    for (let i = 0; i < 5; i++) evalExpr(buildSnapshotJs({}));
+    const result = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
+    expect((result.interactive as Json[]).length).toBe(2);
+    expect(result.snapshot_id).toBe(sid(6));
+    expect(result.since).toBe(sid(1));
+    expect(result.since_status).toBe('evicted');
+  });
+
+  test('without the observer a since gives a full snapshot with since_status observer-unavailable', () => {
+    evalExpr(buildObserverTeardownJs());
+    const result = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
+    expect((result.interactive as Json[]).length).toBe(2);
+    expect(result.doc_id).toBeUndefined();
+    expect(result.snapshot_id).toBeUndefined();
+    expect(result.since).toBe(sid(1));
+    expect(result.since_status).toBe('observer-unavailable');
+  });
+
+  test('max_interactive applies after diffing: 3 added with a cap of 1 keeps 1, overflow 2', () => {
+    evalExpr(buildSnapshotJs({}));
+    addButton('c', 'Gamma');
+    addButton('d', 'Delta');
+    addButton('e', 'Epsilon');
+    const diff = evalExpr<{ added: Json[]; changed: Json[]; overflow: number }>(
+      buildSnapshotJs({ since: sid(1), max_interactive: 1 }),
+    );
+    expect(diff.added.map((e) => e.selector)).toEqual(['#c']);
+    expect(diff.changed).toEqual([]);
+    expect(diff.overflow).toBe(2);
+  });
+
+  test('headings and text are omitted when unchanged and headings return when a heading changed', () => {
+    evalExpr(buildSnapshotJs({}));
+    const idle = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
+    expect('headings' in idle).toBe(false);
+    expect('text' in idle).toBe(false);
+    document.getElementById('title')!.textContent = 'Archive';
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: sid(2) }));
+    expect(diff.headings).toEqual([{ level: 'H1', text: 'Archive' }]);
+  });
+
+  test('only_interactive never reports headings or text in a diff', () => {
+    evalExpr(buildSnapshotJs({}));
+    document.getElementById('title')!.textContent = 'Archive';
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: sid(1), only_interactive: true }));
+    expect('headings' in diff).toBe(false);
+    expect('text' in diff).toBe(false);
+  });
+
+  test('a snapshot without since keeps its shape and still records for a later since', () => {
+    const full = evalExpr<Json>(buildSnapshotJs({ max_interactive: 1 }));
+    expect(Object.keys(full)).toEqual([
+      'title',
+      'url',
+      'interactive',
+      'headings',
+      'doc_id',
+      'snapshot_id',
+    ]);
+    expect((full.interactive as Json[]).length).toBe(1);
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+  });
+
+  test('a within_selector miss ignores since and keeps its shape plus doc_id', () => {
+    evalExpr(buildSnapshotJs({}));
+    const miss = evalExpr<Json>(buildSnapshotJs({ within_selector: '#nope', since: sid(1) }));
+    expect(miss).toEqual({
+      title: 'Diff fixture',
+      url: location.href,
+      interactive: [],
+      notice: 'within_selector did not match any element',
+      doc_id: docId,
+    });
   });
 });

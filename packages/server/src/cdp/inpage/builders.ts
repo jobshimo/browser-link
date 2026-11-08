@@ -22,6 +22,53 @@
  */
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';
+import { OBSERVER_GLOBAL } from './observer.js';
+
+/**
+ * In-page access to the page observer's element identity (spec v4 §5.6),
+ * injected verbatim into `buildSnapshotJs`, `buildFindJs` and `buildStateJs`.
+ * The observer global is looked up ONCE per evaluation and used only when it
+ * is present, not torn down, and exposes `refFor`:
+ *   - `refOf(el)` returns the observer's `e<N>` ref for `el`, or `null`;
+ *   - `withDocId(result)` adds `doc_id` to `result` and returns it;
+ *   - `snapshotStore()` returns the observer when it keeps snapshot records
+ *     (`recordSnapshot` / `getSnapshot`, used by `snapshot({ since })`), else
+ *     `null`.
+ * Without the observer (injection failed, pre-observer document) all are
+ * no-ops, so every result is byte-identical to the pre-ref output.
+ */
+export const PAGE_OBSERVER_JS = `
+  const pageObserver = (() => {
+    try {
+      const g = window[${JSON.stringify(OBSERVER_GLOBAL)}];
+      if (g && !g.dead && typeof g.refFor === 'function') return g;
+    } catch (e) {}
+    return null;
+  })();
+  function refOf(el) {
+    if (!pageObserver) return null;
+    try {
+      const ref = pageObserver.refFor(el);
+      return typeof ref === 'string' ? ref : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function withDocId(result) {
+    if (pageObserver && typeof pageObserver.doc_id === 'string') result.doc_id = pageObserver.doc_id;
+    return result;
+  }
+  function snapshotStore() {
+    if (
+      pageObserver &&
+      typeof pageObserver.recordSnapshot === 'function' &&
+      typeof pageObserver.getSnapshot === 'function'
+    ) {
+      return pageObserver;
+    }
+    return null;
+  }
+`;
 
 /**
  * Build the snapshot expression. Filters are applied INSIDE the page so the
@@ -42,12 +89,41 @@ import { DOM_HELPERS_JS } from './dom-helpers.js';
  * a computed `pointer-events: none` element can never receive a real click
  * (see the helper's comment in `dom-helpers.ts`). Headings and the text
  * dump keep plain `isVisible`, so such elements still contribute text.
+ *
+ * With the page observer installed (see `PAGE_OBSERVER_JS`), each
+ * interactive entry carries `ref` right after `selector`, and the result
+ * carries `doc_id` and `snapshot_id` (`<doc_id>:s<N>`, one per call). Without
+ * it the output is unchanged.
+ *
+ * Every snapshot taken with the observer is recorded by it (the last 4 per
+ * document; the first 500 entries keyed by ref, each with a hash = the entry
+ * serialised without `ref`). `since: <snapshot_id>` then answers with a diff
+ * against that record instead of the full list:
+ *   { title, url, doc_id, snapshot_id, since, added, removed, changed,
+ *     overflow?, headings?, text? }
+ * `added` are entries whose ref is new, `removed` are `{ ref, tag, text? }`
+ * of refs gone (capped at 500), `changed` are current entries whose hash
+ * differs. `max_interactive` applies AFTER diffing to `added` then `changed`;
+ * `overflow` counts what it dropped. `headings` / `text` appear only when
+ * `only_interactive` is false and they differ from the recorded ones.
+ * When the diff cannot be made the result is the full snapshot plus `since`
+ * and `since_status`:
+ *   - `observer-unavailable`: no observer (no `doc_id` / `snapshot_id`);
+ *   - `doc-changed`: `snapshot_id` is `<doc_id>:s<N>`, and the part of
+ *     `since` before its LAST `:` is not the current `doc_id` (or `since` has
+ *     no `:`), so it came from another document; the store is not consulted;
+ *   - `evicted`: the prefix is the current `doc_id` but the id is not among
+ *     the last 4 records (evicted, or never issued).
+ * A `within_selector` miss ignores `since` and keeps the miss shape (plus
+ * `doc_id`).
  */
 export interface SnapshotOpts {
   within_selector?: string;
   only_interactive?: boolean;
   exclude?: string[];
   max_interactive?: number;
+  /** `snapshot_id` of an earlier snapshot of this document to diff against. */
+  since?: string;
 }
 
 export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
@@ -59,23 +135,25 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       typeof opts.max_interactive === 'number' && opts.max_interactive > 0
         ? Math.min(opts.max_interactive, 500)
         : 120,
+    since: typeof opts.since === 'string' ? opts.since : null,
   });
   return `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   const opts = ${optsJson};
   let root = document;
   let notice = '';
   if (opts.withinSelector) {
     const sub = deepQueryFirst(opts.withinSelector);
     if (!sub) {
-      return {
+      return withDocId({
         title: document.title,
         url: location.href,
         interactive: [],
         notice: 'within_selector did not match any element',
-      };
+      });
     }
     root = sub;
   }
@@ -118,6 +196,8 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     const role = el.getAttribute('role') || tag;
     const selInfo = genSelectorInfo(el);
     const entry = { tag, role, selector: selInfo.selector };
+    const ref = refOf(el);
+    if (ref) entry.ref = ref;
     if (selInfo.ambiguous) entry.ambiguous = true;
     const txt = shortText(el);
     if (txt) entry.text = txt;
@@ -137,34 +217,116 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (frame) entry.frame = frame;
     interactive.push(entry);
   });
-  const result = {
-    title: document.title,
-    url: location.href,
-    interactive: interactive.slice(0, opts.maxInteractive),
-  };
+  let headings = null;
+  let visibleText = '';
   if (!opts.onlyInteractive) {
-    const headings = [];
+    const found = [];
     deepQueryAll('h1, h2, h3', root).forEach((h) => {
       if (!isVisible(h)) return;
       if (inExcludedLandmark(h)) return;
       const t = shortText(h);
-      if (t) headings.push({ level: h.tagName, text: t });
+      if (t) found.push({ level: h.tagName, text: t });
     });
-    result.headings = headings.slice(0, 30);
+    headings = found.slice(0, 30);
     const textRoot = (root === document) ? (document.body || document) : root;
-    const visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
-    if (visibleText) result.text = visibleText;
+    visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
   }
-  if (notice) result.notice = notice;
-  return result;
+  let snapshotId = null;
+  if (withDocId({}).doc_id && typeof pageObserver.nextSnapshotId === 'function') {
+    const issued = pageObserver.nextSnapshotId();
+    if (typeof issued === 'string') snapshotId = issued;
+  }
+  function fullResult() {
+    const result = {
+      title: document.title,
+      url: location.href,
+      interactive: interactive.slice(0, opts.maxInteractive),
+    };
+    if (headings) result.headings = headings;
+    if (visibleText) result.text = visibleText;
+    if (notice) result.notice = notice;
+    withDocId(result);
+    if (snapshotId) result.snapshot_id = snapshotId;
+    return result;
+  }
+  // Record every snapshot (with or without since) so a later call can diff
+  // against it. Entries are keyed by ref; the hash is the entry serialised
+  // without its ref, in emission order. Capped at the first 500 entries.
+  const store = snapshotId ? snapshotStore() : null;
+  // A snapshot_id is \`<doc_id>:s<N>\`: a since whose prefix (before the LAST
+  // ':') is not this document's doc_id, or that has no ':', came from another
+  // document and is never looked up.
+  const sinceCut = opts.since === null ? -1 : opts.since.lastIndexOf(':');
+  const sinceSameDoc =
+    sinceCut >= 0 && withDocId({}).doc_id === opts.since.slice(0, sinceCut);
+  const previous = store && sinceSameDoc ? store.getSnapshot(opts.since) : null;
+  const current = new Map();
+  const headingsHash = headings ? JSON.stringify(headings) : null;
+  const textHash = opts.onlyInteractive ? null : visibleText;
+  if (store) {
+    for (const entry of interactive) {
+      if (current.size >= 500) break;
+      if (typeof entry.ref !== 'string') continue;
+      const copy = {};
+      for (const key of Object.keys(entry)) if (key !== 'ref') copy[key] = entry[key];
+      current.set(entry.ref, { hash: JSON.stringify(copy), entry });
+    }
+    store.recordSnapshot(snapshotId, { entries: current, headings_hash: headingsHash, text_hash: textHash });
+  }
+  if (opts.since === null) return fullResult();
+  if (!store) {
+    const result = fullResult();
+    result.since = opts.since;
+    result.since_status = 'observer-unavailable';
+    return result;
+  }
+  if (!previous || !previous.entries || typeof previous.entries.get !== 'function') {
+    const result = fullResult();
+    result.since = opts.since;
+    result.since_status = sinceSameDoc ? 'evicted' : 'doc-changed';
+    return result;
+  }
+  const added = [];
+  const changed = [];
+  const removed = [];
+  current.forEach((item, ref) => {
+    const old = previous.entries.get(ref);
+    if (!old) added.push(item.entry);
+    else if (old.hash !== item.hash) changed.push(item.entry);
+  });
+  previous.entries.forEach((item, ref) => {
+    if (current.has(ref) || removed.length >= 500) return;
+    const gone = { ref, tag: item.entry.tag };
+    if (item.entry.text) gone.text = item.entry.text;
+    removed.push(gone);
+  });
+  // max_interactive applies after diffing (added first, then changed), so
+  // a window shift never masquerades as change.
+  const listed = added.concat(changed);
+  const kept = listed.slice(0, opts.maxInteractive);
+  const diff = withDocId({ title: document.title, url: location.href });
+  diff.snapshot_id = snapshotId;
+  diff.since = opts.since;
+  diff.added = kept.slice(0, Math.min(added.length, kept.length));
+  diff.removed = removed;
+  diff.changed = kept.slice(diff.added.length);
+  if (listed.length > kept.length) diff.overflow = listed.length - kept.length;
+  if (!opts.onlyInteractive) {
+    if (headingsHash !== previous.headings_hash) diff.headings = headings;
+    if (textHash !== previous.text_hash) diff.text = visibleText;
+  }
+  return diff;
 })()
 `;
 }
 
 /** Build the find-by-text expression. Returns one of:
- *   { matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }
- *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,role?}] }
- *   { matched: false, reason: 'multiple-matches', candidates: [{selector,text,tag}] }
+ *   { matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }
+ *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
+ *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
+ *
+ * `ref` and `doc_id` are present only when the page observer is installed
+ * (see `PAGE_OBSERVER_JS`).
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
@@ -211,6 +373,7 @@ export function buildFindJs(opts: FindOpts): string {
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   const opts = ${optsJson};
   const needle = opts.text.toLowerCase();
   const needleTokens = needle.split(/[^a-z0-9]+/).filter(Boolean);
@@ -271,6 +434,8 @@ export function buildFindJs(opts: FindOpts): string {
     }
     function toNearMiss(el) {
       const entry = { text: snippetOf(el), selector: genSelector(el) };
+      const ref = refOf(el);
+      if (ref) entry.ref = ref;
       const roleAttr = el.getAttribute('role');
       if (roleAttr) entry.role = roleAttr;
       return entry;
@@ -303,44 +468,46 @@ export function buildFindJs(opts: FindOpts): string {
           ' but none with role "' + opts.role + '"' +
           (closest ? ' — closest: ' + describeForError(closest) + ' "' + snippetOf(closest) + '"' : '');
         result.near_misses = ranked.map(toNearMiss);
-        return result;
+        return withDocId(result);
       }
       const ranked = rankCandidates(broadAll);
       if (ranked.length > 0) result.near_misses = ranked.map(toNearMiss);
-      return result;
+      return withDocId(result);
     }
     const ranked = rankCandidates(all);
     if (ranked.length > 0) result.near_misses = ranked.map(toNearMiss);
-    return result;
+    return withDocId(result);
   }
   if (matches.length > 1) {
-    return {
+    return withDocId({
       matched: false,
       reason: 'multiple-matches',
-      candidates: matches.slice(0, opts.candidateLimit).map((el) => ({
-        selector: genSelector(el),
-        text: shortText(el),
-        tag: el.tagName.toLowerCase(),
-      })),
-    };
+      candidates: matches.slice(0, opts.candidateLimit).map((el) => {
+        const candidate = { selector: genSelector(el) };
+        const ref = refOf(el);
+        if (ref) candidate.ref = ref;
+        candidate.text = shortText(el);
+        candidate.tag = el.tagName.toLowerCase();
+        return candidate;
+      }),
+    });
   }
   const el = matches[0];
   const center = viewportCenterOf(el);
   const selInfo = genSelectorInfo(el);
-  const result = {
-    matched: true,
-    selector: selInfo.selector,
-    coords: {
-      x: Math.round(center.x),
-      y: Math.round(center.y),
-    },
-    tag: el.tagName.toLowerCase(),
-    text: shortText(el),
+  const result = { matched: true, selector: selInfo.selector };
+  const ref = refOf(el);
+  if (ref) result.ref = ref;
+  result.coords = {
+    x: Math.round(center.x),
+    y: Math.round(center.y),
   };
+  result.tag = el.tagName.toLowerCase();
+  result.text = shortText(el);
   if (selInfo.ambiguous) result.ambiguous = true;
   const frame = frameSelectorFor(el);
   if (frame) result.frame = frame;
-  return result;
+  return withDocId(result);
 })()
 `;
 }
@@ -778,12 +945,16 @@ export function buildExpectProbeJs(opts: ExpectProbeOpts): string {
  * `focused` beyond `<body>`, no `dialogs` when none are open, and no
  * `scroll` when the page is at its default (0,0) position — token-lean by
  * construction, matching the omit-falsy convention the other builders use.
+ *
+ * With the page observer installed (see `PAGE_OBSERVER_JS`), `focused`
+ * carries `ref` right after `selector` and the result carries `doc_id`.
  */
 export function buildStateJs(): string {
   return `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   function deepActiveElement() {
     let el = document.activeElement;
     let guard = 0;
@@ -844,7 +1015,10 @@ export function buildStateJs(): string {
   const active = deepActiveElement();
   if (active && active !== document.body && active.tagName) {
     const selInfo = genSelectorInfo(active);
-    const focused = { selector: selInfo.selector, tag: active.tagName.toLowerCase() };
+    const focused = { selector: selInfo.selector };
+    const ref = refOf(active);
+    if (ref) focused.ref = ref;
+    focused.tag = active.tagName.toLowerCase();
     if (selInfo.ambiguous) focused.ambiguous = true;
     result.focused = focused;
   }
@@ -864,7 +1038,7 @@ export function buildStateJs(): string {
   const scrollY = Math.round(window.scrollY);
   if (scrollX !== 0 || scrollY !== 0) result.scroll = { x: scrollX, y: scrollY };
 
-  return result;
+  return withDocId(result);
 })()
 `;
 }

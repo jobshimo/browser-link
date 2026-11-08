@@ -79,6 +79,13 @@ describe('agent-instructions block — reflex protocol shape', () => {
     expect(out).toContain('latest_id');
   });
 
+  test('teaches one full snapshot per view, then since (snapshot diff)', () => {
+    const out = block();
+    expect(out).toContain('take ONE full `browser.snapshot` per');
+    expect(out).toContain('pass it as `since` for every later');
+    expect(out).toContain('informational, not an action');
+  });
+
   test('special keys point at browser.press instead of synthetic KeyboardEvent (v0.16.0)', () => {
     const out = block();
     expect(out).toContain('browser.press');
