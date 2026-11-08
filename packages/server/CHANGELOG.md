@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.35.0](https://github.com/jobshimo/browser-link/compare/v0.34.1...v0.35.0) (2026-11-08)
+
+### Features
+
+- **settle:** a persistent page observer is installed on connect, before any page script runs, on both transports. `click`, `type` and `press` take a mark before dispatching, so the settle result now measures what the action caused: `mutation_count` counts the synchronous mutation that the old post-dispatch observer always missed, `url_changed` and `focus_moved` are baselined at the mark, and a new `changes` object reports `records`, `targets`, per-kind counts, the roots touched (`document`, `shadow`, `frame`) and up to 20 target descriptors (`tag`, `id`, `role`, `path`) with an `overflow` count. When the observer is not in the page, the result keeps today's fields and says so with `changes: null` and `observer: 'unavailable'`.
+- **settle:** the observer covers open and closed shadow roots (`attachShadow` patched in the main world before page scripts) and same-origin iframes, coalesces records per flush with `setTimeout`, never `requestAnimationFrame`, so a hidden tab still reports, and keeps a bounded ring so a stale document answers `doc-changed` instead of lying. Measured on a strict-CSP page (GitHub) and under a 13k mutations/s storm; see `packages/plan/lab/2026-11-06-live-page-model/README.md`.
+- **list_tabs:** `url` and `title` follow the page. The observer reports `doc_start` and `nav` (`pushState`, `replaceState`, `popstate`, `hashchange`); the extension forwards them as a `tab-navigated` bridge event and cdp-direct updates its own tab metadata, so `list_tabs` no longer shows registration-time values after an SPA or full navigation.
+- **wait_for:** the selector modes (`visible`, `hidden`, `attached`, `detached`) use the same deep query as `find` and `click`, reaching open shadow roots and same-origin iframes on both transports. Expression and `network_url` modes are unchanged.
+- **cdp-direct:** the same observer, mark and `changes` shape as the extension; the observer is torn down by the idle sweep, and a failed install leaves the connection usable.
+
 ## [0.34.1](https://github.com/jobshimo/browser-link/compare/v0.34.0...v0.34.1) (2026-11-06)
 
 ### Security
