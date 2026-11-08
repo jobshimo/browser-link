@@ -314,14 +314,14 @@ drive the connected tab (14 read, 13 action) and 6 persistent-map tools
 | `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                            |
 | `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                 |
 | `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed                                                                                                                    |
-| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`                                                                                                                                      |
+| `browser.find`              | Locate one element by visible text, by `ref` or by `semantic_key` (`key`) → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`                                                                                               |
 | `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                                                                                                                      |
 | `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                                                                                                                              |
 | `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB; an element larger than its iframe/scroll container is only painted as far as that container shows it) |
 | `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                                                                                                                                  |
 | `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                                                                                                                                  |
 | `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                                                                                                                                                |
-| `browser.wait_for`          | Wait for a selector / JS expression / network request URL to match a condition                                                                                                                                                                                        |
+| `browser.wait_for`          | Wait for a selector / `ref` / JS expression / network request URL to match a condition                                                                                                                                                                                |
 | `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                                                                                                                                          |
 | `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                                                                                                                                      |
 | `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`                                                                                                                           |
@@ -333,9 +333,9 @@ two exceptions are footnoted):
 | Tool                     | Purpose                                                                                                                                                  |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                                |
-| `browser.click`          | Click an element by CSS selector; hit-tests for occlusion first (`force:true` to bypass)                                                                 |
-| `browser.type`           | Focus an input and type text via the native value setter                                                                                                 |
-| `browser.press`          | Trusted CDP key press (+ modifiers) — real `isTrusted:true` input, for widgets synthetic events miss                                                     |
+| `browser.click`          | Click an element by CSS selector or `ref`; hit-tests for occlusion first (`force:true` to bypass)                                                        |
+| `browser.type`           | Focus an input (by selector or `ref`) and type text via the native value setter                                                                          |
+| `browser.press`          | Trusted CDP key press (+ modifiers), optionally focusing a selector or `ref` first — real `isTrusted:true` input, for widgets synthetic events miss      |
 | `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                                     |
 | `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip; fail-fast, max 20 steps, `dry_run` and `detach` available |
 | `browser.flow_cancel`    | Stop a running flow by `flow_id`; lands within one step and keeps the partial results [^cancel-claim]                                                    |
@@ -413,8 +413,8 @@ and `since_status`, so the call is never wasted. Keep the new
 is reused while the node lives. A `ref` is valid only for the `doc_id` that
 issued it and dies with the document. Results also carry `doc_id`, and
 `snapshot` results carry `snapshot_id` (`<doc_id>:s<N>`). All of these are
-additive and absent when the observer is not in the page. For now `ref` is
-informational: it is not yet accepted as an action target.
+additive and absent when the observer is not in the page. A `ref` is also an
+action target: see [`ref` as a target](#ref-as-a-target--stable-identity-for-this-document).
 
 **Selectors can change.** The structural selector adds `:nth-of-type` only
 when siblings force it, so inserting a sibling can change a neighbour's
@@ -424,6 +424,56 @@ the current one.
 The result shapes are the same on the extension and on cdp-direct tabs, so
 the [cdp-direct support table](#cdp-direct-mode-no-extension) needs no
 change.
+
+#### `ref` as a target — stable identity for this document
+
+`click`, `type`, `press`, `find`, `wait_for` and the matching `browser.flow`
+steps accept `ref` (`e<N>`, taken from the latest `snapshot`, `find` or
+`state` of the **current** document) in place of a CSS selector. Prefer it
+over a selector you copied earlier: a selector can change when siblings are
+inserted (see above), a live `ref` still names the same node.
+
+| Tool            | Target rule                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------- |
+| `click`, `type` | exactly one of `selector` or `ref`                                                                            |
+| `press`         | at most one of `selector` or `ref` (neither: the key goes to whatever has focus)                              |
+| `wait_for`      | exactly one of `selector`, `ref`, `expression` or `network_url`; `ref` takes the same `condition` as selector |
+| `find`          | exactly one of `text`, `ref` or `key`; `ref` together with `text` is accepted and `text` is ignored           |
+| `flow` steps    | a step `ref` beats the implicit target of a preceding `find`; `selector` and `ref` together are rejected      |
+
+**Resolution.** A `ref` whose node is still in the page resolves directly. If
+the node is gone (a list re-rendered and replaced it), the observer looks it
+up again by the element's **semantic key**, recorded when the `ref` was
+issued: the same role, the same accessible name, an identical ancestor tag
+path, and the unique candidate with the smallest sibling-index distance. When
+that rebind succeeds the result carries `reresolved: true` and the action
+proceeds on the new node. A changed name or role invalidates the `ref`.
+
+**Failures.**
+
+| Error                                             | Meaning and next step                                                                                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ref-stale: <ref> not found in document <doc_id>` | The node is gone and no unique match exists, or the `ref` belongs to another document. Take a fresh `snapshot` (or `find`) and use the new `ref`. |
+| `observer-unavailable: …`                         | The page observer is not running in the tab, so a `ref` cannot be resolved. Use a selector.                                                       |
+| `wait_for` on a `ref` that no longer resolves     | Not an error: the element counts as missing (`attached` false, `detached` true).                                                                  |
+
+**Properties.**
+
+- Re-resolution never crosses documents. A navigation or reload gives a new
+  `doc_id`, and every earlier `ref` fails with `ref-stale`.
+- Identical rows (same role, accessible name and tag path) tie. A tie is
+  refused with `ref-stale`, never guessed, so a `ref` never silently moves to
+  a different row.
+- The selector path is unchanged: a call with `selector` behaves as it did
+  before `ref` existed, and tests pin that.
+
+**`semantic_key`.** A single-match `find` (by text, by `ref` or by `key`)
+also returns `semantic_key: { role, name, path: [{ tag, index }] }`. Pass it
+back as `find({ key })` to locate the element again by role and accessible
+name: a unique match returns the usual single-match result, otherwise the
+call reports a counted `not-found` (for example, how many candidates share
+role and name). `candidates`, `near_misses` and `snapshot` entries do not
+carry the key.
 
 #### `settle_ms` — settle proves QUIET, not EFFECT
 
@@ -824,6 +874,22 @@ Two layers, both indexed by app:
 | **selector** | `{ selector: "button[aria-label='Save']", evidence?: "found via snapshot" }`         | A CSS selector tied to a stable purpose                                        |
 | **flow**     | `{ steps: [{action:'click', selector:'#chip'}, {action:'wait', ms:500}, …] }`        | A free-form note about a multi-step path — not `browser.flow`-replayable as-is |
 | **gotcha**   | `{ body: "Synthetic dblclick does not fire the React handler — use full sequence" }` | A non-obvious fact about the app that would take time to rediscover            |
+
+A `selector` entry may also carry a **`semantic_key`** in its payload,
+next to the selector: `{ selector, semantic_key: { role, name, path } }`,
+where `semantic_key` is the one a `browser.find` single match returned for
+that element (`path` has 1 to 8 `{ tag, index }` steps). Save it when the
+selector is a structural `:nth-of-type(` fallback, which breaks when the
+page reorders. `browser.map.save` refuses a key on an entry saved with
+`ambiguous: true`. At `browser.map.recall`, a selector entry that carries a
+key and whose selector is a structural fallback comes back with
+`prefer: 'semantic_key'`: target it with
+`browser.find({ key: payload.semantic_key })` instead of the stored
+selector. `prefer` is computed at recall and never stored. The field lives
+inside the existing JSON `payload`, so the `entries` table is unchanged,
+there is no migration, and older rows read as before. `map export` /
+`map import` carry it. `ref` values are never stored in the map: they die
+with the document.
 
 **Named flow recipes** (v0.18.0) — a separate `flows` table, one row per
 named, directly **`browser.flow`-replayable** sequence, validated against

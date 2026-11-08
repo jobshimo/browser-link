@@ -174,9 +174,20 @@ tokens AND more reliable than a hand-rolled expression.
   \`since_status: "doc-changed"\` (or \`evicted\`, \`observer-unavailable\`) you
   already got the full snapshot back: keep its new \`snapshot_id\`. A changed
   neighbour can be listed because its selector changed — use the current
-  one. \`ref\` (\`e<N>\`) on entries is an element handle valid only for the
-  \`doc_id\` that issued it; for now it is informational, not an action
-  target.
+  one.
+- **Acting on an element you just located** → prefer its \`ref\` (\`e<N>\`)
+  from the last \`snapshot\`/\`find\` of the CURRENT document: \`click\`,
+  \`type\`, \`press\`, \`find\` and \`wait_for\` take \`ref\` instead of
+  \`selector\`. A replaced node is re-found by role + accessible name +
+  tag path and the result says \`reresolved: true\`; identical rows tie
+  and are refused. On \`ref-stale\` (node gone, or ref from another
+  document) take a fresh \`browser.snapshot\` — never retry the same
+  ref. Refs die with the document: never save one to the map.
+- **Saving a structural selector to the map** → a \`find\` single match
+  carries \`semantic_key\`. When the selector is structural
+  (\`:nth-of-type\`), save that \`semantic_key\` in the payload next to it,
+  and use \`browser.find({ key })\` when recall returns
+  \`prefer: "semantic_key"\`. Never save a key for an \`ambiguous\` entry.
 - **Quick orientation without a full snapshot** → \`browser.state\`. Returns
   \`{ url, title, focused?, dialogs?, scroll?, viewport }\` — cheaper than
   \`browser.snapshot\` when you only need to know where you are (is a

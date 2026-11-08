@@ -277,7 +277,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Empty-string fields (`placeholder`, `aria_label`, etc.) are omitted from each entry. Read by key with optional-chaining or fall back to "".',
         'CLOSED shadow roots (attachShadow({mode:"closed"})) are unreachable from any CDP-based tool — there is no workaround. Cross-origin iframes are also unreachable (same-origin policy); their content is invisible to this scan.',
         'Two structurally-identical component instances in different roots (e.g. twin web components with byte-identical internals) cannot be told apart by any CSS selector — no syntax scopes a selector to one shadow root. Affected entries carry `ambiguous: true`; their selector resolves to the FIRST match in a deterministic traversal order. Use it right away, never cache it.',
-        '`ref`, `doc_id` and `snapshot_id` appear only when the page observer is running in the tab. A `ref` dies with its document: compare `doc_id` before trusting a ref from an earlier call, and never store refs in the persistent map. `ref` is informational for now: it is not yet accepted as an action target.',
+        '`ref`, `doc_id` and `snapshot_id` appear only when the page observer is running in the tab. A `ref` dies with its document: compare `doc_id` before trusting a ref from an earlier call, and never store refs in the persistent map. A `ref` is accepted as an action target on click, type, press, find and wait_for for the current document: a replaced node is re-found by its semantic key (`reresolved: true`), otherwise the call fails with `ref-stale: <ref> not found in document <doc_id>` and you take a fresh snapshot.',
         'With `since`, a `since_status` of `doc-changed`, `evicted` or `observer-unavailable` means you already received the full snapshot: keep its new `snapshot_id` for the next `since`. Do not diff against the old id again.',
         'The structural selector adds `:nth-of-type` only when siblings force it, so inserting a sibling can change the selector of a neighbour and list that neighbour in `changed`. The selector did change: use the current one, not the one from the earlier snapshot.',
         'A diff covers at most the first 500 interactive entries of each snapshot, and `removed` is capped at 500.',
@@ -355,6 +355,8 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'When the agent would otherwise write a hand-rolled `browser.evaluate` to grep textContent — `find` encapsulates the silently-failing patterns (missing visibility checks, `<div onclick>` not matching `button`, multi-match ambiguity).',
       ],
       gotchas: [
+        '`ref` mode returns `ref-stale: <ref> not found in document <doc_id>` (an error) when the node is gone and no unique role + name + tag-path match exists; take a fresh snapshot. A re-found node comes back with `reresolved: true`.',
+        '`semantic_key` is on single matches only (text, ref and key modes), never on `candidates`, `near_misses` or snapshot entries. `key` mode returns a unique match or a counted `not-found`; with `path`, ties on distance are refused rather than guessed. It never crosses documents.',
         'A `<div onclick>` IS considered clickable here — the broad selector set (`[onclick]`, `[role]`, `[tabindex]`, `[contenteditable]`) is the whole point. A naive `querySelectorAll("button")` misses these silently.',
         'On `multiple-matches`, the response includes up to 5 candidates with their selectors and snippets so the agent can disambiguate without another round-trip. Retry with `exact:true` or a longer/unique substring.',
         '`coords` are viewport-relative at the moment of the call. If the page reflows between `find` and `click`, the selector is the durable identifier — prefer it over coords.',
@@ -637,6 +639,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'When you depend on a backend response — wait for the network request URL to land before reading the DOM.',
       ],
       gotchas: [
+        'In `ref` mode a ref that no longer resolves counts as a missing element, not an error: `attached` stays false and `detached` is true. A re-found node is used silently. Without the page observer the call fails with `observer-unavailable`.',
         'matched: false is not an error. Read it and decide — many flows have a plan B when the condition does not happen.',
         'expression mode runs arbitrary JS via Runtime.evaluate. Subject to the same disabled-list as browser.evaluate would be if you want to gate it.',
         'network_url matches against the rolling buffer of recent requests (last 200). If the request happened before wait_for started, it still counts as matched — wait_for has no concept of "fresh" requests.',
@@ -859,6 +862,9 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'After browser.snapshot returned a selector for the element the user asked you to interact with.',
       ],
       gotchas: [
+        'With `ref`, a failure `ref-stale: <ref> not found in document <doc_id>` means the node is gone and could not be re-found (or the ref came from another document): take a fresh `browser.snapshot` or `browser.find` and use the new `ref`. Do not retry the same ref.',
+        '`reresolved: true` in the result means the node behind the ref had been replaced and the observer re-found it by role, accessible name and ancestor tag path in the same document. Check that the action hit the element you meant.',
+        'Re-resolution refuses ties: identical rows (same role, name and tag path) fail with `ref-stale` instead of being guessed. It never crosses documents, and a changed accessible name invalidates the ref.',
         'Never click a selector you have not just verified via browser.snapshot or browser.map.recall — speculating wastes a turn.',
         'Auto-claims the tab on first use in multi-agent mode.',
         'ok:false with an "Element covered by …" error means something else is on top of the target at click time (a modal backdrop, a loading overlay, a dropdown). Click or dismiss the covering element first, or re-snapshot — do not blindly retry with force:true.',
@@ -896,6 +902,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'After browser.snapshot returned a selector for the input the user wants filled.',
       ],
       gotchas: [
+        '`ref` follows the same rules as browser.click: `reresolved: true` after a re-found node, `ref-stale: <ref> not found in document <doc_id>` when it cannot be found (take a fresh snapshot), `observer-unavailable` when the page observer is not in the tab.',
         'Pass clear:true when you need to replace the current value instead of appending to it.',
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
         'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
@@ -946,6 +953,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'A rich text editor, autocomplete widget, or non-DOM runtime (Qt-WASM, WebGL) that discards synthetic input dispatched via browser.evaluate and needs a REAL, isTrusted:true keystroke.',
       ],
       gotchas: [
+        '`ref` follows the same rules as browser.click (`reresolved`, `ref-stale`, `observer-unavailable`). Without `selector` or `ref` the key goes to whatever has focus; giving both is an error.',
         'For typing normal text into an input, use browser.type instead — it goes through the native value setter and is far cheaper per character than one browser.press call per keystroke.',
         'For anything not covered by the named keys or a single character, browser.evaluate is the escape hatch — but note it produces isTrusted:false events, which some pages ignore.',
         'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',

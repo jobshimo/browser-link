@@ -100,7 +100,7 @@ describe('installAt — v0.8.3 refresh message', () => {
   });
 
   test('refresh message uses the v{prev} → v{VERSION} reflex-protocol wording', () => {
-    writeFileSync(file, `${beginMarker('0.0.1')}\nstale\n${END_MARKER}\n`, 'utf8');
+    writeFileSync(file, `${beginMarker('0.0.1')}\nold body\n${END_MARKER}\n`, 'utf8');
     const msg = installAt(file, 'Test Client');
     expect(msg).toContain('v0.0.1');
     expect(msg).toContain(`v${VERSION}`);
@@ -108,7 +108,7 @@ describe('installAt — v0.8.3 refresh message', () => {
     expect(msg).toContain('restart your MCP client');
     // The stale body is gone.
     const out = readFileSync(file, 'utf8');
-    expect(out).not.toContain('stale');
+    expect(out).not.toContain('old body');
     expect(out).toContain(BEGIN_PREFIX);
   });
 

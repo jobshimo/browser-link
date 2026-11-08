@@ -67,7 +67,15 @@ describe('buildServerInstructions', () => {
     const out = buildServerInstructions();
     expect(out).toContain('take ONE full `browser.snapshot` per');
     expect(out).toContain('pass it as `since` for every later');
-    expect(out).toContain('informational, not an action');
+  });
+
+  test('preamble teaches ref as an action target, ref-stale recovery and semantic_key in the map', () => {
+    const out = buildServerInstructions();
+    expect(out).toContain('prefer its `ref` (`e<N>`)');
+    expect(out).toContain('On `ref-stale` (node gone, or ref from another');
+    expect(out).toContain('save that `semantic_key` in the payload next to it,');
+    expect(out).toContain('Never save a key for an `ambiguous` entry.');
+    expect(out).not.toContain('informational, not an action');
   });
 
   test('preamble points special keys at browser.press instead of synthetic KeyboardEvent (v0.16.0)', () => {
