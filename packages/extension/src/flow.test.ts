@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  refFailureMessage,
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
@@ -1272,5 +1273,128 @@ describe('runFlow — progress reporting', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected success');
     expect(result.steps_completed).toBe(1);
+  });
+});
+
+describe('runFlow — ref as a step target (spec v4 §6.3)', () => {
+  test('a click step with ref passes the ref and no selector', async () => {
+    const performClick = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          result: { clicked: 'e3', tag: 'button', ref: 'e3', reresolved: true },
+        }) satisfies ActionOutcome<ClickStepResult>,
+    );
+    const deps = makeDeps({ performClick });
+    const result = await runFlow([{ click: { ref: 'e3' } }], deps);
+    expect(result.ok).toBe(true);
+    expect(performClick).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'e3', selector: undefined }),
+    );
+  });
+
+  test('a step ref beats the implicit target, which survives for a later step', async () => {
+    const performClick = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          result: { clicked: '#x', tag: 'button' },
+        }) satisfies ActionOutcome<ClickStepResult>,
+    );
+    const deps = makeDeps({
+      performFind: vi.fn(async () => okFind({ selector: '#implicit', ref: 'e1' })),
+      performClick,
+    });
+    const result = await runFlow(
+      [{ find: { text: 'GIF' } }, { click: { ref: 'e9' } }, { click: {} }],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(performClick).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ ref: 'e9', selector: undefined }),
+    );
+    expect(performClick).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ selector: '#implicit' }),
+    );
+    expect(performClick.mock.calls[1][0]).not.toHaveProperty('ref');
+  });
+
+  test('type and press steps pass their ref', async () => {
+    const performType = vi.fn(
+      async () => ({ ok: true, result: { typed: 2 } }) satisfies ActionOutcome<TypeStepResult>,
+    );
+    const performPress = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          result: { key: 'Enter', modifiers: [] },
+        }) satisfies ActionOutcome<PressStepResult>,
+    );
+    const deps = makeDeps({ performType, performPress });
+    const result = await runFlow(
+      [{ type: { ref: 'e4', text: 'hi' } }, { press: { ref: 'e4', key: 'Enter' } }],
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(performType).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'e4', selector: undefined, text: 'hi' }),
+    );
+    expect(performPress).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'e4', selector: undefined, key: 'Enter' }),
+    );
+  });
+
+  test('a wait_for step passes its ref through', async () => {
+    const performWaitFor = vi.fn(async () => ({
+      ok: true as const,
+      result: { matched: true, elapsed_ms: 1, checks: 1 },
+    }));
+    const deps = makeDeps({ performWaitFor });
+    const result = await runFlow([{ wait_for: { ref: 'e5', condition: 'detached' } }], deps);
+    expect(result.ok).toBe(true);
+    expect(performWaitFor).toHaveBeenCalledWith({ ref: 'e5', condition: 'detached' });
+  });
+
+  test('a step with both selector and ref fails without dispatching', async () => {
+    const deps = makeDeps();
+    const result = await runFlow([{ click: { selector: '#a', ref: 'e1' } }], deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.step_kind).toBe('click');
+    expect(result.error).toBe('click: selector and ref are mutually exclusive');
+    expect(deps.performClick).not.toHaveBeenCalled();
+  });
+
+  test('a failing ref click surfaces the ref-stale error verbatim', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(async () => ({
+        ok: false as const,
+        error: refFailureMessage({ reason: 'ref-stale', doc_id: 'd1' }, 'e3')!,
+      })),
+    });
+    const result = await runFlow([{ click: { ref: 'e3' } }], deps);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toBe('ref-stale: e3 not found in document d1');
+  });
+});
+
+describe('refFailureMessage', () => {
+  test('ref-stale names the ref and the doc_id', () => {
+    expect(refFailureMessage({ reason: 'ref-stale', doc_id: 'abc' }, 'e12')).toBe(
+      'ref-stale: e12 not found in document abc',
+    );
+  });
+
+  test('observer-unavailable names the ref', () => {
+    expect(refFailureMessage({ reason: 'observer-unavailable' }, 'e12')).toBe(
+      'observer-unavailable: ref e12 cannot be resolved without the page observer',
+    );
+  });
+
+  test('any other reason is not a ref failure', () => {
+    expect(refFailureMessage({ reason: 'not-found' }, 'e12')).toBeNull();
+    expect(refFailureMessage({ reason: 'occluded' }, 'e12')).toBeNull();
   });
 });

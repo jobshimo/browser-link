@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { type BrowserToolDeps, handleBrowserTool, isBrowserTool } from './browser-dispatch.js';
+import {
+  type BrowserToolDeps,
+  handleBrowserTool,
+  isBrowserTool,
+  validateFlowSteps,
+} from './browser-dispatch.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
@@ -2249,6 +2254,7 @@ describe('browser.flow schema shape', () => {
     expect(body.oneOf!.map((c) => c.required[0]).sort()).toEqual([
       'expression',
       'network_url',
+      'ref',
       'selector',
     ]);
   });
@@ -3543,5 +3549,141 @@ describe('browser.download', () => {
       ),
     ).rejects.toThrow(/not supported over cdp-direct/);
     expect(callCdpTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
+  const tab = { tab_id: 'tab_1' };
+  const call = (name: string, args: Record<string, unknown>, deps = makeDeps()) =>
+    handleBrowserTool(name, { ...tab, ...args }, deps, TEST_CALLER);
+  const forwarded = (deps: BrowserToolDeps): Record<string, unknown> =>
+    (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<string, unknown>;
+
+  test('click forwards ref and needs exactly one of selector or ref', async () => {
+    const deps = makeDeps();
+    await call('browser.click', { ref: 'e12' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'e12' });
+    expect(forwarded(deps).selector).toBeUndefined();
+    await expect(call('browser.click', {})).rejects.toThrow(
+      'browser.click needs exactly one of selector or ref',
+    );
+    await expect(call('browser.click', { selector: '#a', ref: 'e1' })).rejects.toThrow(
+      'browser.click needs exactly one of selector or ref',
+    );
+  });
+
+  test('click by selector still forwards no ref key', async () => {
+    const deps = makeDeps();
+    await call('browser.click', { selector: '#go' }, deps);
+    expect(forwarded(deps)).toMatchObject({ selector: '#go', force: false });
+    expect(forwarded(deps)).not.toHaveProperty('ref');
+  });
+
+  test('type forwards ref and needs exactly one of selector or ref', async () => {
+    const deps = makeDeps();
+    await call('browser.type', { ref: 'e3', text: 'hi' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'e3', text: 'hi' });
+    await expect(call('browser.type', { text: 'hi' })).rejects.toThrow(
+      'browser.type needs exactly one of selector or ref',
+    );
+    await expect(call('browser.type', { selector: '#a', ref: 'e1', text: 'hi' })).rejects.toThrow(
+      'browser.type needs exactly one of selector or ref',
+    );
+    const bySelector = makeDeps();
+    await call('browser.type', { selector: '#q', text: 'hi' }, bySelector);
+    expect(forwarded(bySelector)).not.toHaveProperty('ref');
+  });
+
+  test('press forwards ref; ref and selector are exclusive', async () => {
+    const deps = makeDeps();
+    await call('browser.press', { key: 'Enter', ref: 'e4' }, deps);
+    expect(forwarded(deps)).toMatchObject({ key: 'Enter', ref: 'e4' });
+    await expect(
+      call('browser.press', { key: 'Enter', ref: 'e4', selector: '#a' }),
+    ).rejects.toThrow('browser.press accepts at most one of selector or ref');
+  });
+
+  test('wait_for accepts ref as a mode, with condition', async () => {
+    const deps = makeDeps();
+    await call('browser.wait_for', { ref: 'e5', condition: 'detached' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'e5', condition: 'detached' });
+    await expect(call('browser.wait_for', { ref: 'e5', selector: '#a' })).rejects.toThrow(
+      /exactly one of selector, expression, network_url, ref/,
+    );
+    await expect(call('browser.wait_for', { ref: 'e5', condition: 'gone' })).rejects.toThrow(
+      /condition must be one of visible \| hidden \| attached \| detached/,
+    );
+  });
+
+  test('find needs text unless ref is given, and forwards ref', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { ref: 'e6' }, deps);
+    expect(forwarded(deps)).toEqual({ ref: 'e6' });
+    await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
+    const byText = makeDeps();
+    await call('browser.find', { text: 'Save' }, byText);
+    expect(forwarded(byText)).toEqual({ text: 'Save', role: undefined, exact: false });
+  });
+
+  test.each([
+    ['browser.click', {}],
+    ['browser.type', { text: 'x' }],
+    ['browser.press', { key: 'Enter' }],
+    ['browser.wait_for', {}],
+    ['browser.find', {}],
+  ])('%s rejects a ref that is not e<digits> or too long', async (name, extra) => {
+    for (const ref of ['12', 'e', 'e1x', 'E1', '', 7, 'e' + '1'.repeat(64)]) {
+      await expect(call(name, { ...extra, ref })).rejects.toThrow(
+        `${name}: ref must be an element ref like "e12"`,
+      );
+    }
+  });
+
+  describe('validateFlowSteps', () => {
+    test('click, type, press and wait_for steps accept ref', () => {
+      expect(
+        validateFlowSteps([
+          { click: { ref: 'e1' } },
+          { type: { ref: 'e2', text: 'x' } },
+          { press: { ref: 'e2', key: 'Enter' } },
+          { wait_for: { ref: 'e1', condition: 'detached' } },
+        ]).ok,
+      ).toBe(true);
+    });
+
+    test('a step with both selector and ref is rejected', () => {
+      for (const step of [
+        { click: { selector: '#a', ref: 'e1' } },
+        { type: { selector: '#a', ref: 'e1', text: 'x' } },
+        { press: { selector: '#a', ref: 'e1', key: 'Enter' } },
+      ]) {
+        const kind = Object.keys(step)[0];
+        expect(validateFlowSteps([step])).toEqual({
+          ok: false,
+          error: `step 0: ${kind} accepts at most one of selector or ref`,
+        });
+      }
+      expect(validateFlowSteps([{ wait_for: { selector: '#a', ref: 'e1' } }])).toEqual({
+        ok: false,
+        error: 'step 0: wait_for requires exactly one of selector | expression | network_url | ref',
+      });
+    });
+
+    test('a malformed step ref is rejected', () => {
+      expect(validateFlowSteps([{ click: { ref: 'button' } }])).toEqual({
+        ok: false,
+        error:
+          'step 0: click.ref must be an element ref like "e12" (e followed by digits, at most 64 characters)',
+      });
+    });
+
+    test('selector-only steps validate exactly as before', () => {
+      expect(validateFlowSteps([{ find: { text: 'Go' } }, { click: {} }]).ok).toBe(true);
+      expect(validateFlowSteps([{ click: { selector: '#a' } }]).ok).toBe(true);
+      expect(validateFlowSteps([{ click: {} }])).toEqual({
+        ok: false,
+        error: 'step 0: click has no selector and no preceding find to supply an implicit target',
+      });
+    });
   });
 });

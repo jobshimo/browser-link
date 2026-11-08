@@ -68,6 +68,7 @@ import {
   shouldStopDetachedFlow,
 } from './detached-flows.js';
 import {
+  refFailureMessage,
   runFlow,
   type ActionOutcome,
   type ClickStepResult,
@@ -495,21 +496,41 @@ async function dispatchKeyEventSequence(
 // performWaitFor function-for-function — see this module's header comment.
 
 type ClickResolveResult =
-  | { ok: true; x: number; y: number; tag: string; hit_element?: string }
+  | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found' }
-  | { ok: false; reason: 'occluded'; blocker: string };
+  | { ok: false; reason: 'occluded'; blocker: string }
+  | RefResolveFailure;
 
 type TypeResolveResult =
-  | { ok: true }
+  | { ok: true; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' };
+  | { ok: false; reason: 'not-found' }
+  | RefResolveFailure;
+
+/** A `ref` target the page could not resolve — see `RESOLVE_TARGET_JS` in
+ * `inpage/builders.ts`; `refFailureMessage` (flow.ts) turns it into the
+ * error string. */
+type RefResolveFailure =
+  | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
+  | { ok: false; reason: 'observer-unavailable' };
+
+/** Result shape of `buildFocusJs` with a `ref` (with a selector it is a
+ * boolean). */
+type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
 
 async function performFind(
   client: CdpClient,
-  params: { text: string; role?: string; exact?: boolean },
+  params: { text?: string; role?: string; exact?: boolean; ref?: string },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
+    if (params.ref !== undefined) {
+      const ref = params.ref;
+      const found = await evaluateInTab<FindStepResult>(client, buildFindJs({ ref }));
+      const refError = found.matched ? null : refFailureMessage(found, ref);
+      if (refError) return { ok: false, error: refError };
+      return { ok: true, result: found };
+    }
     if (!params.text) return { ok: false, error: 'find: text required' };
     const opts: FindOpts = { text: params.text, role: params.role, exact: params.exact === true };
     const value = await evaluateInTab<FindStepResult>(client, buildFindJs(opts));
@@ -522,7 +543,9 @@ async function performFind(
 async function performClick(
   client: CdpClient,
   params: {
-    selector: string;
+    /** Exactly one of `selector` / `ref`. */
+    selector?: string;
+    ref?: string;
     force?: boolean;
     settle_ms?: number;
     settle_timeout_ms?: number;
@@ -530,19 +553,21 @@ async function performClick(
   },
 ): Promise<ActionOutcome<ClickStepResult>> {
   try {
-    const { selector, force = false } = params;
+    const { selector, ref, force = false } = params;
     const settle = resolveSettleParams({
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    const resolveOpts: ClickResolveOpts = { selector, force };
+    const resolveOpts: ClickResolveOpts = ref !== undefined ? { ref, force } : { selector, force };
     const resolved = await evaluateInTab<ClickResolveResult>(
       client,
       buildClickResolveJs(resolveOpts),
     );
     if (!resolved.ok) {
+      const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
+      if (refError) return { ok: false, error: refError };
       if (resolved.reason === 'occluded') {
         return {
           ok: false,
@@ -552,7 +577,7 @@ async function performClick(
       if (resolved.reason === 'invalid-selector') {
         return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
       }
-      return { ok: false, error: `Element not found: ${selector}` };
+      return { ok: false, error: `Element not found: ${ref ?? selector}` };
     }
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
@@ -578,7 +603,9 @@ async function performClick(
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: ClickStepResult = { clicked: selector, tag: resolved.tag };
+    const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
+    if (ref !== undefined) result.ref = ref;
+    if (resolved.reresolved === true) result.reresolved = true;
     if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
@@ -592,6 +619,8 @@ async function performType(
   client: CdpClient,
   params: {
     selector?: string;
+    /** Exclusive with `selector`. */
+    ref?: string;
     text: string;
     clear?: boolean;
     settle_ms?: number;
@@ -600,14 +629,25 @@ async function performType(
   },
 ): Promise<ActionOutcome<TypeStepResult>> {
   try {
-    const { selector, text, clear = false } = params;
+    const { selector, ref, text, clear = false } = params;
     const settle = resolveSettleParams({
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    if (selector !== undefined) {
+    let reresolved = false;
+    if (ref !== undefined) {
+      const opts: TypeResolveOpts = { ref, clear };
+      const resolved = await evaluateInTab<TypeResolveResult>(client, buildTypeResolveJs(opts));
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          error: refFailureMessage(resolved, ref) ?? `Element not found: ${ref}`,
+        };
+      }
+      reresolved = resolved.reresolved === true;
+    } else if (selector !== undefined) {
       const opts: TypeResolveOpts = { selector, clear };
       const resolved = await evaluateInTab<TypeResolveResult>(client, buildTypeResolveJs(opts));
       if (!resolved.ok) {
@@ -625,6 +665,8 @@ async function performType(
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
+    if (ref !== undefined) result.ref = ref;
+    if (reresolved) result.reresolved = true;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -639,6 +681,8 @@ async function performPress(
     key?: string;
     modifiers?: string[];
     selector?: string;
+    /** Exclusive with `selector`. */
+    ref?: string;
     settle_ms?: number;
     settle_timeout_ms?: number;
     expect?: ExpectParams;
@@ -657,7 +701,15 @@ async function performPress(
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    if (params.selector) {
+    const ref = params.ref;
+    let reresolved = false;
+    if (ref !== undefined) {
+      const focused = await evaluateInTab<FocusRefResult>(client, buildFocusJs({ ref }));
+      if (!focused.ok) {
+        return { ok: false, error: refFailureMessage(focused, ref) ?? `Element not found: ${ref}` };
+      }
+      reresolved = focused.reresolved === true;
+    } else if (params.selector) {
       const focused = await evaluateInTab<boolean>(
         client,
         buildFocusJs({ selector: params.selector }),
@@ -673,6 +725,8 @@ async function performPress(
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: PressStepResult = { key, modifiers: modifierNames };
+    if (ref !== undefined) result.ref = ref;
+    if (reresolved) result.reresolved = true;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -695,6 +749,7 @@ async function performWaitFor(
   client: CdpClient,
   params: {
     selector?: string;
+    ref?: string;
     expression?: string;
     network_url?: string;
     condition?: string;
@@ -740,12 +795,33 @@ async function performWaitFor(
           : requestedPoll;
 
     let check: (() => Promise<boolean>) | null = null;
+    // Set when a ref probe reports that the page has no observer: the ref
+    // can never resolve, so the wait fails instead of timing out (or, for
+    // `detached` / `hidden`, matching a ref it never looked up).
+    const refProbe = { unavailable: false };
     if (waitSelector !== undefined) {
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
           const value = await evaluateInTab(client, expr);
           return Boolean(value);
+        } catch {
+          return false;
+        }
+      };
+    } else if (params.ref !== undefined) {
+      const expr = buildWaitForSelectorJs(
+        { ref: params.ref },
+        waitCondition as WaitForSelectorCondition,
+      );
+      check = async (): Promise<boolean> => {
+        try {
+          const value = await evaluateInTab(client, expr);
+          if (typeof value === 'object' && value !== null) {
+            refProbe.unavailable = true;
+            return true;
+          }
+          return value === true;
         } catch {
           return false;
         }
@@ -780,6 +856,12 @@ async function performWaitFor(
       await sleep(pollIntervalMs);
     }
     const elapsedMs = Date.now() - startedAt;
+    if (refProbe.unavailable && params.ref !== undefined) {
+      return {
+        ok: false,
+        error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
+      };
+    }
     // 'cancelled' is deliberately distinct from 'timeout': the step
     // executor turns a timeout into a flow FAILURE (with a recovery
     // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
@@ -934,14 +1016,17 @@ export async function callCdpTool(
         text: typeof p.text === 'string' ? p.text : '',
         role: typeof p.role === 'string' ? p.role : undefined,
         exact: p.exact === true,
+        ref: typeof p.ref === 'string' ? p.ref : undefined,
       });
       if (!outcome.ok) throw new Error(outcome.error);
       return outcome.result;
     }
 
     case 'click': {
+      const ref = typeof p.ref === 'string' ? p.ref : undefined;
       const outcome = await performClick(client, {
-        selector: typeof p.selector === 'string' ? p.selector : '',
+        selector: typeof p.selector === 'string' ? p.selector : ref !== undefined ? undefined : '',
+        ref,
         force: p.force === true,
         settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
         settle_timeout_ms:
@@ -955,6 +1040,7 @@ export async function callCdpTool(
     case 'type': {
       const outcome = await performType(client, {
         selector: typeof p.selector === 'string' ? p.selector : undefined,
+        ref: typeof p.ref === 'string' ? p.ref : undefined,
         text: typeof p.text === 'string' ? p.text : '',
         clear: p.clear === true,
         settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
@@ -974,6 +1060,7 @@ export async function callCdpTool(
         key: typeof p.key === 'string' ? p.key : undefined,
         modifiers: modifierNames,
         selector: typeof p.selector === 'string' ? p.selector : undefined,
+        ref: typeof p.ref === 'string' ? p.ref : undefined,
         settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
         settle_timeout_ms:
           typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
@@ -991,6 +1078,7 @@ export async function callCdpTool(
     case 'wait_for': {
       const outcome = await performWaitFor(client, {
         selector: typeof p.selector === 'string' ? p.selector : undefined,
+        ref: typeof p.ref === 'string' ? p.ref : undefined,
         expression: typeof p.expression === 'string' ? p.expression : undefined,
         network_url: typeof p.network_url === 'string' ? p.network_url : undefined,
         condition: typeof p.condition === 'string' ? p.condition : undefined,

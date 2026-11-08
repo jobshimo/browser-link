@@ -1680,3 +1680,277 @@ describe('buildSnapshotJs — since diff', () => {
     });
   });
 });
+
+/**
+ * `ref` as a target (spec v4 §6.3): the selector-taking builders also accept
+ * an observer ref. A live ref resolves to its node; a node replaced by a
+ * re-render is re-resolved by its semantic key (`reresolved: true`); a ref
+ * with no unique candidate is `ref-stale` and names the `doc_id`; without
+ * the observer the ref cannot be resolved at all (`observer-unavailable`).
+ */
+describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const BUTTONS = '<li><button>Alpha</button></li><li><button>Beta</button></li>';
+  const INPUTS = '<li><input aria-label="Alpha" /></li><li><input aria-label="Beta" /></li>';
+  let docId = '';
+
+  function install(items: string): void {
+    document.body.innerHTML = '<ul id="list">' + items + '</ul>';
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    // jsdom has no hit-testing; null fails the occlusion check open.
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
+      null;
+  }
+  const second = (): HTMLElement =>
+    document.querySelectorAll<HTMLElement>('#list li')[1].firstElementChild as HTMLElement;
+  const refOfSecond = (): string => (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(second())!;
+  const rerender = (items: string): void => {
+    document.getElementById('list')!.innerHTML = items;
+  };
+  const removeSecond = (): void => {
+    document.querySelectorAll('#list li')[1].remove();
+  };
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+  });
+
+  test('click by a live ref gives the same result as by selector and targets that node', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const bySelector = evalExpr<Json>(
+      buildClickResolveJs({ selector: '#list li:nth-of-type(2) button', force: false }),
+    );
+    let scrolled: Element | null = null;
+    second().scrollIntoView = function (this: Element) {
+      scrolled = this;
+    };
+    const byRef = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
+    expect(byRef).toEqual(bySelector);
+    expect(byRef.reresolved).toBeUndefined();
+    expect(scrolled).toBe(second());
+  });
+
+  test('click by ref after a replacing re-render resolves the new node with reresolved', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const old = second();
+    rerender(BUTTONS);
+    const fresh = second();
+    expect(fresh).not.toBe(old);
+    let scrolled: Element | null = null;
+    fresh.scrollIntoView = function (this: Element) {
+      scrolled = this;
+    };
+    const resolved = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
+    expect(resolved).toEqual({ ok: true, x: 0, y: 0, tag: 'button', reresolved: true });
+    expect(scrolled).toBe(fresh);
+    // The rebind is done: the next resolution is a plain live hit.
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false })).reresolved).toBeUndefined();
+  });
+
+  test('click by a stale ref is ref-stale and names the doc_id', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    removeSecond();
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: 'e999', force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: 'e999',
+      doc_id: docId,
+    });
+  });
+
+  test('click by ref without the observer is observer-unavailable', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('type by ref focuses the node, clears it, and re-resolves after a re-render', () => {
+    install(INPUTS);
+    const ref = refOfSecond();
+    (second() as HTMLInputElement).value = 'old';
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: true }))).toEqual({ ok: true });
+    expect(document.activeElement).toBe(second());
+    expect((second() as HTMLInputElement).value).toBe('');
+    rerender(INPUTS);
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: true,
+      reresolved: true,
+    });
+    expect(document.activeElement).toBe(second());
+    removeSecond();
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildTypeResolveJs({ ref, clear: false }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('focus by ref answers an object (selector mode keeps its boolean)', () => {
+    install(INPUTS);
+    const ref = refOfSecond();
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({ ok: true });
+    expect(document.activeElement).toBe(second());
+    (document.activeElement as HTMLElement).blur();
+    rerender(INPUTS);
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({ ok: true, reresolved: true });
+    expect(document.activeElement).toBe(second());
+    removeSecond();
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+    expect(evalExpr<boolean>(buildFocusJs({ selector: '#list input' }))).toBe(true);
+    expect(evalExpr<boolean>(buildFocusJs({ selector: '#nope' }))).toBe(false);
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildFocusJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+
+  test('element rect by ref equals the selector rect; stale ref is ref-stale', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const bySelector = evalExpr<Json>(
+      buildElementRectJs({ selector: '#list li:nth-of-type(2) button' }),
+    );
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual(bySelector);
+    rerender(BUTTONS);
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual({
+      ...bySelector,
+      reresolved: true,
+    });
+    removeSecond();
+    expect(evalExpr<Json>(buildElementRectJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: docId,
+    });
+  });
+
+  test('wait_for by ref: live, re-resolved and stale semantics per condition', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    const wait = (condition: 'visible' | 'hidden' | 'attached' | 'detached'): unknown =>
+      evalExpr(buildWaitForSelectorJs({ ref }, condition));
+    const giveSize = (el: Element): void => {
+      el.getBoundingClientRect = () =>
+        ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 10,
+          bottom: 10,
+          width: 10,
+          height: 10,
+          toJSON() {},
+        }) as DOMRect;
+    };
+    giveSize(second());
+    expect(wait('attached')).toBe(true);
+    expect(wait('detached')).toBe(false);
+    expect(wait('visible')).toBe(true);
+    expect(wait('hidden')).toBe(false);
+    rerender(BUTTONS);
+    expect(wait('attached')).toBe(true);
+    // The fresh node has no box yet: hidden, not visible.
+    expect(wait('visible')).toBe(false);
+    expect(wait('hidden')).toBe(true);
+    removeSecond();
+    expect(wait('attached')).toBe(false);
+    expect(wait('detached')).toBe(true);
+    expect(wait('hidden')).toBe(true);
+    expect(wait('visible')).toBe(false);
+  });
+
+  test('wait_for by ref without the observer answers observer-unavailable, never a boolean', () => {
+    install(BUTTONS);
+    const ref = refOfSecond();
+    evalExpr(buildObserverTeardownJs());
+    for (const condition of ['visible', 'hidden', 'attached', 'detached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref }, condition))).toEqual({
+        ok: false,
+        reason: 'observer-unavailable',
+      });
+    }
+  });
+
+  test('wait_for with a selector string builds the selector-only source (no observer code)', () => {
+    const source = buildWaitForSelectorJs('#panel .row', 'visible');
+    expect(source).not.toContain('resolveTarget');
+    expect(source).not.toContain(OBSERVER_GLOBAL);
+  });
+
+  test('find by ref gives the single-match shape for that element', () => {
+    install(BUTTONS);
+    makeVisible(second());
+    const ref = refOfSecond();
+    const found = evalExpr<Json>(buildFindJs({ ref }));
+    expect(found).toEqual({
+      matched: true,
+      selector: expect.any(String),
+      ref,
+      coords: { x: 0, y: 0 },
+      tag: 'button',
+      text: 'Beta',
+      doc_id: docId,
+    });
+    expect(Object.keys(found)).toEqual([
+      'matched',
+      'selector',
+      'ref',
+      'coords',
+      'tag',
+      'text',
+      'doc_id',
+    ]);
+    expect(document.querySelector(found.selector as string)).toBe(second());
+    rerender(BUTTONS);
+    const again = evalExpr<Json>(buildFindJs({ ref }));
+    expect(again.reresolved).toBe(true);
+    expect(again.ref).toBe(ref);
+    expect(document.querySelector(again.selector as string)).toBe(second());
+  });
+
+  test('find by an unknown ref is ref-stale; without the observer it is observer-unavailable', () => {
+    install(BUTTONS);
+    expect(evalExpr<Json>(buildFindJs({ ref: 'e999' }))).toEqual({
+      matched: false,
+      reason: 'ref-stale',
+      ref: 'e999',
+      doc_id: docId,
+    });
+    evalExpr(buildObserverTeardownJs());
+    expect(evalExpr<Json>(buildFindJs({ ref: 'e1' }))).toEqual({
+      matched: false,
+      reason: 'observer-unavailable',
+      ref: 'e1',
+    });
+  });
+});

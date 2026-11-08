@@ -552,6 +552,33 @@ export type FlowValidationResult =
  * — a steps array `browser.flow` would reject must be rejected here too,
  * never a second, slightly-different copy of this logic.
  */
+/** Longest `ref` accepted as an action target. Observer refs are `e<N>`
+ * with a per-document counter, so 64 characters is far beyond any real
+ * ref and only bounds what a caller can push into the page. */
+const MAX_REF_LENGTH = 64;
+const REF_PATTERN = /^e[0-9]+$/;
+const REF_SHAPE_ERROR =
+  'ref must be an element ref like "e12" (e followed by digits, at most 64 characters)';
+
+/** Whether `ref` is a well-formed observer element ref (`e<digits>`, from
+ * `snapshot` / `find` / `state`). Only the shape is checked here; whether
+ * it names an element of the current document is decided in the page
+ * (`ref-stale`). */
+function isElementRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && ref.length <= MAX_REF_LENGTH && REF_PATTERN.test(ref);
+}
+
+/** Throw the tool-prefixed shape error when `ref` is present but malformed. */
+function requireValidRef(tool: string, ref: unknown): void {
+  if (ref !== undefined && !isElementRef(ref)) throw new Error(`${tool}: ${REF_SHAPE_ERROR}`);
+}
+
+/** `{ ref }` when given, else nothing — so a selector call forwards exactly
+ * the parameters it always did. */
+function refArg(ref: string | undefined): { ref?: string } {
+  return ref !== undefined ? { ref } : {};
+}
+
 export function validateFlowSteps(
   input: unknown,
   opts: { allowRepeat?: boolean; maxBudgetMs?: number } = {},
@@ -599,7 +626,17 @@ export function validateFlowSteps(
       return { ok: false, error: `step ${i}: "${kind}" must be an object` };
     }
     const bodyRecord = body as Record<string, unknown>;
+    if (
+      (kind === 'click' || kind === 'type' || kind === 'press' || kind === 'wait_for') &&
+      bodyRecord.ref !== undefined &&
+      !isElementRef(bodyRecord.ref)
+    ) {
+      return { ok: false, error: `step ${i}: ${kind}.${REF_SHAPE_ERROR}` };
+    }
     if (kind === 'click' || kind === 'type' || kind === 'press') {
+      if (bodyRecord.selector !== undefined && bodyRecord.ref !== undefined) {
+        return { ok: false, error: `step ${i}: ${kind} accepts at most one of selector or ref` };
+      }
       const expectError = expectArgError(bodyRecord.expect);
       if (expectError) return { ok: false, error: `step ${i}: ${kind}.${expectError}` };
       const settleTimeout = bodyRecord.settle_timeout_ms;
@@ -642,7 +679,7 @@ export function validateFlowSteps(
       }
       budgetMs += flowActionBudgetMs(bodyRecord);
     } else if (kind === 'click') {
-      if (bodyRecord.selector === undefined && !hasTarget) {
+      if (bodyRecord.selector === undefined && bodyRecord.ref === undefined && !hasTarget) {
         return {
           ok: false,
           error: `step ${i}: click has no selector and no preceding find to supply an implicit target`,
@@ -775,13 +812,16 @@ export function validateFlowSteps(
       // wait_for — mirror the standalone dispatcher's contract checks so a
       // bad step fails HERE with a clear message instead of in-page with a
       // misleading "condition not met within timeout (0ms, 0 checks)".
-      const modes = [bodyRecord.selector, bodyRecord.expression, bodyRecord.network_url].filter(
-        (v) => v !== undefined,
-      );
+      const modes = [
+        bodyRecord.selector,
+        bodyRecord.expression,
+        bodyRecord.network_url,
+        bodyRecord.ref,
+      ].filter((v) => v !== undefined);
       if (modes.length !== 1) {
         return {
           ok: false,
-          error: `step ${i}: wait_for requires exactly one of selector | expression | network_url`,
+          error: `step ${i}: wait_for requires exactly one of selector | expression | network_url | ref`,
         };
       }
       for (const key of ['selector', 'expression', 'network_url'] as const) {
@@ -1506,11 +1546,18 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.find': {
-      const { text, role, exact } = (args ?? {}) as {
+      const { text, role, exact, ref } = (args ?? {}) as {
         text?: unknown;
         role?: unknown;
         exact?: unknown;
+        ref?: unknown;
       };
+      requireValidRef('browser.find', ref);
+      if (ref !== undefined) {
+        // With a ref, find describes that element; text/role/exact do not
+        // apply (see buildFindJs).
+        return routeToolCall('find', requireTabId(args), { ref: ref as string }, deps);
+      }
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error('browser.find: text required');
       }
@@ -1633,22 +1680,28 @@ async function dispatchBrowserTool(
     case 'browser.click': {
       const {
         selector,
+        ref,
         force = false,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
       } = args as {
-        selector: string;
+        selector?: string;
+        ref?: string;
         force?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
       };
+      if ((selector === undefined) === (ref === undefined)) {
+        throw new Error('browser.click needs exactly one of selector or ref');
+      }
+      requireValidRef('browser.click', ref);
       requireValidExpect('browser.click', expectArg);
       return runAction(
         'click',
         requireTabId(args),
-        { selector, force, settle_ms, settle_timeout_ms, expect: expectArg },
+        { selector, ...refArg(ref), force, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
@@ -1657,24 +1710,30 @@ async function dispatchBrowserTool(
     case 'browser.type': {
       const {
         selector,
+        ref,
         text,
         clear = false,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
       } = args as {
-        selector: string;
+        selector?: string;
+        ref?: string;
         text: string;
         clear?: boolean;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
       };
+      if ((selector === undefined) === (ref === undefined)) {
+        throw new Error('browser.type needs exactly one of selector or ref');
+      }
+      requireValidRef('browser.type', ref);
       requireValidExpect('browser.type', expectArg);
       return runAction(
         'type',
         requireTabId(args),
-        { selector, text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
+        { selector, ...refArg(ref), text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
         deps,
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
@@ -1685,6 +1744,7 @@ async function dispatchBrowserTool(
         key,
         modifiers,
         selector,
+        ref,
         settle_ms,
         settle_timeout_ms,
         expect: expectArg,
@@ -1692,6 +1752,7 @@ async function dispatchBrowserTool(
         key?: unknown;
         modifiers?: unknown;
         selector?: unknown;
+        ref?: unknown;
         settle_ms?: number;
         settle_timeout_ms?: number;
         expect?: unknown;
@@ -1711,6 +1772,10 @@ async function dispatchBrowserTool(
       if (selector !== undefined && typeof selector !== 'string') {
         throw new Error('browser.press: selector must be a string when provided');
       }
+      requireValidRef('browser.press', ref);
+      if (selector !== undefined && ref !== undefined) {
+        throw new Error('browser.press accepts at most one of selector or ref');
+      }
       requireValidExpect('browser.press', expectArg);
       return runAction(
         'press',
@@ -1719,6 +1784,7 @@ async function dispatchBrowserTool(
           key,
           modifiers: normalizedModifiers,
           selector,
+          ...refArg(ref as string | undefined),
           settle_ms,
           settle_timeout_ms,
           expect: expectArg,
@@ -2044,22 +2110,24 @@ async function dispatchBrowserTool(
     case 'browser.download':
       return handleDownload(args, deps, caller);
     case 'browser.wait_for': {
-      const { selector, expression, network_url, condition, timeout_ms, poll_interval_ms } =
+      const { selector, ref, expression, network_url, condition, timeout_ms, poll_interval_ms } =
         (args ?? {}) as {
           selector?: string;
+          ref?: string;
           expression?: string;
           network_url?: string;
           condition?: string;
           timeout_ms?: number;
           poll_interval_ms?: number;
         };
-      const modes = [selector, expression, network_url].filter((v) => v !== undefined);
+      const modes = [selector, expression, network_url, ref].filter((v) => v !== undefined);
       if (modes.length !== 1) {
         throw new Error(
-          'browser.wait_for: provide exactly one of selector, expression, network_url',
+          'browser.wait_for: provide exactly one of selector, expression, network_url, ref',
         );
       }
-      if (selector !== undefined && condition !== undefined) {
+      requireValidRef('browser.wait_for', ref);
+      if ((selector !== undefined || ref !== undefined) && condition !== undefined) {
         const ok = ['visible', 'hidden', 'attached', 'detached'].includes(condition);
         if (!ok) {
           throw new Error(
@@ -2074,7 +2142,15 @@ async function dispatchBrowserTool(
       return routeToolCall(
         'wait_for',
         requireTabId(args),
-        { selector, expression, network_url, condition, timeout_ms, poll_interval_ms },
+        {
+          selector,
+          ...refArg(ref),
+          expression,
+          network_url,
+          condition,
+          timeout_ms,
+          poll_interval_ms,
+        },
         deps,
         requestTimeoutMs,
       );
