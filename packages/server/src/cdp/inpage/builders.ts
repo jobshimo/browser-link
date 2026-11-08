@@ -22,6 +22,40 @@
  */
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';
+import { OBSERVER_GLOBAL } from './observer.js';
+
+/**
+ * In-page access to the page observer's element identity (spec v4 §5.6),
+ * injected verbatim into `buildSnapshotJs`, `buildFindJs` and `buildStateJs`.
+ * The observer global is looked up ONCE per evaluation and used only when it
+ * is present, not torn down, and exposes `refFor`:
+ *   - `refOf(el)` returns the observer's `e<N>` ref for `el`, or `null`;
+ *   - `withDocId(result)` adds `doc_id` to `result` and returns it.
+ * Without the observer (injection failed, pre-observer document) both are
+ * no-ops, so every result is byte-identical to the pre-ref output.
+ */
+export const PAGE_OBSERVER_JS = `
+  const pageObserver = (() => {
+    try {
+      const g = window[${JSON.stringify(OBSERVER_GLOBAL)}];
+      if (g && !g.dead && typeof g.refFor === 'function') return g;
+    } catch (e) {}
+    return null;
+  })();
+  function refOf(el) {
+    if (!pageObserver) return null;
+    try {
+      const ref = pageObserver.refFor(el);
+      return typeof ref === 'string' ? ref : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function withDocId(result) {
+    if (pageObserver && typeof pageObserver.doc_id === 'string') result.doc_id = pageObserver.doc_id;
+    return result;
+  }
+`;
 
 /**
  * Build the snapshot expression. Filters are applied INSIDE the page so the
@@ -42,6 +76,11 @@ import { DOM_HELPERS_JS } from './dom-helpers.js';
  * a computed `pointer-events: none` element can never receive a real click
  * (see the helper's comment in `dom-helpers.ts`). Headings and the text
  * dump keep plain `isVisible`, so such elements still contribute text.
+ *
+ * With the page observer installed (see `PAGE_OBSERVER_JS`), each
+ * interactive entry carries `ref` right after `selector`, and the result
+ * carries `doc_id` and `snapshot_id` (`s<N>`, one per call). Without it the
+ * output is unchanged.
  */
 export interface SnapshotOpts {
   within_selector?: string;
@@ -64,18 +103,19 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   const opts = ${optsJson};
   let root = document;
   let notice = '';
   if (opts.withinSelector) {
     const sub = deepQueryFirst(opts.withinSelector);
     if (!sub) {
-      return {
+      return withDocId({
         title: document.title,
         url: location.href,
         interactive: [],
         notice: 'within_selector did not match any element',
-      };
+      });
     }
     root = sub;
   }
@@ -118,6 +158,8 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     const role = el.getAttribute('role') || tag;
     const selInfo = genSelectorInfo(el);
     const entry = { tag, role, selector: selInfo.selector };
+    const ref = refOf(el);
+    if (ref) entry.ref = ref;
     if (selInfo.ambiguous) entry.ambiguous = true;
     const txt = shortText(el);
     if (txt) entry.text = txt;
@@ -156,15 +198,23 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (visibleText) result.text = visibleText;
   }
   if (notice) result.notice = notice;
+  withDocId(result);
+  if (result.doc_id && typeof pageObserver.nextSnapshotId === 'function') {
+    const snapshotId = pageObserver.nextSnapshotId();
+    if (typeof snapshotId === 'string') result.snapshot_id = snapshotId;
+  }
   return result;
 })()
 `;
 }
 
 /** Build the find-by-text expression. Returns one of:
- *   { matched: true, selector, coords:{x,y}, tag, text, frame?, ambiguous? }
- *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,role?}] }
- *   { matched: false, reason: 'multiple-matches', candidates: [{selector,text,tag}] }
+ *   { matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }
+ *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
+ *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
+ *
+ * `ref` and `doc_id` are present only when the page observer is installed
+ * (see `PAGE_OBSERVER_JS`).
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
@@ -211,6 +261,7 @@ export function buildFindJs(opts: FindOpts): string {
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   const opts = ${optsJson};
   const needle = opts.text.toLowerCase();
   const needleTokens = needle.split(/[^a-z0-9]+/).filter(Boolean);
@@ -271,6 +322,8 @@ export function buildFindJs(opts: FindOpts): string {
     }
     function toNearMiss(el) {
       const entry = { text: snippetOf(el), selector: genSelector(el) };
+      const ref = refOf(el);
+      if (ref) entry.ref = ref;
       const roleAttr = el.getAttribute('role');
       if (roleAttr) entry.role = roleAttr;
       return entry;
@@ -303,44 +356,46 @@ export function buildFindJs(opts: FindOpts): string {
           ' but none with role "' + opts.role + '"' +
           (closest ? ' — closest: ' + describeForError(closest) + ' "' + snippetOf(closest) + '"' : '');
         result.near_misses = ranked.map(toNearMiss);
-        return result;
+        return withDocId(result);
       }
       const ranked = rankCandidates(broadAll);
       if (ranked.length > 0) result.near_misses = ranked.map(toNearMiss);
-      return result;
+      return withDocId(result);
     }
     const ranked = rankCandidates(all);
     if (ranked.length > 0) result.near_misses = ranked.map(toNearMiss);
-    return result;
+    return withDocId(result);
   }
   if (matches.length > 1) {
-    return {
+    return withDocId({
       matched: false,
       reason: 'multiple-matches',
-      candidates: matches.slice(0, opts.candidateLimit).map((el) => ({
-        selector: genSelector(el),
-        text: shortText(el),
-        tag: el.tagName.toLowerCase(),
-      })),
-    };
+      candidates: matches.slice(0, opts.candidateLimit).map((el) => {
+        const candidate = { selector: genSelector(el) };
+        const ref = refOf(el);
+        if (ref) candidate.ref = ref;
+        candidate.text = shortText(el);
+        candidate.tag = el.tagName.toLowerCase();
+        return candidate;
+      }),
+    });
   }
   const el = matches[0];
   const center = viewportCenterOf(el);
   const selInfo = genSelectorInfo(el);
-  const result = {
-    matched: true,
-    selector: selInfo.selector,
-    coords: {
-      x: Math.round(center.x),
-      y: Math.round(center.y),
-    },
-    tag: el.tagName.toLowerCase(),
-    text: shortText(el),
+  const result = { matched: true, selector: selInfo.selector };
+  const ref = refOf(el);
+  if (ref) result.ref = ref;
+  result.coords = {
+    x: Math.round(center.x),
+    y: Math.round(center.y),
   };
+  result.tag = el.tagName.toLowerCase();
+  result.text = shortText(el);
   if (selInfo.ambiguous) result.ambiguous = true;
   const frame = frameSelectorFor(el);
   if (frame) result.frame = frame;
-  return result;
+  return withDocId(result);
 })()
 `;
 }
@@ -778,12 +833,16 @@ export function buildExpectProbeJs(opts: ExpectProbeOpts): string {
  * `focused` beyond `<body>`, no `dialogs` when none are open, and no
  * `scroll` when the page is at its default (0,0) position — token-lean by
  * construction, matching the omit-falsy convention the other builders use.
+ *
+ * With the page observer installed (see `PAGE_OBSERVER_JS`), `focused`
+ * carries `ref` right after `selector` and the result carries `doc_id`.
  */
 export function buildStateJs(): string {
   return `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
+  ${PAGE_OBSERVER_JS}
   function deepActiveElement() {
     let el = document.activeElement;
     let guard = 0;
@@ -844,7 +903,10 @@ export function buildStateJs(): string {
   const active = deepActiveElement();
   if (active && active !== document.body && active.tagName) {
     const selInfo = genSelectorInfo(active);
-    const focused = { selector: selInfo.selector, tag: active.tagName.toLowerCase() };
+    const focused = { selector: selInfo.selector };
+    const ref = refOf(active);
+    if (ref) focused.ref = ref;
+    focused.tag = active.tagName.toLowerCase();
     if (selInfo.ambiguous) focused.ambiguous = true;
     result.focused = focused;
   }
@@ -864,7 +926,7 @@ export function buildStateJs(): string {
   const scrollY = Math.round(window.scrollY);
   if (scrollX !== 0 || scrollY !== 0) result.scroll = { x: scrollX, y: scrollY };
 
-  return result;
+  return withDocId(result);
 })()
 `;
 }

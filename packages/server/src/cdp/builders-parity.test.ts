@@ -11,6 +11,10 @@ import * as srvObserver from './inpage/observer.js';
 import * as extObserver from '../../../extension/src/inpage/observer.js';
 
 describe('cdp builders emit byte-identical output to the extension original', () => {
+  test('PAGE_OBSERVER_JS (the shared ref/doc_id helper)', () => {
+    expect(srv.PAGE_OBSERVER_JS).toBe(ext.PAGE_OBSERVER_JS);
+  });
+
   test('buildSnapshotJs', () => {
     const opts = {
       within_selector: '#panel',

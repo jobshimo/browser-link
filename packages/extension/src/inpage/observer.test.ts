@@ -302,6 +302,7 @@ interface RefInstance {
   doc_id: string;
   refFor(el: Element): string | null;
   resolveRef(ref: string): Element | null;
+  nextSnapshotId(): string | null;
   teardown(): void;
 }
 const instance = (): RefInstance =>
@@ -372,6 +373,33 @@ describe('page observer: element refs', () => {
     g.teardown();
     expect(g.resolveRef(ref)).toBeNull();
     expect(g.refFor(document.getElementById('go')!)).toBeNull();
+  });
+});
+
+describe('page observer: snapshot ids', () => {
+  test('nextSnapshotId increments per call from s1', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.nextSnapshotId()).toBe('s1');
+    expect(g.nextSnapshotId()).toBe('s2');
+    expect(g.nextSnapshotId()).toBe('s3');
+  });
+
+  test('a fresh install restarts at s1', () => {
+    evalExpr(buildObserverInstallJs());
+    instance().nextSnapshotId();
+    instance().nextSnapshotId();
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    expect(instance().nextSnapshotId()).toBe('s1');
+  });
+
+  test('nextSnapshotId returns null after teardown', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.nextSnapshotId()).toBe('s1');
+    g.teardown();
+    expect(g.nextSnapshotId()).toBeNull();
   });
 });
 

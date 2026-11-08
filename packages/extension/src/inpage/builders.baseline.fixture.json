@@ -1,0 +1,306 @@
+{
+  "snapshot": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "#home",
+        "text": "Home",
+        "href": "/home"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#save",
+        "text": "Save changes"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "main > button:nth-of-type(2)",
+        "text": "Save draft"
+      },
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "main > a",
+        "text": "Docs link",
+        "href": "/docs"
+      },
+      {
+        "tag": "input",
+        "role": "input",
+        "selector": "input[aria-label=\"Search box\"]",
+        "placeholder": "Search",
+        "aria_label": "Search box",
+        "name": "q",
+        "type": "search"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#inner",
+        "text": "Shadow action"
+      }
+    ],
+    "headings": [
+      {
+        "level": "H1",
+        "text": "Fixture heading"
+      }
+    ]
+  },
+  "snapshot_only_interactive": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "#home",
+        "text": "Home",
+        "href": "/home"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#save",
+        "text": "Save changes"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "main > button:nth-of-type(2)",
+        "text": "Save draft"
+      },
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "main > a",
+        "text": "Docs link",
+        "href": "/docs"
+      },
+      {
+        "tag": "input",
+        "role": "input",
+        "selector": "input[aria-label=\"Search box\"]",
+        "placeholder": "Search",
+        "aria_label": "Search box",
+        "name": "q",
+        "type": "search"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#inner",
+        "text": "Shadow action"
+      }
+    ]
+  },
+  "snapshot_exclude_nav": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#save",
+        "text": "Save changes"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "main > button:nth-of-type(2)",
+        "text": "Save draft"
+      },
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "main > a",
+        "text": "Docs link",
+        "href": "/docs"
+      },
+      {
+        "tag": "input",
+        "role": "input",
+        "selector": "input[aria-label=\"Search box\"]",
+        "placeholder": "Search",
+        "aria_label": "Search box",
+        "name": "q",
+        "type": "search"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#inner",
+        "text": "Shadow action"
+      }
+    ],
+    "headings": [
+      {
+        "level": "H1",
+        "text": "Fixture heading"
+      }
+    ]
+  },
+  "snapshot_within": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#save",
+        "text": "Save changes"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "main > button:nth-of-type(2)",
+        "text": "Save draft"
+      },
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "main > a",
+        "text": "Docs link",
+        "href": "/docs"
+      },
+      {
+        "tag": "input",
+        "role": "input",
+        "selector": "input[aria-label=\"Search box\"]",
+        "placeholder": "Search",
+        "aria_label": "Search box",
+        "name": "q",
+        "type": "search"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#inner",
+        "text": "Shadow action"
+      }
+    ],
+    "headings": [
+      {
+        "level": "H1",
+        "text": "Fixture heading"
+      }
+    ]
+  },
+  "snapshot_within_miss": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [],
+    "notice": "within_selector did not match any element"
+  },
+  "snapshot_max_interactive": {
+    "title": "Baseline fixture",
+    "url": "http://localhost:3000/",
+    "interactive": [
+      {
+        "tag": "a",
+        "role": "a",
+        "selector": "#home",
+        "text": "Home",
+        "href": "/home"
+      },
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#save",
+        "text": "Save changes"
+      }
+    ],
+    "headings": [
+      {
+        "level": "H1",
+        "text": "Fixture heading"
+      }
+    ]
+  },
+  "find_single": {
+    "matched": true,
+    "selector": "main > a",
+    "coords": {
+      "x": 0,
+      "y": 0
+    },
+    "tag": "a",
+    "text": "Docs link"
+  },
+  "find_shadow": {
+    "matched": true,
+    "selector": "#inner",
+    "coords": {
+      "x": 0,
+      "y": 0
+    },
+    "tag": "button",
+    "text": "Shadow action"
+  },
+  "find_multi": {
+    "matched": false,
+    "reason": "multiple-matches",
+    "candidates": [
+      {
+        "selector": "#save",
+        "text": "Save changes",
+        "tag": "button"
+      },
+      {
+        "selector": "main > button:nth-of-type(2)",
+        "text": "Save draft",
+        "tag": "button"
+      }
+    ]
+  },
+  "find_not_found": {
+    "matched": false,
+    "reason": "not-found",
+    "near_misses": [
+      {
+        "text": "Save changes",
+        "selector": "#save"
+      },
+      {
+        "text": "Save draft",
+        "selector": "main > button:nth-of-type(2)"
+      }
+    ]
+  },
+  "find_role_excluded": {
+    "matched": false,
+    "reason": "not-found",
+    "error": "text matched 1 element but none with role \"button\" — closest: <a> \"Docs link\"",
+    "near_misses": [
+      {
+        "text": "Docs link",
+        "selector": "main > a"
+      }
+    ]
+  },
+  "state_unfocused": {
+    "url": "http://localhost:3000/",
+    "title": "Baseline fixture",
+    "viewport": {
+      "w": 1024,
+      "h": 768
+    }
+  },
+  "state_focused": {
+    "url": "http://localhost:3000/",
+    "title": "Baseline fixture",
+    "viewport": {
+      "w": 1024,
+      "h": 768
+    },
+    "focused": {
+      "selector": "input[aria-label=\"Search box\"]",
+      "tag": "input"
+    }
+  }
+}

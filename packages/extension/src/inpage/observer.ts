@@ -62,7 +62,9 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * `e<N>` (monotonic per document instance, from `e1`) the first time an
  * element is seen and reuses it while the node lives; `resolveRef(ref)`
  * returns the element while it is connected, else `null`. Refs are only valid
- * for the `doc_id` that issued them. Neither method throws.
+ * for the `doc_id` that issued them. Neither method throws. `nextSnapshotId()`
+ * issues `s<N>` (monotonic per document instance, from `s1`) for each
+ * `snapshot` result and returns `null` once the instance is torn down.
  */
 export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const optsJson = JSON.stringify({
@@ -108,6 +110,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   let refs = new WeakMap();
   const refNodes = new Map();
   let refSeq = 0;
+  let snapshotSeq = 0;
   // WeakRef keeps the registry from pinning removed nodes; the fallback only
   // matters on engines without it (Chrome has it since 84).
   const holdWeakly =
@@ -328,6 +331,11 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     }
   };
 
+  g.nextSnapshotId = function () {
+    if (g.dead) return null;
+    return 's' + ++snapshotSeq;
+  };
+
   g.mark = function () {
     flush();
     const mark = g.seq;
@@ -410,6 +418,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     g.baselines.clear();
     refs = new WeakMap();
     refNodes.clear();
+    snapshotSeq = 0;
     if (window[opts.key] === g) {
       try { delete window[opts.key]; } catch (e) {}
     }
