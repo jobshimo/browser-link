@@ -23,7 +23,7 @@
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */
-export const OBSERVER_VERSION = 1;
+export const OBSERVER_VERSION = 2;
 
 /** Name of the `Runtime.addBinding` function the observer pushes messages through. */
 export const OBSERVER_BINDING = '__blPageObserverPush';
@@ -57,6 +57,12 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * `Page.addScriptToEvaluateOnNewDocument` source and as a one-off
  * `Runtime.evaluate` expression, which evaluates to
  * `{ ok: true, installed, version, doc_id, coverage }`.
+ *
+ * The instance also owns element identity (spec v4 §5.6): `refFor(el)` issues
+ * `e<N>` (monotonic per document instance, from `e1`) the first time an
+ * element is seen and reuses it while the node lives; `resolveRef(ref)`
+ * returns the element while it is connected, else `null`. Refs are only valid
+ * for the `doc_id` that issued them. Neither method throws.
  */
 export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   const optsJson = JSON.stringify({
@@ -99,6 +105,13 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   };
   const observers = [];
   const observed = new WeakSet();
+  let refs = new WeakMap();
+  const refNodes = new Map();
+  let refSeq = 0;
+  // WeakRef keeps the registry from pinning removed nodes; the fallback only
+  // matters on engines without it (Chrome has it since 84).
+  const holdWeakly =
+    typeof WeakRef === 'function' ? (el) => new WeakRef(el) : (el) => ({ deref: () => el });
   const round = (n) => Math.round(n * 10) / 10;
 
   function push(message) {
@@ -285,6 +298,36 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
 
   g.flush = flush;
 
+  g.refFor = function (el) {
+    try {
+      if (g.dead || !el || el.nodeType !== 1) return null;
+      let ref = refs.get(el);
+      if (!ref) {
+        ref = 'e' + ++refSeq;
+        refs.set(el, ref);
+      }
+      // Same node, same ref: re-register one pruned while it was detached.
+      if (!refNodes.has(ref)) refNodes.set(ref, holdWeakly(el));
+      return ref;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  g.resolveRef = function (ref) {
+    try {
+      if (typeof ref !== 'string') return null;
+      const held = refNodes.get(ref);
+      if (!held) return null;
+      const el = held.deref();
+      if (el && el.isConnected) return el;
+      refNodes.delete(ref);
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
   g.mark = function () {
     flush();
     const mark = g.seq;
@@ -365,6 +408,8 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     window.removeEventListener('popstate', onNav);
     window.removeEventListener('hashchange', onNav);
     g.baselines.clear();
+    refs = new WeakMap();
+    refNodes.clear();
     if (window[opts.key] === g) {
       try { delete window[opts.key]; } catch (e) {}
     }
@@ -413,6 +458,19 @@ export function buildObserverChangesJs(mark: number, docId?: string): string {
   const markJson = JSON.stringify(clampInt(mark, 0, 0, Number.MAX_SAFE_INTEGER));
   const docJson = typeof docId === 'string' && docId.length > 0 ? JSON.stringify(docId) : 'null';
   return callInstance(`g.changes(${markJson}, ${docJson})`);
+}
+
+/**
+ * Build the ref-resolve expression, for tests and debugging. Evaluates to
+ * `{ ok: true, found: true, tag }` when `ref` names an element of the current
+ * document that is still connected, `{ ok: true, found: false }` when it is
+ * unknown or stale, or `{ ok: false, reason: 'observer-unavailable' }`.
+ */
+export function buildObserverRefResolveJs(ref: string): string {
+  const refJson = JSON.stringify(typeof ref === 'string' ? ref : '');
+  return callInstance(
+    `((el) => el ? { ok: true, found: true, tag: el.localName || String(el.nodeName).toLowerCase() } : { ok: true, found: false })(g.resolveRef(${refJson}))`,
+  );
 }
 
 /**

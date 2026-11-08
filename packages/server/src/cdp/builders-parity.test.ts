@@ -95,4 +95,13 @@ describe('cdp page observer emits byte-identical output to the extension origina
     );
     expect(srvObserver.buildObserverTeardownJs()).toBe(extObserver.buildObserverTeardownJs());
   });
+
+  test('buildObserverRefResolveJs', () => {
+    expect(srvObserver.buildObserverRefResolveJs('e1')).toBe(
+      extObserver.buildObserverRefResolveJs('e1'),
+    );
+    expect(srvObserver.buildObserverRefResolveJs('e"42')).toBe(
+      extObserver.buildObserverRefResolveJs('e"42'),
+    );
+  });
 });

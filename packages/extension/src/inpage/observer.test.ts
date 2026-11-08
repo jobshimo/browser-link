@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   OBSERVER_BINDING,
+  OBSERVER_GLOBAL,
   OBSERVER_VERSION,
   buildObserverChangesJs,
   buildObserverInstallJs,
   buildObserverMarkJs,
+  buildObserverRefResolveJs,
   buildObserverTeardownJs,
 } from './observer.js';
 
@@ -290,6 +292,186 @@ describe('page observer: mark and changes', () => {
 
   test('changes without an observer report observer-unavailable', () => {
     expect(evalExpr<Failure>(buildObserverChangesJs(0))).toEqual({
+      ok: false,
+      reason: 'observer-unavailable',
+    });
+  });
+});
+
+interface RefInstance {
+  doc_id: string;
+  refFor(el: Element): string | null;
+  resolveRef(ref: string): Element | null;
+  teardown(): void;
+}
+const instance = (): RefInstance =>
+  (window as unknown as Record<string, RefInstance>)[OBSERVER_GLOBAL];
+
+describe('page observer: element refs', () => {
+  test('the same element gets the same ref across calls', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const go = document.getElementById('go')!;
+    const first = instance().refFor(go);
+    expect(first).toBe('e1');
+    expect(instance().refFor(go)).toBe(first);
+    expect(instance().resolveRef(first!)).toBe(go);
+  });
+
+  test('distinct elements get distinct refs in issue order', () => {
+    document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.refFor(document.getElementById('b')!)).toBe('e1');
+    expect(g.refFor(document.getElementById('a')!)).toBe('e2');
+    expect(g.resolveRef('e1')).toBe(document.getElementById('b'));
+    expect(g.resolveRef('e2')).toBe(document.getElementById('a'));
+  });
+
+  test('a detached element resolves to null and its ref id is never reissued', () => {
+    document.body.innerHTML = '<ul id="list"><li id="one">1</li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    const one = document.getElementById('one')!;
+    const ref = g.refFor(one)!;
+    one.remove();
+    expect(g.resolveRef(ref)).toBeNull();
+    const other = document.createElement('li');
+    document.getElementById('list')!.appendChild(other);
+    const next = g.refFor(other);
+    expect(next).not.toBe(ref);
+    expect(next).toBe('e2');
+    expect(g.resolveRef(ref)).toBeNull();
+  });
+
+  test('refFor and resolveRef never throw on bad input', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.refFor(null as unknown as Element)).toBeNull();
+    expect(g.refFor(document.createTextNode('x') as unknown as Element)).toBeNull();
+    expect(g.resolveRef(undefined as unknown as string)).toBeNull();
+    expect(g.resolveRef('e999')).toBeNull();
+  });
+
+  test('a new install on a fresh document instance restarts at e1', () => {
+    document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
+    evalExpr(buildObserverInstallJs());
+    instance().refFor(document.getElementById('a')!);
+    const firstDoc = instance().doc_id;
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    expect(instance().doc_id).not.toBe(firstDoc);
+    expect(instance().refFor(document.getElementById('b')!)).toBe('e1');
+  });
+
+  test('teardown clears the registries', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    const ref = g.refFor(document.getElementById('go')!)!;
+    g.teardown();
+    expect(g.resolveRef(ref)).toBeNull();
+    expect(g.refFor(document.getElementById('go')!)).toBeNull();
+  });
+});
+
+describe('page observer: version 2 install rule', () => {
+  test('OBSERVER_VERSION is 2', () => {
+    expect(OBSERVER_VERSION).toBe(2);
+  });
+
+  test('an installed version 1 instance is torn down and replaced by version 2', () => {
+    const teardown = vi.fn();
+    (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
+      version: 1,
+      doc_id: 'old-doc',
+      coverage: 'full',
+      teardown,
+    };
+    const result = evalExpr(buildObserverInstallJs());
+    expect(teardown).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, installed: true, version: 2 });
+    expect(instance().doc_id).not.toBe('old-doc');
+    expect(typeof instance().refFor).toBe('function');
+  });
+
+  test.each([2, 3])('an installed version %i instance is left alone', (version) => {
+    const teardown = vi.fn();
+    (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
+      version,
+      doc_id: 'kept-doc',
+      coverage: 'full',
+      teardown,
+    };
+    const result = evalExpr(buildObserverInstallJs());
+    expect(teardown).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      installed: false,
+      version,
+      doc_id: 'kept-doc',
+      coverage: 'full',
+    });
+    expect(pushed.filter((m) => m.type === 'doc_start')).toHaveLength(0);
+  });
+
+  test('doc_start keeps its exact payload shape with version 2', () => {
+    evalExpr(buildObserverInstallJs());
+    const starts = pushed.filter((m) => m.type === 'doc_start');
+    expect(starts).toHaveLength(1);
+    expect(Object.keys(starts[0]).sort()).toEqual(['coverage', 'doc_id', 'type', 'url', 'version']);
+    expect(starts[0]).toMatchObject({ version: 2, coverage: 'full', url: location.href });
+  });
+
+  test('mark and changes keep their exact result shapes alongside refs', () => {
+    document.body.innerHTML = '<ul id="list"></ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    instance().refFor(list);
+    const mark = evalExpr<MarkOk>(buildObserverMarkJs());
+    expect(Object.keys(mark).sort()).toEqual(['doc_id', 'has_focus_baseline', 'mark', 'ok', 'url']);
+    list.appendChild(document.createElement('li'));
+    const changes = evalExpr<ChangesOk>(buildObserverChangesJs(mark.mark));
+    expect(Object.keys(changes).sort()).toEqual([
+      'descriptors',
+      'doc_id',
+      'kinds',
+      'ok',
+      'overflow',
+      'records',
+      'roots',
+      'since',
+      'targets',
+    ]);
+    expect(changes.records).toBe(1);
+    expect(changes.descriptors).toEqual([{ tag: 'ul', id: 'list', path: 'body>ul#list' }]);
+  });
+});
+
+describe('page observer: buildObserverRefResolveJs', () => {
+  test('a live ref resolves to found with its tag', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(document.getElementById('go')!)!;
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({
+      ok: true,
+      found: true,
+      tag: 'button',
+    });
+  });
+
+  test('a stale or unknown ref resolves to not found', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const go = document.getElementById('go')!;
+    const ref = instance().refFor(go)!;
+    go.remove();
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverRefResolveJs('e42'))).toEqual({ ok: true, found: false });
+  });
+
+  test('without an instance it reports observer-unavailable', () => {
+    expect(evalExpr<Failure>(buildObserverRefResolveJs('e1'))).toEqual({
       ok: false,
       reason: 'observer-unavailable',
     });
