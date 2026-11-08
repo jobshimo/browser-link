@@ -3561,13 +3561,13 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
 
   test('click forwards ref and needs exactly one of selector or ref', async () => {
     const deps = makeDeps();
-    await call('browser.click', { ref: 'e12' }, deps);
-    expect(forwarded(deps)).toMatchObject({ ref: 'e12' });
+    await call('browser.click', { ref: 'k3x9ab:e12' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e12' });
     expect(forwarded(deps).selector).toBeUndefined();
     await expect(call('browser.click', {})).rejects.toThrow(
       'browser.click needs exactly one of selector or ref',
     );
-    await expect(call('browser.click', { selector: '#a', ref: 'e1' })).rejects.toThrow(
+    await expect(call('browser.click', { selector: '#a', ref: 'k3x9ab:e1' })).rejects.toThrow(
       'browser.click needs exactly one of selector or ref',
     );
   });
@@ -3581,14 +3581,14 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
 
   test('type forwards ref and needs exactly one of selector or ref', async () => {
     const deps = makeDeps();
-    await call('browser.type', { ref: 'e3', text: 'hi' }, deps);
-    expect(forwarded(deps)).toMatchObject({ ref: 'e3', text: 'hi' });
+    await call('browser.type', { ref: 'k3x9ab:e3', text: 'hi' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e3', text: 'hi' });
     await expect(call('browser.type', { text: 'hi' })).rejects.toThrow(
       'browser.type needs exactly one of selector or ref',
     );
-    await expect(call('browser.type', { selector: '#a', ref: 'e1', text: 'hi' })).rejects.toThrow(
-      'browser.type needs exactly one of selector or ref',
-    );
+    await expect(
+      call('browser.type', { selector: '#a', ref: 'k3x9ab:e1', text: 'hi' }),
+    ).rejects.toThrow('browser.type needs exactly one of selector or ref');
     const bySelector = makeDeps();
     await call('browser.type', { selector: '#q', text: 'hi' }, bySelector);
     expect(forwarded(bySelector)).not.toHaveProperty('ref');
@@ -3596,29 +3596,29 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
 
   test('press forwards ref; ref and selector are exclusive', async () => {
     const deps = makeDeps();
-    await call('browser.press', { key: 'Enter', ref: 'e4' }, deps);
-    expect(forwarded(deps)).toMatchObject({ key: 'Enter', ref: 'e4' });
+    await call('browser.press', { key: 'Enter', ref: 'k3x9ab:e4' }, deps);
+    expect(forwarded(deps)).toMatchObject({ key: 'Enter', ref: 'k3x9ab:e4' });
     await expect(
-      call('browser.press', { key: 'Enter', ref: 'e4', selector: '#a' }),
+      call('browser.press', { key: 'Enter', ref: 'k3x9ab:e4', selector: '#a' }),
     ).rejects.toThrow('browser.press accepts at most one of selector or ref');
   });
 
   test('wait_for accepts ref as a mode, with condition', async () => {
     const deps = makeDeps();
-    await call('browser.wait_for', { ref: 'e5', condition: 'detached' }, deps);
-    expect(forwarded(deps)).toMatchObject({ ref: 'e5', condition: 'detached' });
-    await expect(call('browser.wait_for', { ref: 'e5', selector: '#a' })).rejects.toThrow(
+    await call('browser.wait_for', { ref: 'k3x9ab:e5', condition: 'detached' }, deps);
+    expect(forwarded(deps)).toMatchObject({ ref: 'k3x9ab:e5', condition: 'detached' });
+    await expect(call('browser.wait_for', { ref: 'k3x9ab:e5', selector: '#a' })).rejects.toThrow(
       /exactly one of selector, expression, network_url, ref/,
     );
-    await expect(call('browser.wait_for', { ref: 'e5', condition: 'gone' })).rejects.toThrow(
+    await expect(call('browser.wait_for', { ref: 'k3x9ab:e5', condition: 'gone' })).rejects.toThrow(
       /condition must be one of visible \| hidden \| attached \| detached/,
     );
   });
 
   test('find needs text unless ref is given, and forwards ref', async () => {
     const deps = makeDeps();
-    await call('browser.find', { ref: 'e6' }, deps);
-    expect(forwarded(deps)).toEqual({ ref: 'e6' });
+    await call('browser.find', { ref: 'k3x9ab:e6' }, deps);
+    expect(forwarded(deps)).toEqual({ ref: 'k3x9ab:e6' });
     await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
     const byText = makeDeps();
     await call('browser.find', { text: 'Save' }, byText);
@@ -3631,31 +3631,68 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
     ['browser.press', { key: 'Enter' }],
     ['browser.wait_for', {}],
     ['browser.find', {}],
-  ])('%s rejects a ref that is not e<digits> or too long', async (name, extra) => {
-    for (const ref of ['12', 'e', 'e1x', 'E1', '', 7, 'e' + '1'.repeat(64)]) {
+  ])('%s rejects a ref that is not <doc_tag>:e<digits> or too long', async (name, extra) => {
+    for (const ref of [
+      '12',
+      'e',
+      'e12',
+      'e1x',
+      'E1',
+      '',
+      7,
+      ':e1',
+      'k3x9ab:e',
+      'k3x9ab:E1',
+      'K3X9AB:e1',
+      'k3x9ab-e1',
+      'k3x9ab:e1x',
+      'a'.repeat(17) + ':e1',
+      'k3x9ab:e' + '1'.repeat(64),
+    ]) {
       await expect(call(name, { ...extra, ref })).rejects.toThrow(
-        `${name}: ref must be an element ref like "e12"`,
+        `${name}: ref must be an element ref like "k3x9ab:e12"`,
       );
     }
+  });
+
+  test('find rejects a ref combined with text, role or exact', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ text: 'Save' }, 'browser.find needs exactly one of text, ref or key'],
+      [{ role: 'button' }, 'browser.find: role and exact apply to text mode only'],
+      [{ exact: true }, 'browser.find: role and exact apply to text mode only'],
+    ];
+    for (const [extra, error] of cases) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { ref: 'k3x9ab:e6', ...extra }, deps)).rejects.toThrow(
+        error,
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test('find forwards text with role and exact', async () => {
+    const deps = makeDeps();
+    await call('browser.find', { text: 'Save', role: 'button', exact: true }, deps);
+    expect(forwarded(deps)).toEqual({ text: 'Save', role: 'button', exact: true });
   });
 
   describe('validateFlowSteps', () => {
     test('click, type, press and wait_for steps accept ref', () => {
       expect(
         validateFlowSteps([
-          { click: { ref: 'e1' } },
-          { type: { ref: 'e2', text: 'x' } },
-          { press: { ref: 'e2', key: 'Enter' } },
-          { wait_for: { ref: 'e1', condition: 'detached' } },
+          { click: { ref: 'k3x9ab:e1' } },
+          { type: { ref: 'k3x9ab:e2', text: 'x' } },
+          { press: { ref: 'k3x9ab:e2', key: 'Enter' } },
+          { wait_for: { ref: 'k3x9ab:e1', condition: 'detached' } },
         ]).ok,
       ).toBe(true);
     });
 
     test('a step with both selector and ref is rejected', () => {
       for (const step of [
-        { click: { selector: '#a', ref: 'e1' } },
-        { type: { selector: '#a', ref: 'e1', text: 'x' } },
-        { press: { selector: '#a', ref: 'e1', key: 'Enter' } },
+        { click: { selector: '#a', ref: 'k3x9ab:e1' } },
+        { type: { selector: '#a', ref: 'k3x9ab:e1', text: 'x' } },
+        { press: { selector: '#a', ref: 'k3x9ab:e1', key: 'Enter' } },
       ]) {
         const kind = Object.keys(step)[0];
         expect(validateFlowSteps([step])).toEqual({
@@ -3663,7 +3700,7 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
           error: `step 0: ${kind} accepts at most one of selector or ref`,
         });
       }
-      expect(validateFlowSteps([{ wait_for: { selector: '#a', ref: 'e1' } }])).toEqual({
+      expect(validateFlowSteps([{ wait_for: { selector: '#a', ref: 'k3x9ab:e1' } }])).toEqual({
         ok: false,
         error: 'step 0: wait_for requires exactly one of selector | expression | network_url | ref',
       });
@@ -3673,8 +3710,17 @@ describe('ref as a target (spec v4 §6.3) — dispatch validation', () => {
       expect(validateFlowSteps([{ click: { ref: 'button' } }])).toEqual({
         ok: false,
         error:
-          'step 0: click.ref must be an element ref like "e12" (e followed by digits, at most 64 characters)',
+          'step 0: click.ref must be an element ref like "k3x9ab:e12" (a document tag of 1-16 lowercase letters or digits, ":e" and digits, at most 64 characters)',
       });
+    });
+
+    test('a find step carrying ref or key is rejected', () => {
+      for (const extra of [{ ref: 'k3x9ab:e1' }, { key: { role: 'button', name: 'Go' } }]) {
+        expect(validateFlowSteps([{ find: { text: 'Go', ...extra } }, { click: {} }])).toEqual({
+          ok: false,
+          error: 'step 0: find steps take text (and role, exact) only',
+        });
+      }
     });
 
     test('selector-only steps validate exactly as before', () => {
@@ -3712,8 +3758,18 @@ describe('find by semantic key (spec v4 §6.3, S3) — dispatch validation', () 
     expect(forwarded(bare)).toEqual({ key: { role: 'button', name: 'Save' } });
   });
 
+  test('key rejects role and exact', async () => {
+    for (const extra of [{ role: 'button' }, { exact: true }]) {
+      const deps = makeDeps();
+      await expect(call('browser.find', { key: KEY, ...extra }, deps)).rejects.toThrow(
+        'browser.find: role and exact apply to text mode only',
+      );
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
   test('key is exclusive with text and ref', async () => {
-    for (const extra of [{ text: 'Save' }, { ref: 'e3' }]) {
+    for (const extra of [{ text: 'Save' }, { ref: 'k3x9ab:e3' }]) {
       const deps = makeDeps();
       await expect(call('browser.find', { key: KEY, ...extra }, deps)).rejects.toThrow(
         'browser.find needs exactly one of text, ref or key',
@@ -3751,8 +3807,8 @@ describe('find by semantic key (spec v4 §6.3, S3) — dispatch validation', () 
     await call('browser.find', { text: 'Save', role: 'button' }, byText);
     expect(forwarded(byText)).toEqual({ text: 'Save', role: 'button', exact: false });
     const byRef = makeDeps();
-    await call('browser.find', { ref: 'e6' }, byRef);
-    expect(forwarded(byRef)).toEqual({ ref: 'e6' });
+    await call('browser.find', { ref: 'k3x9ab:e6' }, byRef);
+    expect(forwarded(byRef)).toEqual({ ref: 'k3x9ab:e6' });
     await expect(call('browser.find', {})).rejects.toThrow('browser.find: text required');
   });
 

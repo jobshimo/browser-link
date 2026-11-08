@@ -87,7 +87,7 @@ describe('agent-instructions block — reflex protocol shape', () => {
 
   test('teaches ref as an action target, ref-stale recovery and semantic_key in the map', () => {
     const out = block();
-    expect(out).toContain('prefer its `ref` (`e<N>`)');
+    expect(out).toContain('prefer its `ref` (like `k3x9ab:e12`)');
     expect(out).toContain('On `ref-stale` (node gone, or ref from another');
     expect(out).toContain('`semantic_key` in the payload next to it, and use');
     expect(out).toContain('Never save a key for an `ambiguous` entry.');

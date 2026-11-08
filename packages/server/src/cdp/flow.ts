@@ -117,7 +117,7 @@ export interface FindStepResult {
 
 export interface ClickStepParams {
   selector?: string;
-  /** Observer ref (`e<N>`) as the target instead of `selector`; exactly one
+  /** Observer ref (`<doc_tag>:e<N>`) as the target instead of `selector`; exactly one
    * of the two. A step ref beats the implicit target of a preceding find. */
   ref?: string;
   force?: boolean;

@@ -15,7 +15,7 @@ import { OBSERVER_GLOBAL } from './observer.js';
  * injected verbatim into `buildSnapshotJs`, `buildFindJs` and `buildStateJs`.
  * The observer global is looked up ONCE per evaluation and used only when it
  * is present, not torn down, and exposes `refFor`:
- *   - `refOf(el)` returns the observer's `e<N>` ref for `el`, or `null`;
+ *   - `refOf(el)` returns the observer's `<doc_tag>:e<N>` ref for `el`, or `null`;
  *   - `withDocId(result)` adds `doc_id` to `result` and returns it;
  *   - `snapshotStore()` returns the observer when it keeps snapshot records
  *     (`recordSnapshot` / `getSnapshot`, used by `snapshot({ since })`), else
@@ -97,7 +97,7 @@ export const RESOLVE_TARGET_JS = `
 `;
 
 /** The target of an action builder: exactly one of a CSS `selector` or an
- * observer `ref` (`e<N>`, from `snapshot` / `find` / `state`). */
+ * observer `ref` (`<doc_tag>:e<N>`, from `snapshot` / `find` / `state`). */
 export interface TargetOpts {
   selector?: string;
   ref?: string;
@@ -384,14 +384,16 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
  * With `key` (`{ role, name, path? }`, the shape `semantic_key` and the map's
  * stored key carry) the text scan is skipped too: candidates are the
  * elements whose semantic key has the same `role` AND `name`. With `path`,
- * only candidates with the identical tag sequence count and the unique
- * smallest summed sibling-index distance wins (the observer's re-resolution
- * rule); without it, exactly one role + name candidate must exist. A unique
- * match answers in the single-match shape; otherwise
+ * only candidates with the identical tag sequence count and exactly one must
+ * exist (the observer's re-resolution rule; sibling indices select nothing);
+ * without it, exactly one role + name candidate must exist. A unique match
+ * answers in the single-match shape; otherwise
  *   { matched: false, reason: 'not-found', error?, doc_id }
- * where `error` starts with `key: <N> candidates share role and name` when
- * N > 0, and `{ matched: false, reason: 'observer-unavailable' }` without
- * the observer. No click-target gate, as for `ref`.
+ * where `error` is `key: <N> candidates share role, name and tag path` when
+ * several share the tag path, else starts with `key: <N> candidates share
+ * role and name` when N > 0, and `{ matched: false, reason:
+ * 'observer-unavailable' }` without the observer. No click-target gate, as
+ * for `ref`.
  *
  * Role-aware: when `role` is provided, only elements whose explicit ARIA
  * role or implicit role match are considered. When omitted, the search
@@ -520,32 +522,25 @@ export function buildFindJs(opts: FindOpts): string {
     if (!Array.isArray(wanted.path)) {
       if (count === 1) picked = candidates[0].el;
     } else {
-      // Same rule as the observer's re-resolution (lab 10): identical tag
-      // path, unique smallest summed sibling-index distance, ties refused.
-      let bestDistance = Infinity;
-      let tie = false;
+      // Same rule as the observer's re-resolution: identical tag path and
+      // exactly one such candidate; identical rows are refused, never guessed.
       let sameTags = 0;
+      let only = null;
       for (const c of candidates) {
         if (c.path.length !== wanted.path.length) continue;
-        let distance = 0;
-        for (let i = 0; i < c.path.length && distance !== Infinity; i++) {
-          if (c.path[i].tag !== wanted.path[i].tag) distance = Infinity;
-          else distance += Math.abs(c.path[i].index - wanted.path[i].index);
+        let same = true;
+        for (let i = 0; i < c.path.length && same; i++) {
+          if (c.path[i].tag !== wanted.path[i].tag) same = false;
         }
-        if (distance === Infinity) continue;
+        if (!same) continue;
         sameTags++;
-        if (distance < bestDistance) {
-          picked = c.el;
-          bestDistance = distance;
-          tie = false;
-        } else if (distance === bestDistance) {
-          tie = true;
-        }
+        only = c.el;
       }
-      if (tie) {
-        picked = null;
-        error = shared + sameTags + ' with the same tag path tie on distance';
-      } else if (!picked && count > 0) {
+      if (sameTags === 1) {
+        picked = only;
+      } else if (sameTags > 1) {
+        error = 'key: ' + sameTags + ' candidates share role, name and tag path';
+      } else if (count > 0) {
         error = shared + 'none has the same tag path';
       }
     }

@@ -409,9 +409,10 @@ and `since_status`, so the call is never wasted. Keep the new
 
 **Fields.** When the page observer runs in the tab, interactive entries in
 `snapshot`, `find` (single match, `candidates`, `near_misses`) and
-`state.focused` carry `ref` (`e<N>`), a per-document element handle that
-is reused while the node lives. A `ref` is valid only for the `doc_id` that
-issued it and dies with the document. Results also carry `doc_id`, and
+`state.focused` carry `ref` (`<doc_tag>:e<N>`, for example `k3x9ab:e12`),
+a per-document element handle that is reused while the node lives. The
+`doc_tag` is the first 6 characters of `doc_id`. A `ref` is valid only for
+the document that issued it and dies with the document. Results also carry `doc_id`, and
 `snapshot` results carry `snapshot_id` (`<doc_id>:s<N>`). All of these are
 additive and absent when the observer is not in the page. A `ref` is also an
 action target: see [`ref` as a target](#ref-as-a-target--stable-identity-for-this-document).
@@ -428,25 +429,25 @@ change.
 #### `ref` as a target — stable identity for this document
 
 `click`, `type`, `press`, `find`, `wait_for` and the matching `browser.flow`
-steps accept `ref` (`e<N>`, taken from the latest `snapshot`, `find` or
+steps accept `ref` (`<doc_tag>:e<N>`, taken from the latest `snapshot`, `find` or
 `state` of the **current** document) in place of a CSS selector. Prefer it
 over a selector you copied earlier: a selector can change when siblings are
 inserted (see above), a live `ref` still names the same node.
 
-| Tool            | Target rule                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------- |
-| `click`, `type` | exactly one of `selector` or `ref`                                                                            |
-| `press`         | at most one of `selector` or `ref` (neither: the key goes to whatever has focus)                              |
-| `wait_for`      | exactly one of `selector`, `ref`, `expression` or `network_url`; `ref` takes the same `condition` as selector |
-| `find`          | exactly one of `text`, `ref` or `key`; `ref` together with `text` is accepted and `text` is ignored           |
-| `flow` steps    | a step `ref` beats the implicit target of a preceding `find`; `selector` and `ref` together are rejected      |
+| Tool            | Target rule                                                                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `click`, `type` | exactly one of `selector` or `ref`                                                                                                                              |
+| `press`         | at most one of `selector` or `ref` (neither: the key goes to whatever has focus)                                                                                |
+| `wait_for`      | exactly one of `selector`, `ref`, `expression` or `network_url`; `ref` takes the same `condition` as selector                                                   |
+| `find`          | exactly one of `text`, `ref` or `key`; `role` and `exact` apply to `text` only, any other combination is rejected                                               |
+| `flow` steps    | a step `ref` beats the implicit target of a preceding `find`; `selector` and `ref` together are rejected; a `find` step takes `text` (and `role`, `exact`) only |
 
 **Resolution.** A `ref` whose node is still in the page resolves directly. If
 the node is gone (a list re-rendered and replaced it), the observer looks it
 up again by the element's **semantic key**, recorded when the `ref` was
-issued: the same role, the same accessible name, an identical ancestor tag
-path, and the unique candidate with the smallest sibling-index distance. When
-that rebind succeeds the result carries `reresolved: true` and the action
+issued: the same role, the same accessible name and an identical ancestor tag
+path, and exactly one element must match. Sibling indices are kept in the key
+but never choose between candidates. When that rebind succeeds the result carries `reresolved: true` and the action
 proceeds on the new node. A changed name or role invalidates the `ref`.
 
 **Failures.**
@@ -459,11 +460,18 @@ proceeds on the new node. A changed name or role invalidates the `ref`.
 
 **Properties.**
 
-- Re-resolution never crosses documents. A navigation or reload gives a new
-  `doc_id`, and every earlier `ref` fails with `ref-stale`.
-- Identical rows (same role, accessible name and tag path) tie. A tie is
-  refused with `ref-stale`, never guessed, so a `ref` never silently moves to
-  a different row.
+- Re-resolution never crosses documents. A `ref` carries its document tag,
+  so after a navigation or reload (a new `doc_id`) every earlier `ref` fails
+  with `ref-stale`, even when the new document has issued the same number. A
+  bare `e<N>` without a tag (the 0.36.0 format) is rejected by the server as a malformed `ref` before it reaches the page.
+- Identical rows (same role, accessible name and tag path) are refused with
+  `ref-stale`, never guessed, so a `ref` never silently moves to a different
+  row. `find({ key })` with `path` applies the same rule.
+- Re-resolution searches the document and its shadow roots, not iframes;
+  `find({ key })` also searches same-origin iframes.
+- `browser.map.save` refuses a `semantic_key` on an `ambiguous` entry only
+  when the payload carries `ambiguous: true`: copy that flag from the
+  `snapshot` or `find` result into the payload.
 - The selector path is unchanged: a call with `selector` behaves as it did
   before `ref` existed, and tests pin that.
 
@@ -472,7 +480,7 @@ also returns `semantic_key: { role, name, path: [{ tag, index }] }`. Pass it
 back as `find({ key })` to locate the element again by role and accessible
 name: a unique match returns the usual single-match result, otherwise the
 call reports a counted `not-found` (for example, how many candidates share
-role and name). `candidates`, `near_misses` and `snapshot` entries do not
+role and name, or role, name and tag path). `candidates`, `near_misses` and `snapshot` entries do not
 carry the key.
 
 #### `settle_ms` — settle proves QUIET, not EFFECT

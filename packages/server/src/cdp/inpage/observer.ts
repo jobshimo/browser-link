@@ -48,10 +48,13 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * `{ ok: true, installed, version, doc_id, coverage }`.
  *
  * The instance also owns element identity (spec v4 §5.6): `refFor(el)` issues
- * `e<N>` (monotonic per document instance, from `e1`) the first time an
- * element is seen and reuses it while the node lives; `resolveRef(ref)`
- * returns the element while it is connected, else `null`. Refs are only valid
- * for the `doc_id` that issued them. Neither method throws.
+ * `<doc_tag>:e<N>` (`doc_tag` = the first 6 characters of `doc_id`, N
+ * monotonic per document instance, from 1) the first time an element is seen
+ * and reuses it while the node lives; `resolveRef(ref)` returns the element
+ * while it is connected, else `null`. Refs are only valid for the document
+ * instance that issued them: a ref whose tag is not this instance's tag, or a
+ * bare `e<N>` with no tag, is `null` everywhere (resolve, re-resolve, key)
+ * without consulting the registries. Neither method throws.
  *
  * Secondary identity (spec v4 §5.6, decided by lab 10): `semanticKeyFor(el)`
  * returns `{ role, name, path }` — role from the `role` attribute or a small
@@ -60,10 +63,10 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * to 8 `{ tag, index }` ancestor steps (1-based same-tag sibling index, a
  * shadow boundary as `{ tag: '#shadow', index: 0 }`). `refFor` stores the key
  * when it issues a ref. `resolveRefDetailed(ref)` returns `{ el, reresolved }`:
- * the live node with `reresolved: false`, else the unique element with the same
- * role, name and tag-only path and the smallest summed sibling-index distance,
- * rebinding the ref to it (`reresolved: true`); a tie or no candidate gives
- * `null`. Candidates come from the document, every open shadow root reachable
+ * the live node with `reresolved: false`, else the element with the same role,
+ * name and tag-only path when exactly one exists, rebinding the ref to it
+ * (`reresolved: true`); zero or several candidates give `null` (sibling
+ * indices are kept in the key as data but never pick among candidates). Candidates come from the document, every open shadow root reachable
  * from it, and every root the `attachShadow` patch observed (closed ones
  * included); closed roots attached before install are not reachable.
  * `resolveRef(ref)` is `resolveRefDetailed(ref)?.el ?? null`. `keyForRef(ref)`
@@ -124,6 +127,10 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   // a replaced node can be found again (spec v4 §5.6 secondary identity).
   const refKeys = new Map();
   let refSeq = 0;
+  // Every ref carries the issuing document's tag, so a ref from another
+  // document instance (or a bare e<N>) never reaches the registries.
+  const refPrefix = g.doc_id.slice(0, 6) + ':e';
+  const ownsRef = (ref) => typeof ref === 'string' && ref.startsWith(refPrefix);
   let snapshotSeq = 0;
   // Last SNAPSHOT_KEEP snapshot records (opaque to the observer; the snapshot
   // builder owns their shape), keyed by snapshot_id in insertion order.
@@ -455,14 +462,13 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     return roots;
   }
 
-  // Lab 10: same role and name, identical tag-only path, unique smallest summed
-  // sibling-index distance; a tie is refused so a ref never jumps across rows.
+  // Same role and name and an identical tag-only path, and exactly one such
+  // element: identical rows are refused, never guessed, so a ref never jumps
+  // across rows. Sibling indices stay in the key but select nothing.
   function findByKey(key) {
     const last = key.path[key.path.length - 1];
     if (!last) return null;
-    let best = null;
-    let bestDistance = Infinity;
-    let tie = false;
+    let found = null;
     for (const root of searchRoots()) {
       let all;
       try { all = root.querySelectorAll('*'); } catch (e) { continue; }
@@ -470,22 +476,16 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
         if (tagOf(el) !== last.tag || roleOf(el) !== key.role || nameOf(el) !== key.name) continue;
         const path = keyPathOf(el);
         if (path.length !== key.path.length) continue;
-        let distance = 0;
-        for (let i = 0; i < path.length && distance !== Infinity; i++) {
-          if (path[i].tag !== key.path[i].tag) distance = Infinity;
-          else distance += Math.abs(path[i].index - key.path[i].index);
+        let same = true;
+        for (let i = 0; i < path.length && same; i++) {
+          if (path[i].tag !== key.path[i].tag) same = false;
         }
-        if (distance === Infinity) continue;
-        if (distance < bestDistance) {
-          best = el;
-          bestDistance = distance;
-          tie = false;
-        } else if (distance === bestDistance) {
-          tie = true;
-        }
+        if (!same) continue;
+        if (found) return null;
+        found = el;
       }
     }
-    return tie ? null : best;
+    return found;
   }
 
   g.semanticKeyFor = semanticKeyFor;
@@ -495,7 +495,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       if (g.dead || !el || el.nodeType !== 1) return null;
       let ref = refs.get(el);
       if (!ref) {
-        ref = 'e' + ++refSeq;
+        ref = refPrefix + ++refSeq;
         refs.set(el, ref);
         const key = semanticKeyFor(el);
         if (key) refKeys.set(ref, key);
@@ -510,7 +510,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
 
   g.resolveRefDetailed = function (ref) {
     try {
-      if (g.dead || typeof ref !== 'string') return null;
+      if (g.dead || !ownsRef(ref)) return null;
       const held = refNodes.get(ref);
       const old = held ? held.deref() : null;
       if (old && old.isConnected) return { el: old, reresolved: false };
@@ -536,7 +536,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   };
 
   g.keyForRef = function (ref) {
-    if (g.dead || typeof ref !== 'string') return null;
+    if (g.dead || !ownsRef(ref)) return null;
     const key = refKeys.get(ref);
     if (!key) return null;
     return { role: key.role, name: key.name, path: key.path.map((s) => ({ tag: s.tag, index: s.index })) };

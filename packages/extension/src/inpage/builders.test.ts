@@ -1328,7 +1328,7 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
     delete win[OBSERVER_BINDING];
   });
 
-  const refPattern = /^e\d+$/;
+  const refPattern = /^[a-z0-9]{1,6}:e\d+$/;
 
   test('snapshot entries carry a ref right after selector, shadow-root entries included', () => {
     buildBaselinePage();
@@ -1763,10 +1763,37 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       ref,
       doc_id: docId,
     });
-    expect(evalExpr<Json>(buildClickResolveJs({ ref: 'e999', force: false }))).toEqual({
+    const unknown = docId.slice(0, 6) + ':e999';
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: unknown, force: false }))).toEqual({
       ok: false,
       reason: 'ref-stale',
-      ref: 'e999',
+      ref: unknown,
+      doc_id: docId,
+    });
+  });
+
+  test('click by a ref from a torn-down document is ref-stale although the new one issued the same number', () => {
+    install(BUTTONS);
+    const first = document.querySelector<HTMLElement>('#list button')!;
+    const oldRef = (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(first)!;
+    const oldDoc = docId;
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    expect(docId).not.toBe(oldDoc);
+    const newRef = refOfSecond();
+    expect(newRef.slice(newRef.indexOf(':'))).toBe(oldRef.slice(oldRef.indexOf(':')));
+    expect(newRef).not.toBe(oldRef);
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: oldRef, force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: oldRef,
+      doc_id: docId,
+    });
+    expect(evalExpr<Json>(buildClickResolveJs({ ref: 'e1', force: false }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref: 'e1',
       doc_id: docId,
     });
   });
@@ -1943,17 +1970,18 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
 
   test('find by an unknown ref is ref-stale; without the observer it is observer-unavailable', () => {
     install(BUTTONS);
-    expect(evalExpr<Json>(buildFindJs({ ref: 'e999' }))).toEqual({
+    const unknown = docId.slice(0, 6) + ':e999';
+    expect(evalExpr<Json>(buildFindJs({ ref: unknown }))).toEqual({
       matched: false,
       reason: 'ref-stale',
-      ref: 'e999',
+      ref: unknown,
       doc_id: docId,
     });
     evalExpr(buildObserverTeardownJs());
-    expect(evalExpr<Json>(buildFindJs({ ref: 'e1' }))).toEqual({
+    expect(evalExpr<Json>(buildFindJs({ ref: 'k3x9ab:e1' }))).toEqual({
       matched: false,
       reason: 'observer-unavailable',
-      ref: 'e1',
+      ref: 'k3x9ab:e1',
     });
   });
 });
@@ -1990,14 +2018,14 @@ describe('find by semantic key and semantic_key on find results', () => {
 
   test('find by key with path gives the single-match shape with ref and semantic_key', () => {
     install();
-    const key = observer().semanticKeyFor(item(1))!;
+    const key = observer().semanticKeyFor(item(0))!;
     expect(key).toEqual({
       role: 'button',
-      name: 'Beta',
+      name: 'Alpha',
       path: [
         { tag: 'body', index: 1 },
         { tag: 'ul', index: 1 },
-        { tag: 'li', index: 2 },
+        { tag: 'li', index: 1 },
         { tag: 'button', index: 1 },
       ],
     });
@@ -2013,20 +2041,32 @@ describe('find by semantic key and semantic_key on find results', () => {
       'doc_id',
     ]);
     expect(found.matched).toBe(true);
-    expect(found.ref).toBe(observer().refFor(item(1)));
+    expect(found.ref).toBe(observer().refFor(item(0)));
     expect(found.semantic_key).toEqual(key);
     expect(found.tag).toBe('button');
-    expect(found.text).toBe('Beta');
+    expect(found.text).toBe('Alpha');
     expect(found.doc_id).toBe(docId);
-    expect(document.querySelector(found.selector as string)).toBe(item(1));
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
   });
 
-  test('with path, the closest same-tag-path candidate wins (the third item)', () => {
+  test('with path, two identical rows (same role, name and tag path) are not-found with the count', () => {
     install();
     const key = observer().semanticKeyFor(item(2))!;
-    const found = evalExpr<Json>(buildFindJs({ key }));
+    expect(evalExpr<Json>(buildFindJs({ key }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      error: 'key: 2 candidates share role, name and tag path',
+      doc_id: docId,
+    });
+  });
+
+  test('with path, a unique same-tag-path candidate matches whatever its sibling indices', () => {
+    install();
+    const key = observer().semanticKeyFor(item(0))!;
+    const moved = { ...key, path: key.path.map((step) => ({ ...step, index: 7 })) };
+    const found = evalExpr<Json>(buildFindJs({ key: moved }));
     expect(found.matched).toBe(true);
-    expect(document.querySelector(found.selector as string)).toBe(item(2));
+    expect(document.querySelector(found.selector as string)).toBe(item(0));
   });
 
   test('two candidates with the same role and name and no path: not-found naming the count', () => {

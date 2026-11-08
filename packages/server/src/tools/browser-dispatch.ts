@@ -552,18 +552,19 @@ export type FlowValidationResult =
  * — a steps array `browser.flow` would reject must be rejected here too,
  * never a second, slightly-different copy of this logic.
  */
-/** Longest `ref` accepted as an action target. Observer refs are `e<N>`
- * with a per-document counter, so 64 characters is far beyond any real
- * ref and only bounds what a caller can push into the page. */
+/** Longest `ref` accepted as an action target. Observer refs are
+ * `<doc_tag>:e<N>` (a 6-character document tag and a per-document counter),
+ * so 64 characters is far beyond any real ref and only bounds what a caller
+ * can push into the page. */
 const MAX_REF_LENGTH = 64;
-const REF_PATTERN = /^e[0-9]+$/;
+const REF_PATTERN = /^[a-z0-9]{1,16}:e[0-9]+$/;
 const REF_SHAPE_ERROR =
-  'ref must be an element ref like "e12" (e followed by digits, at most 64 characters)';
+  'ref must be an element ref like "k3x9ab:e12" (a document tag of 1-16 lowercase letters or digits, ":e" and digits, at most 64 characters)';
 
-/** Whether `ref` is a well-formed observer element ref (`e<digits>`, from
- * `snapshot` / `find` / `state`). Only the shape is checked here; whether
- * it names an element of the current document is decided in the page
- * (`ref-stale`). */
+/** Whether `ref` is a well-formed observer element ref (`<doc_tag>:e<digits>`,
+ * from `snapshot` / `find` / `state`). Only the shape is checked here;
+ * whether it names an element of the current document (its tag is that
+ * document's) is decided in the page (`ref-stale`). */
 function isElementRef(ref: unknown): ref is string {
   return typeof ref === 'string' && ref.length <= MAX_REF_LENGTH && REF_PATTERN.test(ref);
 }
@@ -718,6 +719,11 @@ export function validateFlowSteps(
       }
     }
     if (kind === 'find') {
+      // A flow find only searches by text: its result feeds the next step's
+      // implicit selector target.
+      if (bodyRecord.ref !== undefined || bodyRecord.key !== undefined) {
+        return { ok: false, error: `step ${i}: find steps take text (and role, exact) only` };
+      }
       if (typeof bodyRecord.text !== 'string' || bodyRecord.text.length === 0) {
         return { ok: false, error: `step ${i}: find.text is required` };
       }
@@ -1618,19 +1624,20 @@ async function dispatchBrowserTool(
         key?: unknown;
       };
       requireValidRef('browser.find', ref);
+      // The three modes are strictly exclusive, and role/exact only refine a
+      // text search: an option a mode would ignore is rejected, never dropped.
+      const modes = [text, ref, key].filter((mode) => mode !== undefined).length;
+      if (modes > 1) throw new Error('browser.find needs exactly one of text, ref or key');
+      if ((ref !== undefined || key !== undefined) && (role !== undefined || exact !== undefined)) {
+        throw new Error('browser.find: role and exact apply to text mode only');
+      }
       if (key !== undefined) {
-        // `ref` with `text` keeps its documented behaviour (text ignored);
-        // a key names its own target, so it combines with neither.
-        if (text !== undefined || ref !== undefined) {
-          throw new Error('browser.find needs exactly one of text, ref or key');
-        }
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
         return routeToolCall('find', requireTabId(args), { key: key as SemanticKey }, deps);
       }
       if (ref !== undefined) {
-        // With a ref, find describes that element; text/role/exact do not
-        // apply (see buildFindJs).
+        // With a ref, find describes that element (see buildFindJs).
         return routeToolCall('find', requireTabId(args), { ref: ref as string }, deps);
       }
       if (typeof text !== 'string' || text.length === 0) {

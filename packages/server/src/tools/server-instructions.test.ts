@@ -71,7 +71,7 @@ describe('buildServerInstructions', () => {
 
   test('preamble teaches ref as an action target, ref-stale recovery and semantic_key in the map', () => {
     const out = buildServerInstructions();
-    expect(out).toContain('prefer its `ref` (`e<N>`)');
+    expect(out).toContain('prefer its `ref` (like `k3x9ab:e12`)');
     expect(out).toContain('On `ref-stale` (node gone, or ref from another');
     expect(out).toContain('save that `semantic_key` in the payload next to it,');
     expect(out).toContain('Never save a key for an `ambiguous` entry.');

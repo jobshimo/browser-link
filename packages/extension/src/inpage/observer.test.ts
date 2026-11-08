@@ -321,6 +321,9 @@ interface RefInstance {
 }
 const instance = (): RefInstance =>
   (window as unknown as Record<string, RefInstance>)[OBSERVER_GLOBAL];
+/** The ref the current instance issues for its N-th element: `<doc_tag>:e<N>`. */
+const tagged = (n: number): string => instance().doc_id.slice(0, 6) + ':e' + n;
+const REF_FORMAT = /^[a-z0-9]{1,6}:e\d+$/;
 
 describe('page observer: element refs', () => {
   test('the same element gets the same ref across calls', () => {
@@ -328,7 +331,8 @@ describe('page observer: element refs', () => {
     evalExpr(buildObserverInstallJs());
     const go = document.getElementById('go')!;
     const first = instance().refFor(go);
-    expect(first).toBe('e1');
+    expect(first).toBe(tagged(1));
+    expect(first).toMatch(REF_FORMAT);
     expect(instance().refFor(go)).toBe(first);
     expect(instance().resolveRef(first!)).toBe(go);
   });
@@ -337,10 +341,10 @@ describe('page observer: element refs', () => {
     document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
     evalExpr(buildObserverInstallJs());
     const g = instance();
-    expect(g.refFor(document.getElementById('b')!)).toBe('e1');
-    expect(g.refFor(document.getElementById('a')!)).toBe('e2');
-    expect(g.resolveRef('e1')).toBe(document.getElementById('b'));
-    expect(g.resolveRef('e2')).toBe(document.getElementById('a'));
+    expect(g.refFor(document.getElementById('b')!)).toBe(tagged(1));
+    expect(g.refFor(document.getElementById('a')!)).toBe(tagged(2));
+    expect(g.resolveRef(tagged(1))).toBe(document.getElementById('b'));
+    expect(g.resolveRef(tagged(2))).toBe(document.getElementById('a'));
   });
 
   test('a detached element resolves to null and its ref id is never reissued', () => {
@@ -355,7 +359,7 @@ describe('page observer: element refs', () => {
     document.getElementById('list')!.appendChild(other);
     const next = g.refFor(other);
     expect(next).not.toBe(ref);
-    expect(next).toBe('e2');
+    expect(next).toBe(tagged(2));
     expect(g.resolveRef(ref)).toBeNull();
   });
 
@@ -365,10 +369,48 @@ describe('page observer: element refs', () => {
     expect(g.refFor(null as unknown as Element)).toBeNull();
     expect(g.refFor(document.createTextNode('x') as unknown as Element)).toBeNull();
     expect(g.resolveRef(undefined as unknown as string)).toBeNull();
-    expect(g.resolveRef('e999')).toBeNull();
+    expect(g.resolveRef(tagged(999))).toBeNull();
   });
 
-  test('a new install on a fresh document instance restarts at e1', () => {
+  test('a bare e<N> without a document tag is stale even when this document issued that number', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    expect(g.refFor(document.getElementById('go')!)).toBe(tagged(1));
+    expect(g.resolveRef('e1')).toBeNull();
+    expect(g.resolveRefDetailed('e1')).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs('e1'))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverSemanticKeyJs('e1'))).toEqual({ ok: true, key: null });
+  });
+
+  test('a ref from a torn-down instance is stale even when the new instance issued the same number', () => {
+    document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
+    evalExpr(buildObserverInstallJs());
+    const oldRef = instance().refFor(document.getElementById('a')!)!;
+    expect(oldRef).toBe(tagged(1));
+    evalExpr(buildObserverTeardownJs());
+    evalExpr(buildObserverInstallJs());
+    const newRef = instance().refFor(document.getElementById('b')!)!;
+    expect(newRef).toBe(tagged(1));
+    expect(newRef).not.toBe(oldRef);
+    expect(instance().resolveRef(oldRef)).toBeNull();
+    expect(instance().resolveRefDetailed(oldRef)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(oldRef))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverSemanticKeyJs(oldRef))).toEqual({ ok: true, key: null });
+    expect(instance().resolveRef(newRef)).toBe(document.getElementById('b'));
+  });
+
+  test('a ref carrying another document tag is stale', () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    evalExpr(buildObserverInstallJs());
+    const g = instance();
+    const ref = g.refFor(document.getElementById('go')!)!;
+    const otherTag = g.doc_id.slice(0, 6) === 'zzzzzz' ? 'yyyyyy' : 'zzzzzz';
+    expect(g.resolveRef(otherTag + ':e1')).toBeNull();
+    expect(g.resolveRef(ref)).toBe(document.getElementById('go'));
+  });
+
+  test('a new install on a fresh document instance restarts the number at e1 under its own tag', () => {
     document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
     evalExpr(buildObserverInstallJs());
     instance().refFor(document.getElementById('a')!);
@@ -376,7 +418,7 @@ describe('page observer: element refs', () => {
     evalExpr(buildObserverTeardownJs());
     evalExpr(buildObserverInstallJs());
     expect(instance().doc_id).not.toBe(firstDoc);
-    expect(instance().refFor(document.getElementById('b')!)).toBe('e1');
+    expect(instance().refFor(document.getElementById('b')!)).toBe(tagged(1));
   });
 
   test('teardown clears the registries', () => {
@@ -541,11 +583,11 @@ describe('page observer: buildObserverRefResolveJs', () => {
     const ref = instance().refFor(go)!;
     go.remove();
     expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({ ok: true, found: false });
-    expect(evalExpr(buildObserverRefResolveJs('e42'))).toEqual({ ok: true, found: false });
+    expect(evalExpr(buildObserverRefResolveJs(tagged(42)))).toEqual({ ok: true, found: false });
   });
 
   test('without an instance it reports observer-unavailable', () => {
-    expect(evalExpr<Failure>(buildObserverRefResolveJs('e1'))).toEqual({
+    expect(evalExpr<Failure>(buildObserverRefResolveJs('k3x9ab:e1'))).toEqual({
       ok: false,
       reason: 'observer-unavailable',
     });
@@ -726,7 +768,7 @@ describe('page observer: semantic re-resolution', () => {
     expect(instance().resolveRef(ref)).toBeNull();
   });
 
-  test('two candidates at the same index distance are a tie and resolve to null', () => {
+  test('two candidates with the same tag path resolve to null', () => {
     document.body.innerHTML =
       '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
     evalExpr(buildObserverInstallJs());
@@ -737,7 +779,7 @@ describe('page observer: semantic re-resolution', () => {
     expect(instance().resolveRefDetailed(ref)).toBeNull();
   });
 
-  test('the unique candidate with the smallest index distance wins', () => {
+  test('sibling-index distance never picks among candidates with the same tag path', () => {
     document.body.innerHTML =
       '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
     evalExpr(buildObserverInstallJs());
@@ -746,8 +788,32 @@ describe('page observer: semantic re-resolution', () => {
     list.innerHTML =
       '<li><button>Y</button></li><li><button>Go</button></li>' +
       '<li><button>Z</button></li><li><button>Go</button></li>';
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('a removed row never rebinds its ref to the identically named button of the next row', () => {
+    document.body.innerHTML =
+      '<ul id="rows">' +
+      ['r1', 'r2', 'r3', 'r4'].map((id) => `<li id="${id}"><button>Delete</button></li>`).join('') +
+      '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const ref = instance().refFor(document.querySelector('#r3 button')!)!;
+    document.getElementById('r3')!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(instance().resolveRef(ref)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual({ ok: true, found: false });
+  });
+
+  test('a unique same-named button in a rebuilt list is re-resolved at another index', () => {
+    document.body.innerHTML =
+      '<ul id="list"><li><button>X</button></li><li><button>Go</button></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('list')!;
+    const ref = instance().refFor(list.querySelectorAll('button')[1])!;
+    list.innerHTML =
+      '<li><button>Y</button></li><li><button>Z</button></li><li><button>Go</button></li>';
     expect(instance().resolveRefDetailed(ref)).toEqual({
-      el: list.querySelectorAll('button')[1],
+      el: list.querySelectorAll('button')[2],
       reresolved: true,
     });
   });
@@ -793,7 +859,7 @@ describe('page observer: semantic re-resolution', () => {
     evalExpr(buildObserverInstallJs());
     const g = instance();
     expect(g.resolveRefDetailed(undefined as unknown as string)).toBeNull();
-    expect(g.resolveRefDetailed('e999')).toBeNull();
+    expect(g.resolveRefDetailed(tagged(999))).toBeNull();
     const ref = g.refFor(document.getElementById('go')!)!;
     g.teardown();
     expect(g.resolveRefDetailed(ref)).toBeNull();
@@ -835,13 +901,13 @@ describe('page observer: semantic builders', () => {
         ],
       },
     });
-    expect(evalExpr(buildObserverSemanticKeyJs('e42'))).toEqual({ ok: true, key: null });
+    expect(evalExpr(buildObserverSemanticKeyJs(tagged(42)))).toEqual({ ok: true, key: null });
   });
 
   test('without an instance both builders report observer-unavailable', () => {
     const unavailable = { ok: false, reason: 'observer-unavailable' };
-    expect(evalExpr(buildObserverRefResolveJs('e1'))).toEqual(unavailable);
-    expect(evalExpr(buildObserverSemanticKeyJs('e1'))).toEqual(unavailable);
+    expect(evalExpr(buildObserverRefResolveJs('k3x9ab:e1'))).toEqual(unavailable);
+    expect(evalExpr(buildObserverSemanticKeyJs('k3x9ab:e1'))).toEqual(unavailable);
   });
 
   test('teardown clears the key registry', () => {

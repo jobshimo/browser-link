@@ -35,7 +35,7 @@ describe('cdp builders emit byte-identical output to the extension original', ()
   test('buildFindJs', () => {
     const opts = { text: 'Save changes', role: 'button', exact: true };
     expect(srv.buildFindJs(opts)).toBe(ext.buildFindJs(opts));
-    expect(srv.buildFindJs({ ref: 'e7' })).toBe(ext.buildFindJs({ ref: 'e7' }));
+    expect(srv.buildFindJs({ ref: 'k3x9ab:e7' })).toBe(ext.buildFindJs({ ref: 'k3x9ab:e7' }));
     const key = { role: 'button', name: 'Save', path: [{ tag: 'body', index: 1 }] };
     expect(srv.buildFindJs({ key })).toBe(ext.buildFindJs({ key }));
     const bare = { key: { role: 'link', name: 'Docs' } };
@@ -45,7 +45,7 @@ describe('cdp builders emit byte-identical output to the extension original', ()
   test('buildClickResolveJs', () => {
     const opts = { selector: '#btn', force: false };
     expect(srv.buildClickResolveJs(opts)).toBe(ext.buildClickResolveJs(opts));
-    const byRef = { ref: 'e7', force: true };
+    const byRef = { ref: 'k3x9ab:e7', force: true };
     expect(srv.buildClickResolveJs(byRef)).toBe(ext.buildClickResolveJs(byRef));
   });
 
@@ -56,14 +56,14 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildTypeResolveJs({ selector: '#in', clear: false })).toBe(
       ext.buildTypeResolveJs({ selector: '#in', clear: false }),
     );
-    expect(srv.buildTypeResolveJs({ ref: 'e7', clear: true })).toBe(
-      ext.buildTypeResolveJs({ ref: 'e7', clear: true }),
+    expect(srv.buildTypeResolveJs({ ref: 'k3x9ab:e7', clear: true })).toBe(
+      ext.buildTypeResolveJs({ ref: 'k3x9ab:e7', clear: true }),
     );
   });
 
   test('buildFocusJs', () => {
     expect(srv.buildFocusJs({ selector: '#in' })).toBe(ext.buildFocusJs({ selector: '#in' }));
-    expect(srv.buildFocusJs({ ref: 'e7' })).toBe(ext.buildFocusJs({ ref: 'e7' }));
+    expect(srv.buildFocusJs({ ref: 'k3x9ab:e7' })).toBe(ext.buildFocusJs({ ref: 'k3x9ab:e7' }));
   });
 
   test('buildSettleJs', () => {
@@ -81,7 +81,9 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildElementRectJs({ selector: '#card' })).toBe(
       ext.buildElementRectJs({ selector: '#card' }),
     );
-    expect(srv.buildElementRectJs({ ref: 'e7' })).toBe(ext.buildElementRectJs({ ref: 'e7' }));
+    expect(srv.buildElementRectJs({ ref: 'k3x9ab:e7' })).toBe(
+      ext.buildElementRectJs({ ref: 'k3x9ab:e7' }),
+    );
   });
 
   test('buildStateJs', () => {
@@ -93,8 +95,8 @@ describe('cdp builders emit byte-identical output to the extension original', ()
       expect(srv.buildWaitForSelectorJs('#panel .row', condition)).toBe(
         ext.buildWaitForSelectorJs('#panel .row', condition),
       );
-      expect(srv.buildWaitForSelectorJs({ ref: 'e7' }, condition)).toBe(
-        ext.buildWaitForSelectorJs({ ref: 'e7' }, condition),
+      expect(srv.buildWaitForSelectorJs({ ref: 'k3x9ab:e7' }, condition)).toBe(
+        ext.buildWaitForSelectorJs({ ref: 'k3x9ab:e7' }, condition),
       );
     }
   });
@@ -123,8 +125,8 @@ describe('cdp page observer emits byte-identical output to the extension origina
   });
 
   test('buildObserverRefResolveJs', () => {
-    expect(srvObserver.buildObserverRefResolveJs('e1')).toBe(
-      extObserver.buildObserverRefResolveJs('e1'),
+    expect(srvObserver.buildObserverRefResolveJs('k3x9ab:e1')).toBe(
+      extObserver.buildObserverRefResolveJs('k3x9ab:e1'),
     );
     expect(srvObserver.buildObserverRefResolveJs('e"42')).toBe(
       extObserver.buildObserverRefResolveJs('e"42'),
@@ -132,8 +134,8 @@ describe('cdp page observer emits byte-identical output to the extension origina
   });
 
   test('buildObserverSemanticKeyJs', () => {
-    expect(srvObserver.buildObserverSemanticKeyJs('e1')).toBe(
-      extObserver.buildObserverSemanticKeyJs('e1'),
+    expect(srvObserver.buildObserverSemanticKeyJs('k3x9ab:e1')).toBe(
+      extObserver.buildObserverSemanticKeyJs('k3x9ab:e1'),
     );
     expect(srvObserver.buildObserverSemanticKeyJs('e"42</script>')).toBe(
       extObserver.buildObserverSemanticKeyJs('e"42</script>'),

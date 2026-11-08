@@ -184,7 +184,7 @@ function body(): string {
     '  the full snapshot back: keep its new `snapshot_id`. A changed',
     '  neighbour can be listed because its selector changed — use the current',
     '  one.',
-    '- Acting on an element you just located → prefer its `ref` (`e<N>`)',
+    '- Acting on an element you just located → prefer its `ref` (like `k3x9ab:e12`)',
     '  from the last `snapshot`/`find` of the CURRENT document: `click`,',
     '  `type`, `press`, `find` and `wait_for` take `ref` instead of',
     '  `selector`. A replaced node is re-found by role + accessible name +',
