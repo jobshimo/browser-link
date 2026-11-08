@@ -313,8 +313,8 @@ drive the connected tab (14 read, 13 action) and 6 persistent-map tools
 | `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                                                                                                                                               |
 | `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                            |
 | `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                 |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes                                                                                                                                                       |
-| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity                                                                                                                                                     |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed                                                                                                                    |
+| `browser.find`              | Locate one element by visible text → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`                                                                                                                                      |
 | `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                                                                                                                      |
 | `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                                                                                                                              |
 | `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB; an element larger than its iframe/scroll container is only painted as far as that container shows it) |
@@ -378,6 +378,52 @@ iframes, nested arbitrarily.
 | **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
 | **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                          |
 | **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                              |
+
+#### `snapshot({ since })` — diff instead of re-sending the page
+
+Take one full `snapshot` per view, keep its `snapshot_id`, and pass it as
+`since` for every later look at the same view. The result is a diff:
+
+```
+{ title, url, doc_id, snapshot_id, since, added, removed, changed, overflow? }
+```
+
+- `added` and `changed` are full entries (added first); `removed` is
+  `{ ref, tag, text? }`.
+- `max_interactive` applies after diffing, to `added` + `changed`;
+  `overflow` (how many were dropped) appears only when above 0.
+- `headings` / `text` appear in a diff only when `only_interactive` is
+  false **and** they changed.
+- An invalid `since` (not a string, or over 64 characters) is dropped and a
+  plain full snapshot is returned. A `within_selector` miss ignores `since`.
+
+When no diff can be made, the result is the **full** snapshot plus `since`
+and `since_status`, so the call is never wasted. Keep the new
+`snapshot_id` it carries:
+
+| `since_status`         | Meaning                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `doc-changed`          | the `since` prefix is not the current `doc_id` (new document), or it has no `:`   |
+| `evicted`              | same document, but `since` is not among the last 4 snapshots, or was never issued |
+| `observer-unavailable` | the page observer is not running in the tab                                       |
+
+**Fields.** When the page observer runs in the tab, interactive entries in
+`snapshot`, `find` (single match, `candidates`, `near_misses`) and
+`state.focused` carry `ref` (`e<N>`), a per-document element handle that
+is reused while the node lives. A `ref` is valid only for the `doc_id` that
+issued it and dies with the document. Results also carry `doc_id`, and
+`snapshot` results carry `snapshot_id` (`<doc_id>:s<N>`). All of these are
+additive and absent when the observer is not in the page. For now `ref` is
+informational: it is not yet accepted as an action target.
+
+**Selectors can change.** The structural selector adds `:nth-of-type` only
+when siblings force it, so inserting a sibling can change a neighbour's
+selector and list that neighbour in `changed`. The selector did change: use
+the current one.
+
+The result shapes are the same on the extension and on cdp-direct tabs, so
+the [cdp-direct support table](#cdp-direct-mode-no-extension) needs no
+change.
 
 #### `settle_ms` — settle proves QUIET, not EFFECT
 
