@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.0](https://github.com/jobshimo/browser-link/compare/v0.35.0...v0.36.0) (2026-11-08)
+
+### Features
+
+- **snapshot:** `browser.snapshot({ since: <snapshot_id> })` returns a diff instead of the whole page: `added` and `changed` entries (full entries, added first), `removed` as `{ ref, tag, text? }`, with `max_interactive` applied after diffing and an `overflow` count when it truncates; `headings` and `text` appear only when requested and changed. When no diff can be made the call still returns a full snapshot plus `since_status`: `doc-changed` (the id belongs to another document), `evicted` (not among the last 4 snapshots of this document) or `observer-unavailable`. Measured on a Home Assistant view over 10 looks with read-only interactions between them: 114,031 result bytes for 10 full snapshots vs 35,499 for one full snapshot and 9 `since` calls, 68.9 % less; an idle re-look costs about 2 % of a full snapshot.
+- **snapshot, find, state:** interactive entries carry `ref` (`e<N>`), a per-document element handle issued by the page observer and reused while the node lives; results carry `doc_id`, and snapshot results carry `snapshot_id` (`<doc_id>:s<N>`). All additive and absent when the observer is not in the page, where the output is byte-identical to 0.35.0. `ref` is informational in this release; it becomes an action target in the next slice.
+- **observer:** in-page protocol version 2: element refs (`refFor`, `resolveRef`), per-document snapshot ids and a bounded store of the last 4 snapshot records; an installed version 1 instance is replaced on reinstall.
+
 ## [0.35.0](https://github.com/jobshimo/browser-link/compare/v0.34.1...v0.35.0) (2026-11-08)
 
 ### Features
