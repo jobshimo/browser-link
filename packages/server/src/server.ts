@@ -27,6 +27,7 @@ import {
   probeVersion,
   retryBind,
   runElection,
+  type ElectionDeps,
   shutdownOnSignal,
   stepDownProcess,
 } from './lifecycle/election.js';
@@ -86,22 +87,61 @@ export async function runServer(): Promise<void> {
   // connected Chrome tabs keep talking to the WS bridge until the user
   // explicitly disconnects them from the extension popup, or the WS
   // hits its inactivity TTL on the client side. If a zombie ever holds
-  // BRIDGE_PORT after a crash, `runPrimary` falls back to proxy mode (when
+  // BRIDGE_PORT after a crash, `startServer` falls back to proxy mode (when
   // multi-agent is on) or surfaces a clean EADDRINUSE error pointing
   // the user at `browser-link stop`.
   const cfg = loadConfig();
+  await startServer({
+    bind: () => runPrimary(cfg),
+    runProxy: runProxyMode,
+    multiAgent: cfg.multiAgent === true,
+    election: {
+      localVersion: VERSION,
+      probe: () => probeVersion(WS_PORT),
+      findOwnerPid: () => findPidOnPort(WS_PORT),
+      processStartTime: (pid) => readProcessStartTime(pid),
+      installedCodeMtime: () => readInstalledCodeMtime(),
+      stepDown: async (pid) => {
+        // Same safety rule as `browser-link stop`: only a node process.
+        if (!isNodeImage(imageNameOf(pid))) throw new Error(`PID ${pid} is not a node process`);
+        await stepDownProcess(pid);
+      },
+    },
+    log,
+  });
+}
+
+/** The effects `startServer` orchestrates, injected so the bind → election
+ * → step-down → rebind → proxy path is testable without sockets or kills.
+ * `runServer` wires the real ones. */
+export interface StartServerDeps {
+  /** Become the primary (`runPrimary`); rejects with `AddrInUseError` while
+   * the bridge port is taken. */
+  bind: () => Promise<void>;
+  /** Connect to the running primary as a proxy (`runProxyMode`). */
+  runProxy: () => Promise<void>;
+  multiAgent: boolean;
+  election: ElectionDeps;
+  log: (msg: string) => void;
+  /** The retry loops' delay; real timers when omitted. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Bind, or elect a primary when the port is taken, or degrade to a proxy
+ * (multi-agent on), or fail with the port-in-use error. */
+export async function startServer(deps: StartServerDeps): Promise<void> {
   try {
-    await runPrimary(cfg);
+    await deps.bind();
   } catch (err) {
     if (!isAddrInUse(err)) throw err;
     // Version-aware election (lifecycle/election.ts): a newer process
     // displaces an older primary; otherwise fall through to the existing
     // proxy / error path.
-    if (await electPrimary(() => runPrimary(cfg))) return;
-    if (cfg.multiAgent === true) {
+    if (await electPrimary(deps)) return;
+    if (deps.multiAgent) {
       // Another primary is already running — degrade to proxy mode so this
       // MCP client can still reach the bridge.
-      await runProxyMode();
+      await deps.runProxy();
       return;
     }
     throw new Error(
@@ -131,29 +171,21 @@ const TAKEOVER_DELAY_MS = 200;
  * (the holder left during the hand-off window, or it was older and stepped
  * down), false when it must defer.
  */
-async function electPrimary(bind: () => Promise<void>): Promise<boolean> {
+async function electPrimary(deps: StartServerDeps): Promise<boolean> {
+  const { bind, log, sleep } = deps;
+  const version = deps.election.localVersion;
   try {
     await retryBind(bind, {
       attempts: HANDOFF_ATTEMPTS,
       delayMs: HANDOFF_DELAY_MS,
       isRetryable: isAddrInUse,
+      sleep,
     });
     return true;
   } catch (err) {
     if (!isAddrInUse(err)) throw err;
   }
-  const outcome = await runElection({
-    localVersion: VERSION,
-    probe: () => probeVersion(WS_PORT),
-    findOwnerPid: () => findPidOnPort(WS_PORT),
-    processStartTime: (pid) => readProcessStartTime(pid),
-    installedCodeMtime: () => readInstalledCodeMtime(),
-    stepDown: async (pid) => {
-      // Same safety rule as `browser-link stop`: only a node process.
-      if (!isNodeImage(imageNameOf(pid))) throw new Error(`PID ${pid} is not a node process`);
-      await stepDownProcess(pid);
-    },
-  });
+  const outcome = await runElection(deps.election);
   log(`Primary election: ${outcome.decision} (${outcome.reason}).`);
   if (outcome.decision === 'defer') return false;
   try {
@@ -161,11 +193,12 @@ async function electPrimary(bind: () => Promise<void>): Promise<boolean> {
       attempts: TAKEOVER_ATTEMPTS,
       delayMs: TAKEOVER_DELAY_MS,
       isRetryable: isAddrInUse,
+      sleep,
     });
     log(
       outcome.decision === 'take-over'
-        ? `Took over from PID ${outcome.pid ?? '?'} (running ${VERSION}).`
-        : `Repair hand-off from PID ${outcome.pid ?? '?'} complete (running ${VERSION}).`,
+        ? `Took over from PID ${outcome.pid ?? '?'} (running ${version}).`
+        : `Repair hand-off from PID ${outcome.pid ?? '?'} complete (running ${version}).`,
     );
     return true;
   } catch (err) {

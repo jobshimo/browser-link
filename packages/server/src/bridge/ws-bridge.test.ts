@@ -9,6 +9,7 @@ import {
   buildRegisterSettingsUpdate,
   buildTabRegisteredPayload,
   resolveBridgeOptions,
+  startWsBridge,
   applyTabDocInfo,
   applyTabNavigated,
   recordDocInfoBuild,
@@ -34,13 +35,17 @@ import { closeActivityDb } from '../activity/db.js';
 import { recall } from '../map/queries.js';
 import type { AdminState, FlowRecordedPayload, ServerToExtension } from '../messages.js';
 import { VERSION } from '../version.js';
+import type { AddressInfo } from 'node:net';
+import type { WebSocketServer } from 'ws';
+import { getAllowedBrowsers } from '../auth/allowlist.js';
+import type { PeerLookupResult } from '../auth/process-identity.js';
 
 /* Wire-level coverage for the two settings-push paths in ws-bridge.ts.
  *
- * `startWsBridge` itself binds the FIXED 127.0.0.1:17529 and its
- * verifyClient does a kernel-level peer lookup that rejects anything that
- * is not a Chromium binary — a Node test process cannot pass it without
- * invasive production refactoring. So the register-path decision is
+ * `startWsBridge` binds 127.0.0.1:17529 by default and its verifyClient
+ * does a kernel-level peer lookup that rejects anything that is not a
+ * Chromium binary; the handshake suite at the end of this file drives it on
+ * a free port with an injected lookup. Here the register-path decision is
  * extracted into `buildRegisterSettingsUpdate` (tested directly here), and
  * `pushSettingsToAllTabs` is exercised against fake WS sessions capturing
  * exactly what would go over the wire. */
@@ -900,5 +905,141 @@ describe('recordDocInfoBuild', () => {
     saveConfig({ mapLearningEnabled: true });
     recordDocInfoBuild('about:blank', '3f9a2b1c');
     expect(builds()).toEqual([]);
+  });
+});
+
+/*
+ * The real handshake gate and the first turn of the message loop, over a
+ * real socket on a free port. The peer lookup is injected
+ * (`WsBridgeOptions.lookupPeerProcess`), which is what lets a Node test
+ * process stand in for Chrome.
+ */
+describe('startWsBridge handshake gate and message loop', () => {
+  const CHROMIUM = getAllowedBrowsers()[0] ?? 'chrome';
+  let dataDir: string;
+  let wss: WebSocketServer | null = null;
+  const sockets: WebSocket[] = [];
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-handshake-test-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    for (const s of sockets.splice(0)) s.terminate();
+    if (wss) await new Promise<void>((resolve) => wss?.close(() => resolve()));
+    wss = null;
+    closeDb();
+    vi.restoreAllMocks();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function bridge(lookup: (address: string, port: number) => Promise<PeerLookupResult>) {
+    const tabs = new Map<string, TabSession>();
+    wss = await startWsBridge(tabs, new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '9.9.9',
+      lookupPeerProcess: lookup,
+    });
+    const { port } = wss.address() as AddressInfo;
+    return { tabs, url: `ws://127.0.0.1:${port}` };
+  }
+
+  /** Open a socket; resolves with the open socket or the HTTP status and
+   * body of the refused upgrade (`ws` puts the verifyClient message in the
+   * body). */
+  function connect(
+    url: string,
+    origin?: string,
+  ): Promise<{ ws: WebSocket } | { status: number; message: string }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url, origin === undefined ? {} : { origin });
+      sockets.push(ws);
+      ws.once('open', () => resolve({ ws }));
+      ws.once('unexpected-response', (_req, res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (body += chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, message: body }));
+      });
+      ws.once('error', reject);
+    });
+  }
+
+  const chromiumPeer = async (): Promise<PeerLookupResult> => ({
+    ok: true,
+    peer: { pid: 4321, binaryName: CHROMIUM },
+  });
+
+  test('no Origin header passes the origin check and is left to the peer lookup (pinned; changes in 1.0.0)', async () => {
+    const lookup = vi.fn(chromiumPeer);
+    const { url } = await bridge(lookup);
+    const outcome = await connect(url);
+    expect('ws' in outcome).toBe(true);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookup.mock.calls[0]?.[0]).toBe('127.0.0.1');
+  });
+
+  test('a web-page Origin is refused with 403 before any peer lookup', async () => {
+    const lookup = vi.fn(chromiumPeer);
+    const { url } = await bridge(lookup);
+    expect(await connect(url, 'https://evil.example')).toEqual({
+      status: 403,
+      message: 'Origin not allowed',
+    });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('the extension Origin from a non-Chromium peer is refused with 403', async () => {
+    const { url } = await bridge(async () => ({
+      ok: true,
+      peer: { pid: 99, binaryName: 'node.exe' },
+    }));
+    expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+      status: 403,
+      message: 'Peer is not a Chromium-based browser',
+    });
+  });
+
+  test('a peer lookup that fails with a typed cause is refused with 403', async () => {
+    const { url } = await bridge(async () => ({ ok: false, cause: 'timeout' }));
+    expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+      status: 403,
+      message: 'Peer process unknown',
+    });
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('(cause: timeout)');
+  });
+
+  test('a peer lookup that throws is refused with 500', async () => {
+    const { url } = await bridge(async () => {
+      throw new Error('lookup exploded');
+    });
+    expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+      status: 500,
+      message: 'Process lookup failed',
+    });
+  });
+
+  test('the extension Origin from a Chromium peer connects and its tab.register is answered', async () => {
+    const { tabs, url } = await bridge(chromiumPeer);
+    const outcome = await connect(url, 'chrome-extension://abcdefghijklmnop');
+    if (!('ws' in outcome)) throw new Error(`refused: ${outcome.status} ${outcome.message}`);
+    const reply = new Promise<ServerToExtension>((resolve) => {
+      outcome.ws.once('message', (data) => resolve(JSON.parse(String(data)) as ServerToExtension));
+    });
+    outcome.ws.send(
+      JSON.stringify({
+        kind: 'tab.register',
+        payload: { url: 'https://example.com/', title: 'Example' },
+      }),
+    );
+    const msg = await reply;
+    expect(msg.kind).toBe('tab.registered');
+    if (msg.kind !== 'tab.registered') return;
+    expect(msg.payload.serverVersion).toBe('9.9.9');
+    expect(msg.payload.serverPid).toBe(process.pid);
+    expect(tabs.get(msg.payload.tabId)?.url).toBe('https://example.com/');
   });
 });

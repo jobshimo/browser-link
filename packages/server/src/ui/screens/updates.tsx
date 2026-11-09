@@ -93,6 +93,8 @@ const UPDATES_I18N: Record<
 
 interface UpdatesViewProps extends CommonProps {
   onBack: () => void;
+  /** The registry check. Default `checkUpdates`; tests inject a stub. */
+  checkUpdates?: () => Promise<UpdateInfo>;
 }
 
 type UpdatePhase =
@@ -101,7 +103,11 @@ type UpdatePhase =
   | { kind: 'done'; message: string }
   | { kind: 'failed'; message: string };
 
-export function UpdatesView({ language, onBack }: UpdatesViewProps) {
+export function UpdatesView({
+  language,
+  onBack,
+  checkUpdates: check = checkUpdates,
+}: UpdatesViewProps) {
   const t = UPDATES_I18N[language];
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -111,13 +117,13 @@ export function UpdatesView({ language, onBack }: UpdatesViewProps) {
     let cancelled = false;
     setInfo(null);
     setUpdate({ kind: 'idle' });
-    void checkUpdates().then((r) => {
+    void check().then((r) => {
       if (!cancelled) setInfo(r);
     });
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, check]);
 
   const isUpdating = update.kind === 'running';
   const canUpdate = info !== null && info.newer === true && info.latest !== null && !isUpdating;
