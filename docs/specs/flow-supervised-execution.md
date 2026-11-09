@@ -1,6 +1,6 @@
 # Spec — `flow` as the unit of durable, supervised work
 
-**Status:** accepted, not started · **Program cost:** L (six slices, six PRs) · **Origin:** an internal field report (2026-08-08, v0.23.12)
+**Status:** shipped in 0.27.0 · **Program cost:** L (six slices, six PRs) · **Origin:** an internal field report (2026-08-08, v0.23.12)
 
 This document specifies one coherent program, sliced into six independently shippable PRs. Each slice states its own contract, acceptance criteria, files, README impact and cdp-direct parity, so it can be lifted into `ROADMAP.md` and worked on alone.
 

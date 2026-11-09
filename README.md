@@ -84,8 +84,9 @@ tab", not for unattended consumer automation.
   by itself is the npm registry update check described under
   [Where your data lives](#where-your-data-lives).
 - 🚫 **What it does NOT do** — touch tabs you have not pressed Connect on,
-  send anything off your machine, persist domain data in the map
-  (selectors and flows only, structure never content).
+  persist domain data in the map (selectors and flows only, structure never
+  content). Beyond the update check, the only network traffic it causes is
+  what you ask for: `browser.download` fetches the URLs the agent requests.
 - 🔒 **How it stays private** — WebSocket bridge is loopback-only
   (`127.0.0.1:17529`) and kernel-attested per connection.
 - 🛑 **How you stop it** — the extension popup lists every running
@@ -266,7 +267,7 @@ pays the shim once per session, not once per call.
                        │  stdio (MCP)
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  browser-link MCP server (Node ≥ 22.22.2)                          │
+│  browser-link MCP server (Node ≥ 22.22.2)                        │
 │  ─ listens on 127.0.0.1:17529  (loopback only)                   │
 │  ─ exposes browser.* tools + browser.map.* persistent UI map     │
 └──────────────────────┬───────────────────────────────────────────┘
