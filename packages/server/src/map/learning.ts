@@ -5,6 +5,7 @@ import { resolveLearnerApp } from './queries.js';
 import { incrementsStructural, type PreviousFailure } from './confidence.js';
 import { durableTarget, pathPattern, type TargetKind } from './keys.js';
 import { recordReaderFromDispatch } from './readers.js';
+import { categorise } from '../errors/categories.js';
 
 /**
  * The map learns from use.
@@ -83,19 +84,13 @@ function errorText(error: unknown): string {
   return typeof error === 'string' ? error : String(error);
 }
 
-/** Thrown failures with a known meaning. Anything else (argument
- * validation, claim conflicts, a disconnected tab) says nothing about the
- * target and is not learned. */
+/** Thrown failures with a known meaning, from the shared error-category
+ * table with the map learner's overrides (`errors/categories.ts`). Anything
+ * else (argument validation, claim conflicts, a disconnected tab) says
+ * nothing about the target and is not learned. */
 function classifyError(error: unknown): LearnedOutcome | null {
-  const message = errorText(error);
-  if (/\bretargeted\b|^Click would land on /.test(message)) {
-    return { ok: false, reason: 'retargeted' };
-  }
-  if (/\bref-stale\b/.test(message)) return { ok: false, reason: 'ref-stale' };
-  if (/expectation not met/.test(message)) return { ok: false, reason: 'expect-failed' };
-  if (/^Tool '.*' timed out after/.test(message)) return { ok: false, reason: 'timeout' };
-  if (/^Element not found:/.test(message)) return { ok: false, reason: 'not-found' };
-  return null;
+  const reason = categorise(errorText(error), 'map-learner');
+  return reason === null ? null : { ok: false, reason };
 }
 
 /**
