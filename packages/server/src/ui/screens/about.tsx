@@ -3,17 +3,21 @@ import { Frame } from '../components.js';
 import { COLORS, GLYPHS } from '../tokens.js';
 import { FooterKeys, SectionHead } from '../primitives/index.js';
 import { I18N_ABOUT } from '../../commands/about.js';
+import { NOTICE } from '../../notice.js';
 import type { CommonProps } from './types.js';
 
 /* About / Help — sections layout from screens.jsx → ScreenAbout. The
  * copy still flows from I18N_ABOUT; we re-skin the section headers with
- * SectionHead and switch the footer to a FooterKeys strip. */
+ * SectionHead and switch the footer to a FooterKeys strip. The product
+ * notice (NOTICE, the one approved text) always comes first, as in the
+ * `browser-link about` command. */
 interface AboutViewProps extends CommonProps {
   onBack: () => void;
 }
 
 export function AboutView({ language, onBack }: AboutViewProps) {
   const t = I18N_ABOUT[language];
+  const notice = NOTICE[language];
   useInput((_input, key) => {
     if (key.return || key.escape) onBack();
   });
@@ -23,7 +27,8 @@ export function AboutView({ language, onBack }: AboutViewProps) {
   ];
   return (
     <Frame title={t.title} footer={<FooterKeys items={footerItems} />}>
-      <AboutSection title={t.whatTitle} body={t.what} first />
+      <AboutSection title={notice.title} body={notice.paragraphs.join('\n\n')} first />
+      <AboutSection title={t.whatTitle} body={t.what} />
       <AboutSection title={t.howTitle} body={t.how} />
       <AboutSection title={t.bindingTitle} body={t.binding} />
       <AboutSection title={t.bridgeToolsTitle} body={t.bridgeTools} />

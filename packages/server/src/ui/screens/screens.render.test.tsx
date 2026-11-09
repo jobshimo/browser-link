@@ -17,6 +17,7 @@ import { NoticeScreen } from './notice.js';
 import { App } from '../app.js';
 import { loadConfig, saveConfig } from '../../config.js';
 import { NOTICE } from '../../notice.js';
+import { I18N_ABOUT } from '../../commands/about.js';
 
 /*
  * Render-time crash guard for every Ink screen component. This file ONLY
@@ -168,6 +169,20 @@ describe('AboutView render', () => {
     expect(frame).toMatch(/about/i);
     expect(frame).toContain('Martín Miguel Bernal');
   });
+
+  for (const language of ['en', 'es'] as const) {
+    test(`${language}: the product notice is the first section, all 3 paragraphs`, () => {
+      const { lastFrame } = render(<AboutView language={language} onBack={noop} />);
+      // Ink wraps long lines, so compare with whitespace collapsed.
+      const flat = (lastFrame() ?? '').replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+      const noticeAt = flat.indexOf(NOTICE[language].title);
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(flat.indexOf(I18N_ABOUT[language].whatTitle));
+      for (const p of NOTICE[language].paragraphs) {
+        expect(flat).toContain(p.slice(0, 40).replace(/\s+/g, ' '));
+      }
+    });
+  }
 });
 
 describe('LanguageView render', () => {
