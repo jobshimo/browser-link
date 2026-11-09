@@ -66,8 +66,8 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * the live node with `reresolved: false`, else the element with the same role,
  * name and tag-only path when exactly one exists, rebinding the ref to it
  * (`reresolved: true`); zero or several candidates give `null` (sibling
- * indices are kept in the key as data but never pick among candidates). Candidates come from the document, every open shadow root reachable
- * from it, and every root the `attachShadow` patch observed (closed ones
+ * indices are kept in the key as data but never pick among candidates). Candidates come from the document, every open shadow root and
+ * same-origin iframe document reachable from it, and every root the `attachShadow` patch observed (closed ones
  * included); closed roots attached before install are not reachable.
  * `resolveRef(ref)` is `resolveRefDetailed(ref)?.el ?? null`. `keyForRef(ref)`
  * returns a copy of the stored key or `null`. None of these throws.
@@ -440,8 +440,10 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     }
   }
 
-  // The document, every open shadow root reachable from it, and every root the
-  // attachShadow patch observed (closed ones included) whose host is connected.
+  // The document, every open shadow root and same-origin iframe document
+  // reachable from it (nested either way, the roots browser.find({ key })
+  // searches), and every root the attachShadow patch observed (closed ones
+  // included) whose host is connected. A cross-origin frame is skipped.
   function searchRoots() {
     const roots = [document];
     const seen = new Set(roots);
@@ -457,6 +459,11 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       try { all = roots[i].querySelectorAll('*'); } catch (e) { continue; }
       for (const el of all) {
         if (el.shadowRoot) add(el.shadowRoot);
+        if (tagOf(el) === 'iframe') {
+          let doc = null;
+          try { doc = el.contentDocument; } catch (e) { doc = null; }
+          add(doc);
+        }
       }
     }
     return roots;

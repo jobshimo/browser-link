@@ -8,6 +8,7 @@ import {
   MAX_DOWNLOAD_TIMEOUT_MS,
   buildFetchDownloadJs,
   clampDownloadTimeoutMs,
+  downloadMaxBytes,
   filenameFromContentDisposition,
   filenameFromUrl,
   pickFilename,
@@ -356,5 +357,46 @@ describe('buildFetchDownloadJs (run against a stubbed fetch)', () => {
       maxBytes: MAX_DOWNLOAD_BYTES,
     });
     expect(js).toContain(JSON.stringify('https://x.test/"); alert(1); ("'));
+  });
+});
+
+describe('downloadMaxBytes', () => {
+  const MiB = 1024 * 1024;
+
+  test('the default is MAX_DOWNLOAD_BYTES (25 MiB)', () => {
+    expect(MAX_DOWNLOAD_BYTES).toBe(25 * MiB);
+    expect(downloadMaxBytes({})).toBe(MAX_DOWNLOAD_BYTES);
+  });
+
+  test('a configured whole number of MiB in [1, 64] is applied', () => {
+    expect(downloadMaxBytes({ downloadsMaxMb: 1 })).toBe(MiB);
+    expect(downloadMaxBytes({ downloadsMaxMb: 50 })).toBe(50 * MiB);
+    expect(downloadMaxBytes({ downloadsMaxMb: 64 })).toBe(64 * MiB);
+  });
+
+  test.each([0, 65, 501, 1e9, -5, 2.5, '50', null, Number.NaN])(
+    'an untrusted value %j reads as the default, never past the 64 MiB ceiling',
+    (raw) => {
+      expect(downloadMaxBytes({ downloadsMaxMb: raw })).toBe(MAX_DOWNLOAD_BYTES);
+    },
+  );
+});
+
+describe('buildFetchDownloadJs over-cap message', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('a whole-MiB cap is named in MiB with its byte count and how the human raises it', async () => {
+    const MiB = 1024 * 1024;
+    vi.stubGlobal('fetch', async () => new Response(new Uint8Array(MiB + 1), { status: 200 }));
+    const out = (await (0, eval)(
+      buildFetchDownloadJs({ url: 'https://x.test/big', timeoutMs: 5000, maxBytes: MiB }),
+    )) as FetchDownloadOutcome;
+    expect(out.state).toBe('interrupted');
+    expect(out.error).toBe(
+      'download exceeds the 1 MiB cap (1048576 bytes); the human can change it with: browser-link config set downloads.max-mb <1..64>',
+    );
+    expect(out.data_b64).toBeUndefined();
   });
 });

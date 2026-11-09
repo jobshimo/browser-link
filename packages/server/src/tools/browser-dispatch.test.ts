@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeActivityDb, getActivityDb } from '../activity/db.js';
@@ -12,6 +12,7 @@ import {
   validateFlowSteps,
 } from './browser-dispatch.js';
 import { VERSION } from '../version.js';
+import { saveConfig } from '../config.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
@@ -4216,5 +4217,149 @@ describe('browser.activity — explicit filters are honoured or refused', () => 
     seed();
     const result = await activity({ summary: true, since: '2025-01-01T00:00:00Z', agent_id: 's2' });
     expect(result.summary).toMatchObject({ records: 1 });
+  });
+});
+
+describe('browser.network — headers option', () => {
+  const entries = [
+    {
+      request_id: 'r1',
+      url: 'https://x.test/api',
+      method: 'GET',
+      status: 200,
+      mime_type: 'application/json',
+      request_headers: { accept: '*/*' },
+      response_headers: { 'content-type': 'application/json' },
+      started_at: 1,
+      finished_at: 2,
+    },
+    { request_id: 'r2', url: 'https://x.test/pending', method: 'POST', started_at: 3 },
+  ];
+
+  function networkDeps() {
+    return makeDeps({ callBrowserTool: vi.fn(async () => structuredClone(entries)) });
+  }
+
+  test('default output is unchanged: headers included, extension params untouched', async () => {
+    const deps = networkDeps();
+    const out = await handleBrowserTool(
+      'browser.network',
+      { tab_id: 'tab_1', url_filter: 'x.test' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(out).toEqual(entries);
+    const calls = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][1]).toBe('network');
+    expect(calls[0][2]).toEqual({ url_filter: 'x.test' });
+  });
+
+  test('headers: true is the same as the default', async () => {
+    const out = await handleBrowserTool(
+      'browser.network',
+      { tab_id: 'tab_1', headers: true },
+      networkDeps(),
+      TEST_CALLER,
+    );
+    expect(out).toEqual(entries);
+  });
+
+  test('headers: false omits request and response headers from every entry', async () => {
+    const out = (await handleBrowserTool(
+      'browser.network',
+      { tab_id: 'tab_1', headers: false },
+      networkDeps(),
+      TEST_CALLER,
+    )) as Record<string, unknown>[];
+    expect(out).toHaveLength(2);
+    for (const entry of out) {
+      expect(entry).not.toHaveProperty('request_headers');
+      expect(entry).not.toHaveProperty('response_headers');
+    }
+    expect(out[0]).toEqual({
+      request_id: 'r1',
+      url: 'https://x.test/api',
+      method: 'GET',
+      status: 200,
+      mime_type: 'application/json',
+      started_at: 1,
+      finished_at: 2,
+    });
+    expect(out[1]).toEqual(entries[1]);
+  });
+
+  test('a non-boolean headers value is refused before reaching the tab', async () => {
+    const deps = networkDeps();
+    await expect(
+      handleBrowserTool('browser.network', { tab_id: 'tab_1', headers: 'no' }, deps, TEST_CALLER),
+    ).rejects.toThrow('browser.network: headers must be a boolean');
+    expect(deps.callBrowserTool).not.toHaveBeenCalled();
+  });
+
+  test('the schema and doc document the option', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.network');
+    const schema = def?.inputSchema as {
+      properties: Record<string, { type?: string; description?: string }>;
+    };
+    expect(schema.properties.headers?.type).toBe('boolean');
+    expect(schema.properties.headers?.description).toMatch(/default true/i);
+  });
+});
+
+describe('browser.download — configurable size cap', () => {
+  let dataDir: string;
+  const okFetch = {
+    state: 'complete',
+    status: 200,
+    mime: 'text/csv',
+    content_disposition: null,
+    final_url: 'https://x.test/r.csv',
+    bytes: 3,
+    data_b64: Buffer.from('a,b').toString('base64'),
+  };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-download-cap-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function fetchExpression(): Promise<string> {
+    const callBrowserTool = vi.fn(async () => okFetch);
+    await handleBrowserTool(
+      'browser.download',
+      { tab_id: 'tab_1', url: 'https://x.test/r.csv' },
+      makeDeps({ callBrowserTool, saveDownload: () => '/dl/r.csv' }),
+      TEST_CALLER,
+    );
+    return (callBrowserTool.mock.calls[0] as unknown as [string, string, { expression: string }])[2]
+      .expression;
+  }
+
+  test('without a configured value the cap is the 25 MiB default', async () => {
+    expect(await fetchExpression()).toContain(`const maxBytes = ${25 * 1024 * 1024};`);
+  });
+
+  test('downloads.max-mb from config.json is read on every call', async () => {
+    saveConfig({ downloadsMaxMb: 50 });
+    expect(await fetchExpression()).toContain(`const maxBytes = ${50 * 1024 * 1024};`);
+    saveConfig({ downloadsMaxMb: 2 });
+    expect(await fetchExpression()).toContain(`const maxBytes = ${2 * 1024 * 1024};`);
+  });
+
+  test('an out-of-range or malformed value in config.json falls back to the default', async () => {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ downloadsMaxMb: 100000 }));
+    expect(await fetchExpression()).toContain(`const maxBytes = ${25 * 1024 * 1024};`);
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ downloadsMaxMb: '50' }));
+    expect(await fetchExpression()).toContain(`const maxBytes = ${25 * 1024 * 1024};`);
+  });
+
+  test('the over-cap error names the active cap in MiB', async () => {
+    saveConfig({ downloadsMaxMb: 7 });
+    expect(await fetchExpression()).toContain('download exceeds the 7 MiB cap (7340032 bytes)');
   });
 });

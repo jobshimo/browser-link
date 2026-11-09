@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import * as paths from './map/paths.js';
 import {
   DEFAULT_CDP_DIRECT_PORT,
+  DEFAULT_DOWNLOADS_MAX_MB,
+  MAX_DOWNLOADS_MAX_MB,
   DEFAULT_GRANT_TTL_MINUTES,
   DEFAULT_IDLE_TTL_MINUTES,
   clampCdpDirectPort,
@@ -12,6 +14,7 @@ import {
   clampIdleTtlMinutes,
   loadConfig,
   sanitizeCdpPort,
+  sanitizeDownloadsMaxMb,
   saveConfig,
 } from './config.js';
 
@@ -369,5 +372,44 @@ describe('mapLearningEnabled', () => {
     expect(
       JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
     ).toEqual({ skipWelcome: true });
+  });
+});
+
+describe('downloadsMaxMb', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-download-cap-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('is absent on a fresh install and sanitizes to the 25 MiB default', () => {
+    expect(loadConfig().downloadsMaxMb).toBeUndefined();
+    expect(DEFAULT_DOWNLOADS_MAX_MB).toBe(25);
+    expect(sanitizeDownloadsMaxMb(loadConfig().downloadsMaxMb)).toBe(25);
+  });
+
+  test('a set value is persisted, and clearing it removes the key from disk', () => {
+    saveConfig({ downloadsMaxMb: 50, skipWelcome: true });
+    expect(loadConfig().downloadsMaxMb).toBe(50);
+    saveConfig({ downloadsMaxMb: undefined });
+    expect(
+      JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
+    ).toEqual({ skipWelcome: true });
+  });
+
+  test('the sanitizer passes [1, 64] and refuses everything else', () => {
+    expect(MAX_DOWNLOADS_MAX_MB).toBe(64);
+    expect(sanitizeDownloadsMaxMb(1)).toBe(1);
+    expect(sanitizeDownloadsMaxMb(64)).toBe(64);
+    for (const raw of [0, 65, 501, -1, 2.5, '50', null, undefined, Number.NaN, Infinity]) {
+      expect(sanitizeDownloadsMaxMb(raw)).toBe(DEFAULT_DOWNLOADS_MAX_MB);
+    }
   });
 });
