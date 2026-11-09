@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>browser-link — Admin</title>
+    <style>
+      /* Same slate-blue system as popup.html, with the Activity window's dark
+       * variant: this window, like Activity, stays open on screen. Only the
+       * tokens change between themes — every rule below is written once. */
+      :root {
+        --brand-from: #5b8def;
+        --brand-to: #2a5fd6;
+        --brand-ring: rgba(29, 78, 216, 0.32);
+
+        --bg: #ffffff;
+        --bg-soft: #f8fafc;
+        --bg-raised: #ffffff;
+        --border: #e2e8f0;
+        --border-soft: #eef2f7;
+
+        --text: #0f172a;
+        --text-muted: #64748b;
+        --text-faint: #94a3b8;
+
+        --error-fg: #b91c1c;
+        --error-soft: #fef2f2;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1120;
+          --bg-soft: #111a2e;
+          --bg-raised: #131d33;
+          --border: #1e293b;
+          --border-soft: #172033;
+
+          --text: #e2e8f0;
+          --text-muted: #94a3b8;
+          --text-faint: #64748b;
+
+          --error-fg: #f87171;
+          --error-soft: rgba(239, 68, 68, 0.12);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Inter',
+          'Segoe UI',
+          system-ui,
+          sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-raised);
+      }
+
+      .mark {
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+        box-shadow: 0 0 0 3px var(--brand-ring);
+        flex: 0 0 auto;
+      }
+
+      .titles {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+
+      .subtitle {
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      main {
+        padding: 6px 18px 18px;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+      }
+
+      button.primary {
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
+        color: #ffffff;
+        box-shadow: 0 6px 14px var(--brand-ring);
+      }
+
+      button.danger {
+        background: var(--bg);
+        color: var(--error-fg);
+        box-shadow: inset 0 0 0 1px var(--error-fg);
+      }
+
+      button.danger:hover:not(:disabled) {
+        background: var(--error-soft);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: progress;
+      }
+
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
+      }
+
+      .dialog-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .flows-title {
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin-bottom: 6px;
+      }
+
+      /* Admin rows — rendered generically from the server's AdminState
+       * (admin-view.ts); every label inside comes from the server. */
+      .admin-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 7px 0;
+        border-top: 1px solid var(--border-soft);
+        font-size: 12.5px;
+        color: var(--text-muted);
+      }
+
+      .admin-row-label {
+        min-width: 0;
+      }
+
+      .admin-row-value {
+        color: var(--text);
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+
+      a.admin-row-value {
+        color: var(--brand-to);
+      }
+
+      .admin-row select,
+      .admin-row button {
+        width: auto;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 8px;
+        cursor: pointer;
+      }
+
+      .admin-row button:hover:not(:disabled),
+      .admin-row select:hover:not(:disabled) {
+        border-color: var(--brand-from);
+      }
+
+      .admin-row input[type='checkbox'] {
+        width: 15px;
+        height: 15px;
+        cursor: pointer;
+        accent-color: var(--brand-to);
+      }
+
+      .admin-note {
+        padding-bottom: 4px;
+        font-size: 11.5px;
+        color: var(--text-faint);
+        overflow-wrap: anywhere;
+      }
+
+      .admin-section-title {
+        margin-top: 16px;
+      }
+
+      .admin-status {
+        margin-top: 12px;
+        color: var(--text);
+      }
+
+      .admin-status[data-kind='error'] {
+        color: var(--error-fg);
+      }
+
+      .admin-confirm {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-soft);
+      }
+
+      .admin-confirm-preview {
+        margin-bottom: 10px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+
+      .admin-output {
+        margin: 8px 0 0;
+        padding: 8px 10px;
+        max-height: 240px;
+        overflow: auto;
+        font-size: 11.5px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="mark" aria-hidden="true"></div>
+      <div class="titles">
+        <h1>Admin</h1>
+        <span class="subtitle">browser-link server settings · same as the console</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Rendered by admin.ts from the server's AdminState (admin.describe
+           over any connected tab's socket): the same sections, options and
+           labels as the console. Disk-writing actions show the server's
+           preview with Confirm/Cancel before applying. -->
+      <div id="admin-confirm" class="admin-confirm" hidden>
+        <div id="admin-confirm-preview" class="admin-confirm-preview"></div>
+        <div class="dialog-actions">
+          <button id="admin-confirm-yes" class="primary" type="button">Confirm</button>
+          <button id="admin-confirm-no" class="danger" type="button">Cancel</button>
+        </div>
+      </div>
+      <div id="admin-status" class="admin-status" hidden></div>
+      <pre id="admin-output" class="admin-output" hidden></pre>
+      <div id="admin-body"></div>
+    </main>
+
+    <script type="module" src="admin.js"></script>
+  </body>
+</html>

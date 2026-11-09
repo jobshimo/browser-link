@@ -115,7 +115,7 @@ the four-step setup:
    Developer mode → Load unpacked).
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
-   The popup's own copy is English-only; its **Admin** section speaks the
+   The popup's own copy is English-only; its **Admin** window speaks the
    server's language (see [Admin panel](#admin-panel-console-and-popup)).
 
 After the first run, `browser-link` opens on a **status view**: the running
@@ -1485,14 +1485,16 @@ A handful of knobs — some on by default, all reversible.
 
 ### Admin panel (console and popup)
 
-The console's status view and the popup's **Admin** section render one
+The console's status view and the popup's **Admin** window render one
 description the server builds: the same sections (status, setup, diagnose,
 reference), options and labels, localised from `language` in `config.json`
-(English or Spanish). The popup asks the running server over the extension's
-existing connection, so it needs at least one connected tab; without one it
-says so.
+(English or Spanish). The popup's **Admin** button opens the panel in its own
+window, like **Activity** (pressing it again focuses the open one), so it
+stays on screen while you change settings. The window asks the running server
+over the extension's existing connection, so it needs at least one connected
+tab; without one it says so.
 
-From the popup you can switch the language, enable or disable each MCP tool,
+From the Admin window you can switch the language, enable or disable each MCP tool,
 toggle multi-agent, auto-reelect, the instructions auto-refresh, cdp-direct
 and its grant lifetime, and the activity trail; run `doctor` and an update
 check; install or remove the instructions block per client; and register
