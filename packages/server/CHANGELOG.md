@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.0](https://github.com/jobshimo/browser-link/compare/v0.41.0...v0.42.0) (2026-11-09)
+
+### Features
+
+- **admin:** one server-side source for the administration menus: the server describes its status, setup, diagnose and reference options as data (`admin.describe`) and applies changes (`admin.action`) through the existing config and installer helpers; labels arrive already localised in the console language (`en`/`es`). An action that writes to disk first returns a one-line preview and applies only with `confirm: true`; changes that need a restart say so. `stop` and self-update are shown with their console command, never offered as remote actions.
+- **console:** `browser-link` now opens on a **status view** (running/installed server, pid, instructions block per client, cdp-direct, update available, tools) with the same menu rows and hotkeys underneath; `Tab` opens the full menu. Every existing screen is still there.
+- **extension:** the popup has a collapsible **Admin** section rendered from the server's data: readouts, toggles, selects and buttons, a Confirm/Cancel step for disk-writing actions, the doctor report inline, and an empty state when no tab is connected.
+
 ## [0.41.0](https://github.com/jobshimo/browser-link/compare/v0.40.0...v0.41.0) (2026-11-09)
 
 ### Features
