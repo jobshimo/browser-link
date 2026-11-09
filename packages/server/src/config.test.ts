@@ -241,3 +241,48 @@ describe('cdp-direct config defaults + persistence', () => {
     expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(0);
   });
 });
+
+describe('instructionsAutoRefresh', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-instr-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('defaults to true on a fresh install', () => {
+    expect(loadConfig().instructionsAutoRefresh).toBe(true);
+  });
+
+  test('an explicit false is respected and persisted', () => {
+    saveConfig({ instructionsAutoRefresh: false });
+    expect(loadConfig().instructionsAutoRefresh).toBe(false);
+    const raw = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(raw.instructionsAutoRefresh).toBe(false);
+  });
+
+  test('a hand-written false in config.json is respected', () => {
+    writeFileSync(join(dataDir, 'config.json'), '{"instructionsAutoRefresh": false}');
+    expect(loadConfig().instructionsAutoRefresh).toBe(false);
+  });
+
+  test('true is the default and is stripped from the on-disk file', () => {
+    saveConfig({ instructionsAutoRefresh: false });
+    saveConfig({ instructionsAutoRefresh: true });
+    const raw = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(raw).not.toHaveProperty('instructionsAutoRefresh');
+    expect(loadConfig().instructionsAutoRefresh).toBe(true);
+  });
+});

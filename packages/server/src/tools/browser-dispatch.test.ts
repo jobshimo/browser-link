@@ -3923,3 +3923,46 @@ describe('browser.manual (server-only, never touches a tab)', () => {
     expect(deps.callBrowserTool).not.toHaveBeenCalled();
   });
 });
+
+describe('list_tabs — extension version (S3)', () => {
+  async function listWith(tabs: Array<Record<string, unknown>>, cdp: unknown[] = []) {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => tabs as never),
+      listCdpTabs: vi.fn(async () => cdp as never),
+    });
+    return (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as Array<
+      Record<string, unknown>
+    >;
+  }
+
+  test('passes extension_version through and flags extension_outdated only when it is lower', async () => {
+    const { VERSION } = await import('../version.js');
+    const [major, minor, patch] = VERSION.split('.').map(Number) as [number, number, number];
+    const newer = `${major}.${minor}.${patch + 1}`;
+    const tabs = await listWith([
+      { tab_id: 'tab_1', url: 'http://a', title: 'A', extension_version: '0.0.1' },
+      { tab_id: 'tab_2', url: 'http://b', title: 'B', extension_version: VERSION },
+      { tab_id: 'tab_3', url: 'http://c', title: 'C', extension_version: newer },
+      { tab_id: 'tab_4', url: 'http://d', title: 'D' },
+      { tab_id: 'tab_5', url: 'http://e', title: 'E', extension_version: 'not-a-version' },
+    ]);
+    const byId = new Map(tabs.map((t) => [t.tab_id, t]));
+    expect(byId.get('tab_1')!.extension_version).toBe('0.0.1');
+    expect(byId.get('tab_1')!.extension_outdated).toBe(true);
+    expect(byId.get('tab_2')!.extension_version).toBe(VERSION);
+    expect(byId.get('tab_2')).not.toHaveProperty('extension_outdated');
+    expect(byId.get('tab_3')).not.toHaveProperty('extension_outdated');
+    expect(byId.get('tab_4')).not.toHaveProperty('extension_version');
+    expect(byId.get('tab_4')).not.toHaveProperty('extension_outdated');
+    expect(byId.get('tab_5')).not.toHaveProperty('extension_outdated');
+  });
+
+  test('a cdp tab carries neither field', async () => {
+    const tabs = await listWith(
+      [],
+      [{ tab_id: 'cdp:ABC', url: 'http://x', title: 'X', transport: 'cdp' }],
+    );
+    expect(tabs[0]).not.toHaveProperty('extension_version');
+    expect(tabs[0]).not.toHaveProperty('extension_outdated');
+  });
+});

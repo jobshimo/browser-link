@@ -9,6 +9,7 @@ import {
   buildRegisterSettingsUpdate,
   applyTabNavigated,
   buildTabDisconnectedData,
+  buildTabSession,
   handleFlowRecordedMessage,
   pushSettingsToAllTabs,
   sendToolCancel,
@@ -479,5 +480,42 @@ describe('applyTabNavigated', () => {
       });
     }
     expect(tabs.get('tab_1')).toMatchObject({ url: 'https://example.com/tab_1', title: 'tab_1' });
+  });
+});
+
+describe('buildTabSession (tab.register)', () => {
+  const ws = {} as unknown as WebSocket;
+
+  test('stores the extension version when the register payload carries one', () => {
+    expect(
+      buildTabSession(
+        'tab_1',
+        { url: 'https://a.test/', title: 'A', extensionVersion: '0.39.0' },
+        ws,
+      ),
+    ).toEqual({
+      tabId: 'tab_1',
+      url: 'https://a.test/',
+      title: 'A',
+      ws,
+      extensionVersion: '0.39.0',
+    });
+  });
+
+  test('an older extension that sends no version yields a session without the field', () => {
+    const session = buildTabSession('tab_2', { url: 'https://b.test/', title: 'B' }, ws);
+    expect(session).toEqual({ tabId: 'tab_2', url: 'https://b.test/', title: 'B', ws });
+    expect('extensionVersion' in session).toBe(false);
+  });
+
+  test('a non-string or oversized version is dropped, never stored', () => {
+    for (const bad of [42, '', 'x'.repeat(65)]) {
+      const session = buildTabSession(
+        'tab_3',
+        { url: 'u', title: 't', extensionVersion: bad as unknown as string },
+        ws,
+      );
+      expect('extensionVersion' in session).toBe(false);
+    }
   });
 });

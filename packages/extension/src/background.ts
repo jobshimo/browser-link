@@ -3386,7 +3386,12 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     ws.addEventListener('open', () => {
       send(ws, {
         kind: 'tab.register',
-        payload: { url: registerUrl, title: registerTitle, previousTabId },
+        payload: {
+          url: registerUrl,
+          title: registerTitle,
+          previousTabId,
+          extensionVersion: chrome.runtime.getManifest().version,
+        },
       });
     });
 

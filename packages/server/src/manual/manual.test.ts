@@ -1,9 +1,19 @@
-import { describe, expect, test } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { renderCore } from './core.js';
 import { renderInstallBody, renderServerInstructions } from './render.js';
 import { TOPICS, TOPIC_NAMES, renderTopic } from './topics.js';
 import { detectInstructionsStatus, formatClientStatus, instructionsNotice } from './status.js';
-import type { InstructionsInstaller, InstructionsState } from '../agent-instructions/index.js';
+import { refreshNotice, refreshOutdatedBlocks } from './refresh.js';
+import {
+  claudeInstructionsInstaller,
+  type InstructionsInstaller,
+  type InstructionsState,
+} from '../agent-instructions/index.js';
+import { END_MARKER, beginMarker } from '../agent-instructions/content.js';
+import { VERSION as SERVER_VERSION } from '../version.js';
 
 /**
  * The manual is one source rendered three ways: the MCP connect-time text
@@ -40,6 +50,16 @@ function occurrences(haystack: string, needle: string): number {
 describe('manual core', () => {
   test(`fits in ${CORE_LIMIT} characters without a notice`, () => {
     expect(renderCore({}).length).toBeLessThanOrEqual(CORE_LIMIT);
+  });
+
+  test('tells the agent what extension_outdated on list_tabs means, within the budget', () => {
+    const core = renderCore({});
+    const line = core.split('\n').find((l) => l.includes('`extension_outdated: true`'));
+    expect(line).toBeDefined();
+    expect(line).toContain('update or reload the extension');
+    expect(core.indexOf(line!)).toBeGreaterThan(core.indexOf('### Success is not proof'));
+    expect(core.indexOf(line!)).toBeLessThan(core.indexOf('### Habits'));
+    expect(core.length).toBeLessThanOrEqual(CORE_LIMIT);
   });
 
   test('is the exact prefix of the connect-time instructions', () => {
@@ -280,5 +300,181 @@ describe('instructions-block status and notice', () => {
     expect(detectInstructionsStatus([ok, broken])).toEqual([
       { id: 'claude', displayName: 'Claude Code', state: st('installed', '0.38.0') },
     ]);
+  });
+});
+
+describe('instructions block refreshed at primary start', () => {
+  const st = (kind: string, version?: string | null) =>
+    ({ kind, ...(version === undefined ? {} : { version }) }) as InstructionsState;
+
+  /** A stub installer whose `install()` turns its state into `installed`
+   * (or throws `failWith`), counting calls. */
+  function stub(
+    id: 'claude' | 'opencode' | 'copilot',
+    displayName: string,
+    initial: InstructionsState,
+    failWith?: string,
+  ) {
+    let state = initial;
+    const install = vi.fn(() => {
+      if (failWith !== undefined) throw new Error(failWith);
+      state = st('installed', '9.9.9');
+      return `${displayName}: block refreshed.`;
+    });
+    const installer = {
+      id,
+      displayName,
+      filePath: () => 'x',
+      detect: () => ({ filePath: 'x', state }),
+      install,
+      uninstall: () => '',
+    } as unknown as InstructionsInstaller;
+    return { installer, install };
+  }
+
+  const statusOf = (i: InstructionsInstaller) => ({
+    id: i.id,
+    displayName: i.displayName,
+    state: i.detect().state,
+  });
+
+  test('an outdated client is refreshed once and its status becomes installed', () => {
+    const a = stub('claude', 'Claude Code', st('installed-outdated', '0.37.0'));
+    const result = refreshOutdatedBlocks({
+      statuses: [statusOf(a.installer)],
+      installers: [a.installer],
+      enabled: true,
+    });
+    expect(a.install).toHaveBeenCalledTimes(1);
+    expect(result.statuses[0]!.state.kind).toBe('installed');
+    expect(result.refreshed.map((r) => r.displayName)).toEqual(['Claude Code']);
+    expect(result.failed).toEqual([]);
+    expect(refreshNotice(result, '0.39.0')).toBe(
+      'Your browser-link instructions block was updated to v0.39.0 for Claude Code: restart the client to load it.',
+    );
+  });
+
+  test('several refreshed clients are named in one notice', () => {
+    const a = stub('claude', 'Claude Code', st('installed-outdated', '0.37.0'));
+    const b = stub('opencode', 'OpenCode', st('installed-outdated', null));
+    const installers = [a.installer, b.installer];
+    const result = refreshOutdatedBlocks({
+      statuses: installers.map(statusOf),
+      installers,
+      enabled: true,
+    });
+    expect(refreshNotice(result, '0.39.0')).toBe(
+      'Your browser-link instructions block was updated to v0.39.0 for Claude Code, OpenCode: restart the client to load it.',
+    );
+  });
+
+  test('not-installed, no-file and corrupt clients are never touched', () => {
+    const a = stub('claude', 'Claude Code', st('not-installed'));
+    const b = stub('opencode', 'OpenCode', st('no-file'));
+    const c = stub('copilot', 'GitHub Copilot CLI', {
+      kind: 'corrupt',
+      reason: 'multiple-begin-markers',
+    });
+    const installers = [a.installer, b.installer, c.installer];
+    const result = refreshOutdatedBlocks({
+      statuses: installers.map(statusOf),
+      installers,
+      enabled: true,
+    });
+    expect(a.install).not.toHaveBeenCalled();
+    expect(b.install).not.toHaveBeenCalled();
+    expect(c.install).not.toHaveBeenCalled();
+    expect(result.refreshed).toEqual([]);
+    expect(refreshNotice(result, '0.39.0')).toBeUndefined();
+  });
+
+  test('enabled: false never calls install and keeps the installed-outdated notice', () => {
+    const a = stub('claude', 'Claude Code', st('installed-outdated', '0.37.0'));
+    const result = refreshOutdatedBlocks({
+      statuses: [statusOf(a.installer)],
+      installers: [a.installer],
+      enabled: false,
+    });
+    expect(a.install).not.toHaveBeenCalled();
+    expect(refreshNotice(result, '0.39.0')).toBe(
+      'Your browser-link instructions block is installed-outdated (installed v0.37.0, server v0.39.0): run `browser-link instructions install` and restart the client.',
+    );
+  });
+
+  test('a failed refresh keeps the installed-outdated notice with the reason; the others are still refreshed', () => {
+    const a = stub('claude', 'Claude Code', st('installed-outdated', '0.37.0'), 'EACCES: denied');
+    const b = stub('opencode', 'OpenCode', st('installed-outdated', '0.36.0'));
+    const installers = [a.installer, b.installer];
+    const result = refreshOutdatedBlocks({
+      statuses: installers.map(statusOf),
+      installers,
+      enabled: true,
+    });
+    expect(a.install).toHaveBeenCalledTimes(1);
+    expect(b.install).toHaveBeenCalledTimes(1);
+    expect(result.statuses.map((s) => s.state.kind)).toEqual(['installed-outdated', 'installed']);
+    expect(result.failed).toEqual([
+      { id: 'claude', displayName: 'Claude Code', message: 'EACCES: denied' },
+    ]);
+    expect(refreshNotice(result, '0.39.0')).toBe(
+      'Your browser-link instructions block was updated to v0.39.0 for OpenCode: restart the client to load it. ' +
+        'Your browser-link instructions block is installed-outdated (installed v0.37.0, server v0.39.0): run `browser-link instructions install` and restart the client. ' +
+        'Automatic refresh failed for Claude Code: EACCES: denied',
+    );
+  });
+
+  describe('against a temp HOME with the real installer', () => {
+    let home: string;
+    let saved: string | undefined;
+    const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), 'browser-link-refresh-'));
+      saved = process.env[homeVar];
+      process.env[homeVar] = home;
+    });
+
+    afterEach(() => {
+      if (saved === undefined) delete process.env[homeVar];
+      else process.env[homeVar] = saved;
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test('an outdated block is refreshed in place, keeping the rest of the file', () => {
+      const file = join(home, '.claude', 'CLAUDE.md');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(file, `# Mine\n\n${beginMarker('0.0.1')}\nold body\n${END_MARKER}\n\nTail.\n`);
+      const installers = [claudeInstructionsInstaller];
+      const result = refreshOutdatedBlocks({
+        statuses: detectInstructionsStatus(installers),
+        installers,
+        enabled: true,
+      });
+      expect(result.statuses[0]!.state).toEqual({ kind: 'installed', version: SERVER_VERSION });
+      const text = readFileSync(file, 'utf8');
+      expect(text.startsWith('# Mine\n')).toBe(true);
+      expect(text).toContain(beginMarker());
+      expect(text).not.toContain('old body');
+      expect(text.trimEnd().endsWith('Tail.')).toBe(true);
+      expect(refreshNotice(result)).toContain(`was updated to v${SERVER_VERSION} for Claude Code`);
+    });
+
+    test('a file without a block and a corrupt file are left byte-identical', () => {
+      const file = join(home, '.claude', 'CLAUDE.md');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      const installers = [claudeInstructionsInstaller];
+      for (const body of [
+        '# Mine, no block\n',
+        `${beginMarker('0.0.1')}\na\n${END_MARKER}\n${beginMarker('0.0.1')}\nb\n${END_MARKER}\n`,
+      ]) {
+        writeFileSync(file, body);
+        refreshOutdatedBlocks({
+          statuses: detectInstructionsStatus(installers),
+          installers,
+          enabled: true,
+        });
+        expect(readFileSync(file, 'utf8')).toBe(body);
+      }
+    });
   });
 });

@@ -7,6 +7,7 @@ import type {
   FlowRecordedPayload,
   ServerToExtension,
   SettingsUpdateMessage,
+  TabRegisterPayload,
 } from '../messages.js';
 import {
   countInRange as countActivityInRange,
@@ -31,6 +32,9 @@ export interface TabSession {
   url: string;
   title: string;
   ws: WebSocket;
+  /** The extension's version as sent in `tab.register`; absent when the
+   * extension predates the field. */
+  extensionVersion?: string;
 }
 
 export interface PendingRequest {
@@ -188,12 +192,7 @@ export function startWsBridge(
           } else {
             assignedTabId = assignTabId();
           }
-          tabs.set(assignedTabId, {
-            tabId: assignedTabId,
-            url: msg.payload.url,
-            title: msg.payload.title,
-            ws,
-          });
+          tabs.set(assignedTabId, buildTabSession(assignedTabId, msg.payload, ws));
           send(ws, {
             kind: 'tab.registered',
             payload: { tabId: assignedTabId, serverVersion: VERSION },
@@ -609,6 +608,32 @@ export function applyTabNavigated(
   session.url = url;
   if (typeof title === 'string' && title.length > 0) session.title = title;
   return { ok: true, url: session.url, title: session.title };
+}
+
+/** Longest `extensionVersion` stored from a register payload; anything
+ * longer is not a version and is dropped. */
+const MAX_EXTENSION_VERSION_LENGTH = 64;
+
+/**
+ * The session stored for a freshly registered tab. `extensionVersion` is
+ * kept only when it is a non-empty string of sane length, so an older
+ * extension (no field) or a malformed value leaves the session without it.
+ */
+export function buildTabSession(
+  tabId: string,
+  payload: TabRegisterPayload,
+  ws: WebSocket,
+): TabSession {
+  const session: TabSession = { tabId, url: payload.url, title: payload.title, ws };
+  const version: unknown = payload.extensionVersion;
+  if (
+    typeof version === 'string' &&
+    version.length > 0 &&
+    version.length <= MAX_EXTENSION_VERSION_LENGTH
+  ) {
+    session.extensionVersion = version;
+  }
+  return session;
 }
 
 /**

@@ -204,11 +204,40 @@ describe('start-time instructions (outdated-block notice)', () => {
       detect: () => ({ filePath: 'x', state: { kind, version } }),
     }) as unknown as InstructionsInstaller;
 
-  test('an installed-outdated block puts the notice first', () => {
-    const { text, statuses } = buildStartInstructions([installer('installed-outdated', '0.1.0')]);
+  test('with autoRefresh off, an installed-outdated block puts the notice first', () => {
+    const { text, statuses } = buildStartInstructions([installer('installed-outdated', '0.1.0')], {
+      autoRefresh: false,
+    });
     expect(statuses).toHaveLength(1);
     expect(text.split('\n')[0]).toMatch(
       /^Your browser-link instructions block is installed-outdated \(installed v0\.1\.0, server v[^)]+\): run `browser-link instructions install` and restart the client\.$/,
+    );
+    expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+  });
+
+  test('by default an installed-outdated block is refreshed and the update notice comes first', () => {
+    let state: { kind: string; version?: string } = {
+      kind: 'installed-outdated',
+      version: '0.1.0',
+    };
+    let installs = 0;
+    const refreshable = {
+      id: 'claude',
+      displayName: 'Claude Code',
+      detect: () => ({ filePath: 'x', state }),
+      install: () => {
+        installs += 1;
+        state = { kind: 'installed', version: VERSION };
+        return 'Claude Code: refreshed.';
+      },
+    } as unknown as InstructionsInstaller;
+    const { text, statuses, refreshed, failed } = buildStartInstructions([refreshable]);
+    expect(installs).toBe(1);
+    expect(statuses[0]!.state.kind).toBe('installed');
+    expect(refreshed).toHaveLength(1);
+    expect(failed).toEqual([]);
+    expect(text.split('\n')[0]).toBe(
+      `Your browser-link instructions block was updated to v${VERSION} for Claude Code: restart the client to load it.`,
     );
     expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
   });

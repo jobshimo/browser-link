@@ -311,7 +311,7 @@ toggle-able (`browser.activity` is not) — see
 
 | Tool                        | Purpose                                                                                                                                                                                                                                                               |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`)                                                                                                                                                               |
+| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`), the extension's `extension_version` and `extension_outdated: true` when it is older than the server                                                          |
 | `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                            |
 | `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                 |
 | `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed                                                                                                                    |
@@ -378,6 +378,7 @@ iframes, nested arbitrarily.
 | **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
 | **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
 | **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                          |
+| **`extension_outdated`**           | Each extension tab in `browser.list_tabs` carries `extension_version` (what the extension reported when it connected). When that is a plain `MAJOR.MINOR.PATCH` lower than the server's version, the tab also carries `extension_outdated: true`: results from that tab may lack fields newer servers add, so update or reload the extension. An extension older than 0.39.0 sends no version, so its tabs carry neither field; cdp-direct tabs never do.             |
 | **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                              |
 
 #### `retargeted` — a click that would land on an ancestor
@@ -1358,17 +1359,26 @@ source in the server:
    | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
 
    Reinstall overwrites in place and uninstall removes exactly the span we
-   manage. `browser-link doctor` shows `⚠ outdated` until you re-run install.
+   manage. `browser-link doctor` shows `⚠ outdated` until you re-run install
+   or the server refreshes it at its next start.
 
 3. **`browser.manual` on demand.** No arguments returns the index (server
    version, the block status per client, one line per tool, the topic list);
    `{ tool }` returns one tool in full; `{ topic }` returns one topic. It
    needs no tab.
 
-**Outdated notice.** When an installed block is older than the server, the
-first line of the connect-time text says so and names the command to run.
-A missing block never triggers it: not installing is a choice. The server
-never writes those files; only `browser-link instructions install` does.
+**Refresh at start.** When the server starts, every client whose block is
+installed but older than the server is refreshed in place, through the same
+atomic write `browser-link instructions install` does; installing once is the
+opt-in. A client without a block, or whose file is corrupt, is never touched:
+not installing is a choice. When a block was refreshed, the first line of the
+connect-time text says
+`Your browser-link instructions block was updated to v<version> for <clients>: restart the client to load it.`
+and the server logs each outcome to stderr. If a refresh fails, that client
+keeps the **outdated notice** (the first line names the command to run) with
+the reason appended. To keep your blocks exactly as they are, set
+`"instructionsAutoRefresh": false` in `config.json` in the data dir; the
+server then never writes those files and only shows the outdated notice.
 
 ### Per-tool permissions
 
