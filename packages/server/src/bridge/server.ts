@@ -215,9 +215,11 @@ export class IpcServer {
     // socket with no 'error' listener is an uncaught exception that kills
     // the primary for every agent. Node destroys the socket after 'error',
     // so the connection is dropped and the accept loop keeps serving.
+    // Only the error code is logged (a fixed token like ECONNRESET), never the
+    // raw message, so peer-influenced text cannot reach the log.
     socket.on('error', (err) => {
-      const reason = err.message.replace(/\n|\r/g, ' ');
-      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${reason}`);
+      const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${code}`);
     });
     const remoteAddr = normaliseLoopback(socket.remoteAddress ?? '');
     const remotePort = socket.remotePort;

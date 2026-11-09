@@ -166,7 +166,7 @@ describe('BRIDGE_PORT drift guard', () => {
   });
 
   test('the extension dials the constant, not a literal', () => {
-    expect(read(EXT_BACKGROUND)).toContain('const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;');
+    expect(read(EXT_BACKGROUND)).toMatch(/const WS_URL = `ws:\/\/127\.0\.0\.1:\$\{BRIDGE_PORT\}`;/);
   });
 
   test('the port is still 17529 (no runtime change)', () => {
