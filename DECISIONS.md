@@ -1,10 +1,12 @@
 # Decisiones de arquitectura
 
-Documento vivo. Cada decisión sigue el formato: **Contexto → Decisión → Consecuencias**. Cuando una decisión cambia, se actualiza acá con la fecha del cambio. Las decisiones diferidas se marcan explícitamente para retomar más adelante.
+Documento vivo. Cada decisión sigue el formato: **Contexto → Decisión → Consecuencias**. Cuando una decisión cambia, se actualiza acá con la fecha del cambio. Las decisiones diferidas se marcan explícitamente para retomar más adelante. Los bloques fechados 2026-11-09 resultan de una auditoría de coherencia entre este documento y el código; el texto original de cada sección se conserva debajo como registro histórico.
 
 ---
 
 ## 1. Stack: Node + TypeScript en todo
+
+**Actualización 2026-11-09:** el repositorio tiene cuatro directorios en `packages/`: `shared`, `server`, `extension` y `plan` (este último solo contiene especificaciones y laboratorio, sin `package.json`; ver `packages/plan/SPEC.md`). El protocolo WebSocket ya no vive solo en `packages/shared`: el servidor mantiene su propia copia en `packages/server/src/messages.ts` (su cabecera explica que es para publicar a npm sin una dependencia de workspace sin resolver) y no declara `@browser-link/shared` en `packages/server/package.json`. La extensión sí usa `packages/shared` (`packages/extension/package.json`). Según la auditoría del 2026-11-09, ningún test de deriva cubre esa copia del protocolo (no verificado por separado).
 
 **Estado:** decidida
 
@@ -18,6 +20,8 @@ Documento vivo. Cada decisión sigue el formato: **Contexto → Decisión → Co
 
 ## 2. Gestor de paquetes: npm workspaces
 
+**Estado:** superada el 2026-11-09 — el repositorio usa pnpm, no npm workspaces. `package.json` declara `"packageManager": "pnpm@11.1.1"`, existe `pnpm-workspace.yaml` (con `allowBuilds`, cuyo comentario habla de migrar fuera de npm) y `.npmrc` fija `engine-strict=true` junto con `engines.node >=22.22.2` en `package.json`. El workflow de CI instala pnpm con `pnpm/action-setup` (`.github/workflows/ci.yml`). El texto original queda abajo como registro histórico.
+
 **Estado:** decidida
 
 **Contexto.** Tres packages con dependencias entre sí. Alternativas: npm workspaces, pnpm workspaces.
@@ -29,6 +33,8 @@ Documento vivo. Cada decisión sigue el formato: **Contexto → Decisión → Co
 ---
 
 ## 3. Arquitectura general: extensión + servidor MCP + bridge WebSocket
+
+**Actualización 2026-11-09:** el diagrama sigue siendo válido para el transporte con extensión, pero dos afirmaciones de las consecuencias ya no lo son. (a) La extensión ya no es la única pieza que toca el navegador: el modo `cdp-direct` (opt-in) maneja pestañas de Chrome desde el servidor, sin extensión, vía `packages/server/src/cdp/transport.ts` y `packages/server/src/cdp/gate.ts`. (b) No hay un único proceso de servidor: el primero que toma el puerto 17529 es el primario (WS + MCP) y los demás actúan como proxy de stdio hacia él (`packages/server/src/server.ts`, comentarios sobre primario y proxy). El servidor sigue escuchando solo en `127.0.0.1:17529` (`WS_PORT` en `packages/server/src/bridge/ws-bridge.ts`) y la extensión sigue usando `chrome.debugger.attach` (`packages/extension/src/background.ts`).
 
 **Estado:** decidida
 
@@ -102,6 +108,8 @@ Cliente MCP <— stdio MCP —> Servidor MCP <— WebSocket localhost —> Exten
 
 ## 8. Representación del DOM: híbrida (a11y tree + inspect on-demand)
 
+**Estado:** superada el 2026-11-09 — no existe `browser.inspect` ni se usa el árbol de accesibilidad. `browser.snapshot` devuelve título, URL, texto visible y la lista de elementos interactivos con un selector CSS (`packages/server/src/tools/browser-definitions.ts`, definición de `browser.snapshot`); no hay llamadas a `Accessibility.getFullAXTree` en `packages/server/src` ni en `packages/extension/src` (búsqueda realizada el 2026-11-09). Los `ref` ya no son numéricos: tienen la forma `<doc_tag>:e<N>`, son válidos para un documento concreto y los aceptan `click`, `type`, `press`, `find` y `wait_for` además del selector (`packages/server/src/tools/browser-definitions.ts`, esquema del parámetro `ref`). Para HTML crudo o estilos calculados se usa `browser.evaluate` (ver `ROADMAP.md`, ítems 2, 3a y 3b, resueltos como protocolo).
+
 **Estado:** decidida
 
 **Contexto.** Tres opciones: HTML crudo (caro, frágil), accessibility tree (eficiente, semántico), o híbrido.
@@ -113,6 +121,8 @@ Cliente MCP <— stdio MCP —> Servidor MCP <— WebSocket localhost —> Exten
 ---
 
 ## 9. Catálogo de tools del MVP
+
+**Estado:** superada el 2026-11-09 — el catálogo del MVP quedó muy por detrás del código. `packages/server/src/tools/browser-definitions.ts` define 34 tools `browser.*` (`list_tabs`, `claim_tab`, `release_tab`, `my_tabs`, `manual`, `ping`, `navigate`, `snapshot`, `find`, `state`, `canvas_screenshot`, `screenshot`, `console`, `network`, `network_body`, `wait_for`, `wait_for_tab`, `dialog_respond`, `set_permission`, `download`, `click`, `type`, `press`, `drag`, `flow`, `flow_status`, `flow_cancel`, `evaluate`, `events`, `activity`, `reset`, `wrap_up`, `read`, `feedback`) y `packages/server/src/map/tools.ts` agrega seis tools `browser.map.*` (`recall`, `save`, `record_use`, `forget`, `rename_app`, `apps`). `browser.inspect` y `browser.scroll`, que figuran en la tabla, no existen como tools; `ping` ya no es un slice pendiente. La tabla original se conserva abajo como registro.
 
 **Estado:** alcance decidido. Slice 1 (`browser.list_tabs` + `browser.ping`) implementado, pendiente verificación end-to-end. Resto pendiente.
 
@@ -152,6 +162,8 @@ Cliente MCP <— stdio MCP —> Servidor MCP <— WebSocket localhost —> Exten
 
 ## 11. Seguridad: process binding por el kernel del SO
 
+**Actualización 2026-11-09:** el mecanismo sigue siendo el descrito, con estas diferencias respecto del texto de abajo, verificadas en `packages/server/src/auth/process-identity.ts` y `packages/server/src/bridge/ws-bridge.ts`. (a) macOS/Linux ejecuta `lsof -nP -F pcn -iTCP@host:port -sTCP:ESTABLISHED` (`-F pcn`, no `-F pc`; función `lookupUnix`). (b) En Windows, `netstat -ano -p TCP` obtiene el PID y luego PowerShell `(Get-Process -Id <pid>).ProcessName` resuelve el nombre; `tasklist /FI "PID eq <pid>" /FO CSV /NH` es solo el respaldo si PowerShell falla. (c) `lookupPeerProcess` devuelve `null` si el sistema operativo no es soportado, si el lookup lanza un error o si el PID del peer es el del propio servidor. (d) `verifyClient` rechaza con 403 en cuatro casos (`Origin not allowed`, `Cannot identify peer`, `Peer process unknown`, `Peer is not a Chromium-based browser`) y con 500 (`Process lookup failed`) solo si la cadena de promesas del lookup rechaza. (e) Desde 0.42.0 hay una verificación previa de `Origin`: si el encabezado existe debe empezar por `chrome-extension://`; un `Origin` ausente se deja a la verificación del proceso (`isAllowedHandshakeOrigin`). El ID de la extensión no se fija todavía (ver §12). La allowlist por sistema operativo está en `packages/server/src/auth/allowlist.ts`.
+
 **Estado:** decidida
 
 **Contexto.** El servidor MCP escucha en `127.0.0.1:17529`. Loopback ya impide conexiones desde fuera de la máquina, pero cualquier proceso local que corra como el mismo usuario podría conectarse y hacerse pasar por la extensión Chrome.
@@ -183,6 +195,8 @@ Si el lookup falla o el peer no está en la allowlist, el upgrade se rechaza con
 
 ## 12. Distribución: solo local en MVP
 
+**Actualización 2026-11-09 (decidida para 1.0):** la distribución de 1.0 es la extensión sin empaquetar ("Load unpacked") con un campo `key` fijo en `packages/extension/manifest.json`, para que el ID de la extensión sea estable y la verificación de `Origin` de `packages/server/src/bridge/ws-bridge.ts` pueda comparar contra un ID concreto en lugar de aceptar cualquier `chrome-extension://`. Estado actual verificado: el manifiesto no tiene `key` e `isAllowedHandshakeOrigin` acepta cualquier origen `chrome-extension://`. Sobre una publicación futura en Chrome Web Store: la tienda define el ID de la extensión publicada, así que decidir ahora ese vínculo sería prematuro. La decisión queda así: la publicación en la tienda es una decisión posterior; si la tienda acepta el mismo par de claves, se reutiliza el `key` de 1.0 y el ID no cambia; si no, se vuelve a fijar el ID esperado en el servidor. No verificado: si la Chrome Web Store acepta un paquete con un `key` propio o conserva ese ID; no se comprobó contra la documentación de la tienda.
+
 **Estado:** decidida (provisional)
 
 **Decisión.** Mientras el proyecto esté en desarrollo, la extensión se carga unpacked vía `chrome://extensions/` → Developer mode → Load unpacked. Subir a Chrome Web Store queda para una fase posterior, una vez resuelta la decisión 11.
@@ -190,6 +204,8 @@ Si el lookup falla o el peer no está en la allowlist, el upgrade se rechaza con
 ---
 
 ## 13. `browser.flow` como unidad de trabajo duradero y supervisado
+
+**Estado:** implementada (verificado el 2026-11-09) — las seis fases están entregadas, la última en la versión 0.27.0 (`packages/server/CHANGELOG.md`, entrada 0.27.0, y `ROADMAP.md`, ítems 6 a 11). Referencias que cambiaron de lugar: los dos `runFlow` están hoy en `packages/extension/src/flow.ts` y `packages/server/src/cdp/flow.ts` (no en las líneas 324 y 335 citadas abajo), `MAX_FLOW_TIMEOUT_MS` y `MAX_DETACHED_FLOW_TIMEOUT_MS` están definidas en `packages/server/src/tools/browser-dispatch.ts` (no en las líneas 265-271 de la cita), y `packages/server/src/cdp/drift.test.ts` sigue manteniendo sincronizadas las dos copias. El registro `detached-flow:<flow_id>` está descrito en `packages/extension/src/flow-registry.ts`. La cabecera de `docs/specs/flow-supervised-execution.md` todavía dice "accepted, not started" (no se corrigió aquí).
 
 **Estado:** decidida (2026-08-09) — implementación por fases, spec en `docs/specs/flow-supervised-execution.md`
 

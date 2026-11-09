@@ -56,6 +56,7 @@
 - [Activity trail](#activity-trail)
 - [Customising](#customising)
 - [cdp-direct mode (no extension)](#cdp-direct-mode-no-extension)
+- [Stability](#stability)
 - [Security model](#security-model)
 - [Where your data lives](#where-your-data-lives)
 - [For contributors](#for-contributors)
@@ -78,12 +79,14 @@ tab", not for unattended consumer automation.
   wait_for, wait_for_tab, dialog_respond, set_permission, download, console,
   network, network_body, claim/release/my_tabs, events, activity, reset, and `manual`, which needs no tab) and 6
   persistent-map tools, so the agent learns your apps across sessions.
-- ✅ **What it needs** — Node ≥ 22.13 and Chrome / Chromium / Edge / Brave
-  / Vivaldi. No accounts, no telemetry, no outbound calls except `npm`
-  when you run `Check for updates`.
+- ✅ **What it needs** — Node ≥ 22.22.2 and Chrome / Chromium / Edge / Brave
+  / Vivaldi. No accounts, no telemetry. The only request the server makes
+  by itself is the npm registry update check described under
+  [Where your data lives](#where-your-data-lives).
 - 🚫 **What it does NOT do** — touch tabs you have not pressed Connect on,
-  send anything off your machine, persist domain data in the map
-  (selectors and flows only, structure never content).
+  persist domain data in the map (selectors and flows only, structure never
+  content). Beyond the update check, the only network traffic it causes is
+  what you ask for: `browser.download` fetches the URLs the agent requests.
 - 🔒 **How it stays private** — WebSocket bridge is loopback-only
   (`127.0.0.1:17529`) and kernel-attested per connection.
 - 🛑 **How you stop it** — the extension popup lists every running
@@ -264,7 +267,7 @@ pays the shim once per session, not once per call.
                        │  stdio (MCP)
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  browser-link MCP server (Node ≥ 22.13)                          │
+│  browser-link MCP server (Node ≥ 22.22.2)                        │
 │  ─ listens on 127.0.0.1:17529  (loopback only)                   │
 │  ─ exposes browser.* tools + browser.map.* persistent UI map     │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -1882,8 +1885,13 @@ independent levels before any agent can touch it:
    issue explicitly and that expires on its own (default 60 minutes,
    configurable, `never` allowed but discouraged).
 
-An agent cannot flip either one — both are terminal-only commands. When a
-tool call reaches a `cdp:` tab without both conditions met, it fails with
+Both are changed from the command line (`browser-link config set` and
+`browser-link cdp allow`), so an agent that has shell access on your machine
+can run them too. They are a consent step for you, not a barrier against an
+agent that already has a shell. The protection that holds is on the Chrome
+side: the debugging port is open only if you started Chrome with
+`--remote-debugging-port`, and the grant is time-boxed and visible in
+`browser-link cdp status`. When a tool call reaches a `cdp:` tab without both conditions met, it fails with
 one of exactly two errors naming the missing step:
 
 ```
@@ -1929,7 +1937,7 @@ open -a "Google Chrome" --args --remote-debugging-port=9222                     
 # 2. Turn the feature on (persists in config.json; still not usable without a grant).
 browser-link config set cdp-direct.enabled true
 
-# 3. Grant time-boxed access. Only you can run this — no agent can grant itself access.
+# 3. Grant time-boxed access (a CLI command: anyone with a shell on this machine can run it, an agent included).
 browser-link cdp allow                    # uses cdp-direct.grant-ttl (default 60 min)
 browser-link cdp allow --minutes 15       # a shorter one-off grant
 browser-link cdp allow --minutes never    # never expires — reduces the security posture, see above
@@ -1995,6 +2003,25 @@ Claims apply to `cdp:` tab_ids through the same registry extension tabs
 use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add
 (console/network mirroring, canvas capture, drag).
 
+## Stability
+
+From 1.0.0, versioning follows [semver](https://semver.org): breaking
+changes to the stable set below ship only in a major release.
+
+**Stable (changes only in a major):**
+
+- MCP tool names and their input schemas, and the documented result fields.
+- CLI commands and their flags.
+- `config.json` keys.
+- The map database file (`map.db`), with forward-only migrations.
+
+**Internal (may change in any release):**
+
+- The extension-to-server WebSocket protocol. The server and the bundled
+  extension are versioned together.
+- The in-page observer internals.
+- Everything under `packages/plan`.
+
 ## Security model
 
 The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never
@@ -2005,10 +2032,24 @@ Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi) the
 handshake is refused with HTTP 403 before any application bytes are
 exchanged.
 
-- **macOS / Linux** → `lsof` (`/proc/net/tcp` on Linux is enough too).
+- **macOS / Linux** → `lsof -nP -F pcn -iTCP@<host>:<port> -sTCP:ESTABLISHED`
+  (`packages/server/src/auth/process-identity.ts`).
 - **Windows** → `netstat -ano` locates the owning PID; the process name
   is then resolved via PowerShell `Get-Process`, with `tasklist` as the
   fallback when PowerShell is missing, locked down, or slow.
+
+The handshake is refused in these cases (`verifyClient` in
+`packages/server/src/bridge/ws-bridge.ts`):
+
+| Status | Reason                                                                                                                                                                     |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 403    | `Origin not allowed` — an `Origin` header is present and does not start with `chrome-extension://` (a missing `Origin` is left to the peer check)                          |
+| 403    | `Cannot identify peer` — the socket exposes no remote address or port                                                                                                      |
+| 403    | `Peer process unknown` — the lookup returned no owning process                                                                                                             |
+| 403    | `Peer is not a Chromium-based browser` — the binary is not on the allowlist                                                                                                |
+| 500    | `Process lookup failed` — the lookup promise rejected. `lookupPeerProcess` itself catches lookup errors and returns no process, which gives the 403 `Peer process unknown` |
+
+The allowlist per OS lives in `packages/server/src/auth/allowlist.ts`.
 
 Concretely this means:
 
@@ -2033,9 +2074,8 @@ The popup's [Flows panel](#the-flows-panel) lists every running flow across
 every connected tab with a one-click **Stop**, and stopping is real rather
 than cosmetic: the bridge owns the loop, so cancelling means the runner
 never dispatches the next step. Worst case, one step still lands. Nothing
-an agent can do removes that button, and no agent can grant itself an
-exemption from it — the registry lives in the extension, on the human's
-side of the bridge. The one place this guarantee does **not** reach is
+an agent can do through the MCP tools removes that button — the
+registry lives in the extension, on the human's side of the bridge. The one place this guarantee does **not** reach is
 [cdp-direct mode](#cdp-direct-mode-no-extension), which has no extension
 and therefore no popup; there the equivalent lever is
 `browser-link cdp revoke`, which now also stops a flow already in
@@ -2120,8 +2160,24 @@ append-only and disposable, thousands of rows a session. Two files means
 clearing or vacuuming one never touches the other, and "back up my map" stays
 unambiguous. Delete `activity.db` at any time; nothing else depends on it.
 
-Nothing in this package phones home. The WebSocket bridge talks
-loopback only.
+**What talks to the network.** The WebSocket bridge listens on loopback
+only. The one request the server makes by itself is the update check: a
+`GET https://registry.npmjs.org/-/package/<package-name>/dist-tags` with an
+`accept: application/json` header and nothing else, so the package name is
+the only variable part (`checkUpdates` in
+`packages/server/src/commands/updates.ts`). It runs when the terminal UI is
+open (`packages/server/src/ui/hooks/use-update-check.ts` checks on mount and
+every six hours), when the Admin window asks for its state
+(`packages/server/src/admin/primary.ts`), and when you run
+`browser-link updates`. The result is cached for six hours in
+`update-check.json` in the data directory
+(`packages/server/src/commands/update-check.ts`). The MCP server running
+alone does not start this check. There is no configuration key or environment
+variable that disables it (none found in `packages/server/src/config.ts`),
+and a failed check is silent. Other network access happens only when you ask
+for it: `browser.download` fetches the URL you give it, and the self-update
+in `packages/server/src/commands/self-update.ts` runs `npm install -g`,
+which contacts the registry.
 
 ## For contributors
 
@@ -2160,7 +2216,7 @@ browser-link/
 
 ### Development setup
 
-Requires **Node ≥ 22.13** and **pnpm 11+**. The exact pnpm version is
+Requires **Node ≥ 22.22.2** and **pnpm 11+**. The exact pnpm version is
 pinned in `package.json` via the `packageManager` field — `corepack`
 (bundled with Node ≥ 16) reads that field and uses the matching pnpm
 version automatically.

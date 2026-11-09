@@ -1,6 +1,6 @@
 # Roadmap
 
-Improvements queued for upcoming releases. Each item lists:
+Improvements for upcoming releases. Each queued item lists:
 
 - **The pain** — concrete friction the author or an agent has hit using browser-link in real flows. No hypothetical features.
 - **The idea** — what the surface should look like once shipped. Contracts first, implementation second.
@@ -12,6 +12,60 @@ Check items off as they ship; when an item is done, leave it ticked here and lin
 ---
 
 ## Queued (in priority order)
+
+Nothing is queued as a roadmap item. The next planned work is the plans layer (signals and restarts over the page observer); `packages/plan/SPEC.md` is its index, and v5, the document that specifies it, is not yet written.
+
+---
+
+## Done
+
+_Items move up here when the PR that ships them merges. Format: `- [x] <title> — PR #<n> (<release tag>)`._
+
+- [x] Hardened release pipeline — SHA-pinned actions, tarball smoke test before tag and publish — PR #42 (v0.46.0)
+- [x] Map knowledge loop — identity keys, confidence, start pack, `browser.wrap_up`, shortcuts, rules just in time — PR #41 (v0.45.0)
+- [x] Admin in its own extension window, version in the header — PR #40 (v0.44.1)
+- [x] Fast `doctor`, `browser.network` without headers, configurable download cap, iframe re-resolution — PR #39 (v0.44.0)
+- [x] Automatic map learning and a per-session friction report — PR #38 (v0.43.0)
+- [x] Shared admin panel for the console and the popup, from one server-side source — PR #37 (v0.42.0)
+- [x] Version-aware primary election, `stop` ends every process, repair from the popup — PR #36 (v0.41.0)
+- [x] One legal notice at first run, in `about`, in the popup and in both readmes — PR #35 (v0.40.0)
+- [x] Installed instructions block refreshed at server start; extension version reported to the agent — PR #34 (v0.39.0)
+- [x] One-source agent manual and `browser.manual`, outdated notice — PR #33 (v0.38.0)
+- [x] `ref` as an action target with semantic re-resolution; `find` by key — PR #32 (v0.37.0)
+- [x] `browser.snapshot` diff with `since`, element refs and document ids — PR #31 (v0.36.0)
+- [x] Persistent page observer with exact settle changes — PR #30 (v0.35.0)
+- [x] Patched `zod`, `vite` and `vitest` (security) — PR #29 (v0.34.1)
+- [x] Map stores app mechanisms and pitfalls; small maps inline in `browser.list_tabs` — PR #28 (v0.34.0)
+- [x] Dropped tabs keep reconnecting for 10 minutes; an empty `browser.list_tabs` explains itself — PR #27 (v0.33.0)
+- [x] `browser.flow` returns partial state on timeout and budgets the real worst case — PR #26 (v0.32.0)
+- [x] `expect` on `click`, `type` and `press` asserts the effect of the action — PR #25 (v0.31.0)
+- [x] `browser.screenshot` — viewport, full page and element capture — PR #22 (v0.30.0)
+- [x] `browser.download` — saves files without the native Save-as dialog — PR #21 (v0.29.0)
+- [x] Persistent activity trail and Activity window — PR #6 (v0.28.0)
+- [x] Review advisories of the detached-execution slices closed; drift test for the detached-flow constants (no PR number: it predates the repository history) — (v0.27.1)
+- [x] Detached execution + `flow_status` / `flow_cancel` + action manifest (roadmap item 11) — (v0.27.0)
+- [x] Extension popup: running flows, history, one-click stop (item 10) — (v0.26.0)
+- [x] Flow identity + cancellation (item 9) — (v0.26.0)
+- [x] Bounded `repeat` construct + `dry_run` (item 8) — (v0.25.0)
+- [x] `sleep` step in `browser.flow` (item 7) — (v0.24.0)
+- [x] Agent-instructions safety additions (item 6) — (v0.23.14)
+- [x] cdp-direct mode — extension-free transport driving Chrome tabs directly over `--remote-debugging-port`, gated behind `cdp-direct.enabled` + a separate time-boxed `browser-link cdp allow` grant (a CLI command, so an agent with a shell on the machine can run it too; see the README security model); v1 covers list_tabs/ping/snapshot/find/state/click/type/press/evaluate/wait_for/navigate/flow, with drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab deferred to a future v2 — (v0.23.0)
+- [x] Idle-disconnect TTL — extension popup control (`Auto-disconnect idle tabs`) + `browser-link config get/set idle-ttl <minutes|never>`, synced live between the two with last-write-wins precedence — (v0.19.0)
+- [x] `browser.state` orientation read + `browser.find` near-miss suggestions on no-match + named, replayable map flow recipes (`browser.map.save`/`recall` `flows[]`, validated against the `browser.flow` grammar) — v0.18.0
+- [x] `browser.flow` — declarative `find`/`click`/`type`/`press`/`wait_for` sequence in one round trip, implicit-target threading, fail-fast with a recovery snapshot — v0.17.0
+- [x] `browser.press` — trusted CDP keyboard input (+ modifiers) — plus `settle_ms` post-action quiet-wait on `click`/`type`/`press` — v0.16.0
+- [x] Deep DOM visibility — `browser.snapshot`/`find`/`click`/`type` pierce open Shadow DOM + same-origin iframes; `browser.click` gains an occlusion guard (`force:true` escape hatch) — v0.15.0
+- [x] `browser.canvas_screenshot` — screenshot a `<canvas>` as PNG/JPEG for Qt-WASM / WebGL / other DOMless UIs — v0.14.0
+- [x] `browser.find` + filtered `browser.snapshot` + lean serializer + agent-instructions protocol update — v0.13.0
+- [x] `browser.dialog_respond`, `browser.wait_for_tab`, `browser.set_permission` — v0.12.0
+- [x] `browser.wait_for` — v0.11.0
+- [x] `browser.drag` — v0.10.0
+
+---
+
+## Shipped programs (detail kept for the rationale)
+
+_Everything below shipped; the one-line records are in Done above. Kept because closing an item leaves its bullet detail in place. The full flow spec, `docs/specs/flow-supervised-execution.md`, still carries its original "accepted, not started" status line even though all six slices shipped by v0.27.0._
 
 ### Program: `flow` as the unit of durable, supervised work
 
@@ -57,24 +111,6 @@ Shipped as designed PLUS a bonus: the per-entry serializer now omits empty-strin
 ### [—] 5. Per-agent cursor on `browser.events` — RESOLVED AS PROTOCOL (v0.13.0)
 
 Not shipped as a tool. The "bookkeeping" framing was overstated — `lastId = result.latest_id; pass lastId as since_id next call` is one variable and one assignment. The cost of going stateful server-side (Map<agent_id, lastReadId>, LRU eviction, `caller` plumbed through the dispatcher, cross-process consistency in multi-agent mode) is wildly disproportionate. Pattern is now taught in the agent-instructions block.
-
----
-
-## Done
-
-_Items move up here when the PR that ships them merges. Format: `- [x] <title> — PR #<n> (<release tag>)`._
-
-- [x] cdp-direct mode — extension-free transport driving Chrome tabs directly over `--remote-debugging-port`, gated behind `cdp-direct.enabled` + a separate time-boxed `browser-link cdp allow` grant an agent can never issue itself; v1 covers list_tabs/ping/snapshot/find/state/click/type/press/evaluate/wait_for/navigate/flow, with drag/console/network/network_body/canvas_screenshot/dialog_respond/set_permission/wait_for_tab deferred to a future v2 — (v0.23.0)
-- [x] Idle-disconnect TTL — extension popup control (`Auto-disconnect idle tabs`) + `browser-link config get/set idle-ttl <minutes|never>`, synced live between the two with last-write-wins precedence — (v0.19.0)
-- [x] `browser.state` orientation read + `browser.find` near-miss suggestions on no-match + named, replayable map flow recipes (`browser.map.save`/`recall` `flows[]`, validated against the `browser.flow` grammar) — v0.18.0
-- [x] `browser.flow` — declarative `find`/`click`/`type`/`press`/`wait_for` sequence in one round trip, implicit-target threading, fail-fast with a recovery snapshot — v0.17.0
-- [x] `browser.press` — trusted CDP keyboard input (+ modifiers) — plus `settle_ms` post-action quiet-wait on `click`/`type`/`press` — v0.16.0
-- [x] Deep DOM visibility — `browser.snapshot`/`find`/`click`/`type` pierce open Shadow DOM + same-origin iframes; `browser.click` gains an occlusion guard (`force:true` escape hatch) — v0.15.0
-- [x] `browser.canvas_screenshot` — screenshot a `<canvas>` as PNG/JPEG for Qt-WASM / WebGL / other DOMless UIs — v0.14.0
-- [x] `browser.find` + filtered `browser.snapshot` + lean serializer + agent-instructions protocol update — v0.13.0
-- [x] `browser.dialog_respond`, `browser.wait_for_tab`, `browser.set_permission` — v0.12.0
-- [x] `browser.wait_for` — v0.11.0
-- [x] `browser.drag` — v0.10.0
 
 ---
 
