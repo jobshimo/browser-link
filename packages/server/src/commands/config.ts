@@ -86,6 +86,11 @@ export interface ConfigI18n {
   downloadsDirDefaultNote: string;
   invalidDownloadsDirValue: (raw: string) => string;
   downloadsDirSetSaved: (dir: string) => string;
+  mapLearningLabel: string;
+  mapLearningOn: string;
+  mapLearningOff: string;
+  invalidMapLearningValue: (raw: string) => string;
+  mapLearningSetSaved: (label: string) => string;
 }
 
 /** Exported so `commands/cdp.ts` can reuse `parseGrantTtlArg`'s exact
@@ -110,9 +115,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default>',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set map-learning <on|off>',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, map-learning.`,
     unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'enabled',
@@ -145,6 +150,12 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
       `Invalid downloads.dir value: "${raw}". Use an absolute path, or "default" for <data dir>/downloads.`,
     downloadsDirSetSaved: (dir) =>
       `downloads.dir set to ${dir}. browser.download writes files there.`,
+    mapLearningLabel: 'map-learning',
+    mapLearningOn: 'on (default)',
+    mapLearningOff: 'off',
+    invalidMapLearningValue: (raw) => `Invalid map-learning value: "${raw}". Use "on" or "off".`,
+    mapLearningSetSaved: (label) =>
+      `map-learning set to ${label}. Applies to the next browser action, no restart needed. Only selectors and semantic keys are stored, never typed values.`,
   },
   es: {
     header: 'Configuración de browser-link',
@@ -165,9 +176,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default>',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set map-learning <on|off>',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, map-learning.`,
     unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'habilitado',
@@ -201,6 +212,12 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
       `Valor de downloads.dir inválido: "${raw}". Usá una ruta absoluta, o "default" para <directorio de datos>/downloads.`,
     downloadsDirSetSaved: (dir) =>
       `downloads.dir configurado a ${dir}. browser.download guarda los archivos ahí.`,
+    mapLearningLabel: 'map-learning',
+    mapLearningOn: 'activado (por defecto)',
+    mapLearningOff: 'desactivado',
+    invalidMapLearningValue: (raw) => `Valor de map-learning inválido: "${raw}". Usá "on" u "off".`,
+    mapLearningSetSaved: (label) =>
+      `map-learning configurado a ${label}. Se aplica en la próxima acción del navegador, sin reiniciar. Solo se guardan selectores y claves semánticas, nunca valores escritos.`,
   },
 };
 
@@ -274,6 +291,7 @@ export function listConfig(language: Language = 'en'): string {
     getCdpDirectPortLine(language),
     getCdpDirectGrantTtlLine(language),
     getDownloadsDirLine(language),
+    getMapLearningLine(language),
   ].join('\n');
 }
 
@@ -539,6 +557,33 @@ export function setDownloadsDir(rawValue: string, language: Language = 'en'): st
   return t.downloadsDirSetSaved(value);
 }
 
+/** One formatted line describing the `mapLearningEnabled` state. Only an
+ * explicit `false` is off, same rule the learner applies. */
+export function getMapLearningLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = loadConfig().mapLearningEnabled === false ? t.mapLearningOff : t.mapLearningOn;
+  return `  ${t.mapLearningLabel}   ${value}`;
+}
+
+function parseMapLearningArg(raw: string, t: ConfigI18n): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (['on', 'true', '1'].includes(normalized)) return true;
+  if (['off', 'false', '0'].includes(normalized)) return false;
+  throw new Error(t.invalidMapLearningValue(raw));
+}
+
+/**
+ * `config set map-learning <on|off>`. "on" clears the key (on is the
+ * default, so config.json stays minimal); "off" writes `false`. No live
+ * push: the learner reads config.json on every call.
+ */
+export function setMapLearning(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const enabled = parseMapLearningArg(rawValue, t);
+  saveConfig({ mapLearningEnabled: enabled ? undefined : false });
+  return t.mapLearningSetSaved(enabled ? t.mapLearningOn : t.mapLearningOff);
+}
+
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
@@ -551,6 +596,7 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'flow-recording') return getFlowRecordingLine(language);
     if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
     if (key === 'downloads.dir') return getDownloadsDirLine(language);
+    if (key === 'map-learning') return getMapLearningLine(language);
     throw new Error(t.unknownKey(key));
   }
   if (action === 'set') {
@@ -566,6 +612,10 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'downloads.dir') {
       if (value === undefined) throw new Error(t.usage);
       return setDownloadsDir(value, language);
+    }
+    if (key === 'map-learning') {
+      if (value === undefined) throw new Error(t.usage);
+      return setMapLearning(value, language);
     }
     throw new Error(t.unknownKey(key));
   }

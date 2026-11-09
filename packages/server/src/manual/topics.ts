@@ -79,12 +79,13 @@ export const TOPICS: Record<TopicName, Topic> = {
   map: {
     title: 'The persistent map — identifying the app, mechanisms and pitfalls',
     body: lines(
-      'The map is a private, per-machine SQLite cache of UI structure in the data dir ($XDG_DATA_HOME/browser-link on Linux, ~/Library/Application Support/browser-link on macOS, %APPDATA%/browser-link on Windows; override with $BROWSER_LINK_DATA_DIR). It is never written to a repo.',
-      '- `origin` = scheme://host:port of the tab. `app_key` tells apart apps that share an origin; omit it on the first save (derived from the page title) and fix a poor guess with `browser.map.rename_app`.',
+      'The map is a private per-machine SQLite cache of UI structure in the data dir ($BROWSER_LINK_DATA_DIR overrides it), never in a repo.',
+      '- `origin` = scheme://host:port of the tab. `app_key` tells apart apps that share an origin; omit it on the first save (from the page title) and fix a poor guess with `browser.map.rename_app`.',
       '- After a non-trivial flow worked end-to-end, `browser.map.save` the selectors you just executed, optionally with `flows` recipes that use placeholders (`<QUERY>`, `<NAME>`) for every free-text value.',
       '- Save how the app behaves underneath too: `mechanisms: [{ key, description }]` ("a GET of an item URL marks it complete server-side") and `pitfalls: [{ key, description, symptom? }]` ("click on the next link returns ok but does not navigate"). A pitfall costs far more to rediscover than a selector; `recall` returns pitfalls first.',
       '- A `find` single match carries `semantic_key`. When the selector you save is structural (`:nth-of-type`), save that `semantic_key` in the payload next to it, and use `browser.find({ key })` when recall returns `prefer: "semantic_key"`. Never save a key for an `ambiguous` entry.',
-      '- Never save a `ref` (refs die with the document) or an `ambiguous` selector, and never domain data: no IDs, names, dates or real values.',
+      '- Never save a `ref` or an `ambiguous` selector, and never domain data: no IDs, names, dates or real values.',
+      '- It learns alone: `recall`/`list_tabs` show `learned` counts per selector or `find` key, failed first: avoid those. Never values. Off: `browser-link config set map-learning off`.',
     ),
   },
   'token-efficiency': {
@@ -113,6 +114,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- Read tools (`browser.snapshot`, `browser.state`, `browser.console`, `browser.network`, `browser.network_body`, `browser.events`, `browser.ping`) ignore claims.',
       '- Give `browser.claim_tab` a stable `label` ("claude-code", "opencode"); claims also end on disconnect and after the inactivity TTL. The label is display only: ownership rests on the IPC session id, not on what an agent calls itself.',
       '- One server process is the primary. A newer browser-link that starts displaces an older primary (it reads `GET /version` on the bridge port, then stops the old process), and the extension reconnects by itself.',
+      '- `browser.activity({ summary: true })` is the friction report: errors and flagged calls (`not-found`, `unsettled`, flow or download `timeout`...) by flag, by tool, top failing selectors and one line per agent session; narrow it with `since`, `since_id` or `agent_id`.',
       '- A `list_tabs` hint "server running X, installed Y" means the package was updated under a live server: ask the user to run `browser-link stop` and restart the agent, or to click "Repair connection" in the extension popup. Do not kill processes yourself.',
     ),
   },

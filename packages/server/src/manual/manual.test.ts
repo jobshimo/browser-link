@@ -478,3 +478,16 @@ describe('instructions block refreshed at primary start', () => {
     });
   });
 });
+
+describe('map learning in the manual', () => {
+  test('the map topic explains learned entries and the map-learning switch', () => {
+    const map = renderTopic('map');
+    expect(map).toContain('`learned`');
+    expect(map).toContain('browser-link config set map-learning off');
+    expect(map).toMatch(/Never values/);
+  });
+
+  test('a topic documents the browser.activity friction report', () => {
+    expect(renderTopic('multi-agent')).toContain('browser.activity({ summary: true })');
+  });
+});

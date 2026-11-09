@@ -125,6 +125,33 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_insights_app ON insights(app_id);
   `);
 
+  // v0.43.0: what the map learned from use, with no bookkeeping by the agent
+  // (see map/learning.ts). One row per durable target (a CSS selector or a
+  // `browser.find` semantic key, never typed text or values) per action per
+  // route, with ok/fail counters. Additive CREATE-IF-NOT-EXISTS like every
+  // table above: an older DB picks it up on next open, no row is rewritten.
+  // `last_reason` holds a fixed enum (`LEARNED_REASONS` in learning.ts),
+  // enforced in code rather than by a CHECK, so widening the enum later
+  // never means rebuilding this table (see the `insights` comment).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS selector_outcomes (
+      id INTEGER PRIMARY KEY,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      url_pattern TEXT NOT NULL,
+      target TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('selector', 'key')),
+      action TEXT NOT NULL,
+      ok_n INTEGER NOT NULL DEFAULT 0,
+      fail_n INTEGER NOT NULL DEFAULT 0,
+      last_reason TEXT,
+      last_ok_at TEXT,
+      last_fail_at TEXT,
+      UNIQUE(app_id, url_pattern, target, target_kind, action)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_selector_outcomes_app ON selector_outcomes(app_id);
+  `);
+
   // v0.20.0: normalize apps.origin rows written before the write path
   // canonicalized origins (see origin.ts). Before this release, save
   // stored whatever free text the agent passed ("https://x.com/" with a

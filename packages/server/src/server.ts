@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
 import { getMapHints } from './map/queries.js';
+import { learnFromDispatch } from './map/learning.js';
 import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-instructions.js';
@@ -304,6 +305,14 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
           recordActivityPayloads,
         }
       : {}),
+    // Map learning (see map/learning.ts). Wired unconditionally and
+    // independent of the activity toggle: the learner reads its own
+    // `map-learning` switch per call, so `browser-link config set
+    // map-learning off` applies without a restart. The dispatcher already
+    // catches a throw; it never reaches the tool.
+    recordOutcome: (ctx) => {
+      learnFromDispatch(ctx);
+    },
     // cdp-direct wiring — see cdp/gate.ts, cdp/targets.ts, cdp/transport.ts.
     // Each call re-checks the live enabled+grant gate itself; there is no
     // caching here that could let a disabled/revoked setting linger.

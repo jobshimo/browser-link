@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeDb } from './db.js';
+import { closeDb, getDb } from './db.js';
+import { recordOutcome } from './learning.js';
 import {
   deleteFlow,
   findApp,
@@ -572,5 +573,165 @@ describe('restoreFlow', () => {
     expect(missing.flow.use_count).toBe(0);
     const negative = restoreFlow({ origin: 'http://x', name: 'b', steps: STEPS, use_count: -3 });
     expect(negative.flow.use_count).toBe(0);
+  });
+});
+
+describe('learned outcomes in getMapHint and recall', () => {
+  const learn = (target: string, ok: boolean, n = 1): void => {
+    for (let i = 0; i < n; i++) {
+      recordOutcome(getDb(), {
+        origin: 'http://x',
+        pathname: '/search',
+        target,
+        target_kind: 'selector',
+        action: 'click',
+        outcome: ok ? { ok: true } : { ok: false, reason: 'not-found' },
+      });
+    }
+  };
+  const saveSearchBox = (): void => {
+    saveEntry({
+      origin: 'http://x',
+      title: 'My App',
+      url_pattern: '/search',
+      kind: 'selector',
+      purpose: 'search box',
+      payload: { selector: '#q' },
+    });
+  };
+
+  test('nothing learned: the hint is exactly as before (no learned fields)', () => {
+    saveSearchBox();
+    const hint = getMapHint('http://x');
+    expect(hint).not.toHaveProperty('learned_failures');
+    expect(hint?.inline).toEqual({
+      pitfalls: [],
+      mechanisms: [],
+      entries: [
+        {
+          url_pattern: '/search',
+          kind: 'selector',
+          purpose: 'search box',
+          payload: { selector: '#q' },
+        },
+      ],
+      flows: [],
+    });
+  });
+
+  test('inline carries up to 3 learned items, failures first, then most used', () => {
+    saveSearchBox();
+    learn('#a', true, 4);
+    learn('#b', true, 2);
+    learn('#c', true, 1);
+    learn('#broken', false);
+    const learned = getMapHint('http://x')?.inline?.learned;
+    expect(learned).toEqual([
+      {
+        target: '#broken',
+        target_kind: 'selector',
+        action: 'click',
+        ok_n: 0,
+        fail_n: 1,
+        last_reason: 'not-found',
+      },
+      {
+        target: '#a',
+        target_kind: 'selector',
+        action: 'click',
+        ok_n: 4,
+        fail_n: 0,
+        last_reason: null,
+      },
+      {
+        target: '#b',
+        target_kind: 'selector',
+        action: 'click',
+        ok_n: 2,
+        fail_n: 0,
+        last_reason: null,
+      },
+    ]);
+  });
+
+  test('learned items do not count toward the inline item limit', () => {
+    // 5 saved items is the item limit; learned rows must not push it over.
+    for (let i = 0; i < 5; i++) {
+      saveEntry({
+        origin: 'http://x',
+        title: 'My App',
+        url_pattern: '/s',
+        kind: 'selector',
+        purpose: `p${i}`,
+        payload: { selector: `#p${i}` },
+      });
+    }
+    learn('#a', true);
+    const hint = getMapHint('http://x');
+    expect(hint?.inline?.entries).toHaveLength(5);
+    expect(hint?.inline?.learned).toHaveLength(1);
+  });
+
+  test('learned items are trimmed to stay within the 2048-byte inline cap', () => {
+    saveSearchBox();
+    const long = (c: string): string => `#${c.repeat(700)}`;
+    learn(long('a'), false);
+    learn(long('b'), false);
+    learn(long('c'), false);
+    const hint = getMapHint('http://x');
+    expect(hint?.inline).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(hint?.inline), 'utf8')).toBeLessThanOrEqual(2048);
+    expect(hint?.inline?.learned?.length ?? 0).toBeLessThan(3);
+  });
+
+  test('a map too big to inline still reports learned_failures', () => {
+    for (let i = 0; i < 6; i++) {
+      saveEntry({
+        origin: 'http://x',
+        title: 'My App',
+        url_pattern: '/s',
+        kind: 'selector',
+        purpose: `p${i}`,
+        payload: { selector: `#p${i}` },
+      });
+    }
+    learn('#broken', false);
+    learn('#also-broken', false);
+    learn('#fine', true);
+    const hint = getMapHint('http://x');
+    expect(hint?.inline).toBeUndefined();
+    expect(hint?.learned_failures).toBe(2);
+  });
+
+  test('an app known only through learning still gets a hint', () => {
+    learn('#broken', false);
+    const hint = getMapHint('http://x');
+    expect(hint).toMatchObject({ app_key: 'x', entries: 0, flows: 0 });
+    expect(hint?.inline?.learned).toHaveLength(1);
+  });
+
+  test('recall without learned rows is unchanged (no learned key)', () => {
+    saveSearchBox();
+    const result = recall({ origin: 'http://x' });
+    expect(Object.keys(result)).toEqual(['app', 'pitfalls', 'mechanisms', 'entries', 'flows']);
+  });
+
+  test('recall returns learned after entries, same order, at most 50', () => {
+    saveSearchBox();
+    for (let i = 0; i < 55; i++) learn(`#t${i}`, true);
+    learn('#t3', true, 3);
+    learn('#broken', false);
+    const result = recall({ origin: 'http://x' });
+    expect(Object.keys(result)).toEqual([
+      'app',
+      'pitfalls',
+      'mechanisms',
+      'entries',
+      'learned',
+      'flows',
+    ]);
+    expect(result.learned).toHaveLength(50);
+    expect(result.learned?.[0]).toMatchObject({ target: '#broken', fail_n: 1 });
+    expect(result.learned?.[1]).toMatchObject({ target: '#t3', ok_n: 4, url_pattern: '/search' });
   });
 });

@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   agentNameFor,
+  buildActivityRow,
   buildRow,
+  classifyFlag,
   extractFlowId,
   extractPayload,
   extractSelector,
@@ -224,5 +226,188 @@ describe('handleBrowserTool records without changing behaviour', () => {
   test('with no sink wired, dispatch is untouched', async () => {
     const deps = { listTabs: () => [] } as unknown as BrowserToolDeps;
     await expect(handleBrowserTool('browser.list_tabs', {}, deps, caller)).resolves.toBeDefined();
+  });
+});
+
+/** A resolved MCP tool response, exactly as `dispatchBrowserTool` returns it. */
+function mcp(data: unknown): unknown {
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+}
+
+describe('classifyFlag — thrown errors', () => {
+  test.each([
+    [
+      'Click would land on div.scroller, not on #go: scroll or expand its container, or target the element that receives clicks; force: true clicks there anyway',
+      'retargeted',
+    ],
+    ['retargeted: click would land on an ancestor', 'retargeted'],
+    ['ref-stale: e12 not found in document d3', 'ref-stale'],
+    ['expectation not met: url_changed after 3000ms', 'expect-failed'],
+    ["Tool 'browser.click' timed out after 30000ms", 'timeout'],
+    ['Element not found: #missing', 'not-found'],
+  ])('%s → %s', (message, flag) => {
+    expect(classifyFlag('browser.click', {}, undefined, new Error(message))).toBe(flag);
+  });
+
+  test('an error that matches no rule carries no flag', () => {
+    expect(classifyFlag('browser.click', {}, undefined, new Error('tab_id required'))).toBeNull();
+  });
+
+  test('an isError response is classified by its text like a throw', () => {
+    const response = {
+      content: [{ type: 'text', text: 'Error: expectation not met: text_appears after 2000ms' }],
+      isError: true,
+    };
+    expect(classifyFlag('browser.click', {}, response, undefined)).toBe('expect-failed');
+  });
+});
+
+describe('classifyFlag — resolved results', () => {
+  test('wait_for matched:false → unmatched', () => {
+    expect(classifyFlag('browser.wait_for', {}, mcp({ matched: false }), undefined)).toBe(
+      'unmatched',
+    );
+  });
+
+  test('find not-found → not-found', () => {
+    expect(
+      classifyFlag('browser.find', {}, mcp({ matched: false, reason: 'not-found' }), undefined),
+    ).toBe('not-found');
+  });
+
+  test('find multiple-matches → multiple-matches', () => {
+    expect(
+      classifyFlag(
+        'browser.find',
+        {},
+        mcp({ matched: false, reason: 'multiple-matches', candidates: [] }),
+        undefined,
+      ),
+    ).toBe('multiple-matches');
+  });
+
+  test('flow stopped_by timeout → flow-timeout', () => {
+    expect(
+      classifyFlag(
+        'browser.flow',
+        {},
+        mcp({ ok: true, stopped_by: 'timeout', steps_completed: 3 }),
+        undefined,
+      ),
+    ).toBe('flow-timeout');
+  });
+
+  test.each(['timeout', 'interrupted'])('download state %s → download-timeout', (state) => {
+    expect(classifyFlag('browser.download', {}, mcp({ state }), undefined)).toBe(
+      'download-timeout',
+    );
+  });
+
+  test('settle.settled false → unsettled', () => {
+    expect(
+      classifyFlag(
+        'browser.click',
+        {},
+        mcp({ ok: true, settle: { settled: false, mutation_count: 40 } }),
+        undefined,
+      ),
+    ).toBe('unsettled');
+  });
+
+  test('hit_element on a resolved click → hit-mismatch (only reported outside the target)', () => {
+    expect(
+      classifyFlag('browser.click', {}, mcp({ ok: true, hit_element: 'div.overlay' }), undefined),
+    ).toBe('hit-mismatch');
+  });
+
+  test('a raw (unwrapped) result object is classified too', () => {
+    expect(classifyFlag('browser.wait_for', {}, { matched: false }, undefined)).toBe('unmatched');
+  });
+
+  test('a clean result carries no flag', () => {
+    expect(
+      classifyFlag(
+        'browser.click',
+        {},
+        mcp({ ok: true, settle: { settled: true, mutation_count: 2 } }),
+        undefined,
+      ),
+    ).toBeNull();
+    expect(classifyFlag('browser.find', {}, mcp({ matched: true }), undefined)).toBeNull();
+  });
+
+  test('unparseable or irrelevant results carry no flag and never throw', () => {
+    expect(
+      classifyFlag('browser.click', {}, { content: [{ type: 'text', text: '{nope' }] }, undefined),
+    ).toBeNull();
+    expect(classifyFlag('browser.list_tabs', {}, mcp([]), undefined)).toBeNull();
+    expect(classifyFlag('browser.click', {}, null, undefined)).toBeNull();
+  });
+});
+
+describe('buildActivityRow', () => {
+  test('stores the flag from the result and the agent id', () => {
+    const row = buildActivityRow(
+      { tab_id: 'tab_1', selector: '.done' },
+      {
+        tool: 'browser.wait_for',
+        caller,
+        durationMs: 9,
+        recordPayloads: true,
+        result: mcp({ matched: false }),
+        agentId: 'ipc-uuid-1',
+      },
+    );
+    expect(row).toMatchObject({
+      tool: 'browser.wait_for',
+      selector: '.done',
+      outcome: 'ok',
+      flag: 'unmatched',
+      agentId: 'ipc-uuid-1',
+    });
+  });
+
+  test('stores the flag from a thrown error', () => {
+    const row = buildActivityRow(
+      { tab_id: 'tab_1', selector: '#go' },
+      {
+        tool: 'browser.click',
+        caller,
+        durationMs: 9,
+        recordPayloads: true,
+        error: new Error('ref-stale: e1 not found in document d1'),
+      },
+    );
+    expect(row.outcome).toBe('error');
+    expect(row.flag).toBe('ref-stale');
+  });
+
+  test("the agent id defaults to 'primary'", () => {
+    const row = buildActivityRow(
+      {},
+      { tool: 'browser.list_tabs', caller, durationMs: 1, recordPayloads: true, agentId: null },
+    );
+    expect(row.agentId).toBe('primary');
+  });
+
+  test('the previous meta shape builds the same row as before, plus the defaults', () => {
+    const args = { tab_id: 'tab_1', selector: '#pw', text: 'hunter2' };
+    const meta = { tool: 'browser.type', caller, durationMs: 5, recordPayloads: true };
+    const legacy = buildRow({ ...meta, args });
+    const row = buildActivityRow(args, meta);
+    expect(row).toEqual({ ...legacy, flag: null, agentId: 'primary' });
+    expect(row).toMatchObject({
+      tool: 'browser.type',
+      tabId: 'tab_1',
+      transport: 'extension',
+      selector: '#pw',
+      payload: 'hunter2',
+      agent: 'claude-code',
+      agentPid: 4242,
+      outcome: 'ok',
+      error: null,
+      durationMs: 5,
+      flowId: null,
+    });
   });
 });

@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import { getDb } from './db.js';
 import { canonicalOrigin } from './origin.js';
 
@@ -108,6 +109,40 @@ export function upsertApp(input: UpsertAppInput): AppRow {
     )
     .run(origin, app_key, input.title ?? null, input.notes ?? null, ts, ts);
 
+  return db.prepare('SELECT * FROM apps WHERE id = ?').get(info.lastInsertRowid) as AppRow;
+}
+
+/**
+ * The app the map learner counts into for an origin, read-only on purpose.
+ *
+ * Picks the most recently seen app of the canonical origin with the same
+ * winner rule `getMapHints` applies (last_seen_at DESC, id DESC), so learned
+ * rows land in the app `list_tabs` and `recall` already show. It never
+ * touches that app's `last_seen_at` or `title`: a passive learner bumping
+ * freshness would reorder which app an origin resolves to. Only when the
+ * origin has no app at all does it create one, keyed and titled by the
+ * origin host, never by a tab title (titles change with page state, e.g.
+ * "Inbox (3) - My App", and would mint a new app per title).
+ */
+export function resolveLearnerApp(db: Database.Database, origin: string): AppRow {
+  const canonical = canonicalOrigin(origin);
+  const winner = db
+    .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1')
+    .get(canonical) as AppRow | undefined;
+  if (winner) return winner;
+  let host: string;
+  try {
+    host = new URL(canonical).host;
+  } catch {
+    host = canonical;
+  }
+  const ts = now();
+  const info = db
+    .prepare(
+      `INSERT INTO apps (origin, app_key, title, notes, created_at, last_seen_at)
+       VALUES (?, ?, ?, NULL, ?, ?)`,
+    )
+    .run(canonical, deriveAppKey(canonical, null), host, ts, ts);
   return db.prepare('SELECT * FROM apps WHERE id = ?').get(info.lastInsertRowid) as AppRow;
 }
 
@@ -268,7 +303,54 @@ export interface RecallResult {
   pitfalls: InsightRow[];
   mechanisms: InsightRow[];
   entries: EntryRow[];
+  /** What the map learned from use (see learning.ts): failures first, then
+   * most used, at most `RECALL_MAX_LEARNED`. Present only when the app has
+   * learned rows, so a recall of an app with none reads exactly as before. */
+  learned?: LearnedRecallItem[];
   flows: FlowRow[];
+}
+
+/** One learned target as `list_tabs`' inline map carries it. Targets only:
+ * a CSS selector, or a `browser.find` semantic key as JSON. */
+export interface LearnedSummary {
+  target: string;
+  target_kind: 'selector' | 'key';
+  action: string;
+  ok_n: number;
+  fail_n: number;
+  last_reason: string | null;
+}
+
+/** Recall's richer form: the route it was learned on and when. */
+export interface LearnedRecallItem extends LearnedSummary {
+  url_pattern: string;
+  last_ok_at: string | null;
+  last_fail_at: string | null;
+}
+
+/** At most this many learned rows in a recall. */
+const RECALL_MAX_LEARNED = 50;
+/** At most this many learned rows in the `list_tabs` inline map. */
+const INLINE_MAX_LEARNED = 3;
+
+/** Failures first (rows that ever failed), then the most used; oldest row
+ * first on a tie so the order is stable. */
+const LEARNED_ORDER = 'ORDER BY (fail_n > 0) DESC, (ok_n + fail_n) DESC, id ASC';
+
+/** Learned rows of one app in hint order, capped at `limit`. Takes the DB
+ * explicitly so the learner's tests can read through the handle they write
+ * through. */
+export function listLearned(
+  db: Database.Database,
+  app_id: number,
+  limit: number,
+): LearnedRecallItem[] {
+  return db
+    .prepare(
+      `SELECT target, target_kind, action, ok_n, fail_n, last_reason, url_pattern, last_ok_at, last_fail_at
+       FROM selector_outcomes WHERE app_id = ? ${LEARNED_ORDER} LIMIT ?`,
+    )
+    .all(app_id, limit) as LearnedRecallItem[];
 }
 
 export function recall(input: RecallInput): RecallResult {
@@ -309,12 +391,15 @@ export function recall(input: RecallInput): RecallResult {
 
   // Flow recipes are not url_pattern-scoped (see the schema comment in
   // db.ts) — recall always returns every flow saved for the app, regardless
-  // of the optional `url` filter.
+  // of the optional `url` filter. Learned rows are app-wide too: each one
+  // carries its own `url_pattern`.
+  const learned = listLearned(db, app.id, RECALL_MAX_LEARNED);
   return {
     app,
     pitfalls: listInsights(app.id, 'pitfall'),
     mechanisms: listInsights(app.id, 'mechanism'),
     entries: rows.map((row) => withPreference(hydrate(row))),
+    ...(learned.length > 0 ? { learned } : {}),
     flows: listFlows(app.id),
   };
 }
@@ -551,6 +636,10 @@ export interface MapHintInline {
   mechanisms: InsightSummary[];
   entries: { url_pattern: string; kind: EntryKind; purpose: string; payload: unknown }[];
   flows: { name: string; description: string | null; steps: unknown }[];
+  /** Up to 3 learned targets, failures first. Present only when the app has
+   * learned rows and at least one fits the byte cap; never counted toward
+   * `INLINE_MAX_ITEMS`. */
+  learned?: LearnedSummary[];
 }
 
 export interface MapHint {
@@ -562,6 +651,9 @@ export interface MapHint {
   /** Present only when the map is small (see `INLINE_MAX_ITEMS` /
    * `INLINE_MAX_BYTES`); otherwise the counts above are all there is. */
   inline?: MapHintInline;
+  /** Learned targets of this app that have failed at least once, present
+   * only when there are some and no inline map carrying them fits. */
+  learned_failures?: number;
 }
 
 /** A map is inlined into the hint only when it holds at most this many
@@ -574,6 +666,40 @@ function summarizeInsight(row: InsightRow): InsightSummary {
   return row.symptom === null
     ? { key: row.key, description: row.description }
     : { key: row.key, description: row.description, symptom: row.symptom };
+}
+
+function toLearnedSummary(row: LearnedRecallItem): LearnedSummary {
+  return {
+    target: row.target,
+    target_kind: row.target_kind,
+    action: row.action,
+    ok_n: row.ok_n,
+    fail_n: row.fail_n,
+    last_reason: row.last_reason,
+  };
+}
+
+function fitsInline(inline: MapHintInline): boolean {
+  return Buffer.byteLength(JSON.stringify(inline), 'utf8') <= INLINE_MAX_BYTES;
+}
+
+/** The saved map inline (or null when it does not fit), then as many of the
+ * top learned rows as still fit under the same byte cap. With nothing saved,
+ * the inline exists only to carry learned rows: null when none fits. */
+function buildInlineWithLearned(appId: number, savedTotal: number): MapHintInline | null {
+  const base: MapHintInline | null =
+    savedTotal === 0
+      ? { pitfalls: [], mechanisms: [], entries: [], flows: [] }
+      : savedTotal <= INLINE_MAX_ITEMS
+        ? buildInline(appId)
+        : null;
+  if (!base) return null;
+  const learned = listLearned(getDb(), appId, INLINE_MAX_LEARNED).map(toLearnedSummary);
+  for (let n = learned.length; n > 0; n--) {
+    const candidate = { ...base, learned: learned.slice(0, n) };
+    if (fitsInline(candidate)) return candidate;
+  }
+  return savedTotal === 0 ? null : base;
 }
 
 function buildInline(appId: number): MapHintInline | null {
@@ -592,7 +718,7 @@ function buildInline(appId: number): MapHintInline | null {
       steps: f.steps,
     })),
   };
-  return Buffer.byteLength(JSON.stringify(inline), 'utf8') <= INLINE_MAX_BYTES ? inline : null;
+  return fitsInline(inline) ? inline : null;
 }
 
 /**
@@ -676,7 +802,17 @@ export function getMapHints(origins: string[]): Map<string, MapHint> {
     )
     .all(...appIds) as { app_id: number; kind: InsightKind; n: number }[];
 
+  // What the learner recorded (see learning.ts): total rows and rows that
+  // ever failed, per app, in one more grouped query.
+  const learnedCounts = db
+    .prepare(
+      `SELECT app_id, COUNT(*) AS n, SUM(CASE WHEN fail_n > 0 THEN 1 ELSE 0 END) AS failing
+       FROM selector_outcomes WHERE app_id IN (${idPlaceholders}) GROUP BY app_id`,
+    )
+    .all(...appIds) as { app_id: number; n: number; failing: number }[];
+
   const entriesByAppId = new Map(entryCounts.map((row) => [row.app_id, row.n]));
+  const learnedByAppId = new Map(learnedCounts.map((row) => [row.app_id, row]));
   const flowsByAppId = new Map(flowCounts.map((row) => [row.app_id, row.n]));
   const insightCount = (appId: number, kind: InsightKind): number =>
     insightCounts.find((row) => row.app_id === appId && row.kind === kind)?.n ?? 0;
@@ -687,12 +823,23 @@ export function getMapHints(origins: string[]): Map<string, MapHint> {
     const mechanisms = insightCount(app.id, 'mechanism');
     const pitfalls = insightCount(app.id, 'pitfall');
     const total = entries + flows + mechanisms + pitfalls;
-    if (total === 0) continue;
+    const learned = learnedByAppId.get(app.id);
+    if (total === 0 && learned === undefined) continue;
     const hint: MapHint = { app_key: app.app_key, entries, flows, mechanisms, pitfalls };
     // Only small maps are expanded (extra queries run just for them), so a
-    // big map costs nothing beyond the count queries above.
-    const inline = total <= INLINE_MAX_ITEMS ? buildInline(app.id) : null;
+    // big map costs nothing beyond the count queries above. Learned rows
+    // never count toward INLINE_MAX_ITEMS; they only share the byte cap.
+    const inline =
+      learned === undefined
+        ? total <= INLINE_MAX_ITEMS
+          ? buildInline(app.id)
+          : null
+        : buildInlineWithLearned(app.id, total);
     if (inline) hint.inline = inline;
+    const failing = learned?.failing ?? 0;
+    if (failing > 0 && !inline?.learned) hint.learned_failures = failing;
+    // Learned rows alone that neither fit inline nor ever failed say nothing.
+    if (total === 0 && !hint.inline && hint.learned_failures === undefined) continue;
     result.set(origin, hint);
   }
   return result;

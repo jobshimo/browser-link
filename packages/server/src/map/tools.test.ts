@@ -72,6 +72,16 @@ describe('MAP_TOOL_DEFINITIONS', () => {
     );
   });
 
+  test('recall documents the learned section, after entries and before flows', () => {
+    const description = MAP_TOOL_DEFINITIONS.find(
+      (d) => d.name === 'browser.map.recall',
+    )!.description;
+    const at = (needle: string): number => description.indexOf(needle);
+    expect(at('`learned`')).toBeGreaterThan(at('`entries`'));
+    expect(at('`learned`')).toBeLessThan(at('`flows`.'));
+    expect(description).toMatch(/never a typed value/);
+  });
+
   test('save and recall declare additionalProperties: false to lock down the input shape', () => {
     for (const name of ['browser.map.save', 'browser.map.recall']) {
       const schema = MAP_TOOL_DEFINITIONS.find((d) => d.name === name)?.inputSchema as Record<

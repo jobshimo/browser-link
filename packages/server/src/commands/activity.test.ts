@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeActivityDb } from '../activity/db.js';
@@ -147,5 +147,123 @@ describe('parseDuration', () => {
 
   test.each(['', '7', 'd', '0d', '-3d', '7w', '03/04'])('rejects %s', (input) => {
     expect(parseDuration(input)).toBeNull();
+  });
+});
+
+describe('activity report', () => {
+  function seedReport(): void {
+    record(row({ selector: '.done', tool: 'browser.wait_for', flag: 'unmatched', agentId: 's-1' }));
+    record(
+      row({
+        tool: 'browser.evaluate',
+        selector: null,
+        outcome: 'error',
+        error: "Tool 'browser.evaluate' timed out after 30000ms",
+        flag: 'timeout',
+        agentId: 's-1',
+      }),
+    );
+    record(row({ agent: 'opencode', agentId: 's-2' }));
+  }
+
+  test('prints the friction report in English', () => {
+    seedReport();
+    expect(runActivityCommand(['report'])).toBe(
+      [
+        'Friction report: 3 actions, 1 errors, 1 timeouts, 1 evaluate calls',
+        '',
+        'Flags',
+        '  timeout             1',
+        '  unmatched           1',
+        '',
+        'Errors by tool',
+        '  browser.evaluate    1',
+        '',
+        'Top failing targets',
+        '  TARGET                          TOOL                      COUNT   LAST FLAG',
+        '  .done                           browser.wait_for          1       unmatched',
+        '',
+        'Sessions',
+        '  SESSION                               AGENT           ACTIONS   ERRORS   FLAGS',
+        '  s-2                                   opencode        1         0        —',
+        '  s-1                                   claude-code     2         1        timeout 1, unmatched 1',
+      ].join('\n'),
+    );
+  });
+
+  test('prints the friction report in Spanish', () => {
+    seedReport();
+    expect(runActivityCommand(['report'], 'es')).toBe(
+      [
+        'Informe de fricción: 3 acciones, 1 errores, 1 timeouts, 1 llamadas a evaluate',
+        '',
+        'Señales',
+        '  timeout             1',
+        '  unmatched           1',
+        '',
+        'Errores por herramienta',
+        '  browser.evaluate    1',
+        '',
+        'Objetivos que más fallan',
+        '  OBJETIVO                        HERRAMIENTA               VECES   ÚLTIMA SEÑAL',
+        '  .done                           browser.wait_for          1       unmatched',
+        '',
+        'Sesiones',
+        '  SESIÓN                                AGENTE          ACCIONES  ERRORES  SEÑALES',
+        '  s-2                                   opencode        1         0        —',
+        '  s-1                                   claude-code     2         1        timeout 1, unmatched 1',
+      ].join('\n'),
+    );
+  });
+
+  test('--agent narrows to one session id', () => {
+    seedReport();
+    const out = runActivityCommand(['report', '--agent', 's-2']);
+    expect(out).toContain('Friction report: 1 actions, 0 errors');
+    expect(out).not.toContain('s-1');
+  });
+
+  test('--since accepts a duration and an ISO date', () => {
+    seedReport();
+    expect(runActivityCommand(['report', '--since', '1h'])).toContain('3 actions');
+    expect(runActivityCommand(['report', '--since', '2999-01-01T00:00:00Z'])).toContain(
+      'No activity recorded yet.',
+    );
+  });
+
+  test('an unreadable --since is refused, not ignored', () => {
+    expect(runActivityCommand(['report', '--since', 'yesterday'])).toContain(
+      'Could not read "yesterday"',
+    );
+  });
+
+  test('an empty trail says so', () => {
+    expect(runActivityCommand(['report'])).toContain('No activity recorded yet.');
+  });
+
+  test('help documents the report in both languages', () => {
+    expect(runActivityCommand(['help'])).toContain('browser-link activity report');
+    expect(runActivityCommand(['help'], 'es')).toContain('browser-link activity report');
+  });
+});
+
+describe('existing subcommands keep their output', () => {
+  test('list renders the same columns, ignoring flag and agent id', () => {
+    record(row({ selector: '#a', flag: 'unsettled', agentId: 's-1' }));
+    const out = runActivityCommand([]);
+    expect(out.split('\n')[0]).toMatch(/^WHEN\s+AGENT\s+TOOL\s+TARGET\s+RESULT$/);
+    expect(out).toContain('#a');
+    expect(out).toContain('ok 10ms');
+    expect(out).not.toContain('unsettled');
+    expect(out).toContain('Showing 1 of 1 recorded actions.');
+  });
+
+  test('csv export keeps exactly the previous columns', () => {
+    record(row({ flag: 'timeout', agentId: 's-1' }));
+    const out = join(dataDir, 'out.csv');
+    runActivityCommand(['export', '--format', 'csv', '--out', out]);
+    expect(readFileSync(out, 'utf8').split('\n')[0]).toBe(
+      'id,at,tool,tabId,transport,url,title,agent,agentPid,selector,payload,outcome,error,durationMs,flowId',
+    );
   });
 });

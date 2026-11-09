@@ -423,3 +423,36 @@ describe('downloads.dir key', () => {
     expect(listConfig()).toMatch(/downloads\.dir/);
   });
 });
+
+describe('config get/set map-learning', () => {
+  test('defaults to on and is listed by "config get"', async () => {
+    expect(await runConfigCommand(['get', 'map-learning'])).toMatch(
+      /map-learning\s+on \(default\)/,
+    );
+    expect(listConfig()).toMatch(/map-learning/);
+    expect(loadConfig().mapLearningEnabled).toBeUndefined();
+  });
+
+  test('"set map-learning off" persists false and "on" restores the default', async () => {
+    const off = await runConfigCommand(['set', 'map-learning', 'off']);
+    expect(off).toMatch(/off/);
+    expect(loadConfig().mapLearningEnabled).toBe(false);
+    expect(await runConfigCommand(['get', 'map-learning'])).toMatch(/map-learning\s+off/);
+    await runConfigCommand(['set', 'map-learning', 'on']);
+    expect(loadConfig().mapLearningEnabled).toBeUndefined();
+  });
+
+  test('rejects anything but on/off, and a missing value is a usage error', async () => {
+    await expect(runConfigCommand(['set', 'map-learning', 'maybe'])).rejects.toThrow(
+      /map-learning.*"on" or "off"/,
+    );
+    await expect(runConfigCommand(['set', 'map-learning'])).rejects.toThrow(/Usage/);
+    expect(loadConfig().mapLearningEnabled).toBeUndefined();
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['get', 'map-learning'], 'es')).toMatch(
+      /map-learning\s+activado \(por defecto\)/,
+    );
+  });
+});
