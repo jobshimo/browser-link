@@ -1,6 +1,7 @@
 import type {
   ActivityPurgeResultMessage,
   ActivityResultMessage,
+  BridgeRepairResultMessage,
   ExtensionToServer,
   ServerToExtension,
   ToolRequestMessage,
@@ -125,6 +126,16 @@ import {
   reconnectStorageKey,
   tabIdFromReconnectKey,
 } from './reconnect-policy.js';
+import {
+  REPAIR_TIMEOUT_MS,
+  describeReconnectResults,
+  describeRepairReply,
+  planRepair,
+  prevTabIdKey,
+  rememberedTabIds,
+  type RepairOutcome,
+} from './repair-policy.js';
+import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 const WS_URL = 'ws://127.0.0.1:17529';
 const CDP_VERSION = '1.3';
@@ -293,6 +304,12 @@ interface TabState {
    * `chrome.runtime.getManifest().version` so the popup can warn the user
    * when one half was upgraded and the other wasn't. */
   serverVersion?: string;
+  /** Package version installed on disk when this tab registered
+   * (`tab.registered.installedVersion`, servers from 0.41.0). Newer than
+   * `serverVersion` means the server keeps running stale code. */
+  installedVersion?: string;
+  /** Pid of the server that registered this tab (servers from 0.41.0). */
+  serverPid?: number;
   ws?: WebSocket;
   debuggerAttached: boolean;
   consoleBuffer: ConsoleEntry[];
@@ -484,6 +501,8 @@ type RuntimeMessage =
   | { action: 'pendingDialog'; tabId: number }
   | { action: 'respondDialog'; tabId: number; accept: boolean; promptText?: string }
   | { action: 'versionCheck' }
+  // Tab-independent: a repair acts on the server and on every remembered tab.
+  | { action: 'repairConnection' }
   | { action: 'recordingStatus'; tabId: number }
   | { action: 'startRecording'; tabId: number }
   | { action: 'stopRecording'; tabId: number }
@@ -505,6 +524,7 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
   const m = msg as Record<string, unknown>;
   if (m.action === 'versionCheck') return true;
+  if (m.action === 'repairConnection') return true;
   if (m.action === 'openActivityWindow') return true;
   if (m.action === 'activityQuery') return true;
   if (m.action === 'activityPurge') return true;
@@ -3132,7 +3152,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
  * stale tab_ids after a re-election.
  */
 async function readPreviousTabId(chromeTabId: number): Promise<string | undefined> {
-  const key = `prevTabId:${chromeTabId}`;
+  const key = prevTabIdKey(chromeTabId);
   try {
     const data = await chrome.storage.session.get(key);
     const v = data[key];
@@ -3143,7 +3163,7 @@ async function readPreviousTabId(chromeTabId: number): Promise<string | undefine
 }
 
 async function storeTabId(chromeTabId: number, serverTabId: string): Promise<void> {
-  const key = `prevTabId:${chromeTabId}`;
+  const key = prevTabIdKey(chromeTabId);
   try {
     await chrome.storage.session.set({ [key]: serverTabId });
   } catch {
@@ -3152,7 +3172,7 @@ async function storeTabId(chromeTabId: number, serverTabId: string): Promise<voi
 }
 
 async function forgetTabId(chromeTabId: number): Promise<void> {
-  const key = `prevTabId:${chromeTabId}`;
+  const key = prevTabIdKey(chromeTabId);
   try {
     await chrome.storage.session.remove(key);
   } catch {
@@ -3418,6 +3438,13 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             if (typeof msg.payload.serverVersion === 'string') {
               state.serverVersion = msg.payload.serverVersion;
             }
+            // Same narrowing for the 0.41.0 fields.
+            if (typeof msg.payload.installedVersion === 'string') {
+              state.installedVersion = msg.payload.installedVersion;
+            }
+            if (typeof msg.payload.serverPid === 'number') {
+              state.serverPid = msg.payload.serverPid;
+            }
             // Remember this id so the next reconnect (after a primary swap)
             // asks the new primary to honour it. The primary emits
             // `tab-renamed` in the bridge event log if it can't.
@@ -3486,6 +3513,11 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
           case 'activity.purge.result':
           case 'activity.result': {
             settleActivityRequest(msg.request_id, msg);
+            return;
+          }
+          case 'bridge.repair.result': {
+            // Not tab activity: the popup's Repair button is waiting on it.
+            settleRepairRequest(msg);
             return;
           }
           default: {
@@ -3571,24 +3603,95 @@ function getTabStatus(tabId: number): StatusResult {
  * registered yet (e.g. user just installed and hasn't pressed Connect),
  * `server` stays null and the popup hides the banner.
  */
-function getVersionCheck(): {
-  extension: string;
-  server: string | null;
-  aligned: boolean | null;
-} {
+function getVersionCheck(): VersionCheck {
   const extension = chrome.runtime.getManifest().version;
   let server: string | null = null;
+  let installed: string | null = null;
   for (const s of tabStates.values()) {
     if (typeof s.serverVersion === 'string' && s.serverVersion.length > 0) {
       server = s.serverVersion;
+      installed =
+        typeof s.installedVersion === 'string' && s.installedVersion.length > 0
+          ? s.installedVersion
+          : null;
       break;
     }
   }
-  return {
-    extension,
-    server,
-    aligned: server === null ? null : server === extension,
-  };
+  return computeVersionCheck({ extension, server, installed });
+}
+
+/* "Repair connection" (popup button). The decision lives in repair-policy.ts;
+ * this is the thin wiring that gathers its inputs and carries out the step. */
+
+/** The one in-flight `bridge.repair`, keyed by request id. A late or unknown
+ * reply is dropped, same rule as `settleActivityRequest`. */
+const pendingRepairs = new Map<string, (reply: BridgeRepairResultMessage) => void>();
+
+function settleRepairRequest(reply: BridgeRepairResultMessage): void {
+  const pending = pendingRepairs.get(reply.request_id);
+  if (typeof pending !== 'function') return;
+  pendingRepairs.delete(reply.request_id);
+  pending(reply);
+}
+
+async function readRememberedTabIds(): Promise<number[]> {
+  try {
+    return rememberedTabIds(await chrome.storage.session.get(null));
+  } catch {
+    return [];
+  }
+}
+
+/** Send `bridge.repair` on one open socket and wait for the answer. On
+ * success the server drops every socket uncleanly and the existing
+ * auto-reconnect scheduler brings the tabs back; nothing else to do here. */
+function askServerRestart(socket: WebSocket): Promise<RepairOutcome> {
+  const requestId = crypto.randomUUID();
+  return new Promise<RepairOutcome>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingRepairs.delete(requestId);
+      resolve(describeRepairReply('timeout'));
+    }, REPAIR_TIMEOUT_MS);
+    pendingRepairs.set(requestId, (reply) => {
+      clearTimeout(timer);
+      resolve(describeRepairReply(reply));
+    });
+    send(socket, { kind: 'bridge.repair', request_id: requestId });
+  });
+}
+
+async function repairConnection(): Promise<RepairOutcome> {
+  const socket = [...tabStates.values()]
+    .map((s) => s.ws)
+    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  const plan = planRepair({
+    connected: socket !== undefined,
+    serverVersion: getVersionCheck().server,
+    rememberedTabIds: await readRememberedTabIds(),
+  });
+  switch (plan.step) {
+    case 'ask-server-restart':
+      // `planRepair` only picks this step when a socket is open.
+      return socket ? askServerRestart(socket) : { ok: false, message: 'Not connected' };
+    case 'reconnect-only': {
+      // Same path as the popup's Connect: an explicit attempt replaces any
+      // pending auto-reconnect for the tab, and connectTab's per-tab lock
+      // turns a race with an in-flight retry into a benign result.
+      const results = await Promise.all(
+        plan.tabIds.map(async (tabId) => {
+          reconnectScheduler.cancel(tabId);
+          try {
+            return await connectTab(tabId);
+          } catch {
+            return { ok: false };
+          }
+        }),
+      );
+      return describeReconnectResults(results);
+    }
+    case 'manual':
+      return { ok: false, message: plan.message };
+  }
 }
 
 // === Flow recording by demonstration ===================================
@@ -3986,6 +4089,12 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   if (msg.action === 'versionCheck') {
     sendResponse(getVersionCheck());
     return false;
+  }
+  if (msg.action === 'repairConnection') {
+    void repairConnection().then(sendResponse, (err: unknown) => {
+      sendResponse({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    });
+    return true;
   }
   if (msg.action === 'openActivityWindow') {
     void openActivityWindow().then(sendResponse);

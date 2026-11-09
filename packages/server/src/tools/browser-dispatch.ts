@@ -27,7 +27,7 @@ function handleReset(
 
 import { randomUUID } from 'node:crypto';
 import { compareSemver } from '../utils/semver.js';
-import { VERSION } from '../version.js';
+import { VERSION, readInstalledVersion } from '../version.js';
 import { requireTabId } from './responses.js';
 import type {
   BridgeEvent,
@@ -117,6 +117,25 @@ function isExtensionOutdated(t: TabSnapshot): boolean {
   if (t.transport === 'cdp' || t.extension_version === undefined) return false;
   if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return false;
   return compareSemver(t.extension_version, VERSION) < 0;
+}
+
+/**
+ * Second-block hint for `browser.list_tabs` when the version installed on
+ * disk is newer than the one this process is running (an `npm install -g`
+ * happened under a live server). `null` otherwise, including when the
+ * installed version cannot be read. Meant for `hintToolResponse`: the tab
+ * array itself never changes shape.
+ */
+export function outdatedServerHint(
+  running: string = VERSION,
+  installed: string | null = readInstalledVersion(),
+): string | null {
+  if (installed === null || compareSemver(installed, running) <= 0) return null;
+  return (
+    `server running ${running}, installed ${installed}: this server is outdated; ` +
+    `ask the user to run browser-link stop and restart the agent, ` +
+    `or to click "Repair connection" in the extension popup`
+  );
 }
 
 export interface BrowserToolDeps {

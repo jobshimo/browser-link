@@ -193,7 +193,7 @@ browser-link instructions                  # status of the trigger block per cli
 browser-link instructions install          # insert/refresh the block in every detected client
 browser-link instructions uninstall --client claude
 browser-link extension                     # show extension assets path + steps
-browser-link doctor                        # diagnose current setup
+browser-link doctor                        # diagnose current setup (running vs installed version, live processes)
 browser-link tools                         # show which MCP tools are enabled
 browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
@@ -212,7 +212,7 @@ browser-link map export --out map.json     # export the map (or one app) as JSON
 browser-link map import map.json           # import an export (merge by default, --replace to overwrite)
 browser-link multi-agent disable           # opt out of the default shared-bridge mode
 browser-link multi-agent auto-reelect enable
-browser-link stop                          # kill a browser-link holding port 17529 (zombie)
+browser-link stop                          # stop every live browser-link server (17529 owner included), one line each
 browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
@@ -1471,6 +1471,45 @@ agent never holds a tab forever. `browser.my_tabs` lists the tabs the
 calling agent currently owns. Claims are advisory — they inform, they
 do not block — so a single-client workflow never has to think about
 them.
+
+### Updating while a server is running
+
+An `npm install -g @jobshimo/browser-link` replaces the files on disk, but
+a server that is already running keeps the code it started with. Since
+0.41.0 an old server can no longer keep serving after an update:
+
+- **The newer process wins the port.** When a browser-link starts and
+  finds `127.0.0.1:17529` taken, it retries the bind briefly (a hand-off
+  may be in progress), then asks the running primary
+  `GET http://127.0.0.1:17529/version` (`{ name, version, pid, startedAt,
+installedVersion }`). If the primary is older, it is stopped (Unix
+  `SIGTERM`, then `SIGKILL` after 3 s; Windows `taskkill /F`) and the new
+  process binds in its place. A primary from before 0.41.0 has no
+  `/version`: it is replaced when its process started before the installed
+  `dist/cli.js` was last written, because then it is necessarily running
+  stale code. Same or newer version: nothing changes (proxy in multi-agent
+  mode, the usual "port in use" error otherwise). The connected tabs
+  reconnect by themselves.
+- **`browser-link stop` stops every live server**, not only the one
+  holding port 17529: the IPC port owner and every process whose command
+  line runs this package with no subcommand (or `start`). It never touches
+  itself, the shell that launched it, or short commands such as `doctor`.
+  It prints one line per process (PID, command, result) and also ends a
+  setup UI running in another console.
+- **"Running X / installed Y" is visible everywhere.** `browser-link
+doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
+  with what to do, and lists the live browser-link processes;
+  `browser.list_tabs` adds a hint for the agent when the server is
+  outdated; the extension popup shows "Server running X · installed Y".
+- **"Repair connection" in the popup.** It asks the running server to
+  restart itself on the installed code: the server answers, starts the
+  installed CLI detached, closes every extension socket and exits; the new
+  process takes the port and the extension reconnects. With no server
+  running, the popup reconnects the remembered tabs; a server older than
+  0.41.0 cannot repair itself, so the popup tells you to run
+  `browser-link stop` and restart your agent. A repair also ends the MCP
+  server process of the client that started it; the client starts a new
+  one.
 
 ### Idle-disconnect TTL
 
