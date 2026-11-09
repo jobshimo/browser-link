@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.44.0](https://github.com/jobshimo/browser-link/compare/v0.43.0...v0.44.0) (2026-11-09)
+
+### Features
+
+- **network:** `browser.network` takes `headers: false` to leave request and response headers out of every entry (usually most of the payload) when status, URL and timing are enough. The default output is unchanged.
+- **download:** the per-file cap is configurable: `browser-link config set downloads.max-mb <1..64|default>` (default 25 MiB; 64 MiB is the ceiling because the file crosses the extension socket base64-encoded in one message). The cap applies to the next download, and a file over it comes back as `interrupted` with the active cap named in `error`.
+- **identity:** a `ref` whose node was replaced is re-found by its semantic key inside same-origin iframes as well, the same roots `browser.find({ key })` searches.
+- **doctor:** runs its port probes, the silent-debugger scan, the `/version` probe and the process listing concurrently; wall time on the maintainer's machine fell from about 2.5 s to about 1.2 s. A probe whose connect had already completed can no longer be reported as a timeout when the event loop stalls.
+- **tools:** `browser.activity` is in the tool catalogue, so it can be disabled like every other tool (it could not be before); the `readonly` preset keeps it on.
+- **lifecycle:** `/version` reports `repairing` while a popup repair is in progress and a same-version process waits for the hand-off instead of deferring; the step-down never targets the current process or its ancestors; a repair whose child fails to start keeps the old server serving; `/version` answers only to a loopback `Host`.
+- **console:** `version` says it does not load the config; the README explains the npm Windows shim cost (0.7–3.7 s per call, not browser-link) and gives a PowerShell function and a `doskey` alias that call `dist/cli.js` directly.
+
+### Bug Fixes
+
+- **instructions:** the start-time refresh re-detects right before writing and only rewrites a block that is still ours and still outdated, so a block the user removed is never re-added.
+- **bridge:** the extension version shown to agents in `list_tabs` must look like a version string; free text is dropped. The live request dispatch uses the same routine the tests exercise.
+- **cli:** the compile-cache import is guarded for Node versions without `module.enableCompileCache`, and the entry-point detection is tested.
+
 ## [0.43.0](https://github.com/jobshimo/browser-link/compare/v0.42.0...v0.43.0) (2026-11-09)
 
 ### Features
