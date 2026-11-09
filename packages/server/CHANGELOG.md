@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.46.0](https://github.com/jobshimo/browser-link/compare/v0.45.0...v0.46.0) (2026-11-09)
+
+The release pipeline is hardened before 1.0.0. No change to the published tools or their behaviour.
+
+### Continuous Integration
+
+- **actions:** every GitHub Action in `ci.yml`, `codeql.yml`, `version-gate.yml` and `dependabot-version-bump.yml` is pinned by full commit SHA with its release tag as a comment (`actions/checkout` v7.0.1, `actions/setup-node` v7.1.0, `pnpm/action-setup` v6.1.1, `github/codeql-action` v4.39.3), so a moved tag cannot change what the publishing job runs. Dependabot's `github-actions` ecosystem keeps the pins current.
+
+### Build System
+
+- **package:** the server's build-and-bundle chain (clean, build, bundle the extension into `dist/extension`, copy `LICENSE`) runs on `prepack` instead of `prepublishOnly`, so `pnpm pack` and `npm publish` produce the same tarball. A plain `pnpm pack` used to ship no `dist/extension` at all.
+- **smoke test:** new `scripts/smoke-tarball.mjs` packs the package into a temp directory, checks the required entries and that the bundled extension manifest carries the package version, rejects compiled test files, installs the tarball into a temp prefix and runs `browser-link version`. CI runs it on Ubuntu and Windows for every PR, and the `release` job runs it before the tag, the GitHub Release and the npm publish, so a broken package stops the release before anything irreversible.
+
+### Documentation
+
+- **release:** `scripts/release.mjs` (header, PR body, closing instructions) and the `version-gate.yml` comment describe the real flow: a PR bumps the five versioned files, the version gate enforces alignment and a strictly greater version, and merging to `main` runs `ci` then `release`, which smoke-tests the tarball, tags, creates the GitHub Release and publishes to npm with OIDC provenance. Nothing is manual after the merge.
+
+### Tests
+
+- **scripts:** the version gate decision is extracted into `scripts/lib/version-gate.mjs` and, with the shared semver and alignment helpers and the release PR text, covered by `node:test` suites under `scripts/lib/`. The root `pnpm test` runs them, so CI runs them on both operating systems, and ESLint now lints the root `scripts/` directory.
+
 ## [0.45.0](https://github.com/jobshimo/browser-link/compare/v0.44.1...v0.45.0) (2026-11-09)
 
 ### Features

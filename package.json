@@ -1,6 +1,6 @@
 {
   "name": "browser-link-monorepo",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "private": true,
   "description": "Monorepo workspace root for browser-link. The published npm package is @jobshimo/browser-link in packages/server.",
   "packageManager": "pnpm@11.1.1",
@@ -17,7 +17,7 @@
     "inspect": "npx @modelcontextprotocol/inspector npx tsx packages/server/src/cli.ts",
     "generate:icons": "pnpm --filter @browser-link/extension run generate:icons",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r run test && node --test \"scripts/**/*.test.mjs\"",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"scripts/**/*.mjs\" \"*.md\"",
     "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx,js,mjs,json}\" \"scripts/**/*.mjs\" \"*.md\"",
     "lint": "eslint .",

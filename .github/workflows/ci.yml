@@ -26,7 +26,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: [22]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # pnpm must be on PATH before `setup-node`'s `cache: pnpm` runs.
       # The version is resolved from the root `packageManager` field via
@@ -34,11 +34,11 @@ jobs:
       # both local and CI in lockstep. `@v6` runs on Node 24 inside the
       # action — required, because pnpm 11 itself needs Node >=22.13 and
       # `@v4` self-installs pnpm with Node 20.
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: package.json
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -64,6 +64,12 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      # Pack the publishable tarball (prepack bundles the extension),
+      # check its entries and install + run it from a temp prefix, so a
+      # broken package fails the PR instead of the publish.
+      - name: Smoke-test the npm tarball
+        run: node scripts/smoke-tarball.mjs
 
   # Tag + GitHub Release + npm publish, all in one job downstream of the
   # CI matrix. Lives inside ci.yml on purpose — npm Trusted Publishers
@@ -92,7 +98,7 @@ jobs:
       group: release-main
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
@@ -119,6 +125,30 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "  → release v$VERSION does not exist, will create"
           fi
+
+      # === Build + smoke test =============================================
+      # Runs before anything irreversible: a broken tarball stops the job
+      # here, before the tag, the GitHub Release and the npm publish.
+      # Unconditional (not tied to the skip checks) so a partial-failure
+      # re-run also smoke-tests what it is about to publish.
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Smoke-test the npm tarball
+        run: node scripts/smoke-tarball.mjs
 
       - name: Extract changelog section for this version
         if: steps.tagcheck.outputs.skip == 'false'
@@ -171,18 +201,6 @@ jobs:
       # Independent skip path so a partial-failure re-run (tag created but
       # publish failed last time) can publish without re-creating the tag.
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          package_json_file: package.json
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-          cache: pnpm
-
       - name: Skip if npm has this version already
         id: npmcheck
         env:
@@ -196,10 +214,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "  → @jobshimo/browser-link@$VERSION is not on npm yet, will publish"
           fi
-
-      - name: Install dependencies
-        if: steps.npmcheck.outputs.skip == 'false'
-        run: pnpm install --frozen-lockfile
 
       # Diagnostic preamble — print bundled tool versions and OIDC claims
       # for future debugging. NEVER allowed to block the publish:

@@ -1,6 +1,6 @@
 {
   "name": "@jobshimo/browser-link",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "description": "MCP server that bridges Claude Code, OpenCode, GitHub Copilot CLI and other MCP clients to a Chrome tab. Per-tool permissions, multi-agent mode (multiple MCP clients sharing one bridge), persistent UI map across sessions.",
   "keywords": [
     "mcp",
@@ -52,7 +52,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "pnpm run clean && pnpm run build && node ./scripts/prepare-publish.mjs"
+    "prepack": "pnpm run clean && pnpm run build && node ./scripts/prepare-publish.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
