@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>e2e-net lab form</title>
+</head>
+<body>
+<h1>e2e-net lab form</h1>
+<form id="f">
+  <label for="name">Item name</label>
+  <input id="name" name="name" type="text" autocomplete="off">
+  <button id="add" type="submit">Add item</button>
+</form>
+<div id="result" role="status">Nothing yet</div>
+<div id="count">Items: 0</div>
+<ul id="items"></ul>
+<div id="done" hidden>Saved</div>
+<script>
+  // Each submit (button click or Enter in the input) appends the input value to
+  // the list, updates #result/#count at once, and reveals #done 300 ms later so
+  // wait_for has a late effect to wait on.
+  const f = document.getElementById('f');
+  const items = document.getElementById('items');
+  f.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const v = document.getElementById('name').value;
+    const li = document.createElement('li');
+    li.textContent = v;
+    items.appendChild(li);
+    document.getElementById('result').textContent = 'Added: ' + v;
+    document.getElementById('count').textContent = 'Items: ' + items.children.length;
+    const done = document.getElementById('done');
+    done.hidden = true;
+    setTimeout(() => { done.hidden = false; }, 300);
+  });
+</script>
+</body>
+</html>

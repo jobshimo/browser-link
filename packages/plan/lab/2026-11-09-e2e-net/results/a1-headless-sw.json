@@ -1,0 +1,103 @@
+{
+  "chrome_binary": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "runs": [
+    {
+      "mode": "flag",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-port=29222",
+        "--user-data-dir=<profile>",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--load-extension=<ext>",
+        "--disable-extensions-except=<ext>",
+        "about:blank"
+      ],
+      "browser": "Chrome/156.0.8078.81",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "devtools_ready_ms": 212,
+      "service_worker": null,
+      "sw_wait_ms": 8032,
+      "sw_ready_since_launch_ms": 8256,
+      "targets_seen": [
+        "service_worker chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf/service_worker.js",
+        "background_page chrome-extension://nkeimhogjdpnpccoofpliimaahmaaome/background.html",
+        "page about:blank",
+        "browser_ui chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html",
+        "browser_ui chrome://omnibox-popup.top-chrome/"
+      ],
+      "clean_exit": true,
+      "profile_removed": true
+    },
+    {
+      "mode": "cdp-noflag",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-port=29223",
+        "--user-data-dir=<profile>",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "about:blank"
+      ],
+      "browser": "Chrome/156.0.8078.81",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "devtools_ready_ms": 223,
+      "load_unpacked": {
+        "ok": true,
+        "id": "eebkplgfjeobbliggenjhmmheeomapmn",
+        "ms": 24
+      },
+      "service_worker": {
+        "url": "chrome-extension://eebkplgfjeobbliggenjhmmheeomapmn/background.js",
+        "type": "service_worker"
+      },
+      "sw_wait_ms": 120,
+      "sw_ready_since_launch_ms": 379,
+      "sw_eval": {
+        "id": "eebkplgfjeobbliggenjhmmheeomapmn",
+        "version": "0.46.0",
+        "min": null
+      },
+      "sw_eval_attempts": 1,
+      "sw_eval_ms": 1,
+      "clean_exit": true,
+      "profile_removed": true
+    },
+    {
+      "mode": "cdp",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-port=29224",
+        "--user-data-dir=<profile>",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--enable-unsafe-extension-debugging",
+        "about:blank"
+      ],
+      "browser": "Chrome/156.0.8078.81",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "devtools_ready_ms": 246,
+      "load_unpacked": {
+        "ok": true,
+        "id": "eebkplgfjeobbliggenjhmmheeomapmn",
+        "ms": 89
+      },
+      "service_worker": {
+        "url": "chrome-extension://eebkplgfjeobbliggenjhmmheeomapmn/background.js",
+        "type": "service_worker"
+      },
+      "sw_wait_ms": 60,
+      "sw_ready_since_launch_ms": 404,
+      "sw_eval": {
+        "id": "eebkplgfjeobbliggenjhmmheeomapmn",
+        "version": "0.46.0",
+        "min": null
+      },
+      "sw_eval_attempts": 2,
+      "sw_eval_ms": 109,
+      "clean_exit": true,
+      "profile_removed": true
+    }
+  ],
+  "ext_copy_removed": true
+}

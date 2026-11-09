@@ -1,0 +1,59 @@
+{
+  "question": "Connect a tab without a human: send the popup message from an extension page target",
+  "message_shape": {
+    "action": "connect",
+    "tabId": "<chrome tab id (number)>"
+  },
+  "sent_from": "chrome-extension://<id>/popup.html opened with Target.createTarget, Runtime.evaluate of chrome.runtime.sendMessage(...)",
+  "per_run": [
+    {
+      "label": "probe",
+      "response": {
+        "ok": true,
+        "serverTabId": "tab_1"
+      },
+      "connect_ms": 979,
+      "listed_by_list_tabs": true,
+      "server_log_tab_registered": "[browser-link] Tab registered: tab_1 -> http://127.0.0.1:<page-port>/"
+    },
+    {
+      "label": "run1",
+      "response": {
+        "ok": true,
+        "serverTabId": "tab_1"
+      },
+      "connect_ms": 683,
+      "listed_by_list_tabs": true,
+      "server_log_tab_registered": "[browser-link] Tab registered: tab_1 -> http://127.0.0.1:<page-port>/"
+    },
+    {
+      "label": "run2",
+      "response": {
+        "ok": true,
+        "serverTabId": "tab_1"
+      },
+      "connect_ms": 618,
+      "listed_by_list_tabs": true,
+      "server_log_tab_registered": "[browser-link] Tab registered: tab_1 -> http://127.0.0.1:<page-port>/"
+    },
+    {
+      "label": "run3",
+      "response": {
+        "ok": true,
+        "serverTabId": "tab_1"
+      },
+      "connect_ms": 480,
+      "listed_by_list_tabs": true,
+      "server_log_tab_registered": "[browser-link] Tab registered: tab_1 -> http://127.0.0.1:<page-port>/"
+    }
+  ],
+  "listed_tab_fields": [
+    "tab_id",
+    "url",
+    "title",
+    "extension_version",
+    "claimed_by",
+    "claimed_by_me"
+  ],
+  "handshake": "accepted: headless chrome.exe owns the socket (peer-process check) and the worker sends Origin chrome-extension://<id>"
+}

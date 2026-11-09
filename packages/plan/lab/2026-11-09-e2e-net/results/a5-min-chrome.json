@@ -1,0 +1,19 @@
+{
+  "question": "Which minimum_chrome_version does the extension's service-worker keepalive justify?",
+  "fetched": "2026-11-09",
+  "source": "https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle",
+  "quotes": {
+    "118": "Active debugger sessions created using the browser.debugger API now keep the service worker alive.",
+    "116": "Active WebSocket connections now extend extension service worker lifetimes.",
+    "110": "Extension API calls reset the timers."
+  },
+  "relied_on": [
+    "chrome.debugger session per connected tab (background.ts doConnectTab -> chrome.debugger.attach) keeps the worker alive: Chrome 118",
+    "WebSocket to the server bridge from the worker: Chrome 116"
+  ],
+  "other_apis_checked": "chrome.* namespaces used in packages/extension/src: storage(local, session, onChanged), tabs, windows, runtime, debugger, downloads, alarms. None of them was checked against a version newer than 118 in a fetched doc.",
+  "alarms_note": "https://developer.chrome.com/docs/extensions/reference/api/alarms (fetched) now states a 1-second floor; the extension's own 30 s floor (reconnect-policy.ts ALARM_MIN_DELAY_MS) is above it. The version in which the floor was lowered was not found in the fetched page: not verified.",
+  "lowest_supported_by_docs": "118",
+  "recommendation": "\"minimum_chrome_version\": \"118\"",
+  "not_verified": "No run on Chrome 118 itself; only Chrome 156 was run."
+}

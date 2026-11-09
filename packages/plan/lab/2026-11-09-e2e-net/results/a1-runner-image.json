@@ -1,0 +1,27 @@
+{
+  "question": "Which Chrome does the GitHub ubuntu-latest runner ship? (documented, not run)",
+  "fetched": "2026-11-09",
+  "sources": {
+    "label_mapping": "https://github.com/actions/runner-images/blob/main/README.md",
+    "ubuntu_readme": "https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md",
+    "windows_readme": "https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md"
+  },
+  "ubuntu-latest": {
+    "maps_to": "Ubuntu 24.04",
+    "image_version": "20261101.360.1",
+    "google_chrome": "156.0.8078.79",
+    "chromium": "156.0.8078.0",
+    "chromedriver": "156.0.8078.80",
+    "lsof_listed": false
+  },
+  "windows-latest": {
+    "maps_to": "Windows Server 2025",
+    "image_version": "20261101.318.1",
+    "google_chrome": "156.0.8078.80"
+  },
+  "not_verified": [
+    "Extensions.loadUnpacked and the service worker on Linux headless Chrome (only Windows was run)",
+    "whether lsof is present on ubuntu-latest although the README does not list it (the server's Linux peer-process check runs lsof and fails closed without it)",
+    "whether Chrome's sandbox starts on Ubuntu 24.04 runners without --no-sandbox (AppArmor user-namespace restriction)"
+  ]
+}
