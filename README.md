@@ -17,6 +17,14 @@
 
 > ### ⚠️ Read this before installing
 >
+> **Important notice**
+>
+> browser-link is a development tool. It connects an AI agent to the Chrome tabs you choose, and in those tabs the agent acts with your own session: it sees and can use everything the browser holds in them, including active logins, cookies and tokens, autofilled passwords and payment cards, email, documents and any data the page shows or lets you submit. It can click, type, submit forms and download files as you would.
+>
+> Connect only tabs an agent should operate, disconnect them when you are done, and do not use it on sites whose terms forbid it or with data you cannot afford to expose. Deciding what to grant access to, and what the agent does with that access, is solely the user's responsibility.
+>
+> The software is provided "as is", without warranty of any kind, under the MIT license. The authors accept no liability for losses, damage or misuse arising from its use.
+>
 > `browser-link` opens a bridge between your MCP client and the Chrome tabs
 > you explicitly enable through a companion extension. On every tab where you
 > press **"Connect this tab"** in the extension popup, the agent can read its

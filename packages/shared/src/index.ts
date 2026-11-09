@@ -1,3 +1,5 @@
+export { NOTICE, type NoticeText } from './notice.js';
+
 export type TabId = string;
 
 export interface TabRegisterPayload {

@@ -286,3 +286,53 @@ describe('instructionsAutoRefresh', () => {
     expect(loadConfig().instructionsAutoRefresh).toBe(true);
   });
 });
+
+describe('noticeAcknowledged', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-notice-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function rawFile(): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  test('defaults to false on a fresh install', () => {
+    expect(loadConfig().noticeAcknowledged).toBe(false);
+  });
+
+  test('an acknowledgement is persisted as true', () => {
+    saveConfig({ noticeAcknowledged: true });
+    expect(loadConfig().noticeAcknowledged).toBe(true);
+    expect(rawFile().noticeAcknowledged).toBe(true);
+  });
+
+  test('false is never written to disk', () => {
+    saveConfig({ noticeAcknowledged: false, skipWelcome: true });
+    expect(rawFile()).not.toHaveProperty('noticeAcknowledged');
+    expect(loadConfig().noticeAcknowledged).toBe(false);
+  });
+
+  test('a hand-written non-boolean reads as not acknowledged', () => {
+    writeFileSync(join(dataDir, 'config.json'), '{"noticeAcknowledged": "yes"}');
+    expect(loadConfig().noticeAcknowledged).toBe(false);
+  });
+
+  test('skipWelcome is unaffected by the acknowledgement', () => {
+    saveConfig({ skipWelcome: true });
+    saveConfig({ noticeAcknowledged: true });
+    expect(loadConfig().skipWelcome).toBe(true);
+    expect(rawFile()).toEqual({ skipWelcome: true, noticeAcknowledged: true });
+  });
+});

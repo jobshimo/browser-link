@@ -12,6 +12,7 @@ import {
   LanguageView,
   MainMenu,
   MultiAgentView,
+  NoticeScreen,
   PermissionsView,
   UpdatesView,
   WelcomeScreen,
@@ -27,6 +28,7 @@ import { INSTALLERS, type ClientId } from '../installers/index.js';
 const REPO_URL = 'https://github.com/jobshimo/browser-link';
 
 type Screen =
+  | { kind: 'notice' }
   | { kind: 'welcome'; hideDismiss: boolean }
   | { kind: 'menu' }
   | { kind: 'pick-client' }
@@ -45,6 +47,9 @@ type Screen =
 interface AppProps {
   initialLanguage: Language;
   skipWelcome: boolean;
+  /** False until the user confirmed the product notice; the notice is then
+   * the first screen, whatever `skipWelcome` says. */
+  noticeAcknowledged: boolean;
 }
 
 /* True when at least one of the supported MCP clients is detected on
@@ -57,11 +62,15 @@ function anyClientDetected(): boolean {
   return INSTALLERS.some((i) => i.detect().installed);
 }
 
-export function App({ initialLanguage, skipWelcome }: AppProps) {
+export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppProps) {
   const { exit } = useApp();
   const [language, setLanguage] = useState<Language>(initialLanguage);
+  // The screen the console opens on once the notice is out of the way.
+  const firstRunScreen: Screen = skipWelcome
+    ? { kind: 'menu' }
+    : { kind: 'welcome', hideDismiss: false };
   const [screen, setScreen] = useState<Screen>(
-    skipWelcome ? { kind: 'menu' } : { kind: 'welcome', hideDismiss: false },
+    noticeAcknowledged ? firstRunScreen : { kind: 'notice' },
   );
 
   // Global Ctrl+C kill. Ink already handles SIGINT but we explicitly exit so
@@ -88,6 +97,17 @@ export function App({ initialLanguage, skipWelcome }: AppProps) {
   };
 
   switch (screen.kind) {
+    case 'notice':
+      return (
+        <NoticeScreen
+          language={language}
+          onAcknowledge={() => {
+            saveConfig({ noticeAcknowledged: true });
+            setScreen(firstRunScreen);
+          }}
+        />
+      );
+
     case 'welcome':
       return (
         <WelcomeScreen
