@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 /* Mock only the leaf handlers — dispatch.ts is pure routing. Each handler
  * has its own dedicated test file; here we just verify that dispatch picks
@@ -10,12 +10,16 @@ vi.mock('../map/tools.js', async (importOriginal) => {
 
 vi.mock('../tools/browser-dispatch.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tools/browser-dispatch.js')>();
-  return { ...actual, handleBrowserTool: vi.fn() };
+  return { ...actual, handleBrowserTool: vi.fn(), outdatedServerHint: vi.fn(() => null) };
 });
 
 import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.js';
 import { handleMapTool } from '../map/tools.js';
-import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
+import {
+  handleBrowserTool,
+  outdatedServerHint,
+  type BrowserToolDeps,
+} from '../tools/browser-dispatch.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 import { BridgeEventLog } from './events.js';
 
@@ -317,5 +321,37 @@ describe('handleToolCall — refusal and error handling', () => {
     expect(out.isError).toBe(true);
     expect(out.content[0]?.text).toContain('disabled');
     expect(handleMapTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleToolCall — outdated-server hint on list_tabs (0.41.0)', () => {
+  const call = { name: 'browser.list_tabs', arguments: {}, caller: TEST_CALLER };
+  const OUTDATED = 'server running 0.40.0, installed 0.41.0: this server is outdated';
+
+  afterEach(() => {
+    vi.mocked(outdatedServerHint).mockReturnValue(null);
+  });
+
+  test('non-empty list with an outdated server: bare array first, hint second', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([{ tab_id: 'tab_1' }]);
+    vi.mocked(outdatedServerHint).mockReturnValue(OUTDATED);
+    const res = await handleToolCall(call, makeDeps());
+    expect(res.content).toHaveLength(2);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual([{ tab_id: 'tab_1' }]);
+    expect((res.content[1] as { text: string }).text).toBe(`hint: ${OUTDATED}`);
+  });
+
+  test('non-empty list with a current server: single block, no hint (unchanged)', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([{ tab_id: 'tab_1' }]);
+    const res = await handleToolCall(call, makeDeps());
+    expect(res.content).toHaveLength(1);
+  });
+
+  test('empty list without an event log but an outdated server: the hint still appears', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([]);
+    vi.mocked(outdatedServerHint).mockReturnValue(OUTDATED);
+    const res = await handleToolCall(call, makeDeps());
+    expect(res.content).toHaveLength(2);
+    expect((res.content[1] as { text: string }).text).toBe(`hint: ${OUTDATED}`);
   });
 });

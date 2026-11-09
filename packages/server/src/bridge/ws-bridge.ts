@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
   ActivityPurgeMessage,
@@ -8,6 +9,7 @@ import type {
   ServerToExtension,
   SettingsUpdateMessage,
   TabRegisterPayload,
+  TabRegisteredPayload,
 } from '../messages.js';
 import {
   countInRange as countActivityInRange,
@@ -18,7 +20,9 @@ import {
 } from '../activity/queries.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcess } from '../auth/process-identity.js';
-import { VERSION } from '../version.js';
+import { VERSION, readInstalledVersion } from '../version.js';
+import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
+import { answerRepairRequest } from '../lifecycle/repair.js';
 import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
 import { saveFlow } from '../map/queries.js';
@@ -94,19 +98,65 @@ function assignTabId(): string {
   return `tab_${tabIdCounter}`;
 }
 
+export interface WsBridgeOptions {
+  /** Test-only: bind another port (0 = any free port). Default `WS_PORT`. */
+  port?: number;
+  /** Test-only: the version this bridge reports. Default `VERSION`. */
+  version?: string;
+  /** Starts the popup "Repair connection" restart (see lifecycle/repair.ts).
+   * Absent → `bridge.repair` is answered with `ok: false`. */
+  onRepair?: () => boolean;
+}
+
+/** The effective bind target and reported version. Exported so the
+ * defaults are testable without binding the fixed port. */
+export function resolveBridgeOptions(options: WsBridgeOptions = {}): {
+  host: string;
+  port: number;
+  version: string;
+} {
+  return { host: WS_HOST, port: options.port ?? WS_PORT, version: options.version ?? VERSION };
+}
+
+/** The `tab.registered` payload: the running version (`serverVersion`, as
+ * before), plus the version installed on disk right now and this pid, so
+ * the popup can show "running X · installed Y". */
+export function buildTabRegisteredPayload(
+  tabId: string,
+  serverVersion: string,
+  installedVersion: string | null,
+  serverPid: number,
+): TabRegisteredPayload {
+  return {
+    tabId,
+    serverVersion,
+    ...(installedVersion !== null ? { installedVersion } : {}),
+    serverPid,
+  };
+}
+
 /** Bring up the WebSocket bridge for the Chrome extension. Resolves only
  * after the server is listening, so the caller can fail fast (and refuse
  * to expose the MCP transport) when the port is taken or any other bind
- * error happens. */
+ * error happens.
+ *
+ * The bridge owns its HTTP server: WebSocket upgrades go to the
+ * `WebSocketServer` (same Chromium-only `verifyClient`), `GET /version`
+ * answers the election probe and every other plain request is a 404.
+ * Closing the returned `WebSocketServer` also closes the HTTP server. */
 export function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
   events: BridgeEventLog,
+  options: WsBridgeOptions = {},
 ): Promise<WebSocketServer> {
+  const { host, port, version } = resolveBridgeOptions(options);
   return new Promise((resolve, reject) => {
+    const httpServer = createServer((req, res) => {
+      handleBridgeHttpRequest(req, res, version);
+    });
     const wss = new WebSocketServer({
-      host: WS_HOST,
-      port: WS_PORT,
+      server: httpServer,
       // Refuse the upgrade unless the OS confirms the peer is a Chromium-based
       // browser. The check happens before any application bytes are exchanged.
       verifyClient: (info, cb) => {
@@ -147,13 +197,21 @@ export function startWsBridge(
 
     wss.on('listening', () => {
       settled = true;
-      log(`WebSocket listening on ws://${WS_HOST}:${WS_PORT}`);
+      const address = httpServer.address();
+      const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+      log(`WebSocket listening on ws://${host}:${boundPort}`);
       resolve(wss);
+    });
+
+    // An external HTTP server outlives `wss.close()` unless closed with it.
+    wss.on('close', () => {
+      httpServer.close();
     });
 
     wss.on('error', (err: NodeJS.ErrnoException) => {
       if (!settled) {
         settled = true;
+        wss.close();
         reject(translateBindError(err));
         return;
       }
@@ -195,7 +253,12 @@ export function startWsBridge(
           tabs.set(assignedTabId, buildTabSession(assignedTabId, msg.payload, ws));
           send(ws, {
             kind: 'tab.registered',
-            payload: { tabId: assignedTabId, serverVersion: VERSION },
+            payload: buildTabRegisteredPayload(
+              assignedTabId,
+              version,
+              readInstalledVersion(),
+              process.pid,
+            ),
           });
           log(`Tab registered: ${assignedTabId} -> ${msg.payload.url}`);
           // Hand the freshly-connected tab the CLI's idle-TTL choice, if it
@@ -281,6 +344,20 @@ export function startWsBridge(
           return;
         }
 
+        if (msg.kind === 'bridge.repair') {
+          // Popup "Repair connection". Any authenticated socket may ask (the
+          // popup reaches the bridge through whichever tab is connected); the
+          // ack goes out before the restart starts.
+          answerRepairRequest(
+            msg,
+            (reply) => {
+              send(ws, reply);
+            },
+            options.onRepair,
+          );
+          return;
+        }
+
         if (msg.kind === 'activity.query') {
           // Read-only and deliberately NOT scoped to `assignedTabId`, unlike
           // `flow.recorded` above. The Activity window's whole job is showing
@@ -309,6 +386,8 @@ export function startWsBridge(
         log(`WS connection error: ${err.message}`);
       });
     });
+
+    httpServer.listen(port, host);
   });
 }
 

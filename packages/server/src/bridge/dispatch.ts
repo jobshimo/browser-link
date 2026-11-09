@@ -14,6 +14,7 @@ import { BROWSER_TOOL_DEFINITIONS } from '../tools/browser-definitions.js';
 import {
   handleBrowserTool,
   isBrowserTool,
+  outdatedServerHint,
   type BrowserToolDeps,
 } from '../tools/browser-dispatch.js';
 import {
@@ -79,11 +80,19 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
     if (isBrowserTool(name)) {
       const result = await handleBrowserTool(name, args, deps.browserTools, caller);
       if (name === 'browser.screenshot') return imageToolResponse(result);
-      // An empty list_tabs explains itself in a second block; the first
-      // stays the bare `[]` every client already parses.
-      if (name === 'browser.list_tabs' && Array.isArray(result) && result.length === 0) {
-        const events = deps.browserTools.recentEvents?.({ limit: 200 });
-        if (events) return hintToolResponse(result, buildEmptyTabsHint(events, Date.now()));
+      // list_tabs explains itself in a second block; the first stays the
+      // bare array every client already parses. An empty list gets the
+      // reconnect hint; a server older than the installed one gets the
+      // outdated-server hint (S3b, 0.41.0). Both may apply.
+      if (name === 'browser.list_tabs' && Array.isArray(result)) {
+        const hints: string[] = [];
+        if (result.length === 0) {
+          const events = deps.browserTools.recentEvents?.({ limit: 200 });
+          if (events) hints.push(buildEmptyTabsHint(events, Date.now()));
+        }
+        const outdated = outdatedServerHint();
+        if (outdated) hints.push(outdated);
+        if (hints.length > 0) return hintToolResponse(result, hints.join('\n'));
       }
       return toolResponse(result);
     }

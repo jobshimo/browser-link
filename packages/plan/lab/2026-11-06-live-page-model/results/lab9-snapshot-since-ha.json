@@ -1,0 +1,162 @@
+{
+  "page": "http://homeassistant.local:8123/config/entities",
+  "observer": {
+    "version": 2,
+    "doc_id": "uey1qp4dmw899pjd"
+  },
+  "acceptance_idle": {
+    "first_snapshot_id": "uey1qp4dmw899pjd:s1",
+    "first_interactive": 78,
+    "diff_keys": [
+      "title",
+      "url",
+      "doc_id",
+      "snapshot_id",
+      "since",
+      "added",
+      "removed",
+      "changed"
+    ],
+    "added": 0,
+    "removed": 0,
+    "changed": 0,
+    "since_status": null
+  },
+  "acceptance_insertion": {
+    "added": [
+      {
+        "tag": "button",
+        "role": "button",
+        "selector": "#__bl_lab9_probe",
+        "ref": "e79",
+        "text": "lab9 probe"
+      }
+    ],
+    "removed_count": 0,
+    "changed_count": 0,
+    "since_status": null
+  },
+  "acceptance_removal": {
+    "added_count": 0,
+    "removed": [
+      {
+        "ref": "e79",
+        "tag": "button",
+        "text": "lab9 probe"
+      }
+    ],
+    "changed_count": 0
+  },
+  "acceptance_reload": {
+    "stale_since": "uey1qp4dmw899pjd:s4",
+    "new_doc_id": "8jrplf9umw899sk0",
+    "new_snapshot_id": "8jrplf9umw899sk0:s1",
+    "since_status": "doc-changed",
+    "has_full_interactive": true,
+    "interactive_count": 78,
+    "has_diff_keys": false
+  },
+  "token_measurement": {
+    "looks": [
+      {
+        "step": "look 1: baseline",
+        "full_bytes": 11812,
+        "full_interactive": 78
+      },
+      {
+        "step": "look 2: idle",
+        "full_bytes": 11812,
+        "full_interactive": 78,
+        "since_bytes": 263,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "since_status": null
+      },
+      {
+        "step": "look 3: type \"sensor\" in the filter",
+        "full_bytes": 11996,
+        "full_interactive": 79,
+        "since_bytes": 7632,
+        "added": 12,
+        "removed": 11,
+        "changed": 26,
+        "since_status": null
+      },
+      {
+        "step": "look 4: idle",
+        "full_bytes": 11996,
+        "full_interactive": 79,
+        "since_bytes": 277,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "since_status": null
+      },
+      {
+        "step": "look 5: clear the filter",
+        "full_bytes": 11814,
+        "full_interactive": 78,
+        "since_bytes": 7497,
+        "added": 11,
+        "removed": 12,
+        "changed": 26,
+        "since_status": null
+      },
+      {
+        "step": "look 6: tab Devices",
+        "full_bytes": 11815,
+        "full_interactive": 78,
+        "since_bytes": 265,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "since_status": null
+      },
+      {
+        "step": "look 7: idle",
+        "full_bytes": 11815,
+        "full_interactive": 78,
+        "since_bytes": 265,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "since_status": null
+      },
+      {
+        "step": "look 8: tab Entities",
+        "full_bytes": 11815,
+        "full_interactive": 78,
+        "since_bytes": 599,
+        "added": 2,
+        "removed": 2,
+        "changed": 0,
+        "since_status": null
+      },
+      {
+        "step": "look 9: type \"light\"",
+        "full_bytes": 9578,
+        "full_interactive": 69,
+        "since_bytes": 6611,
+        "added": 26,
+        "removed": 35,
+        "changed": 2,
+        "since_status": null
+      },
+      {
+        "step": "look 10: idle",
+        "full_bytes": 9578,
+        "full_interactive": 69,
+        "since_bytes": 278,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "since_status": null
+      }
+    ],
+    "ten_looks_full_bytes": 114031,
+    "ten_looks_one_full_then_since_bytes": 35499,
+    "saving_ratio": 0.689,
+    "note": "bytes of the JSON result as evaluated in-page; the MCP envelope adds a constant per call"
+  }
+}

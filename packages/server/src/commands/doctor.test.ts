@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { formatDoctor, type DoctorReport } from './doctor.js';
+import { buildServerStatus, formatDoctor, type DoctorReport } from './doctor.js';
 
 /**
  * Doctor format-layer tests. v0.8.3 escalates outdated agent-instructions
@@ -119,5 +119,107 @@ describe('formatDoctor — Chrome debugger infobar detection', () => {
   test('ES copy renders the neutral Rioplatense line for detected:null', () => {
     const out = formatDoctor(makeReport({ silentDebugger: { detected: null } }), 'es');
     expect(out).toContain('no se pudo determinar');
+  });
+});
+
+describe('formatDoctor — running X / installed Y (S3a)', () => {
+  const outdated: Partial<DoctorReport> = {
+    server: {
+      running: { version: '0.37.0', pid: 40296, startedAt: '2026-11-09T01:00:00.000Z' },
+      installed: '0.41.0',
+      outdated: true,
+    },
+    processes: [
+      { pid: 40296, startedAt: '2026-11-09T01:00:00.000Z', command: 'node browser-link' },
+      { pid: 51044, startedAt: null, command: 'node browser-link start' },
+    ],
+  };
+
+  test('outdated: running, pid, installed and what to do', () => {
+    const out = formatDoctor(makeReport(outdated));
+    expect(out).toContain(
+      'running 0.37.0 (pid 40296) / installed 0.41.0 → outdated, run `browser-link stop` and restart your agent',
+    );
+  });
+
+  test('lists every live browser-link process', () => {
+    const out = formatDoctor(makeReport(outdated));
+    expect(out).toContain('Live browser-link processes:');
+    expect(out).toMatch(/PID 40296 {2}node browser-link {2}\(started 2026-11-09T01:00:00\.000Z\)/);
+    expect(out).toMatch(/PID 51044 {2}node browser-link start/);
+  });
+
+  test('up to date: no outdated warning', () => {
+    const out = formatDoctor(
+      makeReport({
+        server: {
+          running: { version: '0.41.0', pid: 7, startedAt: '2026-11-09T01:00:00.000Z' },
+          installed: '0.41.0',
+          outdated: false,
+        },
+        processes: [],
+      }),
+    );
+    expect(out).toContain('running 0.41.0 (pid 7) / installed 0.41.0');
+    expect(out).not.toContain('→ outdated');
+    expect(out).toContain('Live browser-link processes: none');
+  });
+
+  test('no server answering /version: installed only', () => {
+    const out = formatDoctor(
+      makeReport({
+        server: { running: null, installed: '0.41.0', outdated: false },
+        processes: [],
+      }),
+    );
+    expect(out).toContain(
+      'running: no /version answer (none, or older than 0.41.0) / installed 0.41.0',
+    );
+  });
+
+  test('ES copy', () => {
+    const out = formatDoctor(makeReport(outdated), 'es');
+    expect(out).toContain(
+      'corriendo 0.37.0 (pid 40296) / instalado 0.41.0 → desactualizado, corré `browser-link stop` y reiniciá tu agente',
+    );
+    expect(out).toContain('Procesos browser-link vivos:');
+  });
+
+  test('a report without the new fields renders as before', () => {
+    const out = formatDoctor(makeReport());
+    expect(out).not.toContain('running ');
+    expect(out).not.toContain('Live browser-link processes');
+  });
+});
+
+describe('buildServerStatus', () => {
+  test('outdated when the running version is older than the installed one', () => {
+    expect(
+      buildServerStatus(
+        {
+          kind: 'version',
+          info: {
+            name: '@jobshimo/browser-link',
+            version: '0.37.0',
+            pid: 40296,
+            startedAt: '2026-11-09T01:00:00.000Z',
+            installedVersion: '0.41.0',
+          },
+        },
+        '0.41.0',
+      ),
+    ).toEqual({
+      running: { version: '0.37.0', pid: 40296, startedAt: '2026-11-09T01:00:00.000Z' },
+      installed: '0.41.0',
+      outdated: true,
+    });
+  });
+
+  test('not outdated without a /version answer or an installed version', () => {
+    expect(buildServerStatus({ kind: 'no-endpoint' }, '0.41.0')).toEqual({
+      running: null,
+      installed: '0.41.0',
+      outdated: false,
+    });
   });
 });

@@ -70,7 +70,8 @@ Or drive it directly:
 browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
 browser-link extension                     # show the Chrome extension assets path + steps
-browser-link doctor                        # diagnose current setup
+browser-link doctor                        # diagnose current setup (running vs installed version, live processes)
+browser-link stop                          # stop every live browser-link server, one line per process
 browser-link tools                         # show which of the 31 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link map                           # list apps the persistent UI map knows about
@@ -84,11 +85,11 @@ tab you want the agent to reach.
 
 ## The 31 tools, at a glance
 
-| Family                    | Count | What it covers                                                                    |
-| -------------------------- | ----: | ----------------------------------------------------------------------------------- |
-| Browser bridge — read      |    13 | list/claim tabs, snapshot/find/state, console, network, wait_for(_tab), events     |
-| Browser bridge — actions   |    12 | navigate, click, type, press, drag, flow, evaluate, dialogs, permissions, reset    |
-| Persistent UI map          |     6 | recall, save, record_use, forget, rename_app, apps                                 |
+| Family                   | Count | What it covers                                                                  |
+| ------------------------ | ----: | ------------------------------------------------------------------------------- |
+| Browser bridge — read    |    13 | list/claim tabs, snapshot/find/state, console, network, wait_for(_tab), events  |
+| Browser bridge — actions |    12 | navigate, click, type, press, drag, flow, evaluate, dialogs, permissions, reset |
+| Persistent UI map        |     6 | recall, save, record_use, forget, rename_app, apps                              |
 
 Every tool can be disabled per machine via `browser-link tools disable
 <name>` or a preset (`all` / `readonly` / `no-eval` / `no-map`). The full
@@ -99,8 +100,8 @@ this page stays a landing page on purpose.
 
 ## `browser-link map` — inspect and manage the persistent map
 
-The 6 map tools above are how an *agent* reads and writes the map while it
-works. `browser-link map` is how a *human* looks at the same data from a
+The 6 map tools above are how an _agent_ reads and writes the map while it
+works. `browser-link map` is how a _human_ looks at the same data from a
 terminal, no agent required:
 
 ```bash
@@ -127,6 +128,12 @@ browser-link map import map.json            # restore it (merge by default, --re
   the same bridge and map. `browser-link multi-agent` shows the current
   state; see [Multi-agent mode](https://github.com/jobshimo/browser-link#multi-agent-mode)
   for how it works.
+- **Updates take effect by themselves**: a newer browser-link that starts
+  displaces an older primary (it reads `GET /version` on the bridge port),
+  `browser-link stop` stops every live server, `doctor` and `list_tabs`
+  show "running X / installed Y", and the extension popup has a "Repair
+  connection" button. See
+  [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
 - **cdp-direct mode** (off by default): an extension-free transport gated
   behind `browser-link config set cdp-direct.enabled true` PLUS a
   time-boxed `browser-link cdp allow` grant — see

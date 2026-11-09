@@ -32,6 +32,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
+          # packages/plan/lab holds research scripts that build CDP expressions
+          # from strings on purpose; they never ship. Analyse product code only.
+          config: |
+            paths-ignore:
+              - packages/plan/**
 
       - uses: github/codeql-action/analyze@v4
         with:

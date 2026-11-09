@@ -10,6 +10,10 @@ import type { Language } from './welcome.js';
 import { loadConfig } from '../config.js';
 import { IPC_HOST, IPC_PORT } from '../bridge/protocol.js';
 import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
+import { probeVersion, type VersionProbe } from '../lifecycle/election.js';
+import { listBridgeProcesses, shortCommand, type ProcessEntry } from '../lifecycle/processes.js';
+import { readInstalledVersion } from '../version.js';
+import { compareSemver } from '../utils/semver.js';
 
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 17529;
@@ -64,17 +68,64 @@ export interface DoctorReport {
    * unavailable, timed out — and the formatter degrades to a neutral line
    * pointing at the README rather than treating that as a failure. */
   silentDebugger: { detected: boolean | null };
+  /** Since 0.41.0: the running primary (from its `/version`, `null` when
+   * nothing answers it: no server, or one older than 0.41.0) against the
+   * version installed on disk. Optional so older report builders still fit. */
+  server?: DoctorServerStatus;
+  /** Since 0.41.0: every live browser-link bridge process. */
+  processes?: DoctorProcess[];
+}
+
+export interface DoctorServerStatus {
+  running: { version: string; pid: number; startedAt: string } | null;
+  installed: string | null;
+  outdated: boolean;
+}
+
+export interface DoctorProcess {
+  pid: number;
+  startedAt: string | null;
+  command: string;
+}
+
+/** Running vs installed. Outdated only when both are known and the running
+ * version is lower. */
+export function buildServerStatus(
+  probe: VersionProbe,
+  installed: string | null,
+): DoctorServerStatus {
+  const running =
+    probe.kind === 'version'
+      ? { version: probe.info.version, pid: probe.info.pid, startedAt: probe.info.startedAt }
+      : null;
+  return {
+    running,
+    installed,
+    outdated:
+      running !== null && installed !== null && compareSemver(running.version, installed) < 0,
+  };
+}
+
+function toDoctorProcess(p: ProcessEntry): DoctorProcess {
+  return {
+    pid: p.pid,
+    startedAt: p.startedAt === null ? null : new Date(p.startedAt).toISOString(),
+    command: shortCommand(p.command),
+  };
 }
 
 export async function runDoctor(): Promise<DoctorReport> {
   // Independent probes — run them concurrently rather than serially so a
   // slow process-listing scan (silentDebugger) does not add its full
   // latency on top of the port checks.
-  const [ws, ipc, silentDebugger] = await Promise.all([
+  const [ws, ipc, silentDebugger, versionProbe] = await Promise.all([
     checkPort(WS_HOST, WS_PORT),
     checkPort(IPC_HOST, IPC_PORT),
     detectSilentDebuggerFlag(),
+    probeVersion(WS_PORT),
   ]);
+  const server = buildServerStatus(versionProbe, readInstalledVersion());
+  const processes = listBridgeProcesses().map(toDoctorProcess);
 
   const clients = INSTALLERS.map((i) => {
     const d = i.detect();
@@ -110,6 +161,8 @@ export async function runDoctor(): Promise<DoctorReport> {
     map: { dbPath, exists: dbExists, sizeBytes, apps },
     security: { allowedBrowsers: getAllowedBrowsers() },
     silentDebugger,
+    server,
+    processes,
   };
 }
 
@@ -177,6 +230,13 @@ interface DoctorI18n {
   ipcLine: string;
   ipcListening: string;
   ipcFree: string;
+  serverRunning: (version: string, pid: number) => string;
+  serverNoVersion: string;
+  serverInstalled: (version: string | null) => string;
+  serverOutdated: string;
+  processesHeader: string;
+  processesNone: string;
+  processStarted: (iso: string) => string;
 }
 
 const DOCTOR_I18N: Record<Language, DoctorI18n> = {
@@ -225,6 +285,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     ipcLine: '  IPC port         ',
     ipcListening: 'listening (a primary is running)',
     ipcFree: 'free (no primary on this machine)',
+    serverRunning: (v, pid) => `running ${v} (pid ${pid})`,
+    serverNoVersion: 'running: no /version answer (none, or older than 0.41.0)',
+    serverInstalled: (v) => `installed ${v ?? 'unknown'}`,
+    serverOutdated: 'outdated, run `browser-link stop` and restart your agent',
+    processesHeader: 'Live browser-link processes:',
+    processesNone: 'none',
+    processStarted: (iso) => `(started ${iso})`,
   },
   es: {
     title: 'browser-link doctor',
@@ -272,6 +339,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     ipcLine: '  Puerto IPC       ',
     ipcListening: 'escuchando (hay un primary corriendo)',
     ipcFree: 'libre (no hay primary en esta máquina)',
+    serverRunning: (v, pid) => `corriendo ${v} (pid ${pid})`,
+    serverNoVersion: 'corriendo: sin respuesta en /version (ninguno, o anterior a 0.41.0)',
+    serverInstalled: (v) => `instalado ${v ?? 'desconocido'}`,
+    serverOutdated: 'desactualizado, corré `browser-link stop` y reiniciá tu agente',
+    processesHeader: 'Procesos browser-link vivos:',
+    processesNone: 'ninguno',
+    processStarted: (iso) => `(arrancó ${iso})`,
   },
 };
 
@@ -283,6 +357,26 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
   lines.push(`${t.wsBridge}  ${symbol(r.ws.listening)} ${r.ws.host}:${r.ws.port} — ${r.ws.detail}`);
   if (!r.ws.listening) {
     lines.push(t.wsHint);
+  }
+  if (r.server) {
+    const running = r.server.running
+      ? t.serverRunning(r.server.running.version, r.server.running.pid)
+      : t.serverNoVersion;
+    const versions = `${running} / ${t.serverInstalled(r.server.installed)}`;
+    lines.push(
+      r.server.outdated ? `  ${red(`${versions} → ${t.serverOutdated}`)}` : `  ${versions}`,
+    );
+  }
+  if (r.processes) {
+    if (r.processes.length === 0) {
+      lines.push(`${t.processesHeader} ${t.processesNone}`);
+    } else {
+      lines.push(t.processesHeader);
+      for (const p of r.processes) {
+        const started = p.startedAt ? `  ${t.processStarted(p.startedAt)}` : '';
+        lines.push(`  PID ${p.pid}  ${p.command}${started}`);
+      }
+    }
   }
   lines.push('');
   lines.push(t.clientsHeader);

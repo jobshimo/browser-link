@@ -32,6 +32,16 @@ export interface TabRegisteredPayload {
    * without re-loading the Chrome extension.
    */
   serverVersion?: string;
+  /**
+   * Version of the browser-link package installed on disk right now, re-read
+   * by the server on every registration. Differs from `serverVersion` when
+   * the package was updated while this server kept running old code. Absent
+   * from servers older than 0.41.0.
+   */
+  installedVersion?: string;
+  /** Process id of the server that registered this tab. Absent from servers
+   * older than 0.41.0. */
+  serverPid?: number;
 }
 
 export interface TabRegisterMessage {
@@ -261,13 +271,31 @@ export type ActivityPurgeResultMessage =
     }
   | { kind: 'activity.purge.result'; request_id: string; ok: false; error: string };
 
+/**
+ * The popup's "Repair connection" button asking the primary to restart itself
+ * on the installed code. Understood by servers from 0.41.0; the extension
+ * checks `serverVersion` before sending it.
+ */
+export interface BridgeRepairMessage {
+  kind: 'bridge.repair';
+  request_id: string;
+}
+
+/** Server's reply to `bridge.repair`. On `ok: true` the server spawns the
+ * installed CLI, drops every extension socket uncleanly and exits, so the
+ * extension's auto-reconnect takes over. */
+export type BridgeRepairResultMessage =
+  | { kind: 'bridge.repair.result'; request_id: string; ok: true; action: 'restarting' }
+  | { kind: 'bridge.repair.result'; request_id: string; ok: false; error: string };
+
 export type ExtensionToServer =
   | TabRegisterMessage
   | ToolResponseMessage
   | BridgeEventMessage
   | FlowRecordedMessage
   | ActivityQueryMessage
-  | ActivityPurgeMessage;
+  | ActivityPurgeMessage
+  | BridgeRepairMessage;
 export type ServerToExtension =
   | TabRegisteredMessage
   | ToolRequestMessage
@@ -275,7 +303,8 @@ export type ServerToExtension =
   | SettingsUpdateMessage
   | FlowRecordedResultMessage
   | ActivityResultMessage
-  | ActivityPurgeResultMessage;
+  | ActivityPurgeResultMessage
+  | BridgeRepairResultMessage;
 
 export interface PingResult {
   title: string;

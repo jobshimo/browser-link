@@ -162,7 +162,9 @@ Uso:
   browser-link instructions uninstall --client <id>
                                 Quita el bloque, deja el resto del archivo intacto.
   browser-link stop             Mata el proceso browser-link que esté ocupando el
-                                puerto 17529 (útil si un cliente MCP quedó zombie).
+                                puerto 17529 (útil si un cliente MCP quedó zombie)
+                                y todos los demás servidores browser-link vivos,
+                                una línea por proceso.
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
   browser-link help             Este mensaje.
@@ -280,7 +282,9 @@ Usage:
                                 Remove the block, leaving the rest of the file
                                 intact.
   browser-link stop             Kill the browser-link process holding port 17529
-                                (useful when an MCP client left a zombie behind).
+                                (useful when an MCP client left a zombie behind)
+                                and every other live browser-link server, one
+                                line per process.
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
   browser-link help             This message.

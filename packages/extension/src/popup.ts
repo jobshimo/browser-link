@@ -32,6 +32,11 @@ import {
   shouldShowNoticeBeforeConnect,
 } from './notice-policy.js';
 import type { FlowStep } from './flow.js';
+import {
+  runningInstalledLine,
+  shouldShowVersionBanner,
+  type VersionCheck,
+} from './version-status.js';
 
 // Local mirrors of the runtime message return shapes that background.ts
 // produces. Kept in sync by hand because there's no shared workspace
@@ -87,10 +92,14 @@ interface PendingDialogResult {
   pending: PendingDialogInfo | null;
 }
 
-interface VersionCheckResult {
-  extension: string;
-  server: string | null;
-  aligned: boolean | null;
+/** background.ts's answer to `{ action: 'versionCheck' }`, computed by
+ * version-status.ts (shared by both entrypoints). */
+type VersionCheckResult = VersionCheck;
+
+/** background.ts's answer to `{ action: 'repairConnection' }`. */
+interface RepairResult {
+  ok: boolean;
+  message: string;
 }
 
 /** background.ts's answer to `{ action: 'flowsStatus' }`. `running` spans
@@ -169,10 +178,11 @@ function setAction(label: string, variant: 'primary' | 'danger', disabled = fals
 
 function renderVersionBanner(check: VersionCheckResult): void {
   const banner = $('version-banner') as HTMLDivElement;
+  renderRunningInstalledLine(check);
   // Hide while we have no server version yet (no tab has registered) or
   // when both halves are aligned. The banner is purely informational —
   // the agent flow keeps working either way, this is just a heads-up.
-  if (check.server === null || check.aligned !== false) {
+  if (!shouldShowVersionBanner(check)) {
     banner.hidden = true;
     return;
   }
@@ -180,6 +190,91 @@ function renderVersionBanner(check: VersionCheckResult): void {
   $('version-extension').textContent = check.extension;
   $('version-server').textContent = check.server;
 }
+
+/**
+ * "Repair connection": always visible, placed right under the Connect /
+ * Disconnect button, with its outcome on a line beneath it. Plus the
+ * "Server running X · installed Y" line above the button, shown only when
+ * the server runs a different version than the one installed on disk.
+ *
+ * Built here rather than in popup.html so the whole feature lives in one
+ * file; the elements reuse the popup's base `button` and `.explanation`
+ * styles and only override what makes the button read as secondary.
+ */
+function createRepairControls(): {
+  versionLine: HTMLDivElement;
+  button: HTMLButtonElement;
+  outcome: HTMLDivElement;
+} {
+  const action = $('action');
+
+  const versionLine = document.createElement('div');
+  versionLine.id = 'version-running-installed';
+  versionLine.className = 'explanation';
+  versionLine.hidden = true;
+  versionLine.style.borderTop = 'none';
+  versionLine.style.color = 'var(--idle-fg)';
+  versionLine.style.fontWeight = '600';
+
+  const button = document.createElement('button');
+  button.id = 'repair-connection';
+  button.type = 'button';
+  button.textContent = REPAIR_LABEL;
+  button.title =
+    'Restart the browser-link server on the installed version, or reconnect the tabs you connected';
+  button.style.marginTop = '8px';
+  button.style.background = 'var(--bg)';
+  button.style.color = 'var(--connecting-fg)';
+  button.style.boxShadow = 'inset 0 0 0 1px var(--border)';
+
+  const outcome = document.createElement('div');
+  outcome.id = 'repair-outcome';
+  outcome.className = 'explanation';
+  outcome.setAttribute('role', 'status');
+  outcome.hidden = true;
+  outcome.style.borderTop = 'none';
+  outcome.style.marginTop = '6px';
+  outcome.style.paddingTop = '0';
+
+  action.after(versionLine, button, outcome);
+  return { versionLine, button, outcome };
+}
+
+const REPAIR_LABEL = 'Repair connection';
+const repairControls = createRepairControls();
+
+function renderRunningInstalledLine(check: VersionCheckResult): void {
+  const line = runningInstalledLine(check);
+  repairControls.versionLine.hidden = line === null;
+  repairControls.versionLine.textContent = line ?? '';
+}
+
+function setRepairOutcome(result: RepairResult): void {
+  const { outcome } = repairControls;
+  outcome.hidden = false;
+  outcome.textContent = result.message;
+  outcome.style.color = result.ok ? 'var(--connected-fg)' : 'var(--error-fg)';
+}
+
+async function onRepair(): Promise<void> {
+  const { button, outcome } = repairControls;
+  button.disabled = true;
+  button.textContent = 'Repairing…';
+  outcome.hidden = true;
+  try {
+    setRepairOutcome(await send<RepairResult>({ action: 'repairConnection' }));
+  } catch (err: unknown) {
+    setRepairOutcome({ ok: false, message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    button.disabled = false;
+    button.textContent = REPAIR_LABEL;
+  }
+  await refresh();
+}
+
+repairControls.button.addEventListener('click', () => {
+  void onRepair();
+});
 
 async function refreshVersionBanner(): Promise<void> {
   const check = await send<VersionCheckResult>({ action: 'versionCheck' });

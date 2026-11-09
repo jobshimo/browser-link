@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.41.0](https://github.com/jobshimo/browser-link/compare/v0.40.0...v0.41.0) (2026-11-09)
+
+### Features
+
+- **lifecycle:** a newer browser-link process now wins the port: on a taken `127.0.0.1:17529` it retries the bind, probes the running primary with `GET /version` and takes over when that primary is older (a primary from before 0.41.0 has no endpoint and is replaced when it started before the installed `dist/cli.js` was last written); the old process is stopped and the connected tabs reconnect by themselves. Same or newer version: unchanged (proxy in multi-agent mode, the usual error otherwise).
+- **stop:** `browser-link stop` ends every live browser-link server (the 17529 and 17530 owners and every bridge process found by command line), never itself, its shell or short commands such as `doctor`; one line per process. The already-free output is unchanged.
+- **doctor:** reports `running X (pid N) / installed Y` with what to do when they differ, and lists the live browser-link processes.
+- **list_tabs:** appends a hint for the agent when the installed version is newer than the running server; the tab array is unchanged.
+- **bridge:** the server answers `GET http://127.0.0.1:17529/version` with `{ name, version, pid, startedAt, installedVersion }`; `tab.registered` also carries `installedVersion` and `serverPid`.
+- **extension:** the popup shows `Server running X · installed Y` when they differ and has an always-visible **Repair connection** button: it asks a 0.41.0+ server to restart on the installed code (the server starts the installed CLI detached, closes every socket and exits; the tabs reconnect), reconnects the remembered tabs when no server is connected, and explains what to run when the server is too old or absent.
+
 ## [0.40.0](https://github.com/jobshimo/browser-link/compare/v0.39.0...v0.40.0) (2026-11-09)
 
 ### Features

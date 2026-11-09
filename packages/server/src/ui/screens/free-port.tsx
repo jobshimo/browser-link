@@ -38,7 +38,8 @@ const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
       'If an MCP client (Claude / OpenCode / Copilot) was closed without',
       'shutting down browser-link cleanly, the next client crashes with',
       '"port already in use". This screen finds the process holding',
-      '127.0.0.1:17529 and stops it.',
+      '127.0.0.1:17529 and stops it, then every other browser-link',
+      'server still running (an old version included).',
     ].join('\n'),
     safety:
       'Safety: only processes whose image starts with "node" are killed. Anything else is left alone with an explanation.',
@@ -57,7 +58,8 @@ const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
       'Si un cliente MCP (Claude / OpenCode / Copilot) cerró sin bajar',
       'browser-link de forma limpia, el próximo cliente crashea con',
       '"port already in use". Esta pantalla busca el proceso que tiene',
-      '127.0.0.1:17529 y lo para.',
+      '127.0.0.1:17529 y lo para, y después todos los demás procesos de browser-link',
+      'que sigan corriendo (incluida una versión vieja).',
     ].join('\n'),
     safety:
       'Seguridad: sólo se matan procesos cuyo nombre empieza con "node". Cualquier otro se deja vivo con una explicación.',

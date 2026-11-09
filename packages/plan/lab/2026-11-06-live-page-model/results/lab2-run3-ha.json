@@ -1,0 +1,150 @@
+{
+  "tree": {
+    "nodes": 3718,
+    "open_roots": 404,
+    "closed_roots": 1,
+    "ua_roots": 0
+  },
+  "scenarios": [
+    {
+      "name": "light-dom: setAttribute on body",
+      "page_result": "ok",
+      "events": 2,
+      "by_method": {
+        "DOM.attributeModified": 1,
+        "DOM.attributeRemoved": 1
+      },
+      "shadow_depths": [
+        0
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "light-dom: append+remove child of body",
+      "page_result": "ok",
+      "events": 2,
+      "by_method": {
+        "DOM.childNodeInserted": 1,
+        "DOM.childNodeRemoved": 1
+      },
+      "shadow_depths": [
+        0
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "existing open shadow: setAttribute on inner element",
+      "page_result": "depth 11",
+      "events": 2,
+      "by_method": {
+        "DOM.attributeModified": 1,
+        "DOM.attributeRemoved": 1
+      },
+      "shadow_depths": [
+        11
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "existing open shadow: append+remove child",
+      "page_result": "ok",
+      "events": 2,
+      "by_method": {
+        "DOM.childNodeInserted": 1,
+        "DOM.childNodeRemoved": 1
+      },
+      "shadow_depths": [
+        11
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "existing open shadow: characterData change",
+      "page_result": "ok",
+      "events": 3,
+      "by_method": {
+        "DOM.childNodeInserted": 1,
+        "DOM.characterDataModified": 1,
+        "DOM.childNodeRemoved": 1
+      },
+      "shadow_depths": [
+        11
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "new open shadow root: create host + attachShadow + inner mutation",
+      "page_result": "ok",
+      "events": 4,
+      "by_method": {
+        "DOM.childNodeInserted": 1,
+        "DOM.setChildNodes": 1,
+        "DOM.shadowRootPushed": 1,
+        "DOM.childNodeCountUpdated": 1
+      },
+      "shadow_depths": [
+        0,
+        1
+      ],
+      "pushed_root_types": [
+        "open"
+      ],
+      "unknown_refs": 0
+    },
+    {
+      "name": "new open shadow root: mutate inside again (after push)",
+      "page_result": "ok",
+      "events": 0,
+      "by_method": {},
+      "shadow_depths": [],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "new closed shadow root: create + inner mutation",
+      "page_result": "ok",
+      "events": 4,
+      "by_method": {
+        "DOM.childNodeInserted": 1,
+        "DOM.setChildNodes": 1,
+        "DOM.shadowRootPushed": 1,
+        "DOM.childNodeCountUpdated": 1
+      },
+      "shadow_depths": [
+        0,
+        1
+      ],
+      "pushed_root_types": [
+        "closed"
+      ],
+      "unknown_refs": 0
+    },
+    {
+      "name": "new closed shadow root: mutate inside again",
+      "page_result": "ok",
+      "events": 0,
+      "by_method": {},
+      "shadow_depths": [],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    },
+    {
+      "name": "cleanup",
+      "page_result": "ok",
+      "events": 2,
+      "by_method": {
+        "DOM.childNodeRemoved": 2
+      },
+      "shadow_depths": [
+        0
+      ],
+      "pushed_root_types": [],
+      "unknown_refs": 0
+    }
+  ]
+}

@@ -7,6 +7,8 @@ import {
   MAX_FLOW_DESCRIPTION_LENGTH,
   MAX_FLOW_NAME_LENGTH,
   buildRegisterSettingsUpdate,
+  buildTabRegisteredPayload,
+  resolveBridgeOptions,
   applyTabNavigated,
   buildTabDisconnectedData,
   buildTabSession,
@@ -19,6 +21,7 @@ import { BridgeEventLog, isExtensionEventKind } from './events.js';
 import { closeDb } from '../map/db.js';
 import { recall } from '../map/queries.js';
 import type { FlowRecordedPayload } from '../messages.js';
+import { VERSION } from '../version.js';
 
 /* Wire-level coverage for the two settings-push paths in ws-bridge.ts.
  *
@@ -517,5 +520,37 @@ describe('buildTabSession (tab.register)', () => {
       );
       expect('extensionVersion' in session).toBe(false);
     }
+  });
+});
+
+describe('startWsBridge options (S1/S5)', () => {
+  test('with no options it still targets 127.0.0.1:17529 and the running VERSION', () => {
+    expect(resolveBridgeOptions()).toEqual({ host: '127.0.0.1', port: 17529, version: VERSION });
+    expect(resolveBridgeOptions({})).toEqual({ host: '127.0.0.1', port: 17529, version: VERSION });
+  });
+
+  test('port and version are overridable for tests', () => {
+    expect(resolveBridgeOptions({ port: 0, version: '0.40.0' })).toEqual({
+      host: '127.0.0.1',
+      port: 0,
+      version: '0.40.0',
+    });
+  });
+});
+
+describe('buildTabRegisteredPayload (S3c)', () => {
+  test('still carries serverVersion, plus installedVersion and serverPid', () => {
+    expect(buildTabRegisteredPayload('tab_1', '0.40.0', '0.41.0', 4242)).toEqual({
+      tabId: 'tab_1',
+      serverVersion: '0.40.0',
+      installedVersion: '0.41.0',
+      serverPid: 4242,
+    });
+  });
+
+  test('an unreadable installed version leaves the field out', () => {
+    const payload = buildTabRegisteredPayload('tab_2', '0.41.0', null, 7);
+    expect(payload).toEqual({ tabId: 'tab_2', serverVersion: '0.41.0', serverPid: 7 });
+    expect('installedVersion' in payload).toBe(false);
   });
 });

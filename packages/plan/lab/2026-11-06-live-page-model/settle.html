@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>settle lab</title></head>
+<body>
+<button id="go">go</button>
+<div id="out">idle</div>
+<ul id="list"></ul>
+<script>
+  // A click causes three effects: one synchronous (same task as the event),
+  // one at +300 ms, one at +900 ms. A good settle reports all three as
+  // caused by the click; the current one installs its observer after the
+  // dispatch returns, so the synchronous one is already gone.
+  document.getElementById('go').addEventListener('click', () => {
+    document.getElementById('out').textContent = 'clicked ' + Date.now();
+    setTimeout(() => { const li = document.createElement('li'); li.textContent = 'late 300'; document.getElementById('list').appendChild(li); }, 300);
+    setTimeout(() => { document.getElementById('out').setAttribute('data-done', '1'); }, 900);
+  });
+</script>
+</body></html>

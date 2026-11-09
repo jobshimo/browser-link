@@ -1,0 +1,28 @@
+{
+  "start": {
+    "url": "http://homeassistant.local:8123/home/overview",
+    "total": 88,
+    "same_node": 0,
+    "new_node": 88,
+    "semantic_keys": 37
+  },
+  "navigated": true,
+  "away": {
+    "url": "http://homeassistant.local:8123/config/dashboard",
+    "total": 71,
+    "same_node": 39,
+    "new_node": 32
+  },
+  "back": {
+    "url": "http://homeassistant.local:8123/home/overview",
+    "total": 88,
+    "same_node": 88,
+    "new_node": 0,
+    "semantic_keys": 37
+  },
+  "semantic": {
+    "keys_at_start": 37,
+    "keys_back": 37,
+    "survived": 37
+  }
+}

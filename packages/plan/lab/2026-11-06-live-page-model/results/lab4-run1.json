@@ -1,0 +1,46 @@
+{
+  "A_current_settle": {
+    "result": {
+      "settled": true,
+      "duration_ms": 164,
+      "mutation_count": 0
+    },
+    "page_state_right_after": {
+      "out": "clicked 1793979648973",
+      "items": 0,
+      "done": null
+    },
+    "note": "observer installed after dispatch"
+  },
+  "B_agent_at_quiet": {
+    "quiet_after_ms": 1445,
+    "records": [
+      {
+        "at": 2.199999988079071,
+        "type": "childList",
+        "target": "div#out",
+        "added": 1
+      }
+    ]
+  },
+  "B_agent_1200ms_later": [
+    {
+      "at": 2.199999988079071,
+      "type": "childList",
+      "target": "div#out",
+      "added": 1
+    },
+    {
+      "at": 307.2999999821186,
+      "type": "childList",
+      "target": "ul#list",
+      "added": 1
+    },
+    {
+      "at": 909.2999999821186,
+      "type": "attributes",
+      "target": "div#out",
+      "attr": "data-done"
+    }
+  ]
+}

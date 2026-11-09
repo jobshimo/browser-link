@@ -1,0 +1,171 @@
+{
+  "page": "http://homeassistant.local:8123/config/entities",
+  "observer": {
+    "version": 3,
+    "doc_id": "sjjjnadvmw8dmdc1"
+  },
+  "picked": {
+    "term": "2406APNFAG",
+    "kept_candidates": [
+      {
+        "ref": "sjjjna:e1",
+        "text": "2406APNFAG"
+      },
+      {
+        "ref": "sjjjna:e2",
+        "text": "2406APNFAG 2406APNFAG Aplicación móvil —"
+      },
+      {
+        "ref": "sjjjna:e3",
+        "text": "2406APNFAG 2406APNFAG Aplicación móvil —"
+      }
+    ],
+    "dropped_candidates": [
+      {
+        "ref": "sjjjna:e7",
+        "text": "A1_03900D640729564"
+      },
+      {
+        "ref": "sjjjna:e8",
+        "text": "Actualización de Firmware A1_03900D640729564 Bambu Lab No pr"
+      }
+    ],
+    "rows_seen": 30
+  },
+  "A_same_items_rerender": {
+    "ref": "sjjjna:e1",
+    "old_text": "2406APNFAG",
+    "resolve": {
+      "ok": true,
+      "reresolved": true
+    },
+    "new_text": "2406APNFAG"
+  },
+  "B_replacing_rerender": {
+    "kept_rows": [
+      {
+        "ref": "sjjjna:e1",
+        "old_text": "2406APNFAG",
+        "ok": true,
+        "reresolved": true,
+        "new_text": "2406APNFAG"
+      },
+      {
+        "ref": "sjjjna:e2",
+        "old_text": "2406APNFAG 2406APNFAG Aplicación móvil —",
+        "ok": true,
+        "reresolved": false,
+        "new_text": "2406APNFAG 2406APNFAG Aplicación móvil —"
+      },
+      {
+        "ref": "sjjjna:e3",
+        "old_text": "2406APNFAG 2406APNFAG Aplicación móvil —",
+        "ok": true,
+        "reresolved": false,
+        "new_text": "2406APNFAG 2406APNFAG Aplicación móvil —"
+      }
+    ],
+    "dropped_rows": [
+      {
+        "ref": "sjjjna:e7",
+        "old_text": "A1_03900D640729564",
+        "ok": false,
+        "reason": "ref-stale",
+        "doc_id": "sjjjnadvmw8dmdc1"
+      },
+      {
+        "ref": "sjjjna:e8",
+        "old_text": "Actualización de Firmware A1_03900D640729564 Bambu Lab No pr",
+        "ok": false,
+        "reason": "ref-stale",
+        "doc_id": "sjjjnadvmw8dmdc1"
+      }
+    ]
+  },
+  "C_changed_name": {
+    "find": {
+      "matched": true,
+      "ref": "sjjjna:e31",
+      "semantic_key": {
+        "role": "button",
+        "name": "lab11 alpha",
+        "path": [
+          {
+            "tag": "body",
+            "index": 1
+          },
+          {
+            "tag": "button",
+            "index": 1
+          }
+        ]
+      }
+    },
+    "renamed": {
+      "ok": false,
+      "reason": "ref-stale",
+      "doc_id": "sjjjnadvmw8dmdc1"
+    },
+    "same_name": {
+      "ok": true,
+      "reresolved": true
+    },
+    "builder_after": {
+      "ok": true,
+      "found": true,
+      "tag": "button"
+    }
+  },
+  "D_find_by_key": {
+    "row": {
+      "ref": "sjjjna:e1",
+      "text": "2406APNFAG"
+    },
+    "key": {
+      "role": "row",
+      "name": "2406APNFAG",
+      "path": [
+        {
+          "tag": "#shadow",
+          "index": 0
+        },
+        {
+          "tag": "hass-tabs-subpage",
+          "index": 1
+        },
+        {
+          "tag": "ha-data-table",
+          "index": 1
+        },
+        {
+          "tag": "#shadow",
+          "index": 0
+        },
+        {
+          "tag": "div",
+          "index": 1
+        },
+        {
+          "tag": "div",
+          "index": 1
+        },
+        {
+          "tag": "lit-virtualizer",
+          "index": 1
+        },
+        {
+          "tag": "div",
+          "index": 1
+        }
+      ]
+    },
+    "by_key_with_path": {
+      "matched": true,
+      "text": "2406APNFAG",
+      "ref": "sjjjna:e32"
+    },
+    "by_key_without_path": {
+      "matched": true
+    }
+  }
+}

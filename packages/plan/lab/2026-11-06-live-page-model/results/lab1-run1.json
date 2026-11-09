@@ -1,0 +1,59 @@
+[lab] target: http://homeassistant.local:8123/home/overview
+[lab] listening 30000 ms (leave the page alone)…
+{
+  "target": "http://homeassistant.local:8123/home/overview",
+  "idle_ms": 30000,
+  "phase1_full_tree": {
+    "getDocument_ms": 27,
+    "getDocument_bytes": 746352,
+    "nodes": 3723,
+    "shadow_roots": 403,
+    "frame_documents": 0
+  },
+  "cdp_events": {
+    "total": 0,
+    "bytes": 0,
+    "by_method": {
+      "DOM.attributeModified": 2,
+      "DOM.childNodeRemoved": 2,
+      "DOM.childNodeInserted": 2,
+      "DOM.inlineStyleInvalidated": 1,
+      "DOM.documentUpdated": 2
+    },
+    "in_shadow": 0,
+    "in_frame": 0,
+    "unknown_node_refs": 0,
+    "shadow_root_pushed": 0,
+    "document_updated": 0,
+    "per_second": {
+      "min": 0,
+      "max": 0,
+      "avg": 0
+    },
+    "max_burst_per_100ms": 0
+  },
+  "mutation_observer": {
+    "observer_roots": 404,
+    "records_doc_only": 0,
+    "records_all_roots": 0,
+    "in_shadow": 0,
+    "in_frame": 0,
+    "by_type": {},
+    "microtask_batches": 0,
+    "max_records_per_batch": 0
+  },
+  "navigation": {
+    "spa": {
+      "clicked_href": "/home",
+      "url_after": "http://homeassistant.local:8123/home/overview",
+      "events_during": 7,
+      "document_updated_during": 0
+    },
+    "reload": {
+      "document_updated": 2,
+      "events_after_reload_before_getDocument": 2,
+      "events_5s_after_new_getDocument": 0,
+      "nodes_after_reload": 3723
+    }
+  }
+}

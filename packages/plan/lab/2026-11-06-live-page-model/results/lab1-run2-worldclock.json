@@ -1,0 +1,46 @@
+[lab] target: https://www.timeanddate.com/worldclock/
+[lab] listening 20000 ms (leave the page alone)…
+{
+  "target": "https://www.timeanddate.com/worldclock/",
+  "idle_ms": 20000,
+  "phase1_full_tree": {
+    "getDocument_ms": 15,
+    "getDocument_bytes": 450010,
+    "nodes": 2311,
+    "shadow_roots": 13,
+    "frame_documents": 2
+  },
+  "cdp_events": {
+    "total": 220,
+    "bytes": 29816,
+    "by_method": {
+      "DOM.childNodeRemoved": 100,
+      "DOM.childNodeInserted": 100,
+      "DOM.inlineStyleInvalidated": 20
+    },
+    "in_shadow": 0,
+    "in_frame": 0,
+    "unknown_node_refs": 0,
+    "shadow_root_pushed": 0,
+    "document_updated": 0,
+    "per_second": {
+      "min": 0,
+      "max": 11,
+      "avg": 11
+    },
+    "max_burst_per_100ms": 11
+  },
+  "mutation_observer": {
+    "observer_roots": 4,
+    "records_doc_only": 340,
+    "records_all_roots": 340,
+    "in_shadow": 0,
+    "in_frame": 0,
+    "by_type": {
+      "childList": 100,
+      "attributes": 240
+    },
+    "microtask_batches": 20,
+    "max_records_per_batch": 17
+  }
+}

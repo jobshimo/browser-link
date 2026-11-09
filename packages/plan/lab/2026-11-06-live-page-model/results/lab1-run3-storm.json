@@ -1,0 +1,45 @@
+[lab] target: file:///<lab-dir>/storm.html
+[lab] listening 10000 ms (leave the page alone)…
+{
+  "target": "file:///<lab-dir>/storm.html",
+  "idle_ms": 10000,
+  "phase1_full_tree": {
+    "getDocument_ms": 2,
+    "getDocument_bytes": 66141,
+    "nodes": 453,
+    "shadow_roots": 20,
+    "frame_documents": 0
+  },
+  "cdp_events": {
+    "total": 261209,
+    "bytes": 22254177,
+    "by_method": {
+      "DOM.characterDataModified": 237469,
+      "DOM.attributeModified": 23740
+    },
+    "in_shadow": 237469,
+    "in_frame": 0,
+    "unknown_node_refs": 0,
+    "shadow_root_pushed": 0,
+    "document_updated": 0,
+    "per_second": {
+      "min": 0,
+      "max": 30442,
+      "avg": 23746
+    },
+    "max_burst_per_100ms": 3105
+  },
+  "mutation_observer": {
+    "observer_roots": 21,
+    "records_doc_only": 28820,
+    "records_all_roots": 317020,
+    "in_shadow": 288200,
+    "in_frame": 0,
+    "by_type": {
+      "attributes": 28820,
+      "characterData": 288200
+    },
+    "microtask_batches": 30261,
+    "max_records_per_batch": 20
+  }
+}

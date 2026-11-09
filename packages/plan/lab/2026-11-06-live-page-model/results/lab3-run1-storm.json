@@ -1,0 +1,48 @@
+{
+  "target": "file:///<lab-dir>/storm.html",
+  "script_id": "1",
+  "window_ms": 10000,
+  "phase_a_live_inject": {
+    "agent": {
+      "roots": 21,
+      "closedRoots": 0,
+      "flushes": 0,
+      "records": 0,
+      "doc": "file:///<lab-dir>/storm.html"
+    },
+    "wire": {
+      "messages": 720,
+      "bytes": 242640,
+      "records": 316800,
+      "bytes_per_s": 24264,
+      "msgs_per_s": 72
+    },
+    "agent_after": {
+      "roots": 21,
+      "closedRoots": 0,
+      "flushes": 721,
+      "records": 317240,
+      "doc": "file:///<lab-dir>/storm.html"
+    }
+  },
+  "phase_b_after_reload": {
+    "agent": {
+      "roots": 21,
+      "closedRoots": 0,
+      "flushes": 721,
+      "records": 317258,
+      "doc": "file:///<lab-dir>/storm.html"
+    },
+    "wire": {
+      "messages": 721,
+      "bytes": 242975,
+      "records": 317038,
+      "bytes_per_s": 24298
+    }
+  },
+  "phase_c_closed_root": {
+    "closed_roots_seen_by_agent": 1,
+    "records_pushed": 31684,
+    "messages": 72
+  }
+}

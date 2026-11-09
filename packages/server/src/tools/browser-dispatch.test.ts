@@ -3,8 +3,10 @@ import {
   type BrowserToolDeps,
   handleBrowserTool,
   isBrowserTool,
+  outdatedServerHint,
   validateFlowSteps,
 } from './browser-dispatch.js';
+import { VERSION } from '../version.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
@@ -3964,5 +3966,29 @@ describe('list_tabs — extension version (S3)', () => {
     );
     expect(tabs[0]).not.toHaveProperty('extension_version');
     expect(tabs[0]).not.toHaveProperty('extension_outdated');
+  });
+});
+
+describe('outdatedServerHint (S3b)', () => {
+  test('installed newer than running: tells the agent what to ask the user', () => {
+    expect(outdatedServerHint('0.40.0', '0.41.0')).toBe(
+      'server running 0.40.0, installed 0.41.0: this server is outdated; ask the user to run browser-link stop and restart the agent, or to click "Repair connection" in the extension popup',
+    );
+  });
+
+  test('no hint when running = installed, installed is older, or unknown', () => {
+    expect(outdatedServerHint('0.41.0', '0.41.0')).toBeNull();
+    expect(outdatedServerHint('0.41.0', '0.40.0')).toBeNull();
+    expect(outdatedServerHint('0.41.0', null)).toBeNull();
+  });
+
+  test('list_tabs result is unchanged when running = installed', async () => {
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ tab_id: 'tab_1', url: 'http://x', title: 't' }]),
+    });
+    expect(outdatedServerHint(VERSION, VERSION)).toBeNull();
+    expect(await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)).toEqual([
+      { tab_id: 'tab_1', url: 'http://x', title: 't', claimed_by: null, claimed_by_me: false },
+    ]);
   });
 });

@@ -4,6 +4,12 @@ import type { ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { resolveNpmCliJs, runSelfUpdate, type SelfUpdateProgress } from './self-update.js';
 
+// Never run the real `stop` from a test: since 0.41.0 it ends every live
+// browser-link process on the machine, not only the port owner.
+vi.mock('./free-port.js', () => ({
+  runFreePort: vi.fn(() => ({ ok: true, pid: null, imageName: null, message: 'free' })),
+}));
+
 /**
  * Build a minimal fake `ChildProcess` for `spawn` stubs. Tests drive it by
  * emitting `data` on the stderr stream, then `close` with an exit code.
@@ -104,8 +110,8 @@ describe('runSelfUpdate', () => {
     const events: SelfUpdateProgress[] = [];
     const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
 
-    // We don't mock runFreePort itself — it might find or not find a primary
-    // on the test runner. Either way the stage label appears in events.
+    // runFreePort is mocked for the whole file (it would stop every live
+    // browser-link process on this machine); the stage label still appears.
     await runSelfUpdate('latest', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,

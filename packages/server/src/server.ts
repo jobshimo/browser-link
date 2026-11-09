@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
 import { getMapHints } from './map/queries.js';
@@ -20,6 +21,11 @@ import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
+import { findPidOnPort, imageNameOf, isNodeImage } from './commands/free-port.js';
+import { probeVersion, retryBind, runElection, stepDownProcess } from './lifecycle/election.js';
+import { readProcessStartTime } from './lifecycle/processes.js';
+import { createRepairController } from './lifecycle/repair.js';
+import { INSTALLED_CLI_PATH, readInstalledCodeMtime } from './lifecycle/version-endpoint.js';
 import {
   WS_HOST,
   WS_PORT,
@@ -78,6 +84,10 @@ export async function runServer(): Promise<void> {
     await runPrimary(cfg);
   } catch (err) {
     if (!isAddrInUse(err)) throw err;
+    // Version-aware election (lifecycle/election.ts): a newer process
+    // displaces an older primary; otherwise fall through to the existing
+    // proxy / error path.
+    if (await electPrimary(() => runPrimary(cfg))) return;
     if (cfg.multiAgent === true) {
       // Another primary is already running — degrade to proxy mode so this
       // MCP client can still reach the bridge.
@@ -97,6 +107,59 @@ export async function runServer(): Promise<void> {
   }
 }
 
+/** Hand-off race: a repair or take-over predecessor may be exiting right
+ * now. Retry the bind briefly before asking who holds the port. */
+const HANDOFF_ATTEMPTS = 5;
+const HANDOFF_DELAY_MS = 100;
+/** After a take-over step-down: 200 ms × up to 25. */
+const TAKEOVER_ATTEMPTS = 25;
+const TAKEOVER_DELAY_MS = 200;
+
+/**
+ * The port is taken. Returns true when this process ended up as the primary
+ * (the holder left during the hand-off window, or it was older and stepped
+ * down), false when it must defer.
+ */
+async function electPrimary(bind: () => Promise<void>): Promise<boolean> {
+  try {
+    await retryBind(bind, {
+      attempts: HANDOFF_ATTEMPTS,
+      delayMs: HANDOFF_DELAY_MS,
+      isRetryable: isAddrInUse,
+    });
+    return true;
+  } catch (err) {
+    if (!isAddrInUse(err)) throw err;
+  }
+  const outcome = await runElection({
+    localVersion: VERSION,
+    probe: () => probeVersion(WS_PORT),
+    findOwnerPid: () => findPidOnPort(WS_PORT),
+    processStartTime: (pid) => readProcessStartTime(pid),
+    installedCodeMtime: () => readInstalledCodeMtime(),
+    stepDown: async (pid) => {
+      // Same safety rule as `browser-link stop`: only a node process.
+      if (!isNodeImage(imageNameOf(pid))) throw new Error(`PID ${pid} is not a node process`);
+      await stepDownProcess(pid);
+    },
+  });
+  log(`Primary election: ${outcome.decision} (${outcome.reason}).`);
+  if (outcome.decision !== 'take-over') return false;
+  try {
+    await retryBind(bind, {
+      attempts: TAKEOVER_ATTEMPTS,
+      delayMs: TAKEOVER_DELAY_MS,
+      isRetryable: isAddrInUse,
+    });
+    log(`Took over from PID ${outcome.pid ?? '?'} (running ${VERSION}).`);
+    return true;
+  } catch (err) {
+    if (!isAddrInUse(err)) throw err;
+    log('Take-over: the port did not free up in time; deferring.');
+    return false;
+  }
+}
+
 async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   const tabs = new Map<string, TabSession>();
   const pendingRequests = new Map<string, PendingRequest>();
@@ -108,9 +171,30 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     multiAgent: cfg.multiAgent === true,
   });
 
+  // Popup "Repair connection" (lifecycle/repair.ts): restart on the
+  // installed code. Wired here because only the primary owns the sockets,
+  // the IPC server and the process.
+  const repair = createRepairController({
+    execPath: process.execPath,
+    cliPath: INSTALLED_CLI_PATH,
+    spawn: (command, args, options) => spawn(command, args, options),
+    terminateSockets: () => {
+      for (const client of wss.clients) client.terminate();
+    },
+    stopIpc: () => (ipcServer ? ipcServer.stop() : Promise.resolve()),
+    exit: (code) => {
+      closeDb();
+      process.exit(code);
+    },
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
+  });
+
   // Bind the WS bridge first. AddrInUseError propagates up to runServer()
   // so the caller can decide between proxy mode and a clear error.
-  await startWsBridge(tabs, pendingRequests, events);
+  const wss = await startWsBridge(tabs, pendingRequests, events, {
+    onRepair: () => repair.start(),
+  });
 
   // Cooperative tab ownership across MCP clients. Claim events are mirrored
   // into the bridge event log so `browser.events` doubles as an audit trail.
