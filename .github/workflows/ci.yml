@@ -71,6 +71,44 @@ jobs:
       - name: Smoke-test the npm tarball
         run: node scripts/smoke-tarball.mjs
 
+  # Real-Chrome end-to-end net: the built extension in headless Chrome,
+  # driven through the built server over MCP stdio (packages/e2e). Runs in
+  # parallel with the matrix so a failure is attributed to this job alone.
+  # Chrome: the runner's own, /usr/bin/google-chrome (CHROME_BIN in
+  # actions/runner-images images/ubuntu/scripts/build/install-google-chrome.sh;
+  # Ubuntu 24.04 image lists Google Chrome 156). lsof is not listed there;
+  # the harness uses it to prove no process on 17529/17530 was disturbed.
+  e2e:
+    name: e2e (real Chrome, ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Install lsof
+        run: command -v lsof || { sudo apt-get update && sudo apt-get install -y lsof; }
+
+      - name: End-to-end (one line per tool)
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          E2E_NO_SANDBOX: '1'
+        run: pnpm test:e2e
+
   # Tag + GitHub Release + npm publish, all in one job downstream of the
   # CI matrix. Lives inside ci.yml on purpose — npm Trusted Publishers
   # validates the OIDC `workflow_ref` claim, and chained workflows
@@ -82,7 +120,8 @@ jobs:
   # configured to accept.
   release:
     name: Tag + Release + npm publish
-    needs: ci
+    # e2e too: a red end-to-end net blocks the publish.
+    needs: [ci, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
