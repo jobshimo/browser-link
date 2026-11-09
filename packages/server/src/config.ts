@@ -9,6 +9,13 @@ import { sanitizeDisabledTools } from './permissions.js';
  */
 export interface BrowserLinkConfig {
   skipWelcome?: boolean;
+  /**
+   * The user confirmed the product notice (`notice.ts`) on the console's
+   * first run. Reads as `false` unless the file holds exactly `true`; only
+   * `true` is ever written. Until it is true the TUI opens on the notice,
+   * whatever `skipWelcome` says. CLI commands are never blocked by it.
+   */
+  noticeAcknowledged?: boolean;
   language?: 'en' | 'es';
   /**
    * Tool names the MCP server must not expose. Empty / undefined means
@@ -259,6 +266,8 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // Only an explicit boolean false turns the refresh off; anything else in a
   // hand-edited file reads as the default.
   const instructionsAutoRefresh = cfg.instructionsAutoRefresh !== false;
+  // Only an explicit boolean true counts as acknowledged.
+  const noticeAcknowledged = cfg.noticeAcknowledged === true;
   // sanitizeCdpPort (not `?? DEFAULT`) so cfg.cdpDirectPort is ALWAYS a valid
   // integer by construction — an untrusted config.json string that would
   // otherwise reach a discovery URL is neutralized here, at the read
@@ -289,6 +298,7 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
     cdpDirectGrantTtlMinutes,
     idleTtlMinutes,
     instructionsAutoRefresh,
+    noticeAcknowledged,
   };
 }
 
@@ -339,6 +349,12 @@ function normaliseForWrite(cfg: BrowserLinkConfig): BrowserLinkConfig {
   if (next.instructionsAutoRefresh === DEFAULT_INSTRUCTIONS_AUTO_REFRESH) {
     const { instructionsAutoRefresh: _omit8, ...rest8 } = next;
     next = rest8;
+  }
+  // The acknowledgement is written only as `true`; anything else is the
+  // implicit "not acknowledged" state.
+  if ('noticeAcknowledged' in next && next.noticeAcknowledged !== true) {
+    const { noticeAcknowledged: _omit9, ...rest9 } = next;
+    next = rest9;
   }
   return next;
 }

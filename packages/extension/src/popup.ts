@@ -22,6 +22,15 @@ import {
   type RunningFlowView,
 } from './flow-registry.js';
 import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
+import {
+  NOTICE_ACKNOWLEDGED_STORAGE_KEY,
+  noticeAcknowledgeLabel,
+  noticeCloseLabel,
+  noticeFull,
+  noticeLanguage,
+  noticeShortLineParts,
+  shouldShowNoticeBeforeConnect,
+} from './notice-policy.js';
 import type { FlowStep } from './flow.js';
 
 // Local mirrors of the runtime message return shapes that background.ts
@@ -660,6 +669,52 @@ async function respondToDialog(accept: boolean): Promise<void> {
   await refreshPendingDialog(tab.id);
 }
 
+/**
+ * Product notice. The popup has no language setting, so the notice follows
+ * the browser UI language (see notice-policy.ts). Two modes share one
+ * panel: 'read' (opened from the bottom line, Close only) and 'gate'
+ * (before the first Connect on this profile: "I understand" stores the
+ * acknowledgement and resumes the Connect; Close cancels it).
+ */
+const NOTICE_LANG = noticeLanguage(navigator.language);
+
+function renderNoticeLine(): void {
+  const { lead, link } = noticeShortLineParts(NOTICE_LANG);
+  $('notice-line-text').textContent = lead;
+  $('notice-open').textContent = link;
+}
+
+function openNotice(mode: 'read' | 'gate'): void {
+  const notice = noticeFull(NOTICE_LANG);
+  $('notice-title').textContent = notice.title;
+  const body = $('notice-body');
+  body.replaceChildren(
+    ...notice.paragraphs.map((text) => {
+      const p = document.createElement('p');
+      p.textContent = text;
+      return p;
+    }),
+  );
+  const ack = $('notice-acknowledge') as HTMLButtonElement;
+  ack.textContent = noticeAcknowledgeLabel(NOTICE_LANG);
+  ack.hidden = mode !== 'gate';
+  $('notice-close').textContent = noticeCloseLabel(NOTICE_LANG);
+  const panel = $('notice-panel');
+  panel.hidden = false;
+  panel.scrollIntoView({ block: 'nearest' });
+}
+
+function closeNotice(): void {
+  $('notice-panel').hidden = true;
+  ($('notice-acknowledge') as HTMLButtonElement).hidden = true;
+}
+
+async function acknowledgeNoticeAndConnect(): Promise<void> {
+  await chrome.storage.local.set({ [NOTICE_ACKNOWLEDGED_STORAGE_KEY]: true });
+  closeNotice();
+  await onAction();
+}
+
 async function onAction(): Promise<void> {
   const tab = await getCurrentTab();
   if (!tab?.id) return;
@@ -668,6 +723,17 @@ async function onAction(): Promise<void> {
     action: 'status',
     tabId: tab.id,
   });
+
+  // One-time gate: the first Connect on this browser profile shows the
+  // full notice and stops here; "I understand" stores the acknowledgement
+  // and re-enters onAction. Disconnect never asks.
+  if (!status.connected) {
+    const data = await chrome.storage.local.get(NOTICE_ACKNOWLEDGED_STORAGE_KEY);
+    if (shouldShowNoticeBeforeConnect(data[NOTICE_ACKNOWLEDGED_STORAGE_KEY])) {
+      openNotice('gate');
+      return;
+    }
+  }
 
   // Transient "connecting" state — the card flips to the blue palette so
   // the user sees something is happening even if the round-trip to the
@@ -704,6 +770,21 @@ async function onAction(): Promise<void> {
 
 $('action').addEventListener('click', () => {
   onAction().catch((err: unknown) => {
+    setStatus('error', err instanceof Error ? err.message : String(err));
+    setAction('Retry', 'primary');
+  });
+});
+
+$('notice-open').addEventListener('click', () => {
+  openNotice('read');
+});
+
+$('notice-close').addEventListener('click', () => {
+  closeNotice();
+});
+
+$('notice-acknowledge').addEventListener('click', () => {
+  acknowledgeNoticeAndConnect().catch((err: unknown) => {
     setStatus('error', err instanceof Error ? err.message : String(err));
     setAction('Retry', 'primary');
   });
@@ -823,6 +904,7 @@ document.getElementById('open-activity')?.addEventListener('click', () => {
   );
 });
 
+renderNoticeLine();
 refresh().catch((err: unknown) => {
   setStatus('error', err instanceof Error ? err.message : String(err));
 });

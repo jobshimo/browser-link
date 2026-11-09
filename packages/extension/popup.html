@@ -308,6 +308,80 @@
         cursor: progress;
       }
 
+      /* Product notice: a quiet one-liner at the bottom (with a link-styled
+       * button that opens the full text) and the in-popup panel that shows
+       * the full notice — read on demand, or confirmed once before the
+       * first Connect. Texts are filled by popup.ts from notice-policy.ts. */
+      .notice-line {
+        margin-top: 12px;
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--text-muted);
+        text-align: center;
+      }
+
+      .notice-link {
+        display: inline;
+        width: auto;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: none;
+        font: inherit;
+        font-weight: 600;
+        color: var(--brand-to);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+
+      .notice-link:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
+      }
+
+      .notice-panel {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--idle-fg);
+        background: var(--idle-soft);
+        border-radius: 10px;
+      }
+
+      .notice-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text);
+        margin-bottom: 6px;
+      }
+
+      .notice-body {
+        max-height: 220px;
+        overflow-y: auto;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--text);
+      }
+
+      .notice-body p {
+        margin: 0 0 8px;
+      }
+
+      .notice-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .notice-actions button {
+        flex: 1;
+        margin-top: 4px;
+      }
+
+      .notice-actions button.secondary {
+        background: var(--bg-soft);
+        color: var(--text);
+        box-shadow: inset 0 0 0 1px var(--border);
+      }
+
       .footer {
         margin-top: 10px;
         font-size: 10.5px;
@@ -683,6 +757,26 @@
 
       <button id="action" class="primary" disabled>…</button>
 
+      <!-- Product notice, full text. Opened from the bottom notice line
+           (read mode: Close only) or, the first time Connect is pressed on
+           this browser profile, as a gate (I understand + Close): the
+           connection proceeds only after "I understand", which stores
+           `noticeAcknowledged: true` in chrome.storage.local. -->
+      <div
+        id="notice-panel"
+        class="notice-panel"
+        role="dialog"
+        aria-labelledby="notice-title"
+        hidden
+      >
+        <div id="notice-title" class="notice-title"></div>
+        <div id="notice-body" class="notice-body"></div>
+        <div class="notice-actions">
+          <button id="notice-acknowledge" class="primary" type="button" hidden></button>
+          <button id="notice-close" class="secondary" type="button"></button>
+        </div>
+      </div>
+
       <!-- Pending dialog escape hatch.
            Surfaces a native alert/confirm/prompt blocking the connected
            tab so the user can answer it manually when no agent has the
@@ -804,6 +898,11 @@
         </svg>
         Activity
       </button>
+
+      <div class="notice-line">
+        <span id="notice-line-text"></span>
+        <button id="notice-open" class="notice-link" type="button"></button>
+      </div>
 
       <div class="footer">manual · per-tab · loopback only</div>
     </div>

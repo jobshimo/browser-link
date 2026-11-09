@@ -1,4 +1,5 @@
 import type { Language } from './welcome.js';
+import { NOTICE } from '../notice.js';
 
 export interface AboutI18n {
   title: string;
@@ -262,6 +263,15 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
  * The interactive version lives in the Ink UI (`ui/screens.tsx`). */
 export function printAbout(language: Language = 'en'): void {
   const t = I18N_ABOUT[language];
+  // The product notice always comes first, before the page itself.
+  const notice = NOTICE[language];
+  console.log(notice.title);
+  console.log('='.repeat(notice.title.length));
+  console.log('');
+  for (const paragraph of notice.paragraphs) {
+    console.log(paragraph);
+    console.log('');
+  }
   const sections: { title: string; body: string }[] = [
     { title: t.whatTitle, body: t.what },
     { title: t.howTitle, body: t.how },

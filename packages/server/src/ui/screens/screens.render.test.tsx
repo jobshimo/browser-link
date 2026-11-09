@@ -13,6 +13,11 @@ import { LanguageView } from './language.js';
 import { AgentInstructionsView } from './agent-instructions.js';
 import { PermissionsView } from './permissions.js';
 import { MultiAgentView } from './multi-agent.js';
+import { NoticeScreen } from './notice.js';
+import { App } from '../app.js';
+import { loadConfig, saveConfig } from '../../config.js';
+import { NOTICE } from '../../notice.js';
+import { I18N_ABOUT } from '../../commands/about.js';
 
 /*
  * Render-time crash guard for every Ink screen component. This file ONLY
@@ -164,6 +169,20 @@ describe('AboutView render', () => {
     expect(frame).toMatch(/about/i);
     expect(frame).toContain('Martín Miguel Bernal');
   });
+
+  for (const language of ['en', 'es'] as const) {
+    test(`${language}: the product notice is the first section, all 3 paragraphs`, () => {
+      const { lastFrame } = render(<AboutView language={language} onBack={noop} />);
+      // Ink wraps long lines, so compare with whitespace collapsed.
+      const flat = (lastFrame() ?? '').replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+      const noticeAt = flat.indexOf(NOTICE[language].title);
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(flat.indexOf(I18N_ABOUT[language].whatTitle));
+      for (const p of NOTICE[language].paragraphs) {
+        expect(flat).toContain(p.slice(0, 40).replace(/\s+/g, ' '));
+      }
+    });
+  }
 });
 
 describe('LanguageView render', () => {
@@ -202,5 +221,100 @@ describe('MultiAgentView render', () => {
     const frame = lastFrame() ?? '';
     expect(frame).toMatch(/Multi-agent/i);
     expect(frame).toMatch(/Auto-reelect/i);
+  });
+});
+
+async function tick(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+describe('NoticeScreen', () => {
+  for (const [language, label] of [
+    ['en', 'I understand'],
+    ['es', 'Entendido'],
+  ] as const) {
+    test(`${language}: renders the title, the 3 paragraphs and "${label}"`, () => {
+      const { lastFrame } = render(<NoticeScreen language={language} onAcknowledge={noop} />);
+      const frame = lastFrame() ?? '';
+      // Ink wraps long lines, so compare with whitespace collapsed.
+      const flat = frame.replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+      expect(flat).toContain(NOTICE[language].title);
+      for (const p of NOTICE[language].paragraphs) {
+        expect(flat).toContain(p.slice(0, 40).replace(/\s+/g, ' '));
+      }
+      expect(frame).toContain(label);
+    });
+  }
+
+  test('Enter fires onAcknowledge; other keys do not', async () => {
+    let calls = 0;
+    const { stdin } = render(
+      <NoticeScreen
+        language="en"
+        onAcknowledge={() => {
+          calls += 1;
+        }}
+      />,
+    );
+    await tick();
+    stdin.write('q');
+    stdin.write('d');
+    stdin.write(' ');
+    await tick();
+    expect(calls).toBe(0);
+    stdin.write('\r');
+    await tick();
+    expect(calls).toBe(1);
+  });
+});
+
+describe('App first-run notice gate', () => {
+  const WELCOME = 'I understand, continue';
+  const MENU = 'browser-link — setup';
+
+  test('not acknowledged: the notice comes first, Enter persists and continues to welcome', async () => {
+    const { lastFrame, stdin } = render(
+      <App initialLanguage="en" skipWelcome={false} noticeAcknowledged={false} />,
+    );
+    await tick();
+    expect(lastFrame()).toContain(NOTICE.en.title);
+    expect(lastFrame()).not.toContain(WELCOME);
+    stdin.write('\r');
+    await tick();
+    expect(loadConfig().noticeAcknowledged).toBe(true);
+    expect(lastFrame()).toContain(WELCOME);
+  });
+
+  test('not acknowledged with skipWelcome: the notice still comes first, then the menu', async () => {
+    saveConfig({ skipWelcome: true });
+    const { lastFrame, stdin } = render(
+      <App initialLanguage="es" skipWelcome={true} noticeAcknowledged={false} />,
+    );
+    await tick();
+    expect(lastFrame()).toContain(NOTICE.es.title);
+    stdin.write('\r');
+    await tick();
+    expect(loadConfig().noticeAcknowledged).toBe(true);
+    expect(loadConfig().skipWelcome).toBe(true);
+    expect(lastFrame()).toContain('browser-link — configuración');
+  });
+
+  test('acknowledged: welcome is the first screen when not skipped', async () => {
+    const { lastFrame } = render(
+      <App initialLanguage="en" skipWelcome={false} noticeAcknowledged={true} />,
+    );
+    await tick();
+    expect(lastFrame()).not.toContain(NOTICE.en.title);
+    expect(lastFrame()).toContain(WELCOME);
+  });
+
+  test('acknowledged: skipWelcome still lands on the menu', async () => {
+    const { lastFrame } = render(
+      <App initialLanguage="en" skipWelcome={true} noticeAcknowledged={true} />,
+    );
+    await tick();
+    expect(lastFrame()).not.toContain(NOTICE.en.title);
+    expect(lastFrame()).toContain(MENU);
   });
 });

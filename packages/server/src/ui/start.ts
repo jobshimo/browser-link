@@ -12,8 +12,12 @@ export async function startUI(): Promise<void> {
   const cfg = loadConfig();
   const initialLanguage = cfg.language ?? 'en';
   const skipWelcome = cfg.skipWelcome === true;
-  const instance = render(createElement(App, { initialLanguage, skipWelcome }), {
-    exitOnCtrlC: true,
-  });
+  const noticeAcknowledged = cfg.noticeAcknowledged === true;
+  const instance = render(
+    createElement(App, { initialLanguage, skipWelcome, noticeAcknowledged }),
+    {
+      exitOnCtrlC: true,
+    },
+  );
   await instance.waitUntilExit();
 }
