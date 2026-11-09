@@ -581,7 +581,6 @@ describe('learned outcomes in getMapHint and recall', () => {
     for (let i = 0; i < n; i++) {
       recordOutcome(getDb(), {
         origin: 'http://x',
-        title: 'My App',
         pathname: '/search',
         target,
         target_kind: 'selector',
@@ -707,7 +706,7 @@ describe('learned outcomes in getMapHint and recall', () => {
   test('an app known only through learning still gets a hint', () => {
     learn('#broken', false);
     const hint = getMapHint('http://x');
-    expect(hint).toMatchObject({ app_key: 'my-app', entries: 0, flows: 0 });
+    expect(hint).toMatchObject({ app_key: 'x', entries: 0, flows: 0 });
     expect(hint?.inline?.learned).toHaveLength(1);
   });
 

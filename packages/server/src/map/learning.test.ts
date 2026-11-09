@@ -3,7 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDb, getDb } from './db.js';
-import { listLearned, saveEntry, upsertApp } from './queries.js';
+import {
+  getMapHint,
+  listApps,
+  listLearned,
+  recall,
+  resolveLearnerApp,
+  saveEntry,
+  upsertApp,
+} from './queries.js';
 import { saveConfig } from '../config.js';
 import {
   MAX_LEARNED_PER_APP,
@@ -209,7 +217,6 @@ describe('classifyOutcome — nothing learnable', () => {
 describe('recordOutcome', () => {
   const base = {
     origin: ORIGIN,
-    title: 'Example App',
     pathname: '/settings',
     target: '#save',
     target_kind: 'selector' as const,
@@ -275,7 +282,7 @@ describe('recordOutcome', () => {
     for (let i = 0; i < MAX_LEARNED_PER_APP + 3; i++) {
       recordOutcome(db, { ...base, target: `#t${i}`, outcome: { ok: true } });
     }
-    const other = upsertApp({ origin: 'https://other.example.com', title: 'Example App' });
+    const other = resolveLearnerApp(db, 'https://other.example.com');
     expect(rows().filter((r) => r.app_id === other.id)).toHaveLength(1);
   });
 });
@@ -299,7 +306,7 @@ describe('listLearned', () => {
       target: '#broken',
       outcome: { ok: false, reason: 'hit-mismatch' },
     });
-    const app = upsertApp({ origin: ORIGIN, title: 'Example App' });
+    const app = resolveLearnerApp(db, ORIGIN);
     expect(listLearned(db, app.id, 10).map((l) => l.target)).toEqual([
       '#broken',
       '#busy',
@@ -359,5 +366,90 @@ describe('learnFromDispatch', () => {
     learnFromDispatch({ ...ctx, url: null });
     learnFromDispatch({ ...ctx, url: 'not a url' });
     expect(rows()).toHaveLength(0);
+  });
+});
+
+describe('learnFromDispatch — app resolution', () => {
+  const click = (url: string, title: string | null): void => {
+    learnFromDispatch({
+      tool: 'browser.click',
+      args: { tab_id: 't1', selector: '#compose', expect: { url_changed: true } },
+      result: { ok: true },
+      error: undefined,
+      url,
+      title,
+    });
+  };
+
+  test('a changed tab title never creates an app nor hides the saved map', () => {
+    saveEntry({
+      origin: ORIGIN,
+      app_key: 'myapp',
+      title: 'My App',
+      url_pattern: '/inbox',
+      kind: 'selector',
+      purpose: 'compose button',
+      payload: { selector: '#compose' },
+    });
+    click(`${ORIGIN}/inbox`, 'Inbox (3) - My App');
+
+    expect(listApps().map((a) => a.app_key)).toEqual(['myapp']);
+
+    const hint = getMapHint(ORIGIN);
+    expect(hint).toMatchObject({ app_key: 'myapp', entries: 1 });
+    expect(hint?.inline?.entries).toEqual([
+      {
+        url_pattern: '/inbox',
+        kind: 'selector',
+        purpose: 'compose button',
+        payload: { selector: '#compose' },
+      },
+    ]);
+    expect(hint?.inline?.learned).toEqual([
+      expect.objectContaining({ target: '#compose', action: 'click', ok_n: 1, fail_n: 0 }),
+    ]);
+
+    const recalled = recall({ origin: ORIGIN });
+    expect(recalled.app?.app_key).toBe('myapp');
+    expect(recalled.entries.map((e) => e.purpose)).toEqual(['compose button']);
+    expect(recalled.learned?.map((l) => l.target)).toEqual(['#compose']);
+  });
+
+  test('an origin without an app gets one app keyed and titled by its host', () => {
+    click(`${ORIGIN}/inbox`, 'Inbox (3) - My App');
+    click(`${ORIGIN}/inbox`, 'Inbox (4) - My App');
+    const apps = listApps();
+    expect(apps.map((a) => ({ app_key: a.app_key, title: a.title }))).toEqual([
+      { app_key: 'app-example-com', title: 'app.example.com' },
+    ]);
+    expect(rows()).toEqual([expect.objectContaining({ app_id: apps[0]!.id, ok_n: 2 })]);
+    expect(JSON.stringify(apps)).not.toContain('Inbox');
+  });
+
+  test('learning leaves the resolved app untouched (last_seen_at and title)', () => {
+    const app = upsertApp({ origin: ORIGIN, app_key: 'myapp', title: 'My App' });
+    getDb()
+      .prepare('UPDATE apps SET last_seen_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', app.id);
+    const before = getDb().prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+    click(`${ORIGIN}/inbox`, 'Inbox (3) - My App');
+    const after = getDb().prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+    expect(after).toEqual(before);
+    expect(rows()).toEqual([expect.objectContaining({ app_id: app.id })]);
+  });
+});
+
+describe('learnFromDispatch — press with a keyboard key', () => {
+  test('a press carrying only a keyboard key learns nothing', () => {
+    learnFromDispatch({
+      tool: 'browser.press',
+      args: { tab_id: 't1', key: 'Enter', expect: { url_changed: true } },
+      result: { ok: true, settle: { settled: true, mutation_count: 4 } },
+      error: undefined,
+      url: `${ORIGIN}/search`,
+      title: 'Example App',
+    });
+    expect(rows()).toHaveLength(0);
+    expect(listApps()).toHaveLength(0);
   });
 });

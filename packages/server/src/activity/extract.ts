@@ -132,12 +132,14 @@ export interface BuildRowInput {
 /** Thrown (or `isError`) messages, matched in order. The strings are the
  * stable prefixes the transports emit: `ref-stale:` (`flow.ts`), the
  * retargeted click message (`retargetedClickMessage`), `expectation not met`
- * (`cdp/expect.ts`) and the bridge's `Tool '<name>' timed out`. */
+ * (`cdp/expect.ts`), the bridge's `Tool '<name>' timed out` and `Element not found:`
+ * (the same not-found rule the map learner applies, see map/learning.ts). */
 const ERROR_FLAGS: readonly (readonly [RegExp, ActivityFlag])[] = [
   [/\bref-stale\b/, 'ref-stale'],
   [/\bretargeted\b|\bClick would land on\b/, 'retargeted'],
   [/\bexpectation not met\b/, 'expect-failed'],
   [/\bTool '[^']*' timed out\b/, 'timeout'],
+  [/^Element not found:/, 'not-found'],
 ];
 
 /** Tools whose resolved result is worth parsing. Everything else (snapshots,

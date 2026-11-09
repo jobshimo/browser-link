@@ -1398,7 +1398,7 @@ function handleActivity(args: unknown): unknown {
     flow_id,
     outcome,
     limit,
-    include_payloads = true,
+    include_payloads,
   } = (args ?? {}) as {
     summary?: boolean;
     since?: string;
@@ -1413,8 +1413,24 @@ function handleActivity(args: unknown): unknown {
     include_payloads?: boolean;
   };
   // The friction report (S4): aggregated with GROUP BY in activity/summary.ts.
-  // Takes only the window filters; the records mode below is untouched.
+  // Takes only the window filters (since_id, since, agent_id). A records-only
+  // filter passed alongside is refused by name rather than silently ignored:
+  // a summary that quietly dropped `agent` would read as that agent's report.
   if (summary === true) {
+    const unsupported = Object.entries({
+      agent,
+      tab_id,
+      tool,
+      flow_id,
+      outcome,
+      limit,
+      include_payloads,
+    })
+      .filter(([, value]) => value !== undefined)
+      .map(([name]) => name);
+    if (unsupported.length > 0) {
+      throw new Error(`browser.activity: summary: true does not accept: ${unsupported.join(', ')}`);
+    }
     return {
       summary: summarizeActivity(getActivityDb(), {
         ...(typeof since_id === 'number' ? { sinceId: since_id } : {}),
@@ -1431,12 +1447,19 @@ function handleActivity(args: unknown): unknown {
     ...(typeof flow_id === 'string' ? { flowId: flow_id } : {}),
     ...(outcome === 'ok' || outcome === 'error' ? { outcome } : {}),
     ...(typeof limit === 'number' ? { limit } : {}),
+    ...(typeof since === 'string' ? { since } : {}),
+    ...(typeof agent_id === 'string' ? { agentId: agent_id } : {}),
   });
   return {
     // `include_payloads: false` lets an agent pull the shape of the trail
     // without dragging typed text and evaluate expressions into its context —
     // useful when summarising a long run, and the cheaper response by far.
-    records: include_payloads ? page.records : page.records.map(redactActivity),
+    // Omitted means true (the default); read here rather than as a
+    // destructuring default so summary mode can tell "passed" from "omitted".
+    records:
+      include_payloads === undefined || include_payloads
+        ? page.records
+        : page.records.map(redactActivity),
     latest_id: page.latestId,
     total: page.total,
     agents: listActivityAgents(),

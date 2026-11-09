@@ -1478,7 +1478,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.activity',
     description:
-      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. With `summary: true` it returns the friction report instead: { summary: { records, errors, by_flag, by_tool_errors, evaluate_calls, timeouts, top_failing_targets, sessions } }, narrowed by since_id, since and agent_id. Reading the trail is itself recorded.',
+      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. With `summary: true` it returns the friction report instead: { summary: { records, errors, by_flag, by_tool_errors, evaluate_calls, timeouts, top_failing_targets, sessions } }, narrowed by since_id, since and agent_id only (any other filter alongside summary: true is an error naming it). Reading the trail is itself recorded.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1489,17 +1489,17 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         summary: {
           type: 'boolean',
           description:
-            'Return the friction report instead of rows: counts of records and errors, failures by flag (retargeted, ref-stale, expect-failed, timeout, unmatched, not-found, multiple-matches, flow-timeout, download-timeout, unsettled, hit-mismatch), errors by tool, evaluate calls, timeouts, the top 10 failing selectors and one line per agent session. Honours since_id, since and agent_id only.',
+            'Return the friction report instead of rows: counts of records and errors, failures by flag (retargeted, ref-stale, expect-failed, timeout, unmatched, not-found, multiple-matches, flow-timeout, download-timeout, unsettled, hit-mismatch), errors by tool, evaluate calls, timeouts, the top 10 failing selectors and one line per agent session. Accepts since_id, since and agent_id only: agent, tab_id, tool, flow_id, outcome, limit or include_payloads alongside it are refused with an error naming them.',
         },
         since: {
           type: 'string',
           description:
-            'Summary mode only: rows at or after this ISO timestamp (e.g. "2026-11-09T10:00:00Z").',
+            'Only rows at or after this ISO timestamp (e.g. "2026-11-09T10:00:00Z"). Both modes.',
         },
         agent_id: {
           type: 'string',
           description:
-            'Summary mode only: rows of one agent session (the IPC session id listed in summary.sessions).',
+            'Only rows of one agent session (the IPC session id listed in summary.sessions). Both modes.',
         },
         tab_id: { type: 'string', description: 'Only actions against this tab.' },
         agent: {

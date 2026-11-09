@@ -991,8 +991,12 @@ separate `selector_outcomes` table, per app and route.
   `expect-failed`, `not-found`, `multiple-matches`, `unmatched` (a
   `wait_for` that never matched), `timeout`, `unsettled`
   (`settle.settled: false`), `hit-mismatch` (`hit_element` is not the target).
-- **Same app as the agent's saves**: the learner resolves the app from the
-  tab's origin and title exactly as `browser.map.save` does.
+- **Same app `list_tabs` and `recall` show**: the learner counts into the
+  most recently seen app of the tab's origin and leaves it untouched (no
+  `last_seen_at` bump, no title change). Only an origin with no app at all
+  gets a new one, keyed and titled by the host (`app.example.com` →
+  `app-example-com`). The tab title is never used or stored, so a title such
+  as "Inbox (3) - My App" can never create an app that hides your saved map.
 - **Bounded**: at most 200 learned targets per app; past that, the least used
   one is evicted.
 
@@ -1363,11 +1367,13 @@ when a call resolved `ok`: a `flag` (`retargeted`, `ref-stale`,
 agent session that ran it.
 
 - **Agents** call `browser.activity({ summary: true })`, optionally with
-  `since` (ISO timestamp), `since_id` or `agent_id`. It returns
+  `since` (ISO timestamp), `since_id` or `agent_id`; any other filter
+  alongside `summary: true` is an error naming it, never silently ignored. It returns
   `{ summary: { records, errors, by_flag, by_tool_errors, evaluate_calls,
 timeouts, top_failing_targets, sessions } }`: the top 10 failing selectors
   with their tool and last flag, and one line per agent session. Without
-  `summary`, `browser.activity` returns the same rows as before.
+  `summary`, `browser.activity` returns the same rows as before, and also
+  honours `since` and `agent_id`.
 - **You** run `browser-link activity report [--since <duration|iso>]
 [--agent <id>]` for the same report as a table.
 

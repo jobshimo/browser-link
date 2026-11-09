@@ -112,6 +112,40 @@ export function upsertApp(input: UpsertAppInput): AppRow {
   return db.prepare('SELECT * FROM apps WHERE id = ?').get(info.lastInsertRowid) as AppRow;
 }
 
+/**
+ * The app the map learner counts into for an origin, read-only on purpose.
+ *
+ * Picks the most recently seen app of the canonical origin with the same
+ * winner rule `getMapHints` applies (last_seen_at DESC, id DESC), so learned
+ * rows land in the app `list_tabs` and `recall` already show. It never
+ * touches that app's `last_seen_at` or `title`: a passive learner bumping
+ * freshness would reorder which app an origin resolves to. Only when the
+ * origin has no app at all does it create one, keyed and titled by the
+ * origin host, never by a tab title (titles change with page state, e.g.
+ * "Inbox (3) - My App", and would mint a new app per title).
+ */
+export function resolveLearnerApp(db: Database.Database, origin: string): AppRow {
+  const canonical = canonicalOrigin(origin);
+  const winner = db
+    .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1')
+    .get(canonical) as AppRow | undefined;
+  if (winner) return winner;
+  let host: string;
+  try {
+    host = new URL(canonical).host;
+  } catch {
+    host = canonical;
+  }
+  const ts = now();
+  const info = db
+    .prepare(
+      `INSERT INTO apps (origin, app_key, title, notes, created_at, last_seen_at)
+       VALUES (?, ?, ?, NULL, ?, ?)`,
+    )
+    .run(canonical, deriveAppKey(canonical, null), host, ts, ts);
+  return db.prepare('SELECT * FROM apps WHERE id = ?').get(info.lastInsertRowid) as AppRow;
+}
+
 export interface SaveEntryInput {
   origin: string;
   app_key?: string | null;

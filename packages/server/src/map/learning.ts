@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { loadConfig } from '../config.js';
 import { getDb } from './db.js';
-import { upsertApp } from './queries.js';
+import { resolveLearnerApp } from './queries.js';
 
 /**
  * The map learns from use.
@@ -179,7 +179,6 @@ export function classifyOutcome(
 
 export interface RecordOutcomeInput {
   origin: string;
-  title?: string | null;
   pathname: string;
   target: string;
   target_kind: TargetKind;
@@ -191,13 +190,15 @@ export interface RecordOutcomeInput {
  * Persist one verdict: upsert the counters of the (app, route, target,
  * kind, action) row, then enforce the per-app cap.
  *
- * The app is resolved by `upsertApp` with origin + title, the exact call
- * `browser.map.save` makes when the agent omits `app_key`, so what the agent
- * saves and what the learner counts land in the same app.
+ * The app is resolved by `resolveLearnerApp`: the most recently seen app
+ * of the origin (the one `list_tabs` and `recall` show), left untouched,
+ * or a new app keyed by the origin host when the origin has none. The tab
+ * title is never an input: a title such as "Inbox (3) - My App" would mint
+ * a fresh app that then hides the saved map.
  */
 export function recordOutcome(db: Database.Database, input: RecordOutcomeInput): void {
   if (!input.outcome.ok && !LEARNED_REASONS.includes(input.outcome.reason)) return;
-  const app = upsertApp({ origin: input.origin, title: input.title ?? null });
+  const app = resolveLearnerApp(db, input.origin);
   const ts = new Date().toISOString();
   const ok = input.outcome.ok;
   const reason = input.outcome.ok ? null : input.outcome.reason;
@@ -259,8 +260,10 @@ export interface DispatchOutcomeContext {
   args: unknown;
   result: unknown;
   error: unknown;
-  /** The tab's URL and title after the call, from the live tab table. */
+  /** The tab's URL after the call, from the live tab table. */
   url: string | null;
+  /** The tab's title. Part of the dispatcher contract but deliberately
+   * ignored by the learner: it never resolves apps from or stores titles. */
   title: string | null;
 }
 
@@ -286,7 +289,6 @@ export function learnFromDispatch(ctx: DispatchOutcomeContext): void {
   if (loadConfig().mapLearningEnabled === false) return;
   recordOutcome(getDb(), {
     origin: url.origin,
-    title: ctx.title,
     pathname: url.pathname,
     target: target.target,
     target_kind: target.target_kind,

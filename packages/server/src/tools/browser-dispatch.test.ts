@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeActivityDb } from '../activity/db.js';
+import { closeActivityDb, getActivityDb } from '../activity/db.js';
+import { record as recordActivityRow } from '../activity/queries.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -4126,5 +4127,94 @@ describe('browser.activity — records mode and summary mode', () => {
     )) as Record<string, unknown>;
     expect(Object.keys(result)).toEqual(['summary']);
     expect(result.summary).toMatchObject({ records: 0, errors: 0 });
+  });
+});
+
+describe('browser.activity — explicit filters are honoured or refused', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-activity-filters-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    closeActivityDb();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Two rows: an old one of session s1, a recent one of session s2. */
+  function seed(): { old: number; recent: number } {
+    const base = {
+      tool: 'browser.click',
+      tabId: 'tab_1',
+      transport: 'extension' as const,
+      url: 'https://example.com/',
+      title: 'Example',
+      agent: 'claude-code',
+      agentPid: 1,
+      selector: '#a',
+      payload: null,
+      outcome: 'ok' as const,
+      error: null,
+      durationMs: 1,
+      flowId: null,
+    };
+    const old = recordActivityRow({ ...base, agentId: 's1' })!;
+    const recent = recordActivityRow({ ...base, agentId: 's2' })!;
+    getActivityDb()
+      .prepare('UPDATE activity SET at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', old.id);
+    return { old: old.id, recent: recent.id };
+  }
+
+  async function activity(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return (await handleBrowserTool('browser.activity', args, makeDeps(), TEST_CALLER)) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  const ids = (result: Record<string, unknown>): number[] =>
+    (result.records as { id: number }[]).map((r) => r.id);
+
+  test('records mode honours since', async () => {
+    const { recent } = seed();
+    expect(ids(await activity({ since: '2025-01-01T00:00:00Z' }))).toEqual([recent]);
+  });
+
+  test('records mode honours agent_id', async () => {
+    const { old } = seed();
+    expect(ids(await activity({ agent_id: 's1' }))).toEqual([old]);
+  });
+
+  test('records mode without since/agent_id is unchanged', async () => {
+    const { old, recent } = seed();
+    const result = await activity({});
+    expect(Object.keys(result)).toEqual(['records', 'latest_id', 'total', 'agents']);
+    expect(ids(result)).toEqual([recent, old]);
+    expect(result.total).toBe(2);
+  });
+
+  test('summary: true refuses records-only filters, naming them', async () => {
+    await expect(activity({ summary: true, agent: 'claude-code', limit: 5 })).rejects.toThrow(
+      'summary: true does not accept: agent, limit',
+    );
+    await expect(
+      activity({
+        summary: true,
+        tool: 'browser.click',
+        tab_id: 'tab_1',
+        outcome: 'error',
+        include_payloads: false,
+      }),
+    ).rejects.toThrow('summary: true does not accept: tab_id, tool, outcome, include_payloads');
+  });
+
+  test('summary: true with only window filters still runs', async () => {
+    seed();
+    const result = await activity({ summary: true, since: '2025-01-01T00:00:00Z', agent_id: 's2' });
+    expect(result.summary).toMatchObject({ records: 1 });
   });
 });

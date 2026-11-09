@@ -244,6 +244,7 @@ describe('classifyFlag — thrown errors', () => {
     ['ref-stale: e12 not found in document d3', 'ref-stale'],
     ['expectation not met: url_changed after 3000ms', 'expect-failed'],
     ["Tool 'browser.click' timed out after 30000ms", 'timeout'],
+    ['Element not found: #missing', 'not-found'],
   ])('%s → %s', (message, flag) => {
     expect(classifyFlag('browser.click', {}, undefined, new Error(message))).toBe(flag);
   });
