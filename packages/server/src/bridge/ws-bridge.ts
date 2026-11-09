@@ -23,7 +23,7 @@ import {
   stats as activityStats,
 } from '../activity/queries.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
-import { lookupPeerProcessDetailed } from '../auth/process-identity.js';
+import { lookupPeerProcessDetailed, type PeerLookupResult } from '../auth/process-identity.js';
 import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
@@ -135,7 +135,7 @@ function normaliseLoopback(addr: string): string {
 
 /** Sentinel error used by the caller to detect a port-in-use and decide
  * whether to fall back to proxy mode. Anything else propagates unchanged. */
-class AddrInUseError extends Error {
+export class AddrInUseError extends Error {
   constructor() {
     super(`browser-link: port ${WS_HOST}:${WS_PORT} is already in use.`);
     this.name = 'AddrInUseError';
@@ -171,6 +171,10 @@ export interface WsBridgeOptions {
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
+  /** Who owns the other end of a handshake's TCP connection. Default
+   * `lookupPeerProcessDetailed` (the OS lookup); injectable so tests can
+   * drive the real handshake gate from a Node process. */
+  lookupPeerProcess?: (address: string, port: number) => Promise<PeerLookupResult>;
 }
 
 /** What the primary hands the bridge to answer `admin.describe` and
@@ -240,6 +244,7 @@ export function startWsBridge(
   options: WsBridgeOptions = {},
 ): Promise<WebSocketServer> {
   const { host, port, version } = resolveBridgeOptions(options);
+  const lookupPeerProcess = options.lookupPeerProcess ?? lookupPeerProcessDetailed;
   return new Promise((resolve, reject) => {
     const httpServer = createServer((req, res) => {
       handleBridgeHttpRequest(req, res, version, options.isRepairing);
@@ -263,7 +268,7 @@ export function startWsBridge(
           cb(false, 403, 'Cannot identify peer');
           return;
         }
-        lookupPeerProcessDetailed(remoteAddress, remotePort)
+        lookupPeerProcess(remoteAddress, remotePort)
           .then((lookup) => {
             if (!lookup.ok) {
               log(

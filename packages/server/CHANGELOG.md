@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.49.0](https://github.com/jobshimo/browser-link/compare/v0.48.0...v0.49.0) (2026-11-09)
+
+Hand copies are now guarded against drift and the untested server orchestration has tests. One shared error-category table replaces two private ones. No tool, flag or wire format changes.
+
+### Tests
+
+- **wire protocol:** a drift guard keeps the shared `index.ts` canonical between its `<wire-protocol>` markers and `messages.ts` a verbatim copy, checked in `config.drift.test.ts`.
+- **transports:** a parity guard (`cdp/transport-parity.test.ts`) compares `performFind`, `performClick`, `performType`, `performPress` and `performWaitFor` between the extension and cdp-direct. One divergence is allowlisted: the `wait_for` `network_url` mode.
+- **election:** primary election orchestration is tested through `startServer(deps)`, now exported from `server.ts` (9 cases).
+- **handshake:** the WebSocket handshake gate is tested with an injectable `lookupPeerProcess` (6 cases, statuses pinned).
+- **console:** the Updates and Doctor screens are tested with injectable `checkUpdates` and `runDoctor`, along with the update-check hook.
+
+### Code Refactoring
+
+- **errors:** one error-category table (`errors/categories.ts`, `categorise(message, consumer?)`) is shared by the map learner and the activity flags. Named `map-learner` overrides preserve the learner's previous mapping.
+- **cdp:** `cdp/transport.ts` is cosmetically aligned with the extension handlers. No behaviour change.
+
 ## [0.48.0](https://github.com/jobshimo/browser-link/compare/v0.47.0...v0.48.0) (2026-11-09)
 
 Documentation now matches what the code does, and dependency updates wait out a cooldown. No tool, flag or wire format changes.

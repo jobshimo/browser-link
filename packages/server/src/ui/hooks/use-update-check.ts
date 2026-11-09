@@ -12,8 +12,8 @@ import { checkForUpdates } from '../../commands/update-check.js';
  * single TUI session.
  *
  * A test seam (`runCheck`) lets the unit suite inject a synthetic check
- * function — see `use-update-check.test.tsx`. Production callers should
- * leave it undefined.
+ * function — see `ui/hooks/use-update-check.test.tsx` (next to this file).
+ * Production callers should leave it undefined.
  */
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;

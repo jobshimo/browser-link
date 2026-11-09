@@ -4,7 +4,7 @@ import { Frame } from '../components.js';
 import { COLORS, GLYPHS } from '../tokens.js';
 import { FooterKeys, InlineSpinner } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
-import { runDoctor, formatDoctor } from '../../commands/doctor.js';
+import { runDoctor, formatDoctor, type DoctorReport } from '../../commands/doctor.js';
 import type { CommonProps } from './types.js';
 
 /* Doctor — runs `runDoctor()` and dumps the formatted output.
@@ -35,9 +35,11 @@ const DOCTOR_I18N: Record<
 
 interface DoctorViewProps extends CommonProps {
   onBack: () => void;
+  /** The diagnosis. Default `runDoctor`; tests inject a stub. */
+  runDoctor?: () => Promise<DoctorReport>;
 }
 
-export function DoctorView({ language, onBack }: DoctorViewProps) {
+export function DoctorView({ language, onBack, runDoctor: run = runDoctor }: DoctorViewProps) {
   const t = DOCTOR_I18N[language];
   const [output, setOutput] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -45,13 +47,13 @@ export function DoctorView({ language, onBack }: DoctorViewProps) {
   useEffect(() => {
     let cancelled = false;
     setOutput(null);
-    void runDoctor().then((r) => {
+    void run().then((r) => {
       if (!cancelled) setOutput(formatDoctor(r));
     });
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, run]);
 
   useInput((input, key) => {
     if (key.return || key.escape) onBack();

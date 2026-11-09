@@ -1,5 +1,6 @@
 import type { ActivityFlag, ActivityInput, ActivityTransport } from './types.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
+import { categorise } from '../errors/categories.js';
 
 /**
  * Turn one tool dispatch into a trail row.
@@ -129,19 +130,6 @@ export interface BuildRowInput {
  * report can GROUP BY it instead of regexing error text.
  */
 
-/** Thrown (or `isError`) messages, matched in order. The strings are the
- * stable prefixes the transports emit: `ref-stale:` (`flow.ts`), the
- * retargeted click message (`retargetedClickMessage`), `expectation not met`
- * (`cdp/expect.ts`), the bridge's `Tool '<name>' timed out` and `Element not found:`
- * (the same not-found rule the map learner applies, see map/learning.ts). */
-const ERROR_FLAGS: readonly (readonly [RegExp, ActivityFlag])[] = [
-  [/\bref-stale\b/, 'ref-stale'],
-  [/\bretargeted\b|\bClick would land on\b/, 'retargeted'],
-  [/\bexpectation not met\b/, 'expect-failed'],
-  [/\bTool '[^']*' timed out\b/, 'timeout'],
-  [/^Element not found:/, 'not-found'],
-];
-
 /** Tools whose resolved result is worth parsing. Everything else (snapshots,
  * screenshots, list_tabs) can be large and never carries a friction signal,
  * so it is not JSON-parsed on the hot path. */
@@ -156,9 +144,11 @@ const RESULT_TOOLS: ReadonlySet<string> = new Set([
   'browser.download',
 ]);
 
+/** Thrown (or `isError`) messages, through the default rules of the shared
+ * error-category table (`errors/categories.ts`, the same table the map
+ * learner reads with its own overrides). */
 function flagFromMessage(message: string): ActivityFlag | null {
-  for (const [pattern, flag] of ERROR_FLAGS) if (pattern.test(message)) return flag;
-  return null;
+  return categorise(message);
 }
 
 /** The first text block of an MCP response, or null when it is not one. */
