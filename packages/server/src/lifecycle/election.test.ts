@@ -244,7 +244,14 @@ describe('stepDownProcess', () => {
   test('Windows: taskkill /PID n /F', async () => {
     const execFile = vi.fn(() => '');
     const kill = vi.fn();
-    await stepDownProcess(4242, { os: 'win32', execFile, kill });
+    await stepDownProcess(4242, {
+      // Deterministic guard: never compare against the real test runner pids.
+      selfPid: 1,
+      listProcesses: () => [],
+      os: 'win32',
+      execFile,
+      kill,
+    });
     expect(execFile).toHaveBeenCalledWith('taskkill', ['/PID', '4242', '/F'], {
       timeout: expect.any(Number),
     });
@@ -255,6 +262,9 @@ describe('stepDownProcess', () => {
     const kill = vi.fn();
     let alive = true;
     await stepDownProcess(4242, {
+      // Deterministic guard: never compare against the real test runner pids.
+      selfPid: 1,
+      listProcesses: () => [],
       os: 'linux',
       kill,
       isAlive: () => {
@@ -272,6 +282,9 @@ describe('stepDownProcess', () => {
     const kill = vi.fn();
     let clock = 0;
     await stepDownProcess(4242, {
+      // Deterministic guard: never compare against the real test runner pids.
+      selfPid: 1,
+      listProcesses: () => [],
       os: 'darwin',
       kill,
       isAlive: () => true,
