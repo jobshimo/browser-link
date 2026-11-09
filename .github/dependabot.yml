@@ -6,6 +6,11 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # Wait before proposing a freshly published version, so a compromised or
+    # yanked release is usually withdrawn before it reaches a PR.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     # Group rules so the typical week is 1–3 PRs instead of one per dep.
     # Major bumps deliberately drop out of every group (no `major` in
     # update-types) so they always arrive as solo PRs for review.
@@ -39,6 +44,9 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # github-actions supports only default-days (no semver-*-days keys).
+    cooldown:
+      default-days: 7
     groups:
       gh-actions:
         patterns:
