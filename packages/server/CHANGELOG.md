@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.43.0](https://github.com/jobshimo/browser-link/compare/v0.42.0...v0.43.0) (2026-11-09)
+
+### Features
+
+- **map:** the map now learns from use without any agent bookkeeping: after every `click`, `type`, `press`, `find` and `wait_for` the server records, per app, whether the selector or semantic key worked or failed and why (`retargeted`, `ref-stale`, `expect-failed`, `not-found`, `multiple-matches`, `unmatched`, `timeout`, `unsettled`, `hit-mismatch`). Only the selector or key is stored, never typed text, expressions or values; a call that used only a `ref` learns nothing. Capped at 200 rows per app. `browser-link config set map-learning <on|off>` (on by default).
+- **list_tabs / recall:** the inline map carries `learned` (up to three targets, failures first) inside the existing 2048-byte cap, or `learned_failures: n` when nothing fits; `browser.map.recall` returns `learned` (up to 50) after `entries`. Both are absent when nothing was learned, so existing output is unchanged.
+- **activity:** every record now carries a `flag` and the agent session id. Failures that used to resolve as plain `ok` are kept as evidence: `wait_for`/`find` with `matched: false`, flow `stopped_by: 'timeout'`, download `timeout`/`interrupted`, `settle.settled: false` and a `hit_element` outside the target. Existing rows read back with `flag: null`; the migration is additive and idempotent.
+- **friction report:** `browser.activity({ summary: true })` returns records, errors, counts by flag and by tool, `evaluate` calls, timeouts, the top failing targets and a per-session breakdown; `browser-link activity report [--since <duration|date>] [--agent <id>]` prints the same report in the console.
+
 ## [0.42.0](https://github.com/jobshimo/browser-link/compare/v0.41.0...v0.42.0) (2026-11-09)
 
 ### Features
