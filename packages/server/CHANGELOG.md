@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.48.0](https://github.com/jobshimo/browser-link/compare/v0.47.0...v0.48.0) (2026-11-09)
+
+Documentation now matches what the code does, and dependency updates wait out a cooldown. No tool, flag or wire format changes.
+
+### Documentation
+
+- **readme:** the Node floor reads 22.22.2 everywhere, including the architecture diagram, whose box border is realigned.
+- **readme:** the network and update-check text is truthful: the setup console checks registry.npmjs.org for new versions every 6 hours and sends only the package name, and `browser.download` fetches the URLs the agent asks for. The claim that nothing leaves your machine is gone. The security model gains a table of the inputs the server rejects.
+- **readme:** the grant wording explains `cdp status` and the time box on a grant.
+- **readme:** new Stability section.
+- **decisions:** superseded sections of `DECISIONS.md` carry dated blocks pointing to what replaced them, including the §12 note on the key and the Web Store.
+- **spec:** `SPEC.md` is current: v4 is shipped, v5 is pending.
+- **roadmap:** `ROADMAP.md` follows its own format and lists releases 0.27.1 to 0.47.0.
+- **flow spec:** `docs/specs/flow-supervised-execution.md` now reads "shipped in 0.27.0" instead of "accepted, not started".
+
+### Continuous Integration
+
+- **dependabot:** dependency updates are held back by a cooldown: 7 days for npm (14 days for major versions) and 7 days for github-actions.
+
 ## [0.47.0](https://github.com/jobshimo/browser-link/compare/v0.46.0...v0.47.0) (2026-11-09)
 
 Small operability and code-quality fixes from the 2026-11-09 audit. No tool, flag or wire format changes.
