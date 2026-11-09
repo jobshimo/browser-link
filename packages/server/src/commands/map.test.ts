@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeDb } from '../map/db.js';
+import { closeDb, getDb } from '../map/db.js';
+import { recordOutcome } from '../map/learning.js';
+import { setReaderStatus, upsertReader } from '../map/readers.js';
 import {
   listApps,
   listEntries,
@@ -976,5 +978,66 @@ describe('semantic_key in entry payloads (spec v4 §6.3, S3)', () => {
     });
     const out = runMapCommand(['show', 'my-app']);
     expect(out).toContain('{"selector":"#s","semantic_key":{"role":"button","name":"Save"');
+  });
+});
+
+describe('map show — what the map learned (builds, learned targets, JS readers)', () => {
+  function seed(): void {
+    const app = upsertApp({ origin: 'https://learn.test', title: 'Learn App' });
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO app_builds (app_id, fingerprint, first_seen_at, last_seen_at)
+       VALUES (?, '3f9a', '2026-11-01T00:00:00.000Z', '2026-11-09T00:00:00.000Z')`,
+    ).run(app.id);
+    for (const outcome of [
+      { ok: true as const },
+      { ok: false as const, reason: 'retargeted' as const },
+    ]) {
+      recordOutcome(db, {
+        origin: 'https://learn.test',
+        pathname: '/list',
+        target: '.next',
+        target_kind: 'selector',
+        action: 'click',
+        outcome,
+        build: '3f9a',
+      });
+    }
+    const row = upsertReader(db, {
+      appId: app.id,
+      expression: 'document.title',
+      ok: true,
+      build: '3f9a',
+    })!;
+    setReaderStatus(db, row.id, 'kept', 'page-title');
+  }
+
+  test('prints builds, learned targets and readers after the flows block', () => {
+    seed();
+    const out = runMapCommand(['show', 'learn-app']);
+    const lines = out.split('\n');
+    expect(lines).toContain('Builds (1) — current 3f9a');
+    expect(lines).toContain('  3f9a 2026-11-01T00:00:00.000Z 2026-11-09T00:00:00.000Z');
+    expect(lines).toContain('Learned targets (1, 1 with failures)');
+    expect(lines).toContain('  [click] /list .next — fresh, ok 1, fail 1 (retargeted)');
+    expect(lines).toContain('JS readers (1)');
+    expect(out).toMatch(/ {2}#\d+ \[kept\/reader\] page-title — fresh, ok 1, fail 0$/m);
+    expect(out.indexOf('Flows (0):')).toBeLessThan(out.indexOf('Builds (1)'));
+  });
+
+  test('prints the same in Spanish', () => {
+    seed();
+    const out = runMapCommand(['show', 'learn-app'], 'es');
+    expect(out).toContain('Builds (1) — actual 3f9a');
+    expect(out).toContain('Objetivos aprendidos (1, 1 con fallos)');
+    expect(out).toContain('ok 1, fallos 1 (retargeted)');
+    expect(out).toContain('Lectores JS (1)');
+  });
+
+  test('an app with nothing learned prints exactly what it printed before', () => {
+    saveFlow({ origin: 'http://x', title: 'My App', name: 'login', steps: STEPS });
+    const out = runMapCommand(['show', 'my-app']);
+    expect(out).not.toMatch(/Builds|Learned targets|JS readers/);
+    expect(out.endsWith('  login (2 steps, used 0×)')).toBe(true);
   });
 });

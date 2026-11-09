@@ -28,6 +28,10 @@ import {
   saveInsight,
   upsertApp,
   wholeAppMap,
+  bumpFlowUse,
+  currentAppBuild,
+  findFlow,
+  winnerApp,
 } from './queries.js';
 
 let dataDir: string;
@@ -1101,5 +1105,32 @@ describe('knowledge-loop: builds, start pack, action hints, recall scope', () =>
     test("scope 'all' on an unknown origin is empty", () => {
       expect(recall({ origin: ORIGIN, scope: 'all' })).toEqual({ scope: 'all', apps: [] });
     });
+  });
+});
+
+describe('knowledge loop shortcuts: findFlow, bumpFlowUse, currentAppBuild, winnerApp', () => {
+  test('findFlow by name, bumpFlowUse counts a replay', () => {
+    const { app, flow } = saveFlow({
+      origin: 'https://f.test',
+      title: 'F',
+      name: 'search',
+      steps: [{ press: { key: 'Enter' } }],
+    });
+    expect(findFlow(app.id, 'nope')).toBeNull();
+    expect(findFlow(app.id, 'search')?.steps).toEqual([{ press: { key: 'Enter' } }]);
+    bumpFlowUse(flow.id);
+    expect(findFlow(app.id, 'search')?.use_count).toBe(1);
+  });
+
+  test('currentAppBuild is the most recently seen fingerprint; winnerApp never creates', () => {
+    const db = getDb();
+    expect(winnerApp(db, 'https://b.test')).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM apps').get()).toEqual({ n: 0 });
+    recordAppBuild('https://b.test', 'old');
+    recordAppBuild('https://b.test', 'new');
+    const app = winnerApp(db, 'https://b.test')!;
+    db.prepare(`UPDATE app_builds SET last_seen_at = '2000-01-01' WHERE fingerprint = 'old'`).run();
+    expect(currentAppBuild(db, app.id)).toBe('new');
+    expect(currentAppBuild(db, 9999)).toBeNull();
   });
 });

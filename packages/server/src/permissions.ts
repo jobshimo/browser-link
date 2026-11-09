@@ -12,8 +12,10 @@
 export type ToolFamily = 'bridge' | 'map';
 
 /** Coarse-grained behaviour bucket — used by presets, not by the runtime
- * filter. The runtime only cares about the exact tool name. */
-export type ToolCategory = 'read' | 'action' | 'eval' | 'map-read' | 'map-write';
+ * filter. The runtime only cares about the exact tool name. `write` is a
+ * bridge tool that writes local state without touching a page (curation,
+ * feedback). */
+export type ToolCategory = 'read' | 'action' | 'eval' | 'map-read' | 'map-write' | 'write';
 
 export interface ToolMeta {
   name: string;
@@ -209,6 +211,26 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     category: 'eval',
     summary: 'Run arbitrary JavaScript in the page',
   },
+  {
+    name: 'browser.read',
+    family: 'bridge',
+    category: 'eval',
+    summary: 'Run a kept JS reader of the app by name',
+  },
+
+  // Browser bridge — local writes (no page involved)
+  {
+    name: 'browser.wrap_up',
+    family: 'bridge',
+    category: 'write',
+    summary: 'Curate what the session taught the map, in one transaction',
+  },
+  {
+    name: 'browser.feedback',
+    family: 'bridge',
+    category: 'write',
+    summary: 'Leave the owner a local note about a tool that misbehaved',
+  },
 
   // Persistent map — reads
   {
@@ -267,7 +289,11 @@ export const PRESETS: readonly PresetDef[] = [
     id: 'readonly',
     label: 'Read-only (no actions, no JS, no map writes)',
     disabled: namesWhere(
-      (m) => m.category === 'action' || m.category === 'eval' || m.category === 'map-write',
+      (m) =>
+        m.category === 'action' ||
+        m.category === 'eval' ||
+        m.category === 'map-write' ||
+        m.category === 'write',
     ),
   },
   {

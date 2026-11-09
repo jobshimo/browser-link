@@ -18,14 +18,14 @@ describe('TOOL_CATALOGUE', () => {
     for (const t of TOOL_CATALOGUE) {
       expect(t.summary.length).toBeGreaterThan(0);
       expect(['bridge', 'map']).toContain(t.family);
-      expect(['read', 'action', 'eval', 'map-read', 'map-write']).toContain(t.category);
+      expect(['read', 'action', 'eval', 'map-read', 'map-write', 'write']).toContain(t.category);
     }
   });
 
-  test('covers exactly the 37 tools currently exposed', () => {
+  test('covers exactly the 40 tools currently exposed', () => {
     // If this fails, somebody added a tool elsewhere and forgot to register
     // it here — the permissions UI / CLI / server filter will silently miss it.
-    expect(TOOL_CATALOGUE.length).toBe(37);
+    expect(TOOL_CATALOGUE.length).toBe(40);
   });
 
   test('browser.activity is a read tool of the bridge family, so it can be disabled and the readonly preset keeps it', () => {
@@ -105,6 +105,20 @@ describe('TOOL_CATALOGUE', () => {
   });
 });
 
+describe('knowledge-loop tools (wrap_up, read, feedback)', () => {
+  test('wrap_up and feedback are bridge writes; read is eval; readonly disables all three', () => {
+    const meta = (name: string) => TOOL_CATALOGUE.find((t) => t.name === name);
+    expect(meta('browser.wrap_up')).toMatchObject({ family: 'bridge', category: 'write' });
+    expect(meta('browser.feedback')).toMatchObject({ family: 'bridge', category: 'write' });
+    expect(meta('browser.read')).toMatchObject({ family: 'bridge', category: 'eval' });
+    const readonly = getPreset('readonly').disabled;
+    for (const name of ['browser.wrap_up', 'browser.feedback', 'browser.read']) {
+      expect(readonly).toContain(name);
+      expect(isKnownTool(name)).toBe(true);
+    }
+  });
+});
+
 describe('browser.screenshot catalogue entry', () => {
   test('is a read tool', () => {
     const s = TOOL_CATALOGUE.find((t) => t.name === 'browser.screenshot');
@@ -178,11 +192,14 @@ describe('PRESETS', () => {
     expect(getPreset('all').disabled).toEqual([]);
   });
 
-  test('"readonly" disables every action + eval + map-write tool', () => {
+  test('"readonly" disables every action + eval + map-write + write tool', () => {
     const out = new Set(getPreset('readonly').disabled);
     for (const t of TOOL_CATALOGUE) {
       const shouldBeDisabled =
-        t.category === 'action' || t.category === 'eval' || t.category === 'map-write';
+        t.category === 'action' ||
+        t.category === 'eval' ||
+        t.category === 'map-write' ||
+        t.category === 'write';
       expect(out.has(t.name)).toBe(shouldBeDisabled);
     }
   });

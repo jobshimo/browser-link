@@ -1321,13 +1321,24 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'Validate and PROJECT the flow without dispatching a single input event, navigation or pause. Returns { ok:true, dry_run:true, steps_completed:0, results, budget_ms, requires_detach } where a repeat entry reports max_iterations, inner_steps, delay_ms, while_found and would_start (whether the condition matches RIGHT NOW). A dry run is judged against the DETACHED 30-minute ceiling, never the 60s one, so any flow you could legally run either way can be projected — `requires_detach:true` means the real run needs `detach: true`. Use this before any irreversible bulk run.',
         },
+        name: {
+          type: 'string',
+          description:
+            "Without steps: replay the SAVED flow of that name on the tab's app (see browser.map.recall or the start pack), its <PLACEHOLDER> tokens filled from values; an unknown name fails listing the saved ones. With steps: names this run as a flow candidate that browser.wrap_up offers for saving (nothing is saved before that).",
+        },
+        values: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'number', 'boolean'] },
+          description:
+            'Placeholder name → value, e.g. { "QUERY": "shrek" } for a step text "<QUERY>". Every <PLACEHOLDER> of a saved flow needs a value (a missing one fails naming it, before anything runs). On inline steps it is applied only when given: write the steps with placeholders so wrap_up can save them as a reusable recipe.',
+        },
         detach: {
           type: 'boolean',
           description:
             'Run the flow in the BACKGROUND and return immediately with { flow_id, detached:true, started_at, steps, expires_at } instead of the result. Frees the 60s worst-case budget ceiling (the detached ceiling is 30 minutes) and frees your turn. At most ONE detached flow per tab. Poll browser.flow_status(flow_id) for progress and the action manifest; stop it with browser.flow_cancel. The human can stop it from the extension popup at any time. Do NOT detach unless the work genuinely exceeds 60s: a foreground flow returns its results directly, which is simpler and cheaper.',
         },
       },
-      required: ['tab_id', 'steps'],
+      required: ['tab_id'],
       additionalProperties: false,
     },
     doc: {
@@ -1357,6 +1368,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         '`while_found` checks for a VISIBLE match before each iteration and stops the first time there is none (`stopped_by:"condition"`; otherwise `"max_iterations"`). Prefer it over reading a page counter to decide when to stop — counters routinely vanish at zero and leave a stale value that reads as a phantom last item.',
         'On an irreversible bulk run, call once with `dry_run: true` first. It dispatches NOTHING and reports, per repeat, `max_iterations` / `inner_steps` / `delay_ms` / `while_found` / `would_start`. It does not report how many elements currently match — it answers "would this start, and what is my ceiling", not "how many are there".',
         "Max 20 steps per flow, and a repeat's inner steps count toward that same 20. For longer sequences, split into multiple browser.flow calls.",
+        'Pass either steps or name. A saved flow runs with { tab_id, name, values } instead of being recalled and adapted by hand; inline steps written with <PLACEHOLDER> tokens plus values are what browser.wrap_up can save as a reusable recipe (steps holding typed text are refused there, rule 7).',
         'A flow can be STOPPED by the human mid-run, from the extension popup\'s Flows panel (on a cdp: tab, by `browser-link cdp revoke`). It then returns `ok:true` with `stopped_by:"cancelled"`, `steps_completed` and the results of what already ran — a repeat reports its own `stopped_by:"cancelled"` plus `iterations_completed`, and a `partial_iteration` when the stop landed mid-iteration. NEVER relaunch a cancelled flow: it is not a transient failure, it is a person deciding to stop you, and re-running it would repeat irreversible actions they just interrupted. Report what completed and ask.',
         '`detach: true` returns `{ flow_id, detached:true, started_at, steps, expires_at }` INSTEAD of the result — the flow keeps acting between your turns, so poll browser.flow_status(flow_id) for progress and, once it ends, for the action manifest. Only one detached flow per tab: a second attempt is rejected naming the one already running. A detached flow self-cancels at 30 minutes with `stopped_by:"expired"`, and if Chrome terminates the extension service worker under it, it comes back `failed` / `worker-terminated` and is NEVER resumed — check flow_status before relaunching anything.',
       ],
@@ -1431,6 +1443,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         tab_id: { type: 'string' },
         expression: { type: 'string' },
+        as: {
+          type: 'string',
+          description:
+            'Name this expression in the JS registry right away (kebab-case, at most 40 characters, saying what is returned, no leading get/set/do/run/make). It stays pending until browser.wrap_up keeps it; a bad name fails before anything runs.',
+        },
         timeout_ms: {
           type: 'number',
           description:
@@ -1448,6 +1465,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         'Wrap multi-step logic in an IIFE that returns the value you want.',
         'An evaluate that has not returned after timeout_ms (default 15000, cap 60000) fails with a timeout error, but the expression itself keeps running in the page — only the response is dropped. For in-page work that legitimately needs more than 15s (e.g. walking many slides in one loop), raise timeout_ms instead of splitting the loop.',
+        "Every expression is recorded in the app's JS registry (never one with a secret shape or a value you typed). If the app already has a kept reader for what you need, browser.read runs it by name instead. A useful reader is kept through browser.wrap_up; `as` only names it early.",
       ],
     },
   },
@@ -1485,7 +1503,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.activity',
     description:
-      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. With `summary: true` it returns the friction report instead: { summary: { records, errors, by_flag, by_tool_errors, evaluate_calls, timeouts, top_failing_targets, sessions } }, narrowed by since_id, since and agent_id only (any other filter alongside summary: true is an error naming it). Reading the trail is itself recorded.',
+      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. Every record carries resultBytes (size of the serialised result). With `summary: true` it returns the friction report instead: { summary: { records, errors, by_flag, by_tool_errors, evaluate_calls, timeouts, top_failing_targets, sessions, bytes_total, bytes_by_tool, evaluate_share, list_tabs_calls, map_recall_calls, readers_run } }, narrowed by since_id, since and agent_id only (any other filter alongside summary: true is an error naming it). Reading the trail is itself recorded.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1496,7 +1514,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         summary: {
           type: 'boolean',
           description:
-            'Return the friction report instead of rows: counts of records and errors, failures by flag (retargeted, ref-stale, expect-failed, timeout, unmatched, not-found, multiple-matches, flow-timeout, download-timeout, unsettled, hit-mismatch), errors by tool, evaluate calls, timeouts, the top 10 failing selectors and one line per agent session. Accepts since_id, since and agent_id only: agent, tab_id, tool, flow_id, outcome, limit or include_payloads alongside it are refused with an error naming them.',
+            'Return the friction report instead of rows: counts of records and errors, failures by flag (retargeted, ref-stale, expect-failed, timeout, unmatched, not-found, multiple-matches, flow-timeout, download-timeout, unsettled, hit-mismatch), errors by tool, evaluate calls, timeouts, the top 10 failing selectors, one line per agent session, and what the calls cost: bytes_total and bytes_by_tool (serialised result sizes), evaluate_share (share of calls that were browser.evaluate), list_tabs_calls, map_recall_calls and readers_run (browser.read calls). Accepts since_id, since and agent_id only: agent, tab_id, tool, flow_id, outcome, limit or include_payloads alongside it are refused with an error naming them.',
         },
         since: {
           type: 'string',
@@ -1567,6 +1585,172 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'This drops every tab the user had connected — they will need to re-press Connect in the extension popup for each one.',
         'Use sparingly. Most "tab not connected" cases resolve via browser.events showing a tab-renamed entry, not via reset.',
       ],
+    },
+  },
+  {
+    name: 'browser.wrap_up',
+    description:
+      'Close the loop before you answer the user after using the browser. Step 1, no arguments: what this session left to decide, per app touched (≤ 2 KB): { step: 1, apps: [{ origin, app_key, build, readers: [{ id, expression (first 160 chars), kind, flags, ok_n, fail_n, result_bytes_avg }], flows_run: [{ session_index, name, saved_name, steps, stopped_by, ok }], selectors, friction, pitfall_candidates: [{ id, sentence }], feedback_candidates }], omitted? }. Step 2, your decisions: { readers: { keep: [{ id, name, template? }], drop: [id] }, flows: { keep: [{ session_index, name }] }, pitfalls: { confirm: [id], drop: [id] }, feedback: [{ tool, observed, expected }] }, validated against the eight curation rules and applied in ONE transaction: { step: 2, applied: [{ item, action, name? }], rejected: [{ item, rule, reason }] }. Anything you do not decide stays pending and is offered again next time. While work is pending, every object result carries pending_wrap_up: n.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        readers: {
+          type: 'object',
+          properties: {
+            keep: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'integer' },
+                  name: {
+                    type: 'string',
+                    description:
+                      'What is returned, kebab-case, at most 40 characters, no leading get/set/do/run/make.',
+                  },
+                  template: {
+                    type: 'string',
+                    description:
+                      'The expression with every data literal replaced by a <PLACEHOLDER> token (inside its string). Required when the reader is flagged literal_data; may differ from the expression only inside strings.',
+                  },
+                },
+                required: ['id', 'name'],
+                additionalProperties: false,
+              },
+            },
+            drop: { type: 'array', items: { type: 'integer' } },
+          },
+          additionalProperties: false,
+        },
+        flows: {
+          type: 'object',
+          properties: {
+            keep: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  session_index: { type: 'integer' },
+                  id: { type: 'integer', description: 'Alias of session_index.' },
+                  name: { type: 'string', description: 'kebab-case, at most 40 characters.' },
+                },
+                required: ['name'],
+                additionalProperties: false,
+              },
+            },
+          },
+          additionalProperties: false,
+        },
+        pitfalls: {
+          type: 'object',
+          properties: {
+            confirm: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ids of pitfall_candidates from step 1. Free text is refused (rule 6).',
+            },
+            drop: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        feedback: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', maxLength: 500 },
+              observed: { type: 'string', maxLength: 500 },
+              expected: { type: 'string', maxLength: 500 },
+            },
+            required: ['tool', 'observed', 'expected'],
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+    doc: {
+      purpose:
+        'Curate what this session taught the map: keep useful JS readers under a name, save flows, confirm pitfalls, report tool problems, in two calls applied atomically.',
+      when_to_use: [
+        'Before you answer the user after using the browser, and whenever results carry pending_wrap_up.',
+        'Call it once without arguments, decide, then once with the decisions.',
+      ],
+      gotchas: [
+        'The eight rules, enforced: (1) only what worked (ok_n ≥ 1, last outcome ok); (2) data literals become <PLACEHOLDER> templates; (3) nothing touching credentials, tokens, cookies or storage, and no mutation is kept as a reader; (4) names say what is returned: kebab-case, ≤ 40 chars, no leading verb; (5) one-offs are dropped by default; (6) pitfalls only from server candidates, by id; (7) nothing you typed this session; (8) in doubt, drop: drop is always accepted.',
+        'Every rejection names its rule. Rejected items stay pending; fix and send them again, or drop them.',
+        'Flows are saved with the steps exactly as you ran them: run them with <PLACEHOLDER> tokens and values (browser.flow) so the saved recipe carries no data.',
+        "feedback goes to the owner's local log (browser-link feedback); nothing is sent anywhere and you never open an issue.",
+      ],
+      example:
+        'browser.wrap_up({ readers: { keep: [{ id: 12, name: "invoice-total" }], drop: [13, 14] }, pitfalls: { confirm: ["o41"] } })',
+    },
+  },
+  {
+    name: 'browser.read',
+    description:
+      "Run a KEPT JS reader of the tab's app by name (or id) instead of writing the expression again: { tab_id, name | id, values?, timeout_ms? }. A templated reader needs a value for every <PLACEHOLDER> (inserted as string-literal content, quotes escaped); a missing one fails before anything runs. Returns the raw value exactly like browser.evaluate and counts the outcome on the reader. Kept readers are listed in the knowledge start pack (list_tabs / navigate) and in browser.map.recall.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: { type: 'string' },
+        name: { type: 'string', description: 'Name of a kept reader of this app.' },
+        id: { type: 'integer', description: 'Registry id of a kept reader. Instead of name.' },
+        values: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'number', 'boolean'] },
+          description: 'Placeholder name → value, e.g. { "CLIENT": "ACME" } for "<CLIENT>".',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: 'Same as browser.evaluate: default 15000, capped at 60000.',
+        },
+      },
+      required: ['tab_id'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Reuse a reader the map already kept for this app, by name, with its values.',
+      when_to_use: [
+        'The start pack (knowledge.readers) or recall lists a kept reader for what you need to read.',
+      ],
+      gotchas: [
+        'Only kept readers run; pending ones are kept through browser.wrap_up first.',
+        'A reader whose confidence is failing on the current build still runs: check it and fall back to browser.evaluate.',
+      ],
+      example:
+        'browser.read({ tab_id: "tab_1", name: "client-balance", values: { CLIENT: "ACME" } })',
+    },
+  },
+  {
+    name: 'browser.feedback',
+    description:
+      'Tell the browser-link owner that a tool misbehaved or fell short: { tool, observed, expected }, each at most 500 characters. Stored in the owner\'s local activity database with your session and the app; returns { id, stored: "local" }. Nothing leaves the machine: the owner reviews it with `browser-link feedback` and decides whether to open an issue. You never open one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', maxLength: 500, description: 'The tool, e.g. "browser.find".' },
+        observed: {
+          type: 'string',
+          maxLength: 500,
+          description: "What it did, described by shape, not by the page's data.",
+        },
+        expected: { type: 'string', maxLength: 500, description: 'What you expected instead.' },
+      },
+      required: ['tool', 'observed', 'expected'],
+      additionalProperties: false,
+    },
+    doc: {
+      purpose: 'Leave the owner a note about a tool that returned something unexpected.',
+      when_to_use: [
+        'A tool returned an unexpected shape or result twice, or could not do something it should.',
+      ],
+      gotchas: [
+        'Describe the tool, not the data: text containing something you typed this session is refused (rule 7), and so is anything that looks like a token value.',
+        'You can also send feedback in browser.wrap_up step 2.',
+      ],
+      example:
+        'browser.feedback({ tool: "browser.find", observed: "matched:true with an empty selector", expected: "matched:false or a selector" })',
     },
   },
 ];

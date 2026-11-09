@@ -57,13 +57,14 @@ import type {
 import { durableTarget, splitUrl } from '../map/keys.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ActivityInput } from '../activity/types.js';
-import { buildActivityRow } from '../activity/extract.js';
+import { buildActivityRow, serializedBytes } from '../activity/extract.js';
 import {
   listAgents as listActivityAgents,
   query as queryActivity,
   redact as redactActivity,
 } from '../activity/queries.js';
 import { getActivityDb } from '../activity/db.js';
+import { recordFeedback } from '../activity/feedback.js';
 import { summarizeActivity } from '../activity/summary.js';
 import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
@@ -317,6 +318,9 @@ const BROWSER_TOOL_NAMES = [
   'browser.dialog_respond',
   'browser.set_permission',
   'browser.download',
+  'browser.wrap_up',
+  'browser.read',
+  'browser.feedback',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -1453,6 +1457,324 @@ function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: Pub
   return { claims: deps.tabClaims.myTabs(caller).map(toPublicClaim) };
 }
 
+/* ------------------------------ knowledge loop: wrap_up, read, feedback ---
+ *
+ * The map modules are imported lazily, like the manual: only these calls
+ * need them, and a build without a data dir never loads them. */
+
+/** Origin of a connected tab, or null. */
+function tabOrigin(deps: BrowserToolDeps, tabId: string): string | null {
+  const tab = findTab(deps, tabId);
+  return tab ? originOf(tab.url) : null;
+}
+
+/** What the agent typed: this session's values and the process ring. */
+async function typedFor(caller: AgentCaller): Promise<string[]> {
+  const [{ peekSession }, { typedValues }] = await Promise.all([
+    import('../map/session.js'),
+    import('../map/readers.js'),
+  ]);
+  return [...(peekSession(caller.agent_id)?.typedValues ?? []), ...typedValues()];
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The optional `values` argument: placeholder name → value. */
+function valuesArg(tool: string, args: unknown): Record<string, unknown> | null {
+  const v = (args as { values?: unknown } | undefined)?.values;
+  if (v === undefined) return null;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`${tool}: values must be an object mapping placeholder names to strings`);
+  }
+  return v as Record<string, unknown>;
+}
+
+/** Where a `browser.flow` run's steps come from. `template` is what the
+ * session remembers (placeholders unfilled); `steps` is what runs. */
+interface FlowSource {
+  steps: unknown;
+  template: unknown[];
+  name: string | null;
+  saved: { id: number; name: string } | null;
+  origin: string | null;
+}
+
+/**
+ * `browser.flow`'s steps: inline `steps` (placeholders filled when `values`
+ * is given, untouched otherwise), or with `name` and no `steps`, the saved
+ * flow of that name on the tab's app with every placeholder filled.
+ */
+async function resolveFlowSteps(args: unknown, deps: BrowserToolDeps): Promise<FlowSource> {
+  const a = (args ?? {}) as { steps?: unknown; name?: unknown };
+  if (a.name !== undefined && (typeof a.name !== 'string' || a.name.length === 0)) {
+    throw new Error('browser.flow: name must be a non-empty string');
+  }
+  const name = typeof a.name === 'string' ? a.name : null;
+  const values = valuesArg('browser.flow', args);
+  const { fillStepPlaceholders } = await import('../map/curation.js');
+  const fill = (steps: unknown, vals: Record<string, unknown>): unknown => {
+    try {
+      return fillStepPlaceholders(steps, vals);
+    } catch (err) {
+      throw new Error(`browser.flow: ${errorText(err)}`, { cause: err });
+    }
+  };
+  if (a.steps === undefined && name !== null) {
+    const tabId = requireTabId(args);
+    const origin = tabOrigin(deps, tabId);
+    if (!origin) throw new Error(`browser.flow: tab ${tabId} has no web app to find "${name}" in`);
+    const [{ getDb }, { winnerApp, findFlow, listFlows }] = await Promise.all([
+      import('../map/db.js'),
+      import('../map/queries.js'),
+    ]);
+    const app = winnerApp(getDb(), origin);
+    const flow = app ? findFlow(app.id, name) : null;
+    if (!app || !flow) {
+      const saved = app ? listFlows(app.id).map((f) => f.name) : [];
+      throw new Error(
+        `browser.flow: no saved flow "${name}" for ${origin}` +
+          (saved.length > 0 ? ` (saved: ${saved.join(', ')})` : ''),
+      );
+    }
+    const template = Array.isArray(flow.steps) ? flow.steps : [];
+    return {
+      steps: fill(template, values ?? {}),
+      template,
+      name: null,
+      saved: { id: flow.id, name },
+      origin,
+    };
+  }
+  return {
+    steps: values ? fill(a.steps, values) : a.steps,
+    template: Array.isArray(a.steps) ? a.steps : [],
+    name,
+    saved: null,
+    origin: null,
+  };
+}
+
+/** Remember a foreground flow run for `wrap_up`, and count a replay of a
+ * saved flow that worked. Never throws: it must not break the flow. */
+async function rememberFlowRun(
+  tabId: string,
+  source: FlowSource,
+  result: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<void> {
+  try {
+    const r = (typeof result === 'object' && result !== null ? result : {}) as {
+      ok?: unknown;
+      stopped_by?: unknown;
+    };
+    const stoppedBy = typeof r.stopped_by === 'string' ? r.stopped_by : null;
+    const ok =
+      r.ok === true &&
+      (stoppedBy === null || stoppedBy === 'condition' || stoppedBy === 'max_iterations');
+    const [{ recordSessionFlow }, { bumpFlowUse }] = await Promise.all([
+      import('../map/session.js'),
+      import('../map/queries.js'),
+    ]);
+    recordSessionFlow(caller.agent_id, {
+      origin: source.origin ?? tabOrigin(deps, tabId),
+      name: source.name,
+      saved_name: source.saved?.name ?? null,
+      steps: source.template,
+      stopped_by: stoppedBy,
+      ok,
+    });
+    if (ok && source.saved) bumpFlowUse(source.saved.id);
+  } catch (err) {
+    console.error(`[browser-link] flow bookkeeping failed: ${errorText(err)}`);
+  }
+}
+
+/** `browser.evaluate`'s optional `as`: refused before the call runs when it
+ * breaks rule 4 (names) or rule 7 (typed values). */
+async function requireValidAsName(args: unknown): Promise<void> {
+  const as = (args as { as?: unknown } | undefined)?.as;
+  if (as === undefined) return;
+  const { readerNameProblem } = await import('../map/readers.js');
+  const problem = readerNameProblem(as);
+  if (problem) throw new Error(`browser.evaluate: as ${problem} (curation rule 4)`);
+}
+
+/** `browser.wrap_up`: step 1 without a body, step 2 with one (see
+ * `map/curation.ts`). */
+async function handleWrapUp(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<unknown> {
+  const [{ getDb }, { runWrapUp }, { sessionFor }] = await Promise.all([
+    import('../map/db.js'),
+    import('../map/curation.js'),
+    import('../map/session.js'),
+  ]);
+  const session = sessionFor(caller.agent_id);
+  const tabs = deps.listTabs();
+  const origins = [
+    ...session.origins,
+    ...tabs.map((t) => originOf(t.url)).filter((o): o is string => o !== null && o !== 'null'),
+  ];
+  const typed = await typedFor(caller);
+  const where = feedbackWhere(session.origins, tabs);
+  return runWrapUp(getDb(), args, {
+    session,
+    origins,
+    typedValues: typed,
+    validateSteps: (steps) => {
+      const v = validateFlowSteps(steps);
+      return v.ok ? null : v.error;
+    },
+    recordFeedback: (fb) => {
+      recordFeedback(getActivityDb(), { ...fb, agentId: caller.agent_id, ...where });
+    },
+  });
+}
+
+/** The app a feedback entry is about: the session's latest origin and the
+ * build of a connected tab on it, when known. */
+function feedbackWhere(
+  origins: ReadonlySet<string> | undefined,
+  tabs: readonly TabSnapshot[],
+): { origin: string | null; build: string | null } {
+  const list = origins ? [...origins] : [];
+  const origin = list.length > 0 ? list[list.length - 1] : null;
+  const tab = origin ? tabs.find((t) => originOf(t.url) === origin) : undefined;
+  return { origin, build: tab?.build ?? null };
+}
+
+/** `browser.read`: run a kept reader of the tab's app by name or id, with
+ * its template's placeholders filled from `values`, and count the outcome
+ * on the reader. The result is the raw value, as `browser.evaluate`. */
+async function handleRead(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<unknown> {
+  const tabId = requireTabId(args);
+  const { name, id, timeout_ms } = (args ?? {}) as {
+    name?: unknown;
+    id?: unknown;
+    timeout_ms?: number;
+  };
+  if ((name === undefined) === (id === undefined)) {
+    throw new Error('browser.read: pass exactly one of name or id');
+  }
+  if (name !== undefined && (typeof name !== 'string' || name.length === 0)) {
+    throw new Error('browser.read: name must be a non-empty string');
+  }
+  if (id !== undefined && (typeof id !== 'number' || !Number.isInteger(id))) {
+    throw new Error('browser.read: id must be an integer');
+  }
+  const values = valuesArg('browser.read', args);
+  const tab = findTab(deps, tabId);
+  const origin = tab ? originOf(tab.url) : null;
+  if (!origin || origin === 'null') {
+    throw new Error(`browser.read: tab ${tabId} is not connected or has no web app`);
+  }
+  const [{ getDb }, { winnerApp }, readers, { fillPlaceholders }] = await Promise.all([
+    import('../map/db.js'),
+    import('../map/queries.js'),
+    import('../map/readers.js'),
+    import('../map/curation.js'),
+  ]);
+  const db = getDb();
+  const app = winnerApp(db, origin);
+  const ref = typeof name === 'string' ? { name } : { id: id as number };
+  const reader = app ? readers.findKeptReader(db, app.id, ref) : null;
+  if (!app || !reader) {
+    const kept = app
+      ? readers
+          .listReaders(db, app.id, { status: 'kept' })
+          .map((r) => r.name)
+          .filter((n): n is string => n !== null)
+      : [];
+    throw new Error(
+      `browser.read: no kept reader ${typeof name === 'string' ? `"${name}"` : `#${String(id)}`} for ${origin}` +
+        (kept.length > 0 ? ` (kept: ${kept.join(', ')})` : ''),
+    );
+  }
+  let expression = reader.expression;
+  if (reader.template) {
+    try {
+      expression = fillPlaceholders(reader.template, values ?? {}, 'js');
+    } catch (err) {
+      throw new Error(`browser.read: ${errorText(err)}`, { cause: err });
+    }
+  }
+  const record = (ok: boolean, result?: unknown): void => {
+    try {
+      if (loadConfig().mapLearningEnabled === false) return;
+      readers.upsertReader(db, {
+        appId: app.id,
+        expression: reader.expression,
+        ok,
+        build: tab?.build ?? null,
+        resultBytes: ok ? serializedBytes(result) : null,
+      });
+    } catch (err) {
+      console.error(`[browser-link] reader outcome not recorded: ${errorText(err)}`);
+    }
+  };
+  let result: unknown;
+  try {
+    result = await runAction(
+      'evaluate',
+      tabId,
+      { expression },
+      deps,
+      caller,
+      evaluateTimeoutMs(timeout_ms),
+    );
+  } catch (err) {
+    record(false);
+    throw err;
+  }
+  record(true, result);
+  return result;
+}
+
+/** `browser.feedback`: store one note about a tool that misbehaved, in the
+ * local activity DB. Only the owner turns it into an issue. */
+async function handleFeedback(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<{ id: number; stored: 'local' }> {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const field = (key: 'tool' | 'observed' | 'expected'): string => {
+    const v = a[key];
+    if (typeof v !== 'string' || v.trim().length === 0 || v.length > 500) {
+      throw new Error(
+        `browser.feedback: ${key} must be a non-empty string of at most 500 characters`,
+      );
+    }
+    return v;
+  };
+  const item = { tool: field('tool'), observed: field('observed'), expected: field('expected') };
+  const { containsTypedValue, hasSecretValue } = await import('../map/readers.js');
+  const text = `${item.tool}\n${item.observed}\n${item.expected}`;
+  if (containsTypedValue(text, await typedFor(caller))) {
+    throw new Error(
+      'browser.feedback: contains something typed this session (curation rule 7): describe the tool, not the data',
+    );
+  }
+  if (hasSecretValue(text)) {
+    throw new Error(
+      'browser.feedback: looks like it carries a credential or storage value (curation rule 3)',
+    );
+  }
+  const { peekSession } = await import('../map/session.js');
+  const where = feedbackWhere(peekSession(caller.agent_id)?.origins, deps.listTabs());
+  const { id } = recordFeedback(getActivityDb(), { ...item, agentId: caller.agent_id, ...where });
+  return { id, stored: 'local' };
+}
+
 /**
  * `browser.activity` — read the persistent action trail.
  *
@@ -2168,11 +2490,11 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.flow': {
-      const { steps, dry_run, detach } = (args ?? {}) as {
-        steps?: unknown;
-        dry_run?: unknown;
-        detach?: unknown;
-      };
+      const { dry_run, detach } = (args ?? {}) as { dry_run?: unknown; detach?: unknown };
+      // knowledge-loop S11: `name` without `steps` replays a saved flow of
+      // the tab's app; `values` fills `<PLACEHOLDER>` tokens either way.
+      const source = await resolveFlowSteps(args, deps);
+      const steps = source.steps;
       // Strict `=== true` on both: anything else runs the flow FOR REAL,
       // in the foreground. A dry run that silently became a real run, or a
       // foreground run that silently detached, are the worst failures
@@ -2240,6 +2562,7 @@ async function dispatchBrowserTool(
             requires_detach: validated.budgetMs > MAX_FLOW_TIMEOUT_MS,
           })
         : result;
+      if (foreground) await rememberFlowRun(flowTabId, source, result, deps, caller);
       return withFlowId(decorated, flowId);
     }
     case 'browser.flow_status': {
@@ -2281,6 +2604,9 @@ async function dispatchBrowserTool(
     }
     case 'browser.evaluate': {
       const { expression, timeout_ms } = args as { expression: string; timeout_ms?: number };
+      // knowledge-loop S11: `as` names the registry row (still `pending`);
+      // a bad name is refused before anything runs.
+      await requireValidAsName(args);
       return runAction(
         'evaluate',
         requireTabId(args),
@@ -2294,6 +2620,12 @@ async function dispatchBrowserTool(
       return handleEvents(args, deps);
     case 'browser.activity':
       return handleActivity(args);
+    case 'browser.wrap_up':
+      return handleWrapUp(args, deps, caller);
+    case 'browser.read':
+      return handleRead(args, deps, caller);
+    case 'browser.feedback':
+      return handleFeedback(args, deps, caller);
     case 'browser.reset':
       return handleReset(deps);
     case 'browser.wait_for_tab': {

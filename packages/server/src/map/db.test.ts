@@ -432,6 +432,7 @@ describe('knowledge-loop migrations (0.45)', () => {
       'flags',
       'status',
       'created_at',
+      'template',
     ]);
     expect(
       db

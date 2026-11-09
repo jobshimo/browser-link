@@ -346,10 +346,11 @@ state of your own setup instead of guessing.
 
 ## What the agent can do
 
-The MCP server registers two families of tools — 31 bridge tools that
-drive the connected tab, read the activity trail or read the manual, and 6
-persistent-map tools (2 read, 4 write): 37 in all. All 37 are individually
-toggle-able (`browser.activity` since 0.44.0) — see
+The MCP server registers two families of tools — 34 bridge tools that
+drive the connected tab, read the activity trail or the manual, or close the
+knowledge loop, and 6 persistent-map tools (2 read, 4 write): 40 in all. All
+40 are individually toggle-able (`browser.activity` since 0.44.0;
+`browser.wrap_up`, `browser.read` and `browser.feedback` since 0.45.0) — see
 [Per-tool permissions](#per-tool-permissions).
 
 **Browser bridge — read-only** (no claim required, observation only):
@@ -385,13 +386,16 @@ two exceptions are footnoted):
 | `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                                     |
 | `browser.flow`           | Run a declarative find/click/type/press/wait_for/drag/sleep/repeat sequence in one round trip; fail-fast, max 20 steps, `dry_run` and `detach` available |
 | `browser.flow_cancel`    | Stop a running flow by `flow_id`; lands within one step and keeps the partial results [^cancel-claim]                                                    |
-| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result                                                                                 |
+| `browser.evaluate`       | Run an arbitrary JavaScript expression in the page and return its result; `as` names it in the JS registry                                               |
 | `browser.dialog_respond` | Answer a pending native `alert` / `confirm` / `prompt` / `beforeunload` [^dialog-claim]                                                                  |
 | `browser.set_permission` | Pre-grant or pre-deny a browser permission (geo, notifications, camera, …) for an origin                                                                 |
 | `browser.download`       | Download a file — click a button or fetch a URL — with no native "Save as" dialog; see [Downloads](#downloads)                                           |
 | `browser.claim_tab`      | Reserve a tab cooperatively for the calling agent (multi-agent mode)                                                                                     |
 | `browser.release_tab`    | Release a tab claim the calling agent holds                                                                                                              |
 | `browser.reset`          | Soft-reset the bridge — drop tabs, claims and events; keep the server alive [^reset-global]                                                              |
+| `browser.read`           | Run a kept JS reader of the tab's app by name, with its `<PLACEHOLDER>` values; counts the outcome                                                       |
+| `browser.wrap_up`        | Before answering: list what the session left pending, then keep/drop it in one transaction                                                               |
+| `browser.feedback`       | Leave the owner a local note about a tool that misbehaved; never opens an issue                                                                          |
 
 [^dialog-claim]:
     `dialog_respond` deliberately bypasses the claim guard — a dialog
@@ -1103,6 +1107,68 @@ its evidence, never as a verdict.
   the build history and `learned_failures`; `scope: 'all'` does the same for
   every app of the origin. The default (`scope: 'path'`) is unchanged.
 
+### Closing the loop: wrap_up
+
+Everything above is recorded automatically. What is worth **keeping** is
+decided by the agent, once, before it answers you: it calls
+`browser.wrap_up` twice.
+
+1. **No arguments** — per app the session touched (≤ 2 KB): the pending JS
+   readers (`id`, the first 160 characters of the expression, `kind`,
+   `flags`, counters, average result size), the flows it ran, the targets it
+   learned, friction by reason, and **pitfall candidates** the server wrote
+   from repeated structural failures ("click on `.next` was retargeted 3
+   times on build 3f9a").
+2. **With decisions** — `{ readers: { keep: [{ id, name, template? }], drop },
+flows: { keep: [{ session_index, name }] }, pitfalls: { confirm, drop },
+feedback: [{ tool, observed, expected }] }`. The server checks every item
+   against the eight rules below and applies the accepted ones in **one
+   transaction**: a crash midway leaves the map exactly as it was. The answer
+   lists `applied` and `rejected: [{ item, rule, reason }]`; anything not
+   decided stays pending and is offered again next time.
+
+From the first successful `evaluate` or `flow` of a session, every object
+result carries `pending_wrap_up: n` until the decisions are committed. The
+first browser call of a session also returns the rules as a second text
+block, so an agent that never read its instructions still gets them.
+
+**The eight rules, enforced server-side** (each rejection names its number):
+
+1. Only what worked: `ok_n ≥ 1` and the last outcome ok.
+2. A reader holding data literals is kept only as a `<PLACEHOLDER>`
+   template, which may differ from the expression only inside strings.
+3. Nothing touching credentials, tokens, cookies or storage; a mutation is
+   never kept as a reader.
+4. Names say what is returned: kebab-case, ≤ 40 characters, no leading
+   `get` / `set` / `do` / `run` / `make`, unique per app.
+5. One-offs are dropped by default (a named one may be kept).
+6. Pitfalls only from the server's candidates, by id, ≤ 200 characters —
+   never free text.
+7. Nothing about the user: no name, template, flow step or feedback holding
+   something typed in the session.
+8. In doubt, drop: `drop` is always accepted and wins over `keep`.
+
+The server never rewrites an expression; a kept reader stores its template
+next to the original.
+
+**Shortcuts that use what was kept:**
+
+- `browser.read({ tab_id, name | id, values? })` runs a kept reader of the
+  tab's app, filling its placeholders (values are escaped as string
+  content; a missing one fails before anything runs), returns the raw value
+  like `evaluate` and counts the outcome on the reader.
+- `browser.flow({ tab_id, name, values })` replays a saved flow with its
+  placeholders filled. On inline `steps`, `values` fills placeholders and
+  `name` marks the run as a candidate that `wrap_up` can save.
+- `browser.evaluate({ ..., as: 'invoice-total' })` names the registry row
+  right away; it stays pending until `wrap_up`.
+- `browser.feedback({ tool, observed, expected })` leaves you a local note
+  about a tool that misbehaved (`browser-link feedback` lists them); the
+  agent never opens an issue.
+
+`browser-link map show <app>` prints the builds, the learned targets with
+their confidence and the JS readers after the flows.
+
 ### The loop, in plain English
 
 ```
@@ -1606,11 +1672,13 @@ server then never writes those files and only shows the outdated notice.
 
 ### Per-tool permissions
 
-`browser-link` exposes **37 MCP tools** — 31 bridge tools that drive the
-connected Chrome tab, read the activity trail or read the manual, and 6 to
-read/write the persistent UI map (2 read, 4 write). **All 37 are individually
-toggle-able** (`browser.activity` joined the list in 0.44.0; the `readonly`
-preset keeps it on), so you can narrow the surface per machine:
+`browser-link` exposes **40 MCP tools** — 34 bridge tools that drive the
+connected Chrome tab, read the activity trail or the manual, or close the
+knowledge loop, and 6 to read/write the persistent UI map (2 read, 4 write).
+**All 40 are individually toggle-able** (`browser.activity` joined the list
+in 0.44.0; the `readonly` preset keeps it on and turns off `browser.read`,
+`browser.wrap_up` and `browser.feedback`), so you can narrow the surface
+per machine:
 
 - **In the menu** → `Permissions`. Toggle individual tools with **Space**
   or apply a preset with **Enter** (`all` / `readonly` / `no-eval` /

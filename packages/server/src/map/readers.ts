@@ -68,6 +68,9 @@ export interface ReaderRow {
   flags: ReaderFlag[];
   status: ReaderStatus;
   created_at: string;
+  /** `<PLACEHOLDER>` form of `expression`, set only by curation (S10 rule
+   * 2). `browser.read` runs it with the placeholders filled. */
+  template?: string | null;
 }
 
 type StoredReaderRow = Omit<ReaderRow, 'flags'> & { flags: string };
@@ -85,23 +88,45 @@ export function rememberTypedValue(text: unknown): void {
   if (typed.length > MAX_TYPED_VALUES) typed.splice(0, typed.length - MAX_TYPED_VALUES);
 }
 
-/** Remember every `type` step's text of a `browser.flow` call, including the
- * inner steps of a `repeat`. */
+/** Remember every value a `browser.flow` call types or fills in: its `type`
+ * steps' text (inner `repeat` steps included) and its `values`. */
 export function rememberTypedValuesFromFlow(args: unknown): void {
+  for (const text of typedTextsOf(args)) rememberTypedValue(text);
+}
+
+/**
+ * Every value a call types or fills in: `browser.type`'s `text`, each
+ * `type` step's text of a `browser.flow` (inner `repeat` steps included),
+ * and every string/number/boolean of a `values` object (`browser.flow`,
+ * `browser.read` placeholders). Non-empty strings only.
+ */
+export function typedTextsOf(args: unknown): string[] {
+  const out: string[] = [];
+  const push = (v: unknown): void => {
+    if (typeof v === 'string' && v.length > 0) out.push(v);
+    else if (typeof v === 'number' || typeof v === 'boolean') out.push(String(v));
+  };
   const visit = (steps: unknown): void => {
     if (!Array.isArray(steps)) return;
     for (const step of steps) {
       if (typeof step !== 'object' || step === null) continue;
       const s = step as { type?: unknown; repeat?: unknown };
       if (typeof s.type === 'object' && s.type !== null) {
-        rememberTypedValue((s.type as { text?: unknown }).text);
+        const text = (s.type as { text?: unknown }).text;
+        if (typeof text === 'string' && text.length > 0) out.push(text);
       }
       if (typeof s.repeat === 'object' && s.repeat !== null) {
         visit((s.repeat as { steps?: unknown }).steps);
       }
     }
   };
-  if (typeof args === 'object' && args !== null) visit((args as { steps?: unknown }).steps);
+  if (typeof args !== 'object' || args === null) return out;
+  const a = args as { steps?: unknown; values?: unknown };
+  visit(a.steps);
+  if (typeof a.values === 'object' && a.values !== null && !Array.isArray(a.values)) {
+    Object.values(a.values).forEach(push);
+  }
+  return out;
 }
 
 /** A copy of the remembered typed values, oldest first. */
@@ -193,8 +218,56 @@ export function analyzeExpression(
   return { kind: mutation ? 'mutation' : 'reader', flags };
 }
 
+/** The string literals of `expression` that look like data (see
+ * `analyzeExpression`): what curation rule 2 requires a template to replace. */
+export function dataLiterals(expression: string, typedValuesList: readonly string[]): string[] {
+  const typedList = usableTyped(typedValuesList);
+  return [...new Set(stringLiterals(expression).filter((lit) => isLiteralData(lit, typedList)))];
+}
+
+/** The code of `expression` with every string literal blanked: two
+ * expressions with the same skeleton differ only inside string literals. */
+export function codeSkeleton(expression: string): string {
+  return expression.replace(STRING_LITERAL, '""');
+}
+
+/** Whether `expression` has a secret shape (JWT, long hex, credential or
+ * storage words). */
+export function hasSecretShape(expression: string): boolean {
+  return SECRET_SHAPES.some((pattern) => pattern.test(expression));
+}
+
+/** Whether `text` carries a secret-looking VALUE (a JWT or a long hex
+ * string). Unlike `hasSecretShape`, credential words alone do not count:
+ * prose about a tool may name them. */
+export function hasSecretValue(text: string): boolean {
+  return SECRET_SHAPES.slice(0, 2).some((pattern) => pattern.test(text));
+}
+
+/** Reader names (curation rule 4): kebab-case, at most `MAX_READER_NAME`
+ * characters, first word not one of `NAME_VERBS` (names say what is
+ * returned, not what is done). */
+export const READER_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export const MAX_READER_NAME = 40;
+export const NAME_VERBS = ['get', 'set', 'do', 'run', 'make'] as const;
+
+/** Why `name` breaks rule 4, or null when it is a valid reader name. */
+export function readerNameProblem(name: unknown): string | null {
+  if (typeof name !== 'string' || name.length === 0) return 'a name is required';
+  if (name.length > MAX_READER_NAME) return `longer than ${MAX_READER_NAME} characters`;
+  if (!READER_NAME.test(name)) return 'not kebab-case (a-z, 0-9, single dashes)';
+  const first = name.split('-')[0];
+  if ((NAME_VERBS as readonly string[]).includes(first)) {
+    return `starts with the verb "${first}": name what is returned`;
+  }
+  return null;
+}
+
 /** Whether `expression` contains, anywhere, a value the agent typed. */
-function containsTypedValue(expression: string, typedValuesList: readonly string[]): boolean {
+export function containsTypedValue(
+  expression: string,
+  typedValuesList: readonly string[],
+): boolean {
   return usableTyped(typedValuesList).some((v) => expression.includes(v));
 }
 
@@ -389,6 +462,44 @@ export function setReaderStatus(
   return info.changes > 0;
 }
 
+/** Curation: store the `<PLACEHOLDER>` template of a kept reader. The
+ * expression itself is never touched. */
+export function setReaderTemplate(
+  db: Database.Database,
+  id: number,
+  template: string | null,
+): void {
+  db.prepare('UPDATE js_readers SET template = ? WHERE id = ?').run(template, id);
+}
+
+/** One reader by id, any app and status, or null. */
+export function getReader(db: Database.Database, id: number): ReaderRow | null {
+  const row = db.prepare('SELECT * FROM js_readers WHERE id = ?').get(id) as
+    StoredReaderRow | undefined;
+  return row ? toReader(row) : null;
+}
+
+/** A kept reader of an app, by id or (most recent) name, or null. */
+export function findKeptReader(
+  db: Database.Database,
+  appId: number,
+  ref: { name?: string; id?: number },
+): ReaderRow | null {
+  const row = (
+    ref.id !== undefined
+      ? db
+          .prepare(`SELECT * FROM js_readers WHERE app_id = ? AND id = ? AND status = 'kept'`)
+          .get(appId, ref.id)
+      : db
+          .prepare(
+            `SELECT * FROM js_readers WHERE app_id = ? AND name = ? AND status = 'kept'
+             ORDER BY id DESC LIMIT 1`,
+          )
+          .get(appId, ref.name ?? null)
+  ) as StoredReaderRow | undefined;
+  return row ? toReader(row) : null;
+}
+
 /* -------------------------------------------------- dispatch glue ------ */
 
 export interface ReaderDispatchContext {
@@ -441,15 +552,22 @@ export function recordReaderFromDispatch(ctx: ReaderDispatchContext): void {
     }
     const ok = ctx.error === undefined && !isErrorEnvelope(ctx.result);
     const db = getDb();
+    // `as` (S11) names the row at write time; it stays `pending` until
+    // `browser.wrap_up` decides. The dispatcher already refused a bad name.
+    const as = (args as { as?: unknown }).as;
+    const name = typeof as === 'string' && readerNameProblem(as) === null ? as : null;
     db.transaction(() => {
       const app = resolveLearnerApp(db, origin);
-      upsertReader(db, {
+      const row = upsertReader(db, {
         appId: app.id,
         expression,
         ok,
         build: ctx.build ?? null,
         resultBytes: ok ? serializedBytes(ctx.result) : null,
       });
+      if (row && name !== null && row.status === 'pending') {
+        setReaderStatus(db, row.id, 'pending', name);
+      }
     })();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

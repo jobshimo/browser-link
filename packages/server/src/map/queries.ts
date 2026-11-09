@@ -1097,6 +1097,30 @@ export function deleteFlow(app_id: number, name: string): boolean {
   return info.changes > 0;
 }
 
+/** One saved flow of an app by name, or null. Backs `browser.flow({ name })`
+ * (knowledge-loop S11). */
+export function findFlow(app_id: number, name: string): FlowRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM flows WHERE app_id = ? AND name = ?')
+    .get(app_id, name) as RawFlowRow | undefined;
+  return row ? hydrateFlow(row) : null;
+}
+
+/** Count one replay of a saved flow (`browser.flow({ name })` that ran). */
+export function bumpFlowUse(flow_id: number): void {
+  getDb().prepare('UPDATE flows SET use_count = use_count + 1 WHERE id = ?').run(flow_id);
+}
+
+/** The most recently seen build fingerprint of an app, or null. Read-only. */
+export function currentAppBuild(db: Database.Database, app_id: number): string | null {
+  const row = db
+    .prepare(
+      'SELECT fingerprint FROM app_builds WHERE app_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1',
+    )
+    .get(app_id) as { fingerprint: string } | undefined;
+  return row?.fingerprint ?? null;
+}
+
 // === Knowledge loop: builds, start pack, action hints, the whole map =========
 //
 // What the map knows comes back to the agent at the moment it acts: the
@@ -1107,7 +1131,7 @@ export function deleteFlow(app_id: number, name: string): boolean {
 
 /** The most recently seen app of an origin, read-only (no creation, no
  * `last_seen_at` bump): passive reads never reorder which app wins. */
-function winnerApp(db: Database.Database, origin: string): AppRow | null {
+export function winnerApp(db: Database.Database, origin: string): AppRow | null {
   return (
     (db
       .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1')

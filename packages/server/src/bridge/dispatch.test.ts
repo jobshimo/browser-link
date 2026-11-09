@@ -24,6 +24,7 @@ import type { AgentCaller } from '../tools/tab-claims.js';
 import { BridgeEventLog } from './events.js';
 import { clearTypedValues, typedValues } from '../map/readers.js';
 import type { ActivityInput } from '../activity/types.js';
+import { markRulesDelivered, notePendingWork, peekSession, resetSessions } from '../map/session.js';
 
 const TEST_CALLER: AgentCaller = {
   agent_id: 'test',
@@ -52,6 +53,10 @@ function makeDeps(overrides: MakeDepsOverrides = {}): DispatchDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every test except the S13 ones runs in a session that already got its
+  // rules block, so their responses read exactly as before.
+  resetSessions();
+  markRulesDelivered(TEST_CALLER.agent_id);
 });
 
 describe('handleToolsList', () => {
@@ -492,5 +497,195 @@ describe('handleToolCall — typed values are remembered for the JS registry', (
       makeDeps({ disabledTools: ['browser.type'] }),
     );
     expect(typedValues()).toEqual([]);
+  });
+});
+
+describe('handleToolCall — knowledge-loop session (S9, S13)', () => {
+  const FRESH: AgentCaller = { agent_id: 'fresh-session', pid: 1, binary: 'vitest' };
+  const tabs = [{ tab_id: 't1', url: 'https://app.test/list', title: 'A' }];
+  const deps = (): DispatchDeps =>
+    makeDeps({
+      browserTools: {
+        listTabs: vi.fn(() => tabs),
+        callBrowserTool: vi.fn(async () => undefined),
+      } as BrowserToolDeps,
+    });
+  const texts = (res: { content: { type: string; text?: string }[] }): string[] =>
+    res.content.map((c) => c.text ?? '');
+  const RULES = 'browser-link rules:';
+
+  test('the first browser call of a session carries the rules as a second block, once', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: true });
+    const first = await handleToolCall(
+      { name: 'browser.snapshot', arguments: { tab_id: 't1' }, caller: FRESH },
+      deps(),
+    );
+    expect(first.content).toHaveLength(2);
+    expect(JSON.parse(texts(first)[0])).toEqual({ ok: true });
+    expect(texts(first)[1].startsWith(`${RULES}\n`)).toBe(true);
+    expect(texts(first)[1].length).toBeGreaterThan(RULES.length + 1);
+    const second = await handleToolCall(
+      { name: 'browser.snapshot', arguments: { tab_id: 't1' }, caller: FRESH },
+      deps(),
+    );
+    expect(second.content).toHaveLength(1);
+  });
+
+  test('browser.manual and map tools count as the first call; each session gets its own', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue('manual text');
+    const manual = await handleToolCall(
+      { name: 'browser.manual', arguments: {}, caller: FRESH },
+      deps(),
+    );
+    expect(texts(manual)[0]).toBe('manual text');
+    expect(texts(manual)[1].startsWith(RULES)).toBe(true);
+    vi.mocked(handleMapTool).mockReturnValue({ apps: [] });
+    const other: AgentCaller = { agent_id: 'other-session', pid: 2, binary: 'vitest' };
+    const map = await handleToolCall({ name: 'browser.map.apps', caller: other }, deps());
+    expect(map.content).toHaveLength(2);
+  });
+
+  test('a failing first call still delivers the rules after the error', async () => {
+    vi.mocked(handleBrowserTool).mockRejectedValue(new Error('boom'));
+    const res = await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: 't1' }, caller: FRESH },
+      deps(),
+    );
+    expect(res.isError).toBe(true);
+    expect(texts(res)[0]).toBe('Error: boom');
+    expect(texts(res)[1].startsWith(RULES)).toBe(true);
+  });
+
+  test('list_tabs keeps its hint block and the rules come last', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([]);
+    const events = new BridgeEventLog();
+    const res = await handleToolCall(
+      { name: 'browser.list_tabs', caller: FRESH },
+      makeDeps({
+        browserTools: {
+          listTabs: vi.fn(() => []),
+          callBrowserTool: vi.fn(async () => undefined),
+          recentEvents: (opts) => events.recent(opts),
+        } as BrowserToolDeps,
+      }),
+    );
+    expect(texts(res)).toHaveLength(3);
+    expect(texts(res)[0]).toBe('[]');
+    expect(texts(res)[1].startsWith('hint: ')).toBe(true);
+    expect(texts(res)[2].startsWith(RULES)).toBe(true);
+  });
+
+  test('pending_wrap_up appears only after a successful evaluate or flow, on object results only', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: true });
+    const before = await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: 't1' }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect(JSON.parse(texts(before)[0])).toEqual({ ok: true });
+
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce(42);
+    const evalRes = await handleToolCall(
+      {
+        name: 'browser.evaluate',
+        arguments: { tab_id: 't1', expression: '42' },
+        caller: TEST_CALLER,
+      },
+      deps(),
+    );
+    // A raw value is never decorated.
+    expect(texts(evalRes)[0]).toBe('42');
+    expect(peekSession(TEST_CALLER.agent_id)?.pendingWrapUp).toBe(1);
+
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: true });
+    const after = await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: 't1' }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect(JSON.parse(texts(after)[0])).toEqual({ ok: true, pending_wrap_up: 1 });
+    expect(after.content).toHaveLength(1);
+
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: true, steps_completed: 1 });
+    const flowRes = await handleToolCall(
+      { name: 'browser.flow', arguments: { tab_id: 't1', steps: [] }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect(JSON.parse(texts(flowRes)[0])).toEqual({
+      ok: true,
+      steps_completed: 1,
+      pending_wrap_up: 2,
+    });
+
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce([{ tab_id: 't1' }]);
+    const list = await handleToolCall({ name: 'browser.list_tabs', caller: TEST_CALLER }, deps());
+    expect(JSON.parse(texts(list)[0])).toEqual([{ tab_id: 't1' }]);
+  });
+
+  test('a failed evaluate, a dry run and a failed flow add no pending work', async () => {
+    vi.mocked(handleBrowserTool).mockRejectedValueOnce(new Error('ReferenceError'));
+    await handleToolCall(
+      {
+        name: 'browser.evaluate',
+        arguments: { tab_id: 't1', expression: 'x' },
+        caller: TEST_CALLER,
+      },
+      deps(),
+    );
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: true, dry_run: true });
+    await handleToolCall(
+      {
+        name: 'browser.flow',
+        arguments: { tab_id: 't1', steps: [], dry_run: true },
+        caller: TEST_CALLER,
+      },
+      deps(),
+    );
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: false, failed_step: 0 });
+    await handleToolCall(
+      { name: 'browser.flow', arguments: { tab_id: 't1', steps: [] }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect(peekSession(TEST_CALLER.agent_id)?.pendingWrapUp).toBe(0);
+  });
+
+  test('map tool object results carry pending_wrap_up too', async () => {
+    notePendingWork(TEST_CALLER.agent_id);
+    vi.mocked(handleMapTool).mockReturnValue({ apps: [] });
+    const res = await handleToolCall({ name: 'browser.map.apps', caller: TEST_CALLER }, deps());
+    expect(JSON.parse(texts(res)[0])).toEqual({ apps: [], pending_wrap_up: 1 });
+  });
+
+  test('the origin of the tab used and every typed or filled value are kept on the session', async () => {
+    clearTypedValues();
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: true });
+    await handleToolCall(
+      {
+        name: 'browser.type',
+        arguments: { tab_id: 't1', selector: '#q', text: 'acme corp' },
+        caller: TEST_CALLER,
+      },
+      deps(),
+    );
+    await handleToolCall(
+      {
+        name: 'browser.read',
+        arguments: { tab_id: 't1', name: 'client-row', values: { CLIENT: 'Juan' } },
+        caller: TEST_CALLER,
+      },
+      deps(),
+    );
+    const session = peekSession(TEST_CALLER.agent_id)!;
+    expect([...session.origins]).toEqual(['https://app.test']);
+    expect(session.typedValues).toEqual(['acme corp', 'Juan']);
+    expect(typedValues()).toEqual(['acme corp', 'Juan']);
+    clearTypedValues();
+  });
+
+  test('a disabled tool neither delivers the rules nor starts a session', async () => {
+    const res = await handleToolCall(
+      { name: 'browser.click', arguments: {}, caller: FRESH },
+      makeDeps({ disabledTools: ['browser.click'] }),
+    );
+    expect(res.content).toHaveLength(1);
+    expect(peekSession(FRESH.agent_id)).toBeUndefined();
   });
 });

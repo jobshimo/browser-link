@@ -205,6 +205,9 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_js_readers_app ON js_readers(app_id, status);
   `);
+  // v0.45.0 (knowledge-loop S10): the `<PLACEHOLDER>` template a kept reader
+  // runs with (`browser.read`), written only by `browser.wrap_up`.
+  addColumnIfMissing(db, 'js_readers', 'template', 'TEXT');
 
   // v0.20.0: normalize apps.origin rows written before the write path
   // canonicalized origins (see origin.ts). Before this release, save

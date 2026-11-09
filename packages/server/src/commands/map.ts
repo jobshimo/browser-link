@@ -10,6 +10,7 @@ import {
   listAppsWithCounts,
   listEntries,
   listFlows,
+  wholeAppMap,
   listInsights,
   restoreEntry,
   restoreFlow,
@@ -162,6 +163,11 @@ interface MapI18n {
   flowsHeader: (n: number) => string;
   pitfallsHeader: (n: number) => string;
   mechanismsHeader: (n: number) => string;
+  buildsHeader: (n: number, current: string) => string;
+  learnedHeader: (n: number, failing: number) => string;
+  readersHeader: (n: number) => string;
+  okFail: (ok: number, fail: number) => string;
+  unnamed: string;
   none: string;
   statusVerified: string;
   statusFailed: string;
@@ -234,6 +240,11 @@ const MAP_I18N: Record<Language, MapI18n> = {
     flowsHeader: (n) => `Flows (${n}):`,
     pitfallsHeader: (n) => `Pitfalls (${n}):`,
     mechanismsHeader: (n) => `Mechanisms (${n}):`,
+    buildsHeader: (n, current) => `Builds (${n}) — current ${current}`,
+    learnedHeader: (n, failing) => `Learned targets (${n}, ${failing} with failures)`,
+    readersHeader: (n) => `JS readers (${n})`,
+    okFail: (ok, fail) => `ok ${ok}, fail ${fail}`,
+    unnamed: '(unnamed)',
     none: '(none)',
     statusVerified: 'verified',
     statusFailed: 'FAILED',
@@ -336,6 +347,11 @@ const MAP_I18N: Record<Language, MapI18n> = {
     flowsHeader: (n) => `Flows (${n}):`,
     pitfallsHeader: (n) => `Trampas (${n}):`,
     mechanismsHeader: (n) => `Mecanismos (${n}):`,
+    buildsHeader: (n, current) => `Builds (${n}) — actual ${current}`,
+    learnedHeader: (n, failing) => `Objetivos aprendidos (${n}, ${failing} con fallos)`,
+    readersHeader: (n) => `Lectores JS (${n})`,
+    okFail: (ok, fail) => `ok ${ok}, fallos ${fail}`,
+    unnamed: '(sin nombre)',
     none: '(ninguno)',
     statusVerified: 'verificado',
     statusFailed: 'FALLÓ',
@@ -516,7 +532,44 @@ function runShow(argv: string[], language: Language): string {
       lines.push(`  ${f.name} (${stepCount} steps, used ${f.use_count}×)${desc}`);
     }
   }
+  lines.push(...knowledgeLines(app, t));
   return lines.join('\n');
+}
+
+/**
+ * What the map learned by itself (knowledge-loop S7): builds, learned
+ * targets and JS readers, from the same whole-map read as
+ * `browser.map.recall({ scope: 'app' })`. A section is printed only when it
+ * has rows, so a map without them shows exactly what it showed before.
+ */
+function knowledgeLines(app: AppRow, t: MapI18n): string[] {
+  const whole = wholeAppMap(app);
+  const lines: string[] = [];
+  if (whole.builds.length > 0) {
+    lines.push('', t.buildsHeader(whole.builds.length, whole.current_build ?? t.none));
+    for (const b of whole.builds) {
+      lines.push(`  ${b.fingerprint} ${b.first_seen_at} ${b.last_seen_at}`);
+    }
+  }
+  if (whole.outcomes.length > 0) {
+    lines.push('', t.learnedHeader(whole.outcomes.length, whole.learned_failures));
+    for (const o of whole.outcomes) {
+      const reason = o.last_reason ? ` (${o.last_reason})` : '';
+      lines.push(
+        `  [${o.action}] ${o.url_pattern} ${o.target} — ${o.confidence}, ${t.okFail(o.ok_n, o.fail_n)}${reason}`,
+      );
+    }
+  }
+  if (whole.readers.length > 0) {
+    lines.push('', t.readersHeader(whole.readers.length));
+    for (const r of whole.readers) {
+      const flags = r.flags ? `, ${r.flags}` : '';
+      lines.push(
+        `  #${r.id} [${r.status}/${r.kind}] ${r.name ?? t.unnamed} — ${r.confidence}, ${t.okFail(r.ok_n, r.fail_n)}${flags}`,
+      );
+    }
+  }
+  return lines;
 }
 
 // === map forget ==============================================================

@@ -4,6 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeActivityDb, getActivityDb } from '../activity/db.js';
 import { record as recordActivityRow } from '../activity/queries.js';
+import { listFeedback } from '../activity/feedback.js';
+import { closeDb as closeMapDb, getDb as getMapDb } from '../map/db.js';
+import { listFlows, resolveLearnerApp, saveFlow } from '../map/queries.js';
+import {
+  clearTypedValues,
+  getReader,
+  rememberTypedValue,
+  setReaderStatus,
+  setReaderTemplate,
+  upsertReader,
+} from '../map/readers.js';
+import { notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -2171,14 +2183,16 @@ describe('browser.flow dispatch', () => {
 describe('browser.flow schema shape', () => {
   const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.flow');
 
-  test('is registered with tab_id and steps as required properties', () => {
+  test('requires tab_id; steps or a saved flow name (knowledge-loop S11)', () => {
     expect(def).toBeDefined();
     const schema = def!.inputSchema as {
       required: string[];
       additionalProperties: boolean;
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(['tab_id', 'steps']);
+    expect(schema.required).toEqual(['tab_id']);
+    expect(schema.properties.name).toBeDefined();
+    expect(schema.properties.values).toBeDefined();
     expect(schema.additionalProperties).toBe(false);
     expect(schema.properties.tab_id).toBeDefined();
     expect(schema.properties.steps).toBeDefined();
@@ -4576,5 +4590,329 @@ describe('knowledge loop: start pack, action hints and page identity', () => {
     expect(recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ build: '3f9a2b1c', viewSig: '00aa11bb' }),
     );
+  });
+});
+
+describe('knowledge loop: wrap_up, read, feedback and the flow/evaluate shortcuts (S9-S12)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const TAB = { tab_id: 'tab_1', url: `${ORIGIN}/clients/42`, title: 'Clients' };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-knowledge-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function deps(callBrowserTool: BrowserToolDeps['callBrowserTool']): BrowserToolDeps {
+    return makeDeps({ listTabs: vi.fn(() => [TAB]), callBrowserTool });
+  }
+
+  function keptReader(expression: string, name: string, template: string | null = null): number {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression, ok: true })!;
+    setReaderStatus(db, row.id, 'kept', name);
+    setReaderTemplate(db, row.id, template);
+    return row.id;
+  }
+
+  test('catalogue names: wrap_up, read and feedback are browser tools with definitions', () => {
+    for (const name of ['browser.wrap_up', 'browser.read', 'browser.feedback']) {
+      expect(isBrowserTool(name)).toBe(true);
+      expect(BROWSER_TOOL_DEFINITIONS.some((d) => d.name === name)).toBe(true);
+    }
+    const feedback = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.feedback')!;
+    const schema = feedback.inputSchema as { required: string[]; properties: object };
+    expect(schema.required).toEqual(['tool', 'observed', 'expected']);
+    expect(Object.keys(schema.properties).sort()).toEqual(['expected', 'observed', 'tool']);
+  });
+
+  test('wrap_up step 1 reports the tab app; step 2 keeps a reader and resets pending work', async () => {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression: 'document.title', ok: true })!;
+    notePendingWork(TEST_CALLER.agent_id);
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, deps(vi.fn()), TEST_CALLER)) as {
+      step: number;
+      apps: { origin: string; readers: { id: number }[] }[];
+    };
+    expect(step1.step).toBe(1);
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+    expect(step1.apps[0].readers.map((r) => r.id)).toEqual([row.id]);
+
+    const step2 = (await handleBrowserTool(
+      'browser.wrap_up',
+      { readers: { keep: [{ id: row.id, name: 'page-title' }] } },
+      deps(vi.fn()),
+      TEST_CALLER,
+    )) as { step: number; applied: unknown[]; rejected: unknown[] };
+    expect(step2).toEqual({
+      step: 2,
+      applied: [{ item: `reader #${row.id}`, action: 'kept', name: 'page-title' }],
+      rejected: [],
+    });
+    expect(peekSession(TEST_CALLER.agent_id)?.pendingWrapUp).toBe(0);
+  });
+
+  test('wrap_up step 2 rejects by rule and stores feedback in the activity DB', async () => {
+    const result = (await handleBrowserTool(
+      'browser.wrap_up',
+      {
+        readers: { keep: [{ id: 999, name: 'get-total' }] },
+        feedback: [{ tool: 'browser.find', observed: 'two shapes', expected: 'one shape' }],
+      },
+      deps(vi.fn()),
+      TEST_CALLER,
+    )) as { applied: { item: string }[]; rejected: { rule: number }[] };
+    expect(result.rejected).toEqual([expect.objectContaining({ item: 'reader #999', rule: 1 })]);
+    expect(result.applied).toEqual([{ item: 'feedback[0]', action: 'saved' }]);
+    expect(listFeedback(getActivityDb())).toEqual([
+      expect.objectContaining({ tool: 'browser.find', agentId: TEST_CALLER.agent_id }),
+    ]);
+  });
+
+  test('wrap_up refuses a malformed body before writing anything', async () => {
+    await expect(
+      handleBrowserTool(
+        'browser.wrap_up',
+        { readers: { keep: 'all' } },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/readers\.keep must be an array/);
+  });
+
+  test('read by name runs the kept expression and counts the outcome', async () => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => 'Clients');
+    const value = await handleBrowserTool(
+      'browser.read',
+      { tab_id: 'tab_1', name: 'page-title' },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(value).toBe('Clients');
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: 'document.title' });
+    expect(getReader(getMapDb(), id)?.ok_n).toBe(2);
+  });
+
+  test('read by id fills the template placeholders, escaped for a string literal', async () => {
+    const id = keptReader(
+      `document.querySelector('[title="Juan Perez"]').textContent`,
+      'client-cell',
+      `document.querySelector('[title="<CLIENT>"]').textContent`,
+    );
+    const call = vi.fn(async () => '12');
+    await handleBrowserTool(
+      'browser.read',
+      { tab_id: 'tab_1', id, values: { CLIENT: 'O"Brien' } },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', {
+      expression: `document.querySelector('[title="O\\"Brien"]').textContent`,
+    });
+  });
+
+  test('read refuses a missing placeholder, an unknown name and a pending reader', async () => {
+    keptReader(`q("Juan Perez")`, 'client-row', `q("<CLIENT>")`);
+    const call = vi.fn();
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', name: 'client-row' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/missing value for <CLIENT>/);
+    await expect(
+      handleBrowserTool('browser.read', { tab_id: 'tab_1', name: 'nope' }, deps(call), TEST_CALLER),
+    ).rejects.toThrow(/no kept reader "nope".*kept: client-row/);
+    const db = getMapDb();
+    const pending = upsertReader(db, {
+      appId: resolveLearnerApp(db, ORIGIN).id,
+      expression: 'location.href',
+      ok: true,
+    })!;
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', id: pending.id },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/no kept reader #/);
+    await expect(
+      handleBrowserTool('browser.read', { tab_id: 'tab_1' }, deps(call), TEST_CALLER),
+    ).rejects.toThrow(/exactly one of name or id/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test('a failing read counts a failure on the reader', async () => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => {
+      throw new Error('ReferenceError');
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', name: 'page-title' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/ReferenceError/);
+    expect(getReader(getMapDb(), id)?.fail_n).toBe(1);
+  });
+
+  test('flow by name runs the saved steps with values filled and counts the use', async () => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }, { press: { key: 'Enter' } }],
+    });
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 2, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', name: 'search', values: { QUERY: 'shrek' } },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps[0]).toEqual({ type: { selector: '#q', text: 'shrek' } });
+    const flows = listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id);
+    expect(flows[0].use_count).toBe(1);
+    const session = peekSession(TEST_CALLER.agent_id)!;
+    expect(session.flows[0]).toMatchObject({
+      saved_name: 'search',
+      ok: true,
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }, { press: { key: 'Enter' } }],
+    });
+  });
+
+  test('flow by name refuses a missing value or an unknown flow before anything runs', async () => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    const call = vi.fn();
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', name: 'search' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/missing value for <QUERY>/);
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', name: 'other' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/no saved flow "other".*saved: search/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test('an inline flow with name and values is recorded as a named template candidate', async () => {
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      {
+        tab_id: 'tab_1',
+        name: 'search-box',
+        steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+        values: { QUERY: 'shrek' },
+      },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: 'shrek' } }]);
+    expect(peekSession(TEST_CALLER.agent_id)?.flows[0]).toMatchObject({
+      name: 'search-box',
+      origin: ORIGIN,
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    // Nothing is saved before wrap_up.
+    expect(listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id)).toEqual([]);
+  });
+
+  test('an inline flow without values runs its steps untouched', async () => {
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ type: { selector: '#q', text: '<keep me>' } }] },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: '<keep me>' } }]);
+  });
+
+  test('evaluate as: a bad name is refused before running; a good one is not forwarded', async () => {
+    const call = vi.fn(async () => 1);
+    await expect(
+      handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: '1', as: 'getTotal' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 4/);
+    expect(call).not.toHaveBeenCalled();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: '1', as: 'invoice-total' },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: '1' });
+  });
+
+  test('feedback is stored locally with the session app; typed values are refused', async () => {
+    const result = await handleBrowserTool(
+      'browser.feedback',
+      { tool: 'browser.find', observed: 'matched twice', expected: 'one match' },
+      deps(vi.fn()),
+      TEST_CALLER,
+    );
+    expect(result).toEqual({ id: expect.any(Number), stored: 'local' });
+    expect(listFeedback(getActivityDb())[0]).toMatchObject({
+      tool: 'browser.find',
+      observed: 'matched twice',
+      agentId: TEST_CALLER.agent_id,
+    });
+    rememberTypedValue('acme corp');
+    await expect(
+      handleBrowserTool(
+        'browser.feedback',
+        { tool: 'browser.find', observed: 'acme corp twice', expected: 'one' },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 7/);
+    await expect(
+      handleBrowserTool(
+        'browser.feedback',
+        { tool: 'browser.find', observed: '', expected: 'one' },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/observed must be a non-empty string/);
   });
 });

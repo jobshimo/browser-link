@@ -18,6 +18,14 @@ import {
   setReaderStatus,
   typedValues,
   upsertReader,
+  codeSkeleton,
+  dataLiterals,
+  findKeptReader,
+  getReader,
+  hasSecretValue,
+  readerNameProblem,
+  setReaderTemplate,
+  typedTextsOf,
 } from './readers.js';
 
 /**
@@ -363,5 +371,75 @@ describe('recordReaderFromDispatch', () => {
       recordReaderFromDispatch({ ...ctx, args: { expression: 'window.x' } }),
     ).not.toThrow();
     expect(spy).toHaveBeenCalled();
+  });
+});
+
+describe('knowledge loop helpers (S10, S11)', () => {
+  const ctx = {
+    tool: 'browser.evaluate',
+    args: { tab_id: 'tab_1', expression: 'document.title', as: 'page-title' },
+    result: 'Inbox',
+    url: 'https://app.example.com/inbox/42',
+  };
+
+  test('evaluate `as` names the row and leaves it pending', () => {
+    db();
+    recordReaderFromDispatch(ctx);
+    expect(listReaders(db(), appId())[0]).toMatchObject({ name: 'page-title', status: 'pending' });
+  });
+
+  test('a bad `as` name or a kept row is never (re)named', () => {
+    db();
+    recordReaderFromDispatch({ ...ctx, args: { ...ctx.args, as: 'getTitle' } });
+    const [row] = listReaders(db(), appId());
+    expect(row.name).toBeNull();
+    setReaderStatus(db(), row.id, 'kept', 'page-title');
+    recordReaderFromDispatch({ ...ctx, args: { ...ctx.args, as: 'other-name' } });
+    expect(listReaders(db(), appId())[0]).toMatchObject({ name: 'page-title', status: 'kept' });
+  });
+
+  test.each([
+    ['invoice-total', null],
+    ['download-links', null],
+    ['Invoice', /kebab/],
+    ['get-total', /verb "get"/],
+    ['make', /verb "make"/],
+    ['a'.repeat(41), /40/],
+    ['', /required/],
+  ])('readerNameProblem(%s)', (name, problem) => {
+    const result = readerNameProblem(name);
+    if (problem === null) expect(result).toBeNull();
+    else expect(result).toMatch(problem);
+  });
+
+  test('typedTextsOf collects type text, flow type steps and values', () => {
+    expect(
+      typedTextsOf({
+        steps: [{ type: { text: 'a b' } }, { repeat: { steps: [{ type: { text: 'c' } }] } }],
+        values: { X: 'v', N: 3, E: '' },
+      }),
+    ).toEqual(['a b', 'c', 'v', '3']);
+    expect(typedTextsOf(undefined)).toEqual([]);
+  });
+
+  test('dataLiterals, codeSkeleton and hasSecretValue', () => {
+    expect(dataLiterals(`q("Juan Perez", ".x", "a@b.c")`, [])).toEqual(['Juan Perez', 'a@b.c']);
+    expect(codeSkeleton(`q("<A>").id`)).toBe(codeSkeleton(`q('x y').id`));
+    expect(hasSecretValue('the token field')).toBe(false);
+    expect(hasSecretValue('a'.repeat(8) + '0123456789abcdef0123456789abcdef')).toBe(true);
+  });
+
+  test('findKeptReader finds only kept rows, by name or id; setReaderTemplate stores the template', () => {
+    const id = appId();
+    const row = upsertReader(db(), { appId: id, expression: 'document.title', ok: true })!;
+    expect(findKeptReader(db(), id, { name: 'page-title' })).toBeNull();
+    setReaderStatus(db(), row.id, 'kept', 'page-title');
+    setReaderTemplate(db(), row.id, 'document.title');
+    expect(findKeptReader(db(), id, { name: 'page-title' })).toMatchObject({
+      id: row.id,
+      template: 'document.title',
+    });
+    expect(findKeptReader(db(), id, { id: row.id })?.id).toBe(row.id);
+    expect(getReader(db(), 12345)).toBeNull();
   });
 });
