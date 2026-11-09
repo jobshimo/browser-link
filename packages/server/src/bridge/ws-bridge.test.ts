@@ -12,15 +12,19 @@ import {
   applyTabNavigated,
   buildTabDisconnectedData,
   buildTabSession,
+  handleAdminMessage,
   handleFlowRecordedMessage,
   pushSettingsToAllTabs,
+  routeRequestMessage,
   sendToolCancel,
+  type AdminHandlers,
   type TabSession,
 } from './ws-bridge.js';
 import { BridgeEventLog, isExtensionEventKind } from './events.js';
 import { closeDb } from '../map/db.js';
+import { closeActivityDb } from '../activity/db.js';
 import { recall } from '../map/queries.js';
-import type { FlowRecordedPayload } from '../messages.js';
+import type { AdminState, FlowRecordedPayload, ServerToExtension } from '../messages.js';
 import { VERSION } from '../version.js';
 
 /* Wire-level coverage for the two settings-push paths in ws-bridge.ts.
@@ -552,5 +556,151 @@ describe('buildTabRegisteredPayload (S3c)', () => {
     const payload = buildTabRegisteredPayload('tab_2', '0.41.0', null, 7);
     expect(payload).toEqual({ tabId: 'tab_2', serverVersion: '0.41.0', serverPid: 7 });
     expect('installedVersion' in payload).toBe(false);
+  });
+});
+
+describe('admin.describe / admin.action (admin panel S3)', () => {
+  const STATE: AdminState = {
+    version: 1,
+    generatedAt: '2026-11-09T12:00:00.000Z',
+    sections: [],
+    ui: {
+      language: 'en',
+      confirm: 'Confirm',
+      cancel: 'Cancel',
+      apply: 'Apply',
+      notConnected: 'n/c',
+      restartRequired: 'restart',
+      changed: 'Saved.',
+    },
+  };
+
+  function handlers(over: Partial<AdminHandlers> = {}): AdminHandlers {
+    return {
+      describe: () => Promise.resolve(STATE),
+      action: (req) =>
+        Promise.resolve({ ok: true, applied: false, needsConfirm: true, preview: req.id }),
+      ...over,
+    };
+  }
+
+  test('admin.describe answers admin.state with the described state and the request id', async () => {
+    expect(
+      await handleAdminMessage({ kind: 'admin.describe', request_id: 'r1' }, handlers()),
+    ).toEqual({ kind: 'admin.state', request_id: 'r1', ok: true, state: STATE });
+  });
+
+  test('a describe that throws becomes ok:false, never a rejection', async () => {
+    const reply = await handleAdminMessage(
+      { kind: 'admin.describe', request_id: 'r2' },
+      handlers({ describe: () => Promise.reject(new Error('boom')) }),
+    );
+    expect(reply).toEqual({ kind: 'admin.state', request_id: 'r2', ok: false, error: 'boom' });
+  });
+
+  test('admin.action forwards only the typed fields and wraps the result', async () => {
+    const seen: unknown[] = [];
+    const reply = await handleAdminMessage(
+      {
+        kind: 'admin.action',
+        request_id: 'r3',
+        id: 'multiAgent',
+        value: false,
+        confirm: true,
+        extra: 'dropped',
+      } as never,
+      handlers({
+        action: (req) => {
+          seen.push(req);
+          return Promise.resolve({ ok: true, applied: true });
+        },
+      }),
+    );
+    expect(seen).toEqual([{ id: 'multiAgent', value: false, confirm: true }]);
+    expect(reply).toEqual({
+      kind: 'admin.action.result',
+      request_id: 'r3',
+      result: { ok: true, applied: true },
+    });
+  });
+
+  test('a malformed action or a throwing handler becomes result ok:false', async () => {
+    expect(
+      await handleAdminMessage(
+        { kind: 'admin.action', request_id: 'r4', id: 42 } as never,
+        handlers(),
+      ),
+    ).toEqual({
+      kind: 'admin.action.result',
+      request_id: 'r4',
+      result: { ok: false, error: 'admin.action: id must be a string' },
+    });
+    expect(
+      await handleAdminMessage(
+        { kind: 'admin.action', request_id: 'r5', id: 'doctor' },
+        handlers({ action: () => Promise.reject(new Error('nope')) }),
+      ),
+    ).toEqual({
+      kind: 'admin.action.result',
+      request_id: 'r5',
+      result: { ok: false, error: 'nope' },
+    });
+  });
+
+  test('without admin handlers both kinds answer ok:false', async () => {
+    expect(await handleAdminMessage({ kind: 'admin.describe', request_id: 'r6' })).toEqual({
+      kind: 'admin.state',
+      request_id: 'r6',
+      ok: false,
+      error: 'admin panel unavailable',
+    });
+    expect(
+      await handleAdminMessage({ kind: 'admin.action', request_id: 'r7', id: 'doctor' }),
+    ).toEqual({
+      kind: 'admin.action.result',
+      request_id: 'r7',
+      result: { ok: false, error: 'admin panel unavailable' },
+    });
+  });
+});
+
+describe('routeRequestMessage: activity.query beside the admin dispatch', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-route-test-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    closeActivityDb();
+    closeDb();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('activity.query still answers activity.result synchronously', () => {
+    const reply = routeRequestMessage({ kind: 'activity.query', request_id: 'a1' });
+    expect(reply).not.toBeInstanceOf(Promise);
+    expect(reply).toMatchObject({ kind: 'activity.result', request_id: 'a1', ok: true });
+  });
+
+  test('admin.describe goes to the admin handler', async () => {
+    const reply = routeRequestMessage(
+      { kind: 'admin.describe', request_id: 'd1' },
+      {
+        describe: () => Promise.reject(new Error('from admin')),
+        action: () => Promise.resolve({ ok: false, error: 'x' }),
+      },
+    );
+    expect(reply).toBeInstanceOf(Promise);
+    expect(await (reply as Promise<ServerToExtension>)).toMatchObject({
+      kind: 'admin.state',
+      error: 'from admin',
+    });
+  });
+
+  test('every other kind is not a request it routes', () => {
+    expect(routeRequestMessage({ kind: 'bridge.repair', request_id: 'b1' })).toBeNull();
   });
 });

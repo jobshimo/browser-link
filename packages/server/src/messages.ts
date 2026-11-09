@@ -275,6 +275,72 @@ export type BridgeRepairResultMessage =
   | { kind: 'bridge.repair.result'; request_id: string; ok: true; action: 'restarting' }
   | { kind: 'bridge.repair.result'; request_id: string; ok: false; error: string };
 
+/**
+ * Admin panel (0.42.0): the server describes its administration state and
+ * actions as data, already localised, so the popup renders the same
+ * sections, options and labels as the console without a copy of its own.
+ * The same text lives in `packages/shared/src/index.ts`; keep both identical.
+ */
+export type AdminItemKind = 'readout' | 'toggle' | 'select' | 'button' | 'link';
+export interface AdminOption {
+  value: string;
+  label: string;
+}
+export interface AdminItem {
+  id: string;
+  kind: AdminItemKind;
+  label: string;
+  description?: string;
+  value?: string | number | boolean | null;
+  options?: AdminOption[];
+  writesDisk: boolean;
+  requiresRestart?: boolean;
+  hint?: string;
+}
+export interface AdminSection {
+  id: 'status' | 'setup' | 'diagnose' | 'reference';
+  title: string;
+  items: AdminItem[];
+}
+export interface AdminUiStrings {
+  language: 'en' | 'es';
+  confirm: string;
+  cancel: string;
+  apply: string;
+  notConnected: string;
+  restartRequired: string;
+  changed: string;
+}
+export interface AdminState {
+  version: 1;
+  generatedAt: string;
+  sections: AdminSection[];
+  ui: AdminUiStrings;
+}
+export type AdminActionResult =
+  | { ok: true; applied: true; requiresRestart?: boolean; state?: AdminState; output?: string[] }
+  | { ok: true; applied: false; needsConfirm: true; preview: string }
+  | { ok: false; error: string };
+export interface AdminDescribeMessage {
+  kind: 'admin.describe';
+  request_id: string;
+}
+export interface AdminActionMessage {
+  kind: 'admin.action';
+  request_id: string;
+  id: string;
+  value?: string | number | boolean;
+  confirm?: boolean;
+}
+export type AdminStateMessage =
+  | { kind: 'admin.state'; request_id: string; ok: true; state: AdminState }
+  | { kind: 'admin.state'; request_id: string; ok: false; error: string };
+export interface AdminActionResultMessage {
+  kind: 'admin.action.result';
+  request_id: string;
+  result: AdminActionResult;
+}
+
 export type ExtensionToServer =
   | TabRegisterMessage
   | ToolResponseMessage
@@ -282,7 +348,9 @@ export type ExtensionToServer =
   | FlowRecordedMessage
   | ActivityQueryMessage
   | ActivityPurgeMessage
-  | BridgeRepairMessage;
+  | BridgeRepairMessage
+  | AdminDescribeMessage
+  | AdminActionMessage;
 export type ServerToExtension =
   | TabRegisteredMessage
   | ToolRequestMessage
@@ -291,4 +359,6 @@ export type ServerToExtension =
   | FlowRecordedResultMessage
   | ActivityResultMessage
   | ActivityPurgeResultMessage
-  | BridgeRepairResultMessage;
+  | BridgeRepairResultMessage
+  | AdminStateMessage
+  | AdminActionResultMessage;

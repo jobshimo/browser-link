@@ -37,6 +37,7 @@ import {
   type PendingRequest,
   type TabSession,
 } from './bridge/ws-bridge.js';
+import { createPrimaryAdminHandlers } from './admin/primary.js';
 
 export { WS_HOST, WS_PORT };
 
@@ -194,6 +195,18 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // so the caller can decide between proxy mode and a clear error.
   const wss = await startWsBridge(tabs, pendingRequests, events, {
     onRepair: () => repair.start(),
+    // Admin panel (popup): describe/act on this primary's settings through
+    // the same helpers the console uses. Doctor runs only on its button.
+    admin: createPrimaryAdminHandlers({
+      version: VERSION,
+      tabsConnected: () => tabs.size,
+      connectedExtensionVersion: () => {
+        for (const session of tabs.values()) {
+          if (session.extensionVersion !== undefined) return session.extensionVersion;
+        }
+        return null;
+      },
+    }),
   });
 
   // Cooperative tab ownership across MCP clients. Claim events are mirrored

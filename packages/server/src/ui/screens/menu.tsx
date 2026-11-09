@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Frame } from '../components.js';
 import { COLORS, GLYPHS } from '../tokens.js';
 import { FooterKeys, MenuRow, SectionHead } from '../primitives/index.js';
@@ -189,7 +189,19 @@ interface MainMenuProps extends CommonProps {
    * value to assert the update banner renders only when isNewer is true.
    * In production this is undefined and the menu calls the real hook. */
   updateState?: UpdateCheckState;
+  /** Status view (S4) only: replaces the frame title. */
+  title?: string;
+  /** Status view only: rendered above the banners and the menu rows. */
+  header?: ReactNode;
+  /** Status view only: Tab opens the full menu; the footer names it. */
+  onOpenMenu?: { run: () => void; label: string };
 }
+
+/** With an injected `updateState` (tests, the status view) the menu skips
+ * its own registry check; a constant keeps the hook's effect stable. */
+const SKIP_UPDATE_CHECK = {
+  runCheck: (): Promise<UpdateCheckState> => Promise.reject(new Error('injected')),
+};
 
 function defaultOutdatedClientNames(): string[] {
   return statusAll()
@@ -204,6 +216,9 @@ export function MainMenu({
   onQuit,
   outdatedClientNames = defaultOutdatedClientNames,
   updateState,
+  title,
+  header,
+  onOpenMenu,
 }: MainMenuProps) {
   const t = MENU_I18N[language];
 
@@ -211,7 +226,7 @@ export function MainMenu({
    * `updateState` instead. We call the hook unconditionally so the React
    * rules-of-hooks are satisfied (no conditional invocation), then ignore
    * its result when the prop override is present. */
-  const hookState = useBackgroundUpdateCheck();
+  const hookState = useBackgroundUpdateCheck(updateState ? SKIP_UPDATE_CHECK : undefined);
   const effectiveUpdate = updateState ?? hookState;
 
   const [idx, setIdx] = useState(0);
@@ -230,6 +245,7 @@ export function MainMenu({
     if (key.upArrow) setIdx((i) => (i - 1 + MENU_SPEC.length) % MENU_SPEC.length);
     else if (key.downArrow) setIdx((i) => (i + 1) % MENU_SPEC.length);
     else if (key.return) handleAction(MENU_SPEC[idx].value);
+    else if (key.tab && onOpenMenu) onOpenMenu.run();
     else if (input === 'q' || key.escape) onQuit();
     else if (input === 'l') onSwapLang();
     else {
@@ -251,7 +267,7 @@ export function MainMenu({
 
   return (
     <Frame
-      title={t.title}
+      title={title ?? t.title}
       badge={
         <Text color={COLORS.muted} dimColor>
           v{VERSION}
@@ -263,12 +279,14 @@ export function MainMenu({
             { k: `${GLYPHS.up}${GLYPHS.down}`, label: t.footerNavigate },
             { k: GLYPHS.enter, label: t.footerSelect },
             { k: 'a-z', label: t.footerHotkey },
+            ...(onOpenMenu ? [{ k: 'tab', label: onOpenMenu.label }] : []),
             { k: 'l', label: t.footerLang },
             { k: 'q', label: t.footerQuit },
           ]}
         />
       }
     >
+      {header}
       {outdated.length > 0 && (
         <Box marginBottom={1}>
           <Text color={COLORS.warn}>{t.outdatedBanner(outdated.join(', '))}</Text>

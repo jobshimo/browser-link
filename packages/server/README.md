@@ -59,10 +59,12 @@ The fastest path is the interactive UI — a full-screen [Ink](https://github.co
 browser-link
 ```
 
-That opens the welcome screen and then a setup menu to register with
-**Claude Code**, **OpenCode** or **GitHub Copilot CLI**, see the Chrome
-extension install steps, run a doctor diagnose, and manage per-tool
-permissions.
+That opens the welcome screen and then a status view: the running server,
+its ports, multi-agent, the instructions block per client, cdp-direct and
+updates, with the setup menu's entries and hotkeys right below it (Tab opens
+the full menu) to register with **Claude Code**, **OpenCode** or **GitHub
+Copilot CLI**, see the Chrome extension install steps, run a doctor
+diagnose, and manage per-tool permissions.
 
 Or drive it directly:
 
@@ -134,6 +136,12 @@ browser-link map import map.json            # restore it (merge by default, --re
   show "running X / installed Y", and the extension popup has a "Repair
   connection" button. See
   [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
+- **Admin panel**: the console's status view and the extension popup's
+  Admin section render the same server-built sections and labels (English
+  or Spanish). Every change that writes to disk shows a one-line preview and
+  waits for your confirmation; stopping or updating the server stays a
+  console command. See
+  [Admin panel](https://github.com/jobshimo/browser-link#admin-panel-console-and-popup).
 - **cdp-direct mode** (off by default): an extension-free transport gated
   behind `browser-link config set cdp-direct.enabled true` PLUS a
   time-boxed `browser-link cdp allow` grant — see

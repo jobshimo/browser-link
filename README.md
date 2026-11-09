@@ -115,7 +115,16 @@ the four-step setup:
    Developer mode → Load unpacked).
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
-   The popup and its copy are English-only.
+   The popup's own copy is English-only; its **Admin** section speaks the
+   server's language (see [Admin panel](#admin-panel-console-and-popup)).
+
+After the first run, `browser-link` opens on a **status view**: the running
+server (version, PID, uptime, ports, outdated or not), multi-agent, the
+instructions block per client, cdp-direct, updates and the activity trail,
+with every menu entry and its usual hotkey right below it. **Tab** opens the
+full menu; every other screen still returns to the menu, as before. When no
+server is running the status rows say so: the console reads the running
+primary's `GET /version`, it never starts one.
 
 #### The Flows panel
 
@@ -1342,6 +1351,39 @@ the morning by lunchtime.
 ## Customising
 
 A handful of knobs — some on by default, all reversible.
+
+### Admin panel (console and popup)
+
+The console's status view and the popup's **Admin** section render one
+description the server builds: the same sections (status, setup, diagnose,
+reference), options and labels, localised from `language` in `config.json`
+(English or Spanish). The popup asks the running server over the extension's
+existing connection, so it needs at least one connected tab; without one it
+says so.
+
+From the popup you can switch the language, enable or disable each MCP tool,
+toggle multi-agent, auto-reelect, the instructions auto-refresh, cdp-direct
+and its grant lifetime, and the activity trail; run `doctor` and an update
+check; install or remove the instructions block per client; and register
+browser-link with a detected client. The rules:
+
+- **Every change that writes to disk asks first.** The server answers with a
+  one-line preview ("Disable tool browser.evaluate for every agent") and
+  applies it only after you confirm. `doctor` and the update check only read,
+  so they run straight away.
+- **Same write path as the CLI.** The server applies a change through the
+  helpers `browser-link tools`, `multi-agent`, `config set` and
+  `instructions` use, with their validation, and accepts only the entries
+  it described: an unknown action, tool or value is refused.
+- **Some changes need a restart.** Multi-agent, auto-reelect, the
+  instructions auto-refresh and the activity settings are read when the
+  server starts; the panel says "restart required".
+- **Never from the popup:** stopping the server (`browser-link stop`) and
+  updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
+  server that answers the popup, so they appear as the console commands to
+  run. The cdp-direct port and the downloads folder are shown with their
+  `browser-link config set` command; idle disconnect and flow recording keep
+  their own popup controls.
 
 ### Agent instructions
 
