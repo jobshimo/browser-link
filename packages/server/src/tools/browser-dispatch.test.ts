@@ -4,6 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeActivityDb, getActivityDb } from '../activity/db.js';
 import { record as recordActivityRow } from '../activity/queries.js';
+import { listFeedback } from '../activity/feedback.js';
+import { closeDb as closeMapDb, getDb as getMapDb } from '../map/db.js';
+import { listFlows, resolveLearnerApp, saveFlow } from '../map/queries.js';
+import {
+  clearTypedValues,
+  getReader,
+  rememberTypedValue,
+  setReaderStatus,
+  setReaderTemplate,
+  upsertReader,
+} from '../map/readers.js';
+import { notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -2171,14 +2183,16 @@ describe('browser.flow dispatch', () => {
 describe('browser.flow schema shape', () => {
   const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.flow');
 
-  test('is registered with tab_id and steps as required properties', () => {
+  test('requires tab_id; steps or a saved flow name (knowledge-loop S11)', () => {
     expect(def).toBeDefined();
     const schema = def!.inputSchema as {
       required: string[];
       additionalProperties: boolean;
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(['tab_id', 'steps']);
+    expect(schema.required).toEqual(['tab_id']);
+    expect(schema.properties.name).toBeDefined();
+    expect(schema.properties.values).toBeDefined();
     expect(schema.additionalProperties).toBe(false);
     expect(schema.properties.tab_id).toBeDefined();
     expect(schema.properties.steps).toBeDefined();
@@ -4051,6 +4065,29 @@ describe('handleBrowserTool — outcome learner and trail evidence (map-learning
     );
   });
 
+  test('an evaluate refused for a bad `as` never reaches the learner, but stays on the trail', async () => {
+    const recordActivity = vi.fn();
+    const recordOutcome = vi.fn();
+    const call = vi.fn(async () => 1);
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: call,
+      recordActivity,
+      recordOutcome,
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: '1', as: 'getTotal' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 4/);
+    expect(call).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(recordActivity).toHaveBeenCalledTimes(1);
+  });
+
   test('the learner runs even when activity recording is off (no recordActivity)', async () => {
     const recordOutcome = vi.fn();
     const deps = makeDeps({
@@ -4361,5 +4398,544 @@ describe('browser.download — configurable size cap', () => {
   test('the over-cap error names the active cap in MiB', async () => {
     saveConfig({ downloadsMaxMb: 7 });
     expect(await fetchExpression()).toContain('download exceeds the 7 MiB cap (7340032 bytes)');
+  });
+});
+
+describe('knowledge loop: start pack, action hints and page identity', () => {
+  const TAB = {
+    tab_id: 'tab_1',
+    url: 'https://app.example.com/facturas/48213?x=1',
+    title: 'Invoice',
+  };
+  const KNOWLEDGE = {
+    app_key: 'my-app',
+    path: '/facturas/:id',
+    pitfalls: [
+      { key: 'k', description: 'd', confidence: 'unverified', evidence: { saved_at: 't' } },
+    ],
+  } as const;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  describe('list_tabs', () => {
+    test('without getKnowledge the tab reads exactly as before', async () => {
+      const deps = makeDeps({ listTabs: vi.fn(() => [TAB]) });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([{ ...TAB, claimed_by: null, claimed_by_me: false }]);
+    });
+
+    test('a null start pack adds no field', async () => {
+      const getKnowledge = vi.fn(() => null);
+      const deps = makeDeps({ listTabs: vi.fn(() => [TAB]), getKnowledge });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([{ ...TAB, claimed_by: null, claimed_by_me: false }]);
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/48213',
+        build: null,
+      });
+    });
+
+    test('attaches knowledge per tab, looked up with the tab build, on every call', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c', view_sig: '00aa11bb' }]),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      for (let i = 0; i < 2; i++) {
+        const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as {
+          knowledge?: unknown;
+          build?: string;
+          view_sig?: string;
+        }[];
+        expect(tabs[0]).toMatchObject({
+          build: '3f9a2b1c',
+          view_sig: '00aa11bb',
+          knowledge: KNOWLEDGE,
+        });
+      }
+      expect(getKnowledge).toHaveBeenCalledTimes(2);
+      expect(getKnowledge).toHaveBeenCalledWith(expect.objectContaining({ build: '3f9a2b1c' }));
+    });
+
+    test('a tab without a usable origin is never looked up', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, url: 'about:blank' }]),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([
+        { ...TAB, url: 'about:blank', claimed_by: null, claimed_by_me: false },
+      ]);
+      expect(getKnowledge).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('navigate', () => {
+    const NAV_RESULT = { url: 'https://app.example.com/facturas/7', title: 'Invoice 7' };
+
+    test('without knowledge the result is byte-identical', async () => {
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [TAB]),
+        callBrowserTool: vi.fn(async () => NAV_RESULT),
+        getKnowledge: vi.fn(() => null),
+      });
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: 'tab_1', url: NAV_RESULT.url },
+        deps,
+        TEST_CALLER,
+      );
+      expect(JSON.stringify(out)).toBe(JSON.stringify(NAV_RESULT));
+    });
+
+    test('adds the start pack of where it landed', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c' }]),
+        callBrowserTool: vi.fn(async () => NAV_RESULT),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: 'tab_1', url: NAV_RESULT.url },
+        deps,
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ...NAV_RESULT, knowledge: KNOWLEDGE });
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/7',
+        build: '3f9a2b1c',
+      });
+    });
+  });
+
+  describe('action hints', () => {
+    const RESULT = { ok: true, settle: { settled: true, mutation_count: 1 } };
+
+    function depsWith(getActionHint: BrowserToolDeps['getActionHint']): BrowserToolDeps {
+      return makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c' }]),
+        callBrowserTool: vi.fn(async () => RESULT),
+        getActionHint,
+      });
+    }
+
+    test.each([
+      ['browser.click', { selector: '#pay' }, 'click', 'selector', '#pay'],
+      ['browser.type', { selector: '#q', text: 'secret' }, 'type', 'selector', '#q'],
+      ['browser.press', { key: 'Enter', selector: '#q' }, 'press', 'selector', '#q'],
+      [
+        'browser.find',
+        { key: { role: 'button', name: 'Pay', path: [{ tag: 'button', index: 1 }] } },
+        'find',
+        'key',
+        JSON.stringify({ role: 'button', name: 'Pay', path: [{ tag: 'button', index: 1 }] }),
+      ],
+    ])('%s carries known for a target with evidence', async (tool, args, action, kind, target) => {
+      const getActionHint = vi.fn(() => HINT);
+      const out = await handleBrowserTool(
+        tool,
+        { tab_id: 'tab_1', ...args },
+        depsWith(getActionHint as unknown as BrowserToolDeps['getActionHint']),
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ...RESULT, known: HINT });
+      expect(getActionHint).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/48213',
+        build: '3f9a2b1c',
+        target,
+        target_kind: kind,
+        action,
+      });
+      expect(JSON.stringify(getActionHint.mock.calls)).not.toContain('secret');
+    });
+
+    test('no hint, no field: the click result is byte-identical', async () => {
+      const out = await handleBrowserTool(
+        'browser.click',
+        { tab_id: 'tab_1', selector: '#pay' },
+        depsWith(vi.fn(() => null)),
+        TEST_CALLER,
+      );
+      expect(JSON.stringify(out)).toBe(JSON.stringify(RESULT));
+    });
+
+    test.each([
+      ['browser.click', { ref: 'abcdef:e1' }],
+      ['browser.press', { key: 'Enter' }],
+      ['browser.find', { text: 'Pay' }],
+    ])('%s without a durable target never looks one up', async (tool, args) => {
+      const getActionHint = vi.fn(() => HINT);
+      const out = await handleBrowserTool(
+        tool,
+        { tab_id: 'tab_1', ...args },
+        depsWith(getActionHint as unknown as BrowserToolDeps['getActionHint']),
+        TEST_CALLER,
+      );
+      expect(out).toEqual(RESULT);
+      expect(getActionHint).not.toHaveBeenCalled();
+    });
+
+    test('evaluate never carries known (readers are offered by the start pack)', async () => {
+      const getActionHint = vi.fn(() => HINT);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [TAB]),
+        callBrowserTool: vi.fn(async () => 'raw value'),
+        getActionHint: getActionHint as unknown as BrowserToolDeps['getActionHint'],
+      });
+      const out = await handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: 'document.title' },
+        deps,
+        TEST_CALLER,
+      );
+      expect(out).toBe('raw value');
+      expect(getActionHint).not.toHaveBeenCalled();
+    });
+  });
+
+  test('the learner receives the tab build and view signature', async () => {
+    const recordOutcome = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c', view_sig: '00aa11bb' }]),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      recordOutcome,
+    });
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#pay' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ build: '3f9a2b1c', viewSig: '00aa11bb' }),
+    );
+  });
+});
+
+describe('knowledge loop: wrap_up, read, feedback and the flow/evaluate shortcuts (S9-S12)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const TAB = { tab_id: 'tab_1', url: `${ORIGIN}/clients/42`, title: 'Clients' };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-knowledge-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function deps(callBrowserTool: BrowserToolDeps['callBrowserTool']): BrowserToolDeps {
+    return makeDeps({ listTabs: vi.fn(() => [TAB]), callBrowserTool });
+  }
+
+  function keptReader(expression: string, name: string, template: string | null = null): number {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression, ok: true })!;
+    setReaderStatus(db, row.id, 'kept', name);
+    setReaderTemplate(db, row.id, template);
+    return row.id;
+  }
+
+  test('catalogue names: wrap_up, read and feedback are browser tools with definitions', () => {
+    for (const name of ['browser.wrap_up', 'browser.read', 'browser.feedback']) {
+      expect(isBrowserTool(name)).toBe(true);
+      expect(BROWSER_TOOL_DEFINITIONS.some((d) => d.name === name)).toBe(true);
+    }
+    const feedback = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.feedback')!;
+    const schema = feedback.inputSchema as { required: string[]; properties: object };
+    expect(schema.required).toEqual(['tool', 'observed', 'expected']);
+    expect(Object.keys(schema.properties).sort()).toEqual(['expected', 'observed', 'tool']);
+  });
+
+  test('wrap_up step 1 reports the tab app; step 2 keeps a reader and resets pending work', async () => {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression: 'document.title', ok: true })!;
+    notePendingWork(TEST_CALLER.agent_id);
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, deps(vi.fn()), TEST_CALLER)) as {
+      step: number;
+      apps: { origin: string; readers: { id: number }[] }[];
+    };
+    expect(step1.step).toBe(1);
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+    expect(step1.apps[0].readers.map((r) => r.id)).toEqual([row.id]);
+
+    const step2 = (await handleBrowserTool(
+      'browser.wrap_up',
+      { readers: { keep: [{ id: row.id, name: 'page-title' }] } },
+      deps(vi.fn()),
+      TEST_CALLER,
+    )) as { step: number; applied: unknown[]; rejected: unknown[] };
+    expect(step2).toEqual({
+      step: 2,
+      applied: [{ item: `reader #${row.id}`, action: 'kept', name: 'page-title' }],
+      rejected: [],
+    });
+    expect(peekSession(TEST_CALLER.agent_id)?.pendingWrapUp).toBe(0);
+  });
+
+  test('wrap_up step 2 rejects by rule and stores feedback in the activity DB', async () => {
+    const result = (await handleBrowserTool(
+      'browser.wrap_up',
+      {
+        readers: { keep: [{ id: 999, name: 'get-total' }] },
+        feedback: [{ tool: 'browser.find', observed: 'two shapes', expected: 'one shape' }],
+      },
+      deps(vi.fn()),
+      TEST_CALLER,
+    )) as { applied: { item: string }[]; rejected: { rule: number }[] };
+    expect(result.rejected).toEqual([expect.objectContaining({ item: 'reader #999', rule: 1 })]);
+    expect(result.applied).toEqual([{ item: 'feedback[0]', action: 'saved' }]);
+    expect(listFeedback(getActivityDb())).toEqual([
+      expect.objectContaining({ tool: 'browser.find', agentId: TEST_CALLER.agent_id }),
+    ]);
+  });
+
+  test('wrap_up refuses a malformed body before writing anything', async () => {
+    await expect(
+      handleBrowserTool(
+        'browser.wrap_up',
+        { readers: { keep: 'all' } },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/readers\.keep must be an array/);
+  });
+
+  test('read by name runs the kept expression and counts the outcome', async () => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => 'Clients');
+    const value = await handleBrowserTool(
+      'browser.read',
+      { tab_id: 'tab_1', name: 'page-title' },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(value).toBe('Clients');
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: 'document.title' });
+    expect(getReader(getMapDb(), id)?.ok_n).toBe(2);
+  });
+
+  test('read by id fills the template placeholders, escaped for a string literal', async () => {
+    const id = keptReader(
+      `document.querySelector('[title="Juan Perez"]').textContent`,
+      'client-cell',
+      `document.querySelector('[title="<CLIENT>"]').textContent`,
+    );
+    const call = vi.fn(async () => '12');
+    await handleBrowserTool(
+      'browser.read',
+      { tab_id: 'tab_1', id, values: { CLIENT: 'O"Brien' } },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', {
+      expression: `document.querySelector('[title="O\\"Brien"]').textContent`,
+    });
+  });
+
+  test('read refuses a missing placeholder, an unknown name and a pending reader', async () => {
+    keptReader(`q("Juan Perez")`, 'client-row', `q("<CLIENT>")`);
+    const call = vi.fn();
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', name: 'client-row' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/missing value for <CLIENT>/);
+    await expect(
+      handleBrowserTool('browser.read', { tab_id: 'tab_1', name: 'nope' }, deps(call), TEST_CALLER),
+    ).rejects.toThrow(/no kept reader "nope".*kept: client-row/);
+    const db = getMapDb();
+    const pending = upsertReader(db, {
+      appId: resolveLearnerApp(db, ORIGIN).id,
+      expression: 'location.href',
+      ok: true,
+    })!;
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', id: pending.id },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/no kept reader #/);
+    await expect(
+      handleBrowserTool('browser.read', { tab_id: 'tab_1' }, deps(call), TEST_CALLER),
+    ).rejects.toThrow(/exactly one of name or id/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test('a failing read counts a failure on the reader', async () => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => {
+      throw new Error('ReferenceError');
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.read',
+        { tab_id: 'tab_1', name: 'page-title' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/ReferenceError/);
+    expect(getReader(getMapDb(), id)?.fail_n).toBe(1);
+  });
+
+  test('flow by name runs the saved steps with values filled and counts the use', async () => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }, { press: { key: 'Enter' } }],
+    });
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 2, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', name: 'search', values: { QUERY: 'shrek' } },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps[0]).toEqual({ type: { selector: '#q', text: 'shrek' } });
+    const flows = listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id);
+    expect(flows[0].use_count).toBe(1);
+    const session = peekSession(TEST_CALLER.agent_id)!;
+    expect(session.flows[0]).toMatchObject({
+      saved_name: 'search',
+      ok: true,
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }, { press: { key: 'Enter' } }],
+    });
+  });
+
+  test('flow by name refuses a missing value or an unknown flow before anything runs', async () => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    const call = vi.fn();
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', name: 'search' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/missing value for <QUERY>/);
+    await expect(
+      handleBrowserTool(
+        'browser.flow',
+        { tab_id: 'tab_1', name: 'other' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/no saved flow "other".*saved: search/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test('an inline flow with name and values is recorded as a named template candidate', async () => {
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      {
+        tab_id: 'tab_1',
+        name: 'search-box',
+        steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+        values: { QUERY: 'shrek' },
+      },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: 'shrek' } }]);
+    expect(peekSession(TEST_CALLER.agent_id)?.flows[0]).toMatchObject({
+      name: 'search-box',
+      origin: ORIGIN,
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    // Nothing is saved before wrap_up.
+    expect(listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id)).toEqual([]);
+  });
+
+  test('an inline flow without values runs its steps untouched', async () => {
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ type: { selector: '#q', text: '<keep me>' } }] },
+      deps(call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: '<keep me>' } }]);
+  });
+
+  test('evaluate as: a bad name is refused before running; a good one is not forwarded', async () => {
+    const call = vi.fn(async () => 1);
+    await expect(
+      handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: '1', as: 'getTotal' },
+        deps(call),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 4/);
+    expect(call).not.toHaveBeenCalled();
+    await handleBrowserTool(
+      'browser.evaluate',
+      { tab_id: 'tab_1', expression: '1', as: 'invoice-total' },
+      deps(call),
+      TEST_CALLER,
+    );
+    expect(call).toHaveBeenCalledWith('tab_1', 'evaluate', { expression: '1' });
+  });
+
+  test('feedback is stored locally with the session app; typed values are refused', async () => {
+    const result = await handleBrowserTool(
+      'browser.feedback',
+      { tool: 'browser.find', observed: 'matched twice', expected: 'one match' },
+      deps(vi.fn()),
+      TEST_CALLER,
+    );
+    expect(result).toEqual({ id: expect.any(Number), stored: 'local' });
+    expect(listFeedback(getActivityDb())[0]).toMatchObject({
+      tool: 'browser.find',
+      observed: 'matched twice',
+      agentId: TEST_CALLER.agent_id,
+    });
+    rememberTypedValue('acme corp');
+    await expect(
+      handleBrowserTool(
+        'browser.feedback',
+        { tool: 'browser.find', observed: 'acme corp twice', expected: 'one' },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 7/);
+    await expect(
+      handleBrowserTool(
+        'browser.feedback',
+        { tool: 'browser.find', observed: '', expected: 'one' },
+        deps(vi.fn()),
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/observed must be a non-empty string/);
   });
 });

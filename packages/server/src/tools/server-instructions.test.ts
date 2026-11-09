@@ -8,7 +8,7 @@ import {
 } from './server-instructions.js';
 import type { InstructionsInstaller } from '../agent-instructions/index.js';
 import { VERSION } from '../version.js';
-import { renderCore } from '../manual/core.js';
+import { CORE_HEADING, renderCore } from '../manual/core.js';
 import { renderTopic } from '../manual/topics.js';
 
 /**
@@ -18,8 +18,8 @@ import { renderTopic } from '../manual/topics.js';
  *  - every tool with a `doc` block surfaces its name in the generated string,
  *  - every tool with a `doc` block has non-empty `purpose` and `when_to_use`
  *    (structural completeness check — caught here instead of by reviewers),
- *  - the text starts with the manual core (reflex protocol, success is not
- *    proof, habits), and the moved preamble sections live in topics,
+ *  - the text is the manual core (the rules the first browser call also
+ *    returns), then the tool sections; what left the core lives in topics,
  *  - `SERVER_INSTRUCTIONS` is the live result of `buildServerInstructions`,
  *  - structural sections (Gotchas, Example) only appear when the source
  *    block provides them — so a tool without gotchas never emits an empty
@@ -33,10 +33,10 @@ describe('buildServerInstructions', () => {
     expect(SERVER_INSTRUCTIONS).toBe(buildServerInstructions());
   });
 
-  test('starts with the manual core (the part hosts that truncate still show)', () => {
+  test('is the manual core, then the tool sections (hosts that truncate still show the core)', () => {
     const out = buildServerInstructions();
-    expect(out.startsWith(renderCore({}))).toBe(true);
-    expect(out.startsWith('## browser-link — reflex protocol (ALWAYS ACTIVE)')).toBe(true);
+    expect(out.startsWith(`${renderCore({})}\n\n## Tools\n`)).toBe(true);
+    expect(out.startsWith(`${CORE_HEADING}\n`)).toBe(true);
   });
 
   test('a notice becomes the first line', () => {
@@ -46,29 +46,31 @@ describe('buildServerInstructions', () => {
     expect(out.startsWith(renderCore({ notice }))).toBe(true);
   });
 
-  test('reflex protocol is intact in the core', () => {
+  test('the core starts at list_tabs and its knowledge, and ends at wrap_up and curation', () => {
     const core = renderCore({});
     expect(core).toContain('browser.list_tabs');
-    expect(core).toContain('browser.snapshot');
-    expect(core).toContain('Tab not connected');
-    expect(core).toContain('`map` field');
-    expect(core).toContain('browser.map.recall` BEFORE');
+    expect(core).toContain('`knowledge`');
+    expect(core).toContain('`browser.wrap_up`');
+    expect(core).toContain('`pending_wrap_up: n`');
+    expect(core).toContain('8. In doubt, drop.');
   });
 
   test('the core carries hit_element guidance: off target means the click missed', () => {
     const core = renderCore({});
-    expect(core).toContain('### Success is not proof');
-    expect(core).toContain('`hit_element` on `click`');
-    expect(core).toContain('the click missed → do not proceed');
+    expect(core).toContain('`ok` is not proof');
+    expect(core).toContain('`hit_element` that is not your target means the click missed');
+    expect(renderTopic('results')).toContain('the click missed → do not proceed');
   });
 
-  test('the core carries the multi-agent claim and cdp-direct gate lines', () => {
-    const core = renderCore({});
-    expect(core).toContain('browser.claim_tab');
-    expect(core).toContain('browser.release_tab');
-    expect(core).toContain('do not spin-retry');
-    expect(core).toContain('browser-link config set cdp-direct.enabled true');
-    expect(core).toContain('browser-link cdp allow');
+  test('the multi-agent claim and cdp-direct gate lines moved to their topics', () => {
+    const multi = renderTopic('multi-agent');
+    expect(multi).toContain('browser.claim_tab');
+    expect(multi).toContain('browser.release_tab');
+    expect(multi).toContain('do not spin-retry');
+    const cdp = renderTopic('cdp-direct');
+    expect(cdp).toContain('browser-link config set cdp-direct.enabled true');
+    expect(cdp).toContain('browser-link cdp allow');
+    expect(renderTopic('results')).toContain('Tab not connected');
   });
 
   test('the multi-agent topic keeps the claim layer details', () => {
@@ -94,15 +96,17 @@ describe('buildServerInstructions', () => {
     expect(topic).toContain('isTrusted:true');
   });
 
-  test('one full snapshot per view, then since, and ref over a copied selector are core habits', () => {
-    const core = renderCore({});
-    expect(core).toContain('One full `snapshot` per view, then `snapshot({ since: snapshot_id })`');
-    expect(core).toContain('Act on the `ref` from the last `snapshot`/`find`');
-    expect(core).toContain('never retry the same ref');
+  test('ref over a copied selector is a core rule; snapshot since and ref recovery live in results', () => {
+    expect(renderCore({})).toContain('Act on the `ref` from your last `snapshot`/`find`');
+    const topic = renderTopic('results');
+    expect(topic).toContain(
+      'One full `snapshot` per view, then `snapshot({ since: snapshot_id })`',
+    );
+    expect(topic).toContain('never retry the same ref');
   });
 
-  test('settle: quiet is not effect, with the observer caveats in the topic', () => {
-    expect(renderCore({})).toContain('quiet is not effect');
+  test('settle: quiet, not effect, with the observer caveats in the topic', () => {
+    expect(renderCore({})).toContain('quiet, not effect');
     const topic = renderTopic('token-efficiency');
     expect(topic).toContain('settle_ms');
     expect(topic).toContain('Settle proves QUIET, not EFFECT');
@@ -212,7 +216,7 @@ describe('start-time instructions (outdated-block notice)', () => {
     expect(text.split('\n')[0]).toMatch(
       /^Your browser-link instructions block is installed-outdated \(installed v0\.1\.0, server v[^)]+\): run `browser-link instructions install` and restart the client\.$/,
     );
-    expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+    expect(text.split('\n')[2]).toBe(CORE_HEADING);
   });
 
   test('by default an installed-outdated block is refreshed and the update notice comes first', () => {
@@ -239,7 +243,7 @@ describe('start-time instructions (outdated-block notice)', () => {
     expect(text.split('\n')[0]).toBe(
       `Your browser-link instructions block was updated to v${VERSION} for Claude Code: restart the client to load it.`,
     );
-    expect(text.split('\n')[2]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+    expect(text.split('\n')[2]).toBe(CORE_HEADING);
   });
 
   test('an up-to-date block leaves the text identical to SERVER_INSTRUCTIONS', () => {

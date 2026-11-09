@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { getDb } from './db.js';
 import { canonicalOrigin } from './origin.js';
+import { confidenceOf, type Confidence, type Evidence } from './confidence.js';
+import { pathPattern } from './keys.js';
 
 export type EntryKind = 'selector' | 'flow' | 'gotcha';
 
@@ -294,7 +296,13 @@ export interface RecallInput {
   origin: string;
   app_key?: string | null;
   url?: string | null;
+  /** `'path'` (default): the route view, exactly as before scopes existed.
+   * `'app'`: the whole map of the app. `'all'`: the whole map of every app
+   * of the origin. */
+  scope?: RecallScope;
 }
+
+export type RecallScope = 'path' | 'app' | 'all';
 
 export interface RecallResult {
   app: AppRow | null;
@@ -353,7 +361,25 @@ export function listLearned(
     .all(app_id, limit) as LearnedRecallItem[];
 }
 
-export function recall(input: RecallInput): RecallResult {
+export function recall(input: RecallInput & { scope?: 'path' }): RecallResult;
+export function recall(input: RecallInput & { scope: 'app' }): AppRecallResult;
+export function recall(input: RecallInput & { scope: 'all' }): AllRecallResult;
+export function recall(input: RecallInput): RecallResult | AppRecallResult | AllRecallResult;
+export function recall(input: RecallInput): RecallResult | AppRecallResult | AllRecallResult {
+  if (input.scope === 'all') {
+    // Every app of the origin, most recently seen first. Read-only: touching
+    // every app would reorder which one the origin resolves to.
+    const db = getDb();
+    const apps = db
+      .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC')
+      .all(canonicalOrigin(input.origin)) as AppRow[];
+    return { scope: 'all', apps: apps.map((app) => recallWholeApp(db, app)) };
+  }
+  return recallOneApp(input);
+}
+
+/** The `path` and `app` scopes: one app, resolved and touched the same way. */
+function recallOneApp(input: RecallInput): RecallResult | AppRecallResult {
   const db = getDb();
   // Same canonicalization as upsertApp — a recall with a trailing-slash or
   // full-URL origin must find what a canonical save stored.
@@ -371,10 +397,28 @@ export function recall(input: RecallInput): RecallResult {
       .get(origin) as AppRow | undefined;
   }
 
-  if (!app) return { app: null, pitfalls: [], mechanisms: [], entries: [], flows: [] };
+  if (!app) {
+    if (input.scope === 'app') {
+      return {
+        scope: 'app',
+        app: null,
+        current_build: null,
+        pitfalls: [],
+        mechanisms: [],
+        entries: [],
+        flows: [],
+        readers: [],
+        outcomes: [],
+        builds: [],
+        learned_failures: 0,
+      };
+    }
+    return { app: null, pitfalls: [], mechanisms: [], entries: [], flows: [] };
+  }
 
   // Touch last_seen_at so apps that are actively used bubble up.
   db.prepare('UPDATE apps SET last_seen_at = ? WHERE id = ?').run(now(), app.id);
+  if (input.scope === 'app') return recallWholeApp(db, app);
 
   const pathname = input.url ? extractPathname(input.url) : null;
   const rows = (
@@ -1051,4 +1095,470 @@ export function listFlows(app_id: number): FlowRow[] {
 export function deleteFlow(app_id: number, name: string): boolean {
   const info = getDb().prepare('DELETE FROM flows WHERE app_id = ? AND name = ?').run(app_id, name);
   return info.changes > 0;
+}
+
+/** One saved flow of an app by name, or null. Backs `browser.flow({ name })`
+ * (knowledge-loop S11). */
+export function findFlow(app_id: number, name: string): FlowRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM flows WHERE app_id = ? AND name = ?')
+    .get(app_id, name) as RawFlowRow | undefined;
+  return row ? hydrateFlow(row) : null;
+}
+
+/** Count one replay of a saved flow (`browser.flow({ name })` that ran). */
+export function bumpFlowUse(flow_id: number): void {
+  getDb().prepare('UPDATE flows SET use_count = use_count + 1 WHERE id = ?').run(flow_id);
+}
+
+/** The most recently seen build fingerprint of an app, or null. Read-only. */
+export function currentAppBuild(db: Database.Database, app_id: number): string | null {
+  const row = db
+    .prepare(
+      'SELECT fingerprint FROM app_builds WHERE app_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1',
+    )
+    .get(app_id) as { fingerprint: string } | undefined;
+  return row?.fingerprint ?? null;
+}
+
+// === Knowledge loop: builds, start pack, action hints, the whole map =========
+//
+// What the map knows comes back to the agent at the moment it acts: the
+// start pack on `list_tabs`/`navigate` (`getKnowledge`), the `known` hint on
+// an action (`getActionHint`) and the whole map on demand (`recall` with
+// `scope`). Every item carries `confidence` and its raw evidence (see
+// confidence.ts); nothing here writes except `recordAppBuild`.
+
+/** The most recently seen app of an origin, read-only (no creation, no
+ * `last_seen_at` bump): passive reads never reorder which app wins. */
+export function winnerApp(db: Database.Database, origin: string): AppRow | null {
+  return (
+    (db
+      .prepare('SELECT * FROM apps WHERE origin = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1')
+      .get(canonicalOrigin(origin)) as AppRow | undefined) ?? null
+  );
+}
+
+/**
+ * Remember that an origin's app was seen running build `fingerprint`: one
+ * row per (app, fingerprint), `last_seen_at` moved on every report. The app
+ * is resolved by `resolveLearnerApp` (never from a tab title). An empty
+ * fingerprint is ignored. One statement, so it is atomic on its own.
+ */
+export function recordAppBuild(origin: string, fingerprint: string): void {
+  if (typeof fingerprint !== 'string' || fingerprint.length === 0) return;
+  const db = getDb();
+  const app = resolveLearnerApp(db, origin);
+  const ts = now();
+  db.prepare(
+    `INSERT INTO app_builds (app_id, fingerprint, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(app_id, fingerprint) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+  ).run(app.id, fingerprint, ts, ts);
+}
+
+/** A saved pitfall or mechanism in the start pack. Saved by hand, never
+ * observed, so it is `unverified` with when it was saved as evidence. */
+export interface KnowledgeInsight {
+  key: string;
+  description: string;
+  symptom?: string;
+  confidence: Confidence;
+  evidence: { saved_at: string };
+}
+
+/** A kept, named JS reader in the start pack. */
+export interface KnowledgeReader {
+  name: string;
+  kind: string;
+  confidence: Confidence;
+  evidence: Evidence;
+}
+
+/** A saved flow recipe in the start pack (`browser.map.recall` has its steps). */
+export interface KnowledgeFlow {
+  name: string;
+  description: string | null;
+  confidence: Confidence;
+  evidence: { use_count: number; saved_at: string };
+}
+
+/** A learned target in the start pack. `url_pattern` is present only when
+ * the target was learned on another route (app-wide fallback). */
+export interface KnowledgeSelector {
+  target: string;
+  target_kind: 'selector' | 'key';
+  action: string;
+  url_pattern?: string;
+  confidence: Confidence;
+  evidence: Evidence;
+}
+
+/** The start pack: what the map knows for this tab, ranked and ≤ 2 KB. */
+export interface Knowledge {
+  app_key: string;
+  /** The path pattern the pack is scoped to. */
+  path: string;
+  pitfalls?: KnowledgeInsight[];
+  mechanisms?: KnowledgeInsight[];
+  readers?: KnowledgeReader[];
+  flows?: KnowledgeFlow[];
+  selectors?: KnowledgeSelector[];
+  /** Present (`'app'`) only when the path had no selector and the app's
+   * best ones are offered instead. */
+  selectors_from?: 'app';
+  /** Targets that are `failing` on the current build: offered only here. */
+  warnings?: KnowledgeSelector[];
+  /** Items left out to stay under the byte cap, counted from the tail. */
+  dropped?: number;
+}
+
+export interface KnowledgeInput {
+  origin: string;
+  pathname: string;
+  /** The tab's build fingerprint, when known. */
+  build: string | null;
+}
+
+/** Serialized cap of the start pack, in UTF-8 bytes. */
+export const KNOWLEDGE_MAX_BYTES = 2048;
+/** Learned targets considered for the start pack (after ranking). */
+const KNOWLEDGE_MAX_SELECTORS = 5;
+const KNOWLEDGE_MAX_WARNINGS = 3;
+
+/** An outcome row as the knowledge readers select it. */
+interface OutcomeRow {
+  id: number;
+  url_pattern: string;
+  target: string;
+  target_kind: 'selector' | 'key';
+  action: string;
+  ok_n: number;
+  fail_n: number;
+  last_reason: string | null;
+  last_ok_at: string | null;
+  last_fail_at: string | null;
+  view_sig: string | null;
+  last_ok_build: string | null;
+  last_fail_build: string | null;
+  struct_fail_n: number;
+  struct_fail_build: string | null;
+}
+
+function outcomeRows(db: Database.Database, appId: number): OutcomeRow[] {
+  return db
+    .prepare('SELECT * FROM selector_outcomes WHERE app_id = ? ORDER BY ok_n DESC, id ASC')
+    .all(appId) as OutcomeRow[];
+}
+
+function insightItem(row: InsightRow): KnowledgeInsight {
+  return {
+    key: row.key,
+    description: row.description,
+    ...(row.symptom === null ? {} : { symptom: row.symptom }),
+    confidence: 'unverified',
+    evidence: { saved_at: row.updated_at },
+  };
+}
+
+/** Fresh first, then unverified; most successes first within each. */
+function byConfidence<T extends { confidence: Confidence; evidence: Evidence }>(
+  a: T,
+  b: T,
+): number {
+  const rank = (c: Confidence): number => (c === 'fresh' ? 0 : 1);
+  return rank(a.confidence) - rank(b.confidence) || b.evidence.ok_n - a.evidence.ok_n;
+}
+
+/**
+ * The start pack for a tab (knowledge-loop S5), or null when the map has
+ * nothing with evidence for it.
+ *
+ * Scoped to the path pattern of `pathname` for learned targets, falling
+ * back to the app's best targets when that path has none; pitfalls,
+ * mechanisms, kept named readers and saved flows are app-wide. Ranked
+ * pitfalls → `failing` warnings → `fresh` → `unverified`, and cut from the
+ * tail until the JSON fits `KNOWLEDGE_MAX_BYTES`. Read-only: never creates
+ * an app or touches `last_seen_at`.
+ */
+export function getKnowledge(input: KnowledgeInput): Knowledge | null {
+  const db = getDb();
+  const app = winnerApp(db, input.origin);
+  if (!app) return null;
+  const build = input.build ?? null;
+  const path = pathPattern(input.pathname);
+
+  const pitfalls = listInsights(app.id, 'pitfall').map(insightItem);
+  const mechanisms = listInsights(app.id, 'mechanism').map(insightItem);
+  const readers = (
+    db
+      .prepare(
+        `SELECT name, kind, ok_n, fail_n, last_ok_at, last_ok_build FROM js_readers
+         WHERE app_id = ? AND status = 'kept' AND name IS NOT NULL ORDER BY ok_n DESC, id ASC`,
+      )
+      .all(app.id) as {
+      name: string;
+      kind: string;
+      ok_n: number;
+      fail_n: number;
+      last_ok_at: string | null;
+      last_ok_build: string | null;
+    }[]
+  ).map((r): KnowledgeReader => {
+    const { confidence, evidence } = confidenceOf(
+      { ...r, last_reason: null, last_fail_build: null },
+      build,
+    );
+    return { name: r.name, kind: r.kind, confidence, evidence };
+  });
+  const flows = listFlows(app.id).map((f): KnowledgeFlow => ({
+    name: f.name,
+    description: f.description,
+    confidence: 'unverified',
+    evidence: { use_count: f.use_count, saved_at: f.updated_at },
+  }));
+
+  const all = outcomeRows(db, app.id);
+  const onPath = all.filter((r) => pathPattern(r.url_pattern) === path);
+  const toSelector = (r: OutcomeRow, withPath: boolean): KnowledgeSelector => {
+    const { confidence, evidence } = confidenceOf(r, build);
+    return {
+      target: r.target,
+      target_kind: r.target_kind,
+      action: r.action,
+      ...(withPath ? { url_pattern: r.url_pattern } : {}),
+      confidence,
+      evidence,
+    };
+  };
+  const usable = (rows: OutcomeRow[], withPath: boolean): KnowledgeSelector[] =>
+    rows
+      .map((r) => toSelector(r, withPath))
+      .filter((s) => s.confidence !== 'failing' && s.evidence.ok_n > 0)
+      .sort(byConfidence)
+      .slice(0, KNOWLEDGE_MAX_SELECTORS);
+  let selectors = usable(onPath, false);
+  const fromApp = selectors.length === 0;
+  if (fromApp) selectors = usable(all, true);
+  const warnings = (fromApp ? all : onPath)
+    .map((r) => toSelector(r, fromApp))
+    .filter((s) => s.confidence === 'failing')
+    .slice(0, KNOWLEDGE_MAX_WARNINGS);
+
+  // One ranked list of every candidate, so the byte cap cuts the least
+  // valuable items first.
+  type Section = 'pitfalls' | 'mechanisms' | 'readers' | 'flows' | 'selectors' | 'warnings';
+  const ranked: { section: Section; item: unknown }[] = [
+    ...pitfalls.map((item) => ({ section: 'pitfalls' as const, item })),
+    ...warnings.map((item) => ({ section: 'warnings' as const, item })),
+    ...readers
+      .filter((r) => r.confidence === 'fresh')
+      .map((item) => ({ section: 'readers' as const, item })),
+    ...selectors
+      .filter((s) => s.confidence === 'fresh')
+      .map((item) => ({ section: 'selectors' as const, item })),
+    ...mechanisms.map((item) => ({ section: 'mechanisms' as const, item })),
+    ...readers
+      .filter((r) => r.confidence !== 'fresh')
+      .map((item) => ({ section: 'readers' as const, item })),
+    ...flows.map((item) => ({ section: 'flows' as const, item })),
+    ...selectors
+      .filter((s) => s.confidence !== 'fresh')
+      .map((item) => ({ section: 'selectors' as const, item })),
+  ];
+  if (ranked.length === 0) return null;
+
+  const assemble = (kept: typeof ranked, dropped: number): Knowledge => {
+    const pick = <T>(section: Section): T[] =>
+      kept.filter((r) => r.section === section).map((r) => r.item as T);
+    const k: Knowledge = { app_key: app.app_key, path };
+    const sections: Section[] = [
+      'pitfalls',
+      'mechanisms',
+      'readers',
+      'flows',
+      'selectors',
+      'warnings',
+    ];
+    for (const section of sections) {
+      const items = pick<never>(section);
+      if (items.length === 0) continue;
+      (k as unknown as Record<string, unknown>)[section] = items;
+      if (section === 'selectors' && fromApp) k.selectors_from = 'app';
+    }
+    if (dropped > 0) k.dropped = dropped;
+    return k;
+  };
+
+  for (let n = ranked.length; n > 0; n--) {
+    const candidate = assemble(ranked.slice(0, n), ranked.length - n);
+    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') <= KNOWLEDGE_MAX_BYTES) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export interface ActionHintInput {
+  origin: string;
+  pathname: string;
+  build: string | null;
+  target: string;
+  target_kind: 'selector' | 'key';
+  action: string;
+}
+
+/** The `known` field an action result carries (knowledge-loop S6). */
+export interface ActionHint {
+  confidence: Confidence;
+  ok_n: number;
+  fail_n: number;
+  last_reason: string | null;
+  /** The best `fresh` target for the same action on the same path pattern,
+   * present only when it is a different target. */
+  alternative?: { target: string; target_kind: 'selector' | 'key'; ok_n: number };
+}
+
+/**
+ * What the map knows about the target an action is about to use, or null
+ * when the app has no outcome row for it. The row of the current path
+ * pattern wins; otherwise the target's most used row anywhere in the app.
+ * Read-only.
+ */
+export function getActionHint(input: ActionHintInput): ActionHint | null {
+  const db = getDb();
+  const app = winnerApp(db, input.origin);
+  if (!app) return null;
+  const build = input.build ?? null;
+  const path = pathPattern(input.pathname);
+  const rows = outcomeRows(db, app.id).filter((r) => r.action === input.action);
+  const mine = rows.filter((r) => r.target === input.target && r.target_kind === input.target_kind);
+  const row: OutcomeRow | undefined =
+    mine.find((r) => pathPattern(r.url_pattern) === path) ?? mine.at(0);
+  if (!row) return null;
+  const { confidence } = confidenceOf(row, build);
+  const hint: ActionHint = {
+    confidence,
+    ok_n: row.ok_n,
+    fail_n: row.fail_n,
+    last_reason: row.last_reason,
+  };
+  const best: OutcomeRow | undefined = rows
+    .filter((r) => pathPattern(r.url_pattern) === path && r.ok_n > 0)
+    .filter((r) => confidenceOf(r, build).confidence === 'fresh')
+    .sort((a, b) => b.ok_n - a.ok_n)
+    .at(0);
+  if (best && !(best.target === row.target && best.target_kind === row.target_kind)) {
+    hint.alternative = { target: best.target, target_kind: best.target_kind, ok_n: best.ok_n };
+  }
+  return hint;
+}
+
+/** A learned target in the whole-map recall: every column, plus confidence
+ * against the app's most recently seen build. */
+export interface OutcomeRecallItem extends Omit<OutcomeRow, 'id'> {
+  confidence: Confidence;
+}
+
+/** A JS registry row in the whole-map recall (every status). */
+export interface ReaderRecallItem {
+  id: number;
+  name: string | null;
+  kind: string;
+  status: string;
+  flags: string;
+  expression: string;
+  ok_n: number;
+  fail_n: number;
+  last_ok_at: string | null;
+  last_fail_at: string | null;
+  last_ok_build: string | null;
+  result_bytes_avg: number | null;
+  created_at: string;
+  confidence: Confidence;
+}
+
+export interface BuildRecallItem {
+  fingerprint: string;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+/** `recall({ scope: 'app' })`: everything the map holds for one app. */
+export interface AppRecallResult {
+  scope: 'app';
+  app: AppRow | null;
+  /** The app's most recently seen build; confidence is computed against it. */
+  current_build: string | null;
+  pitfalls: InsightRow[];
+  mechanisms: InsightRow[];
+  entries: EntryRow[];
+  flows: FlowRow[];
+  readers: ReaderRecallItem[];
+  outcomes: OutcomeRecallItem[];
+  builds: BuildRecallItem[];
+  /** Learned targets that have failed at least once. */
+  learned_failures: number;
+}
+
+/** `recall({ scope: 'all' })`: the whole map of every app of the origin. */
+export interface AllRecallResult {
+  scope: 'all';
+  apps: AppRecallResult[];
+}
+
+/** The whole map of one app, for `browser-link map show`: what
+ * `recall({ scope: 'app' })` returns, without touching `last_seen_at`. */
+export function wholeAppMap(app: AppRow): AppRecallResult {
+  return recallWholeApp(getDb(), app);
+}
+
+/** The whole map of one app. Read-only. */
+function recallWholeApp(db: Database.Database, app: AppRow): AppRecallResult {
+  const builds = db
+    .prepare(
+      `SELECT fingerprint, first_seen_at, last_seen_at FROM app_builds
+       WHERE app_id = ? ORDER BY first_seen_at ASC, id ASC`,
+    )
+    .all(app.id) as BuildRecallItem[];
+  const latest = db
+    .prepare(
+      'SELECT fingerprint FROM app_builds WHERE app_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1',
+    )
+    .get(app.id) as { fingerprint: string } | undefined;
+  const build = latest?.fingerprint ?? null;
+  const outcomes = (
+    db
+      .prepare(`SELECT * FROM selector_outcomes WHERE app_id = ? ${LEARNED_ORDER}`)
+      .all(app.id) as OutcomeRow[]
+  ).map(({ id: _id, ...row }) => ({ ...row, confidence: confidenceOf(row, build).confidence }));
+  const readers = (
+    db
+      .prepare(
+        `SELECT id, name, kind, status, flags, expression, ok_n, fail_n, last_ok_at, last_fail_at,
+                last_ok_build, result_bytes_avg, created_at
+         FROM js_readers WHERE app_id = ? ORDER BY id ASC`,
+      )
+      .all(app.id) as Omit<ReaderRecallItem, 'confidence'>[]
+  ).map((r) => ({
+    ...r,
+    confidence: confidenceOf({ ...r, last_reason: null, last_fail_build: null }, build).confidence,
+  }));
+  const entries = (
+    db
+      .prepare('SELECT * FROM entries WHERE app_id = ? ORDER BY url_pattern, updated_at DESC')
+      .all(app.id) as RawEntryRow[]
+  ).map((row) => withPreference(hydrate(row)));
+  return {
+    scope: 'app',
+    app,
+    current_build: build,
+    pitfalls: listInsights(app.id, 'pitfall'),
+    mechanisms: listInsights(app.id, 'mechanism'),
+    entries,
+    flows: listFlows(app.id),
+    readers,
+    outcomes,
+    builds,
+    learned_failures: outcomes.filter((o) => o.fail_n > 0).length,
+  };
 }

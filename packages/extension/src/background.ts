@@ -1089,7 +1089,8 @@ async function settleWithChanges(
  * (the install script also runs in same-process child frames, and the
  * binding is page-visible), then reported to the server as a
  * `tab-navigated` bridge event so it can keep the tab's URL and title
- * current.
+ * current. A `doc_info` passes the same top-document check and is reported
+ * as a `tab-doc-info` bridge event (build fingerprint and view signature).
  */
 async function handleObserverMessage(state: TabState, payload: string): Promise<void> {
   const mirror = state.observer;
@@ -1108,6 +1109,24 @@ async function handleObserverMessage(state: TabState, payload: string): Promise<
   }
   if (!isTopDocumentMessage(probe, message.doc_id)) return;
   const outcome = applyObserverMessage(mirror, message);
+  if (outcome.kind === 'doc_info') {
+    // The page's build fingerprint and view signature: the server keys what
+    // the map learns on them (knowledge-loop S1).
+    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
+      send(state.ws, {
+        kind: 'bridge.event',
+        eventKind: 'tab-doc-info',
+        tabId: state.serverTabId,
+        data: {
+          url: outcome.url,
+          build: outcome.build,
+          view_sig: outcome.view_sig,
+          title: outcome.title,
+        },
+      });
+    }
+    return;
+  }
   if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
   let title = '';
   try {

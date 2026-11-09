@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { renderCore } from './core.js';
-import { renderInstallBody, renderServerInstructions } from './render.js';
+import { CORE_HEADING, renderCore } from './core.js';
+import { renderInstallBody, renderServerInstructions, renderTrigger } from './render.js';
 import { TOPICS, TOPIC_NAMES, renderTopic } from './topics.js';
 import { detectInstructionsStatus, formatClientStatus, instructionsNotice } from './status.js';
 import { refreshNotice, refreshOutdatedBlocks } from './refresh.js';
@@ -17,16 +17,18 @@ import { detectAt, installAt } from '../agent-instructions/file-ops.js';
 import { VERSION as SERVER_VERSION } from '../version.js';
 
 /**
- * The manual is one source rendered three ways: the MCP connect-time text
- * (core first, then one section per tool), the installed instructions block
- * (core plus a few topic sections) and, on demand, single topics. The size
- * pins exist because hosts truncate `initialize.instructions` (Claude Code
- * cut it at ~4,090 characters) and the installed block is read every session.
+ * The manual is one source rendered four ways: the installed trigger (what
+ * browser-link is and when to use it, read every session), the core (the
+ * rules, returned by the first browser tool call and first in the MCP
+ * connect-time text, which hosts truncate), the installed block body
+ * (trigger, plus the core with `--with-core`) and, on demand, single topics.
  */
 
-const CORE_LIMIT = 3800;
-const CORE_WITH_NOTICE_LIMIT = 4000;
-const INSTALL_BODY_LIMIT = 12000;
+const TRIGGER_LIMIT = 600;
+const CORE_LIMIT = 2000;
+const CORE_WITH_NOTICE_LIMIT = 2300;
+const INSTALL_BODY_LIMIT = 600;
+const INSTALL_BODY_WITH_CORE_LIMIT = 2700;
 
 /** Sentences of at least 20 characters, split on line breaks and on
  * sentence-ending punctuation followed by a space. */
@@ -48,19 +50,33 @@ function occurrences(haystack: string, needle: string): number {
   }
 }
 
+describe('installed trigger', () => {
+  test(`fits in ${TRIGGER_LIMIT} characters`, () => {
+    expect(renderTrigger().length).toBeLessThanOrEqual(TRIGGER_LIMIT);
+  });
+
+  test('says what browser-link is, when to use it, and where the rules come from', () => {
+    const trigger = renderTrigger();
+    expect(trigger.split('\n')[0]).toBe('## browser-link');
+    expect(trigger).toContain('Chrome tabs the user connected through its extension');
+    expect(trigger).toContain('Use it when the user mentions a web page');
+    expect(trigger).toContain('"no anda"');
+    expect(trigger).toContain(
+      'Your first browser tool call returns the rules; `browser.manual()` has the rest.',
+    );
+  });
+
+  test('repeats no sentence of the core', () => {
+    const core = renderCore({});
+    for (const sentence of sentences(renderTrigger())) {
+      expect(core.includes(sentence), sentence).toBe(false);
+    }
+  });
+});
+
 describe('manual core', () => {
   test(`fits in ${CORE_LIMIT} characters without a notice`, () => {
     expect(renderCore({}).length).toBeLessThanOrEqual(CORE_LIMIT);
-  });
-
-  test('tells the agent what extension_outdated on list_tabs means, within the budget', () => {
-    const core = renderCore({});
-    const line = core.split('\n').find((l) => l.includes('`extension_outdated: true`'));
-    expect(line).toBeDefined();
-    expect(line).toContain('update or reload the extension');
-    expect(core.indexOf(line!)).toBeGreaterThan(core.indexOf('### Success is not proof'));
-    expect(core.indexOf(line!)).toBeLessThan(core.indexOf('### Habits'));
-    expect(core.length).toBeLessThanOrEqual(CORE_LIMIT);
   });
 
   test('is the exact prefix of the connect-time instructions', () => {
@@ -68,8 +84,9 @@ describe('manual core', () => {
     expect(renderServerInstructions({}).startsWith(core)).toBe(true);
   });
 
-  test('without a notice it starts with the reflex protocol heading', () => {
-    expect(renderCore({}).split('\n')[0]).toBe('## browser-link — reflex protocol (ALWAYS ACTIVE)');
+  test('without a notice it starts with the rules heading', () => {
+    expect(CORE_HEADING).toBe('## browser-link rules');
+    expect(renderCore({}).split('\n')[0]).toBe(CORE_HEADING);
   });
 
   test('a notice becomes the first line and still fits the connect-time budget', () => {
@@ -81,38 +98,68 @@ describe('manual core', () => {
     expect(renderServerInstructions({ notice }).startsWith(core)).toBe(true);
   });
 
-  test('carries its sections in the specified order', () => {
+  test('carries its rules in the specified order', () => {
     const core = renderCore({});
     const order = [
-      '## browser-link — reflex protocol (ALWAYS ACTIVE)',
-      '### TRIGGER LIST',
-      '### Success is not proof',
-      '### Habits',
-      '### Shared tabs and cdp-direct',
-      '### Depth on demand',
+      'Use `browser.*` when the request involves a web page',
+      'Call `browser.list_tabs` first',
+      '`ok` is not proof',
+      'Act on the `ref` from your last `snapshot`/`find`',
+      'Before writing JS, try `browser.find`, `browser.read({ name })` and `browser.flow({ name })`',
+      'Downloads only through `browser.download`',
+      'call `browser.wrap_up`',
+      'Curation',
+      'browser.manual()',
     ].map((h) => core.indexOf(h));
     for (const at of order) expect(at).toBeGreaterThanOrEqual(0);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  test('tells the agent that a hit_element off the target means the click missed', () => {
-    const core = renderCore({});
-    expect(core).toContain('`hit_element`');
-    expect(core).toMatch(/hit_element[^\n]*not your target or inside it/);
+  test('list_tabs first, reading the knowledge field', () => {
+    expect(renderCore({})).toContain(
+      "Call `browser.list_tabs` first and read each tab's `knowledge`",
+    );
   });
 
-  test('names every success-is-not-proof field', () => {
+  test('success is not proof: hit_element, settle and expect', () => {
     const core = renderCore({});
-    for (const field of [
-      'settle.settled: false',
-      'mutation_count: 0',
-      '`since_status`',
-      '`reresolved: true`',
-      '`ref-stale`',
-      '`matched: false`',
-    ]) {
-      expect(core).toContain(field);
-    }
+    expect(core).toMatch(/`hit_element` that is not your target means the click missed/);
+    expect(core).toContain('`settle.settled: false` or `mutation_count: 0`');
+    expect(core).toContain('quiet, not effect');
+    expect(core).toContain('Pass `expect` when the effect matters');
+  });
+
+  test('the wrap_up rule and what pending_wrap_up means', () => {
+    const core = renderCore({});
+    expect(core).toContain(
+      'Before you answer the user after using the browser, call `browser.wrap_up`',
+    );
+    expect(core).toContain('`pending_wrap_up: n` on a result means n items wait for it');
+  });
+
+  test('the eight curation rules, numbered as the server enforces them', () => {
+    const lines = renderCore({}).split('\n');
+    const rules = [
+      '1. Only what worked enters knowledge; failures stay as evidence.',
+      "2. Keep a reader only if it is reusable without this task's data; data literals become `<PLACEHOLDER>` templates.",
+      '3. Never credentials, tokens, cookies, storage or personal data, even as structure; mutations are never readers.',
+      '4. Names say what is returned: kebab-case, ≤ 40 chars, no verbs.',
+      '5. One-offs are dropped by default.',
+      '6. A pitfall is a server-generated candidate you confirm, never free text.',
+      '7. Nothing about the user, only how the app works.',
+      '8. In doubt, drop.',
+    ];
+    const at = rules.map((r) => lines.indexOf(r));
+    for (const i of at) expect(i).toBeGreaterThan(0);
+    expect(at).toEqual(at.map((_, k) => at[0]! + k));
+  });
+
+  test('every rule line names the failure it prevents', () => {
+    const bullets = renderCore({})
+      .split('\n')
+      .filter((l) => l.startsWith('- '));
+    expect(bullets).toHaveLength(6);
+    for (const line of bullets) expect(line, line).toMatch(/[;:,] [^;:]+\.$/);
   });
 
   test('points at browser.manual for the index, a tool and every topic', () => {
@@ -125,42 +172,44 @@ describe('manual core', () => {
 });
 
 describe('connect-time instructions', () => {
-  test('the per-tool sections follow the core under a Tools heading', () => {
+  test('are the core, then the per-tool sections under a Tools heading', () => {
     const out = renderServerInstructions({});
     const core = renderCore({});
-    const tools = out.indexOf('\n## Tools\n');
-    expect(tools).toBeGreaterThanOrEqual(core.length);
-    expect(out.indexOf('### browser.click')).toBeGreaterThan(tools);
+    expect(out.startsWith(`${core}\n\n## Tools\n`)).toBe(true);
+    expect(out.indexOf('### browser.click')).toBeGreaterThan(core.length);
   });
 });
 
 describe('installed block body', () => {
-  test(`fits in ${INSTALL_BODY_LIMIT} characters`, () => {
-    expect(renderInstallBody().join('\n').length).toBeLessThanOrEqual(INSTALL_BODY_LIMIT);
+  test(`by default is the trigger only, within ${INSTALL_BODY_LIMIT} characters`, () => {
+    const body = renderInstallBody().join('\n');
+    expect(body).toBe(renderTrigger());
+    expect(body.length).toBeLessThanOrEqual(INSTALL_BODY_LIMIT);
+    expect(renderInstallBody({ withCore: false }).join('\n')).toBe(body);
   });
 
-  test('starts with the core', () => {
-    expect(renderInstallBody().join('\n').startsWith(renderCore({}))).toBe(true);
+  test(`with the core is the trigger, a blank line and the core, within ${INSTALL_BODY_WITH_CORE_LIMIT} characters`, () => {
+    const body = renderInstallBody({ withCore: true }).join('\n');
+    expect(body).toBe(`${renderTrigger()}\n\n${renderCore({})}`);
+    expect(body.length).toBeLessThanOrEqual(INSTALL_BODY_WITH_CORE_LIMIT);
   });
 
-  test('carries the token-efficiency, downloads, flows and map topics in that order', () => {
-    const out = renderInstallBody().join('\n');
-    const at = (['token-efficiency', 'downloads', 'flows', 'map'] as const).map((name) =>
-      out.indexOf(renderTopic(name)),
-    );
-    for (const i of at) expect(i).toBeGreaterThan(0);
-    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  test('never carries a topic', () => {
+    const body = renderInstallBody({ withCore: true }).join('\n');
+    for (const name of TOPIC_NAMES) expect(body).not.toContain(renderTopic(name));
   });
 
-  test('repeats no sentence of the core verbatim', () => {
-    const out = renderInstallBody().join('\n');
-    for (const sentence of sentences(renderCore({}))) {
+  test('repeats no sentence verbatim', () => {
+    const out = renderInstallBody({ withCore: true }).join('\n');
+    for (const sentence of sentences(out)) {
       expect(occurrences(out, sentence), sentence).toBe(1);
     }
   });
 
   test('is a list of single lines (no embedded line breaks)', () => {
-    for (const line of renderInstallBody()) expect(line).not.toContain('\n');
+    for (const withCore of [false, true]) {
+      for (const line of renderInstallBody({ withCore })) expect(line).not.toContain('\n');
+    }
   });
 });
 
@@ -176,6 +225,7 @@ describe('topics', () => {
       'token-efficiency',
       'multi-agent',
       'cdp-direct',
+      'results',
     ]);
   });
 
@@ -200,21 +250,37 @@ describe('topics', () => {
   });
 });
 
-describe('manual core after the retargeted click failure', () => {
-  test('names the retargeted click error and its way out', () => {
-    const core = renderCore({});
-    expect(core).toContain('`retargeted` error on `click`');
-    expect(core).toMatch(/retargeted[^\n]*ancestor of your target[^\n]*`force: true`/);
+describe('what left the core lives in topics', () => {
+  test('the results topic carries every success-is-not-proof field', () => {
+    const topic = renderTopic('results');
+    for (const field of [
+      '`hit_element` on `click`',
+      '`retargeted` error on `click`',
+      'settle.settled: false',
+      '`since_status`',
+      '`reresolved: true`',
+      '`ref-stale`',
+      '`matched: false`',
+      '`extension_outdated: true`',
+      'Tab not connected',
+    ]) {
+      expect(topic).toContain(field);
+    }
+    expect(topic).toMatch(/retargeted[^\n]*ancestor of your target[^\n]*`force: true`/);
+    expect(topic).toMatch(/hit_element[^\n]*not your target or inside it, the click missed/);
+    expect(topic).toContain('update or reload the extension');
   });
 
-  test('scopes hit_element to the cases that still succeed', () => {
-    const line = renderCore({})
-      .split('\n')
-      .find((l) => l.startsWith('- `hit_element`'));
-    expect(line).toBeDefined();
-    expect(line).toContain('`pointer-events: none`');
-    expect(line).toContain('`force: true`');
-    expect(line).toContain('the click missed');
+  test('the multi-agent and cdp-direct topics carry the claim and gate lines', () => {
+    const multi = renderTopic('multi-agent');
+    expect(multi).toContain(
+      '`browser.claim_tab` before a multi-step flow, `browser.release_tab` after.',
+    );
+    expect(multi).toContain('do not spin-retry');
+    const cdp = renderTopic('cdp-direct');
+    expect(cdp).toContain('browser-link config set cdp-direct.enabled true');
+    expect(cdp).toContain('browser-link cdp allow');
+    expect(cdp).toContain('download by selector');
   });
 });
 
@@ -270,7 +336,7 @@ describe('instructions-block status and notice', () => {
       '0.38.0',
     )!;
     const core = renderCore({ notice });
-    expect(core.startsWith(`${notice}\n\n## browser-link — reflex protocol`)).toBe(true);
+    expect(core.startsWith(`${notice}\n\n${CORE_HEADING}\n`)).toBe(true);
     expect(core.length).toBeLessThanOrEqual(CORE_WITH_NOTICE_LIMIT);
   });
 
@@ -437,7 +503,7 @@ describe('instructions block refreshed at primary start', () => {
         displayName,
         filePath: () => file,
         detect: () => detectAt(file),
-        install: () => installAt(file, displayName, { allowOutsideHome: true }),
+        install: (opts = {}) => installAt(file, displayName, { ...opts, allowOutsideHome: true }),
         uninstall: () => '',
       };
     }
@@ -463,7 +529,11 @@ describe('instructions block refreshed at primary start', () => {
         installers,
         enabled: true,
       });
-      expect(result.statuses[0]!.state).toEqual({ kind: 'installed', version: SERVER_VERSION });
+      expect(result.statuses[0]!.state).toEqual({
+        kind: 'installed',
+        version: SERVER_VERSION,
+        mode: 'trigger',
+      });
       const text = readFileSync(file, 'utf8');
       expect(text.startsWith('# Mine\n')).toBe(true);
       expect(text).toContain(beginMarker());
@@ -530,6 +600,74 @@ describe('instructions block refreshed at primary start', () => {
       expect(result.refreshed.map((r) => r.id)).toEqual(['opencode']);
       expect(readFileSync(otherFile, 'utf8')).toContain(beginMarker());
     });
+
+    test('an outdated block installed with --with-core is refreshed with the core kept', () => {
+      const file = claudeFile();
+      installAt(file, 'Claude Code', { allowOutsideHome: true, withCore: true });
+      writeFileSync(file, readFileSync(file, 'utf8').replace(beginMarker(), beginMarker('0.0.1')));
+      expect(detectAt(file).state).toEqual({
+        kind: 'installed-outdated',
+        version: '0.0.1',
+        mode: 'core',
+      });
+      const installers = [claudeInstaller()];
+      const result = refreshOutdatedBlocks({
+        statuses: detectInstructionsStatus(installers),
+        installers,
+        enabled: true,
+      });
+      expect(result.statuses[0]!.state).toEqual({
+        kind: 'installed',
+        version: SERVER_VERSION,
+        mode: 'core',
+      });
+      const text = readFileSync(file, 'utf8');
+      expect(text).toContain(renderTrigger());
+      expect(text).toContain(renderCore({}));
+    });
+
+    test('a legacy block (no mode marker, old full body) is refreshed to the trigger only', () => {
+      const file = claudeFile();
+      writeFileSync(
+        file,
+        `${beginMarker('0.0.1')}\n${'old core line\n'.repeat(50)}${END_MARKER}\n`,
+      );
+      const installers = [claudeInstaller()];
+      refreshOutdatedBlocks({
+        statuses: detectInstructionsStatus(installers),
+        installers,
+        enabled: true,
+      });
+      const text = readFileSync(file, 'utf8');
+      expect(text).toContain(renderTrigger());
+      expect(text).not.toContain(renderCore({}));
+      expect(text).not.toContain('old core line');
+      expect(detectAt(file).state).toEqual({
+        kind: 'installed',
+        version: SERVER_VERSION,
+        mode: 'trigger',
+      });
+    });
+  });
+
+  test('the refresh passes the installed mode to install()', () => {
+    for (const [mode, withCore] of [
+      ['core', true],
+      ['trigger', false],
+      [undefined, false],
+    ] as const) {
+      const a = stub('claude', 'Claude Code', {
+        kind: 'installed-outdated',
+        version: '0.37.0',
+        ...(mode ? { mode } : {}),
+      });
+      refreshOutdatedBlocks({
+        statuses: [statusOf(a.installer)],
+        installers: [a.installer],
+        enabled: true,
+      });
+      expect(a.install).toHaveBeenCalledWith({ withCore });
+    }
   });
 });
 

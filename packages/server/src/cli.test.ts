@@ -30,6 +30,8 @@ const h = vi.hoisted(() => {
     runCdpCommand: vi.fn(async () => 'cdp-report'),
     runMapCommand: vi.fn(() => 'map-report'),
     runActivityCommand: vi.fn(() => 'activity-report'),
+    runFeedbackCommand: vi.fn(async (_argv: string[], _lang: string) => 0),
+    installerInstall: vi.fn((_opts?: { withCore?: boolean }) => 'Inserted the block.'),
     formatStatus: vi.fn(() => 'instructions-status'),
     statusAll: vi.fn(() => []),
     statusFor: vi.fn(() => ({})),
@@ -102,6 +104,27 @@ function registerModuleMocks(): void {
     h.loaded.add('activity');
     return { runActivityCommand: h.spies.runActivityCommand };
   });
+  vi.doMock('./commands/feedback.js', () => {
+    h.loaded.add('feedback');
+    return { runFeedbackCommand: h.spies.runFeedbackCommand };
+  });
+  vi.doMock('./agent-instructions/index.js', () => {
+    h.loaded.add('agent-instructions');
+    const installer = {
+      id: 'claude',
+      displayName: 'Claude Code',
+      filePath: () => '/home/u/.claude/CLAUDE.md',
+      detect: () => ({
+        filePath: '/home/u/.claude/CLAUDE.md',
+        state: { kind: 'installed', version: '9.9.9', mode: 'core' },
+      }),
+      install: h.spies.installerInstall,
+    };
+    return {
+      INSTRUCTIONS_INSTALLERS: [installer],
+      getInstructionsInstaller: () => installer,
+    };
+  });
   vi.doMock('./commands/instructions.js', () => {
     h.loaded.add('instructions');
     return {
@@ -135,6 +158,7 @@ const COMMAND_MODULES = [
   'cdp',
   'map',
   'activity',
+  'feedback',
   'instructions',
   'ui',
 ];
@@ -317,6 +341,7 @@ describe('cli dispatch: every command reaches its handler and loads only its mod
       module: 'instructions',
       handler: 'uninstallInstructionsFor',
     },
+    { argv: ['feedback'], module: 'feedback', handler: 'runFeedbackCommand', stdout: [] },
     { argv: ['stop'], module: 'free-port', handler: 'runFreePort', stdout: ['freed'] },
   ];
 
@@ -426,5 +451,124 @@ describe('cli: entry-point heuristic (S2d)', () => {
     expect(
       mod.isEntryScript(process.argv.at(1), fileURLToPath(new URL('./cli.ts', import.meta.url))),
     ).toBe(false);
+  });
+});
+
+describe('cli: feedback (S12)', () => {
+  it('passes the arguments and the language, and exits with the command code', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await dispatch(['feedback', 'issue', '3']);
+    expect(h.spies.runFeedbackCommand).toHaveBeenCalledWith(['issue', '3'], 'es');
+    h.spies.runFeedbackCommand.mockResolvedValueOnce(2);
+    await expect(dispatch(['feedback', 'issue', 'x'])).rejects.toEqual(new ExitCalled(2));
+  });
+
+  it('the help names the feedback command in both languages', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['help']);
+    expect(logs[0]).toContain('  browser-link feedback [--limit <n>]');
+    expect(logs[0]).toContain('  browser-link feedback issue <id>');
+    expect(logs[0]).toContain('only after you type y');
+    h.language.value = 'es';
+    logs = [];
+    await dispatch(['help']);
+    expect(logs[0]).toContain('  browser-link feedback issue <id>');
+    expect(logs[0]).toContain('solo después de que escribas y');
+  });
+});
+
+describe('cli: instructions install --with-core (S13)', () => {
+  it('default install keeps the trigger-only path', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions', 'install']);
+    expect(h.spies.installInstructionsAll).toHaveBeenCalledTimes(1);
+    expect(h.spies.installerInstall).not.toHaveBeenCalled();
+  });
+
+  it('--with-core installs the trigger plus the core through each installer', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions', 'install', '--with-core', '--client', 'claude']);
+    expect(h.spies.installerInstall).toHaveBeenCalledWith({ withCore: true });
+    expect(h.spies.installInstructionsAll).not.toHaveBeenCalled();
+    expect(h.spies.installInstructionsFor).not.toHaveBeenCalled();
+    expect(logs).toEqual([
+      '· Claude Code: Inserted the block.',
+      '',
+      'Restart your MCP client so it picks up the new instructions on its next session.',
+    ]);
+  });
+
+  it('a failing installer is reported, not thrown', async () => {
+    h.spies.installerInstall.mockImplementationOnce(() => {
+      throw new Error('refused: symlink');
+    });
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions', 'install', '--with-core']);
+    expect(logs[0]).toBe('· Claude Code: refused: symlink');
+  });
+
+  it('status shows the mode of each installed block, in both languages', async () => {
+    h.spies.statusAll.mockReturnValueOnce([
+      {
+        client: 'claude',
+        displayName: 'Claude Code',
+        filePath: 'x',
+        state: { kind: 'installed', version: '9.9.9', mode: 'core' },
+        ok: true,
+      },
+      {
+        client: 'opencode',
+        displayName: 'OpenCode',
+        filePath: 'y',
+        state: { kind: 'installed-outdated', version: '0.1.0' },
+        ok: true,
+      },
+      {
+        client: 'copilot',
+        displayName: 'GitHub Copilot CLI',
+        filePath: 'z',
+        state: { kind: 'no-file' },
+        ok: true,
+      },
+    ] as never);
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions']);
+    expect(logs).toEqual([
+      'instructions-status',
+      '',
+      'Block contents:',
+      '  Claude Code  trigger + core rules (installed with --with-core)',
+      '  OpenCode     trigger only (the rules arrive with the first browser call)',
+    ]);
+    h.language.value = 'es';
+    h.spies.statusAll.mockReturnValueOnce([
+      {
+        client: 'claude',
+        displayName: 'Claude Code',
+        filePath: 'x',
+        state: { kind: 'installed', version: '9.9.9', mode: 'trigger' },
+        ok: true,
+      },
+    ] as never);
+    logs = [];
+    await dispatch(['instructions']);
+    expect(logs.slice(1)).toEqual([
+      '',
+      'Contenido del bloque:',
+      '  Claude Code  solo el disparador (las reglas llegan con la primera llamada al navegador)',
+    ]);
+  });
+
+  it('the help names --with-core in both languages', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['help']);
+    expect(logs[0]).toContain('  browser-link instructions install --with-core');
+    expect(logs[0]).toContain('the first browser call returns the rules');
+    h.language.value = 'es';
+    logs = [];
+    await dispatch(['help']);
+    expect(logs[0]).toContain('  browser-link instructions install --with-core');
+    expect(logs[0]).toContain('la primera llamada al navegador devuelve las reglas');
   });
 });

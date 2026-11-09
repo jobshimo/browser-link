@@ -1,7 +1,12 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { detectAt, installAt, uninstallAt } from './file-ops.js';
-import type { ClientId, InstructionsDetect, InstructionsInstaller } from './types.js';
+import type {
+  ClientId,
+  InstallOptions,
+  InstructionsDetect,
+  InstructionsInstaller,
+} from './types.js';
 
 /**
  * Build an `InstructionsInstaller` for a client whose only per-client knobs
@@ -38,8 +43,8 @@ function createInstructionsInstaller(spec: InstallerSpec): InstructionsInstaller
     detect(): InstructionsDetect {
       return detectAt(file());
     },
-    install(): string {
-      return installAt(file(), displayName, opts());
+    install(installOpts: InstallOptions = {}): string {
+      return installAt(file(), displayName, { ...opts(), withCore: installOpts.withCore });
     },
     uninstall(): string {
       return uninstallAt(file(), displayName, opts());
@@ -111,7 +116,9 @@ export function getInstructionsInstaller(id: ClientId): InstructionsInstaller {
 
 export type {
   ClientId,
+  InstallOptions,
   InstructionsDetect,
+  InstructionsMode,
   InstructionsInstaller,
   InstructionsState,
 } from './types.js';

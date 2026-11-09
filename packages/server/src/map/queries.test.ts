@@ -10,19 +10,28 @@ import {
   findAppByOriginAndKey,
   findAppCandidates,
   forget,
+  getActionHint,
+  getKnowledge,
   getMapHint,
   listApps,
   listAppsWithCounts,
   listEntries,
   listFlows,
   recall,
+  recordAppBuild,
   recordUse,
   renameApp,
   restoreEntry,
   restoreFlow,
   saveEntry,
   saveFlow,
+  saveInsight,
   upsertApp,
+  wholeAppMap,
+  bumpFlowUse,
+  currentAppBuild,
+  findFlow,
+  winnerApp,
 } from './queries.js';
 
 let dataDir: string;
@@ -733,5 +742,395 @@ describe('learned outcomes in getMapHint and recall', () => {
     expect(result.learned).toHaveLength(50);
     expect(result.learned?.[0]).toMatchObject({ target: '#broken', fail_n: 1 });
     expect(result.learned?.[1]).toMatchObject({ target: '#t3', ok_n: 4, url_pattern: '/search' });
+  });
+});
+
+describe('knowledge-loop: builds, start pack, action hints, recall scope', () => {
+  const ORIGIN = 'https://app.example.com';
+  const learn = (
+    target: string,
+    outcome: { ok: true } | { ok: false; reason: 'not-found' | 'timeout' },
+    opts: { path?: string; build?: string | null; action?: string; n?: number } = {},
+  ): void => {
+    for (let i = 0; i < (opts.n ?? 1); i++) {
+      recordOutcome(getDb(), {
+        origin: ORIGIN,
+        pathname: opts.path ?? '/facturas/:id',
+        target,
+        target_kind: 'selector',
+        action: opts.action ?? 'click',
+        outcome,
+        build: opts.build === undefined ? 'B2' : opts.build,
+      });
+    }
+  };
+  const OK = { ok: true } as const;
+  const NOT_FOUND = { ok: false, reason: 'not-found' } as const;
+
+  describe('recordAppBuild', () => {
+    test('upserts one row per (app, fingerprint) and moves last_seen_at', () => {
+      recordAppBuild(ORIGIN, 'B1');
+      const first = getDb().prepare('SELECT * FROM app_builds').all() as {
+        fingerprint: string;
+        first_seen_at: string;
+        last_seen_at: string;
+      }[];
+      expect(first).toHaveLength(1);
+      recordAppBuild(`${ORIGIN}/`, 'B1');
+      recordAppBuild(ORIGIN, 'B2');
+      const rows = getDb()
+        .prepare('SELECT fingerprint, first_seen_at FROM app_builds ORDER BY id')
+        .all() as { fingerprint: string; first_seen_at: string }[];
+      expect(rows.map((r) => r.fingerprint)).toEqual(['B1', 'B2']);
+      expect(rows[0]!.first_seen_at).toBe(first[0]!.first_seen_at);
+    });
+
+    test('never resolves the app from a title and ignores empty fingerprints', () => {
+      upsertApp({ origin: ORIGIN, title: 'My App' });
+      recordAppBuild(ORIGIN, '');
+      recordAppBuild(ORIGIN, 'B1');
+      expect(listApps()).toHaveLength(1);
+      expect(getDb().prepare('SELECT COUNT(*) AS n FROM app_builds').get()).toEqual({ n: 1 });
+    });
+  });
+
+  describe('getKnowledge', () => {
+    const at = { origin: ORIGIN, pathname: '/facturas/48213', build: 'B2' };
+
+    test('null when the origin has no app or nothing with evidence', () => {
+      expect(getKnowledge(at)).toBeNull();
+      upsertApp({ origin: ORIGIN, title: 'My App' });
+      expect(getKnowledge(at)).toBeNull();
+      learn('#never-worked', NOT_FOUND);
+      expect(getKnowledge(at)).toBeNull();
+    });
+
+    test('ranks pitfalls first, then fresh, then unverified, each with evidence', () => {
+      saveInsight({
+        origin: ORIGIN,
+        title: 'My App',
+        kind: 'pitfall',
+        key: 'next-link',
+        description: 'click on the next link returns ok but does not navigate',
+      });
+      saveInsight({
+        origin: ORIGIN,
+        title: 'My App',
+        kind: 'mechanism',
+        key: 'get-completes',
+        description: 'a GET of an item URL marks it complete',
+      });
+      saveFlow({
+        origin: ORIGIN,
+        title: 'My App',
+        name: 'pay',
+        description: 'pay one invoice',
+        steps: [],
+      });
+      learn('#old', OK, { build: 'B1', n: 5 });
+      learn('#pay', OK, { n: 2 });
+      const k = getKnowledge(at)!;
+      expect(k.app_key).toBe('my-app');
+      expect(k.path).toBe('/facturas/:id');
+      expect(k.pitfalls).toEqual([
+        {
+          key: 'next-link',
+          description: 'click on the next link returns ok but does not navigate',
+          confidence: 'unverified',
+          evidence: { saved_at: expect.any(String) },
+        },
+      ]);
+      expect(k.mechanisms?.[0]).toMatchObject({ key: 'get-completes', confidence: 'unverified' });
+      expect(k.flows).toEqual([
+        {
+          name: 'pay',
+          description: 'pay one invoice',
+          confidence: 'unverified',
+          evidence: { use_count: 0, saved_at: expect.any(String) },
+        },
+      ]);
+      expect(k.selectors?.map((s) => [s.target, s.confidence])).toEqual([
+        ['#pay', 'fresh'],
+        ['#old', 'unverified'],
+      ]);
+      expect(k.selectors?.[0]?.evidence).toEqual({
+        ok_n: 2,
+        fail_n: 0,
+        last_reason: null,
+        last_ok_build: 'B2',
+        last_fail_build: null,
+        last_ok_at: expect.any(String),
+      });
+      expect(Object.keys(k)).toEqual([
+        'app_key',
+        'path',
+        'pitfalls',
+        'mechanisms',
+        'flows',
+        'selectors',
+      ]);
+    });
+
+    test('failing targets appear only as warnings', () => {
+      learn('#gone', OK, { n: 3, build: 'B1' });
+      learn('#gone', NOT_FOUND, { n: 2 });
+      learn('#pay', OK);
+      const k = getKnowledge(at)!;
+      expect(k.selectors?.map((s) => s.target)).toEqual(['#pay']);
+      expect(k.warnings).toEqual([
+        expect.objectContaining({ target: '#gone', confidence: 'failing' }),
+      ]);
+    });
+
+    test('falls back to the whole app when the path has no selectors', () => {
+      learn('#search', OK, { path: '/search' });
+      const k = getKnowledge(at)!;
+      expect(k.selectors).toEqual([
+        expect.objectContaining({ target: '#search', url_pattern: '/search' }),
+      ]);
+      expect(k.selectors_from).toBe('app');
+      learn('#pay', OK);
+      const scoped = getKnowledge(at)!;
+      expect(scoped.selectors?.map((s) => s.target)).toEqual(['#pay']);
+      expect(scoped.selectors_from).toBeUndefined();
+    });
+
+    test('rows stored under a raw pathname still match their path pattern', () => {
+      learn('#legacy', OK, { path: '/facturas/777' });
+      expect(getKnowledge(at)!.selectors?.map((s) => s.target)).toEqual(['#legacy']);
+    });
+
+    test('kept, named readers are offered; pending, dropped and unnamed ones are not', () => {
+      const app = upsertApp({ origin: ORIGIN, title: 'My App' });
+      const insert = getDb().prepare(
+        `INSERT INTO js_readers (app_id, hash, expression, kind, name, ok_n, last_ok_build, status, created_at)
+         VALUES (?, ?, 'x', 'reader', ?, 3, 'B2', ?, 't')`,
+      );
+      insert.run(app.id, 'h1', 'invoice-total', 'kept');
+      insert.run(app.id, 'h2', 'draft', 'pending');
+      insert.run(app.id, 'h3', null, 'kept');
+      insert.run(app.id, 'h4', 'old', 'dropped');
+      const k = getKnowledge(at)!;
+      expect(k.readers).toEqual([
+        {
+          name: 'invoice-total',
+          kind: 'reader',
+          confidence: 'fresh',
+          evidence: {
+            ok_n: 3,
+            fail_n: 0,
+            last_reason: null,
+            last_ok_build: 'B2',
+            last_fail_build: null,
+            last_ok_at: null,
+          },
+        },
+      ]);
+    });
+
+    test('stays within 2048 bytes by dropping from the tail', () => {
+      for (let i = 0; i < 12; i++) {
+        saveInsight({
+          origin: ORIGIN,
+          title: 'My App',
+          kind: 'pitfall',
+          key: `p${String(i).padStart(2, '0')}`,
+          description: 'x'.repeat(150),
+        });
+      }
+      learn('#pay', OK);
+      const k = getKnowledge(at)!;
+      expect(Buffer.byteLength(JSON.stringify(k), 'utf8')).toBeLessThanOrEqual(2048);
+      expect(k.selectors).toBeUndefined();
+      expect(k.pitfalls?.[0]?.key).toBe('p00');
+      expect(k.dropped).toBeGreaterThan(0);
+    });
+
+    test('never touches last_seen_at', () => {
+      const app = upsertApp({ origin: ORIGIN, title: 'My App' });
+      learn('#pay', OK);
+      getKnowledge(at);
+      expect(listApps()[0]!.last_seen_at).toBe(app.last_seen_at);
+    });
+  });
+
+  describe('getActionHint', () => {
+    const at = {
+      origin: ORIGIN,
+      pathname: '/facturas/1',
+      build: 'B2',
+      target: '#pay',
+      target_kind: 'selector' as const,
+      action: 'click',
+    };
+
+    test('null without a row for the target', () => {
+      expect(getActionHint(at)).toBeNull();
+      learn('#other', OK);
+      expect(getActionHint(at)).toBeNull();
+    });
+
+    test('carries confidence and counters, and the best fresh alternative', () => {
+      learn('#pay', NOT_FOUND, { n: 2 });
+      learn('#pay-v2', OK, { n: 3 });
+      learn('#pay-v3', OK, { n: 1 });
+      learn('#typed', OK, { n: 9, action: 'type' });
+      expect(getActionHint(at)).toEqual({
+        confidence: 'failing',
+        ok_n: 0,
+        fail_n: 2,
+        last_reason: 'not-found',
+        alternative: { target: '#pay-v2', target_kind: 'selector', ok_n: 3 },
+      });
+    });
+
+    test('no alternative when the target itself is the best fresh one', () => {
+      learn('#pay', OK, { n: 4 });
+      learn('#pay-v2', OK, { n: 1 });
+      expect(getActionHint(at)).toEqual({
+        confidence: 'fresh',
+        ok_n: 4,
+        fail_n: 0,
+        last_reason: null,
+      });
+    });
+
+    test('uses a row of another route when the current one has none', () => {
+      learn('#pay', OK, { path: '/checkout', build: 'B1' });
+      expect(getActionHint(at)).toMatchObject({ confidence: 'unverified', ok_n: 1 });
+    });
+  });
+
+  describe('recall scope', () => {
+    const seed = (): void => {
+      saveEntry({
+        origin: ORIGIN,
+        title: 'My App',
+        url_pattern: '/a',
+        kind: 'selector',
+        purpose: 'go',
+        payload: { selector: '#go' },
+      });
+      saveEntry({
+        origin: ORIGIN,
+        title: 'My App',
+        url_pattern: '/b',
+        kind: 'gotcha',
+        purpose: 'slow',
+        payload: 'it is slow',
+      });
+      learn('#pay', OK);
+      learn('#gone', NOT_FOUND, { n: 2 });
+      recordAppBuild(ORIGIN, 'B1');
+      recordAppBuild(ORIGIN, 'B2');
+    };
+
+    test("scope 'path' is the default and reads exactly as before", () => {
+      seed();
+      const plain = recall({ origin: ORIGIN, url: `${ORIGIN}/a` });
+      const scoped = recall({ origin: ORIGIN, url: `${ORIGIN}/a`, scope: 'path' });
+      expect({ ...scoped, app: null }).toEqual({ ...plain, app: null });
+      expect(Object.keys(plain)).toEqual([
+        'app',
+        'pitfalls',
+        'mechanisms',
+        'entries',
+        'learned',
+        'flows',
+      ]);
+    });
+
+    test("scope 'app' returns everything for the app with confidence and builds", () => {
+      seed();
+      const app = upsertApp({ origin: ORIGIN, title: 'My App' });
+      getDb()
+        .prepare(
+          `INSERT INTO js_readers (app_id, hash, expression, kind, status, ok_n, created_at)
+           VALUES (?, 'h1', 'document.title', 'reader', 'pending', 1, 't')`,
+        )
+        .run(app.id);
+      const r = recall({ origin: ORIGIN, url: `${ORIGIN}/a`, scope: 'app' }) as unknown as Record<
+        string,
+        unknown
+      > & {
+        entries: unknown[];
+        outcomes: { target: string; confidence: string }[];
+        builds: { fingerprint: string }[];
+        readers: { expression: string; status: string }[];
+        learned_failures: number;
+        current_build: string | null;
+      };
+      expect(r.scope).toBe('app');
+      expect(r.entries).toHaveLength(2);
+      expect(r.current_build).toBe('B2');
+      expect(r.outcomes.map((o) => [o.target, o.confidence])).toEqual([
+        ['#gone', 'failing'],
+        ['#pay', 'fresh'],
+      ]);
+      expect(r.builds.map((b) => b.fingerprint)).toEqual(['B1', 'B2']);
+      expect(r.readers).toEqual([
+        expect.objectContaining({ expression: 'document.title', status: 'pending' }),
+      ]);
+      expect(r.learned_failures).toBe(1);
+      expect(r.learned).toBeUndefined();
+    });
+
+    test("scope 'all' returns every app of the origin", () => {
+      seed();
+      saveEntry({
+        origin: ORIGIN,
+        app_key: 'admin',
+        url_pattern: '/admin',
+        kind: 'gotcha',
+        purpose: 'x',
+        payload: 'y',
+      });
+      const r = recall({ origin: ORIGIN, scope: 'all' }) as unknown as {
+        scope: string;
+        apps: { app: { app_key: string } }[];
+      };
+      expect(r.scope).toBe('all');
+      expect(r.apps.map((a) => a.app.app_key).sort()).toEqual(['admin', 'my-app']);
+    });
+
+    test('wholeAppMap reads the app scope without touching last_seen_at', () => {
+      seed();
+      const app = upsertApp({ origin: ORIGIN, title: 'My App' });
+      const whole = wholeAppMap(app);
+      expect(whole.outcomes).toHaveLength(2);
+      expect(whole.builds).toHaveLength(2);
+      expect(listApps().find((a) => a.id === app.id)!.last_seen_at).toBe(app.last_seen_at);
+    });
+
+    test("scope 'all' on an unknown origin is empty", () => {
+      expect(recall({ origin: ORIGIN, scope: 'all' })).toEqual({ scope: 'all', apps: [] });
+    });
+  });
+});
+
+describe('knowledge loop shortcuts: findFlow, bumpFlowUse, currentAppBuild, winnerApp', () => {
+  test('findFlow by name, bumpFlowUse counts a replay', () => {
+    const { app, flow } = saveFlow({
+      origin: 'https://f.test',
+      title: 'F',
+      name: 'search',
+      steps: [{ press: { key: 'Enter' } }],
+    });
+    expect(findFlow(app.id, 'nope')).toBeNull();
+    expect(findFlow(app.id, 'search')?.steps).toEqual([{ press: { key: 'Enter' } }]);
+    bumpFlowUse(flow.id);
+    expect(findFlow(app.id, 'search')?.use_count).toBe(1);
+  });
+
+  test('currentAppBuild is the most recently seen fingerprint; winnerApp never creates', () => {
+    const db = getDb();
+    expect(winnerApp(db, 'https://b.test')).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM apps').get()).toEqual({ n: 0 });
+    recordAppBuild('https://b.test', 'old');
+    recordAppBuild('https://b.test', 'new');
+    const app = winnerApp(db, 'https://b.test')!;
+    db.prepare(`UPDATE app_builds SET last_seen_at = '2000-01-01' WHERE fingerprint = 'old'`).run();
+    expect(currentAppBuild(db, app.id)).toBe('new');
+    expect(currentAppBuild(db, 9999)).toBeNull();
   });
 });

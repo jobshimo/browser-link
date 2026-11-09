@@ -363,3 +363,127 @@ describe('persistence + cross-restart', () => {
     expect(() => getDb()).not.toThrow();
   });
 });
+
+/** The map schema exactly as 0.44 created it (every table, no knowledge-loop
+ * column), so the 0.45 migrations are proven against a real older DB. */
+const SCHEMA_0_44 = `
+  CREATE TABLE apps (id INTEGER PRIMARY KEY, origin TEXT NOT NULL, app_key TEXT NOT NULL, title TEXT, notes TEXT, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, UNIQUE(origin, app_key));
+  CREATE TABLE entries (id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, url_pattern TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('selector', 'flow', 'gotcha')), purpose TEXT NOT NULL, payload TEXT NOT NULL, verified_at TEXT, failed_at TEXT, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(app_id, url_pattern, kind, purpose));
+  CREATE INDEX idx_entries_lookup ON entries(app_id, url_pattern);
+  CREATE TABLE flows (id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, steps_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, use_count INTEGER NOT NULL DEFAULT 0, UNIQUE(app_id, name));
+  CREATE TABLE insights (id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK (kind IN ('mechanism', 'pitfall')), key TEXT NOT NULL, description TEXT NOT NULL, symptom TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(app_id, kind, key));
+  CREATE TABLE selector_outcomes (id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, url_pattern TEXT NOT NULL, target TEXT NOT NULL, target_kind TEXT NOT NULL CHECK (target_kind IN ('selector', 'key')), action TEXT NOT NULL, ok_n INTEGER NOT NULL DEFAULT 0, fail_n INTEGER NOT NULL DEFAULT 0, last_reason TEXT, last_ok_at TEXT, last_fail_at TEXT, UNIQUE(app_id, url_pattern, target, target_kind, action));
+`;
+
+function columnsOf(db: Database.Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+}
+
+describe('knowledge-loop migrations (0.45)', () => {
+  function seed044(): void {
+    const raw = new Database(getDbPath());
+    raw.exec(SCHEMA_0_44);
+    raw
+      .prepare('INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)')
+      .run('https://x.com', 'x', '2026-01-01', '2026-01-01');
+    raw
+      .prepare(
+        `INSERT INTO selector_outcomes (app_id, url_pattern, target, target_kind, action, ok_n, fail_n, last_reason, last_ok_at)
+         VALUES (1, '/inbox', '#go', 'selector', 'click', 3, 1, 'timeout', '2026-01-02')`,
+      )
+      .run();
+    raw.close();
+  }
+
+  test('a 0.44 DB opened twice gains the new columns and tables, keeping every row', () => {
+    seed044();
+    getDb();
+    closeDb();
+    const db = getDb();
+    expect(columnsOf(db, 'selector_outcomes')).toEqual(
+      expect.arrayContaining([
+        'view_sig',
+        'last_ok_build',
+        'last_fail_build',
+        'struct_fail_n',
+        'struct_fail_build',
+      ]),
+    );
+    expect(columnsOf(db, 'app_builds')).toEqual([
+      'id',
+      'app_id',
+      'fingerprint',
+      'first_seen_at',
+      'last_seen_at',
+    ]);
+    expect(columnsOf(db, 'js_readers')).toEqual([
+      'id',
+      'app_id',
+      'hash',
+      'expression',
+      'kind',
+      'name',
+      'ok_n',
+      'fail_n',
+      'last_ok_at',
+      'last_fail_at',
+      'last_ok_build',
+      'result_bytes_avg',
+      'flags',
+      'status',
+      'created_at',
+      'template',
+    ]);
+    expect(
+      db
+        .prepare(
+          'SELECT url_pattern, target, ok_n, fail_n, last_reason, view_sig, last_ok_build, struct_fail_n FROM selector_outcomes',
+        )
+        .all(),
+    ).toEqual([
+      {
+        url_pattern: '/inbox',
+        target: '#go',
+        ok_n: 3,
+        fail_n: 1,
+        last_reason: 'timeout',
+        view_sig: null,
+        last_ok_build: null,
+        struct_fail_n: 0,
+      },
+    ]);
+    // Each column is added once: a second open does not duplicate or fail.
+    expect(columnsOf(db, 'selector_outcomes').filter((c) => c === 'view_sig')).toHaveLength(1);
+  });
+
+  test('app_builds is unique per (app, fingerprint) and cascades with the app', () => {
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    ).run('https://x.com', 'x', 't', 't');
+    const insert = db.prepare(
+      'INSERT INTO app_builds (app_id, fingerprint, first_seen_at, last_seen_at) VALUES (1, ?, ?, ?)',
+    );
+    insert.run('3f9a', 't', 't');
+    expect(() => insert.run('3f9a', 't', 't')).toThrow(/UNIQUE/);
+    db.prepare('DELETE FROM apps WHERE id = 1').run();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM app_builds').get()).toEqual({ n: 0 });
+  });
+
+  test('js_readers enforces its kind and status CHECKs and the (app, hash) key', () => {
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO apps (origin, app_key, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
+    ).run('https://x.com', 'x', 't', 't');
+    const insert = db.prepare(
+      'INSERT INTO js_readers (app_id, hash, expression, kind, status, created_at) VALUES (1, ?, ?, ?, ?, ?)',
+    );
+    insert.run('h1', 'document.title', 'reader', 'pending', 't');
+    expect(() => insert.run('h1', 'document.title', 'reader', 'pending', 't')).toThrow(/UNIQUE/);
+    expect(() => insert.run('h2', 'x', 'other', 'pending', 't')).toThrow(/CHECK/);
+    expect(() => insert.run('h3', 'x', 'reader', 'archived', 't')).toThrow(/CHECK/);
+    expect(
+      db.prepare('SELECT ok_n, fail_n, flags, status FROM js_readers WHERE hash = ?').get('h1'),
+    ).toEqual({ ok_n: 0, fail_n: 0, flags: '', status: 'pending' });
+  });
+});

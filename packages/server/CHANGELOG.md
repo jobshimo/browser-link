@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.45.0](https://github.com/jobshimo/browser-link/compare/v0.44.1...v0.45.0) (2026-11-09)
+
+### Features
+
+- **map:** what browser-link learns about a web app now survives between sessions and comes back when the agent acts. Every learned item is keyed by origin, **path pattern** (`/invoices/48213` becomes `/invoices/:id`), a **view signature** for single-page apps and the app's **build fingerprint** (a hash of its script and stylesheet URLs, captured by the page observer after load and after each navigation). Items carry a **confidence** (`fresh`, `unverified`, `failing`) derived from structural failures (`not-found`, `multiple-matches`, `retargeted`, `hit-mismatch`) versus situational ones (`timeout`, `unsettled`); nothing is ever deleted for failing.
+- **list_tabs / navigate:** carry a `knowledge` start pack (≤ 2 KB) for the tab's app and path: pitfalls, mechanisms, kept readers, saved flows and working selectors, each with confidence and evidence. `click`, `type`, `press` and `find` add a `known` hint when the target has a history, with a better alternative when one exists.
+- **readers:** every `browser.evaluate` expression is registered append-only by hash with a static kind (reader or mutation) and privacy flags; expressions shaped like secrets or containing values the agent typed are never stored. `browser.evaluate({ as })` names the row at write time.
+- **wrap_up:** `browser.wrap_up` closes the loop before the agent answers the user: step one returns what this session produced (readers, flows, selectors, friction and server-generated pitfall candidates), step two applies the agent's decisions in one transaction after validating them against eight curation rules; a rejection names the rule, nothing is rewritten, and anything undecided stays pending. Results carry `pending_wrap_up: n` while something waits.
+- **shortcuts:** `browser.read({ name })` runs a kept reader; `browser.flow({ name, values })` runs a saved flow with its placeholders filled; `browser.recall` gains `scope: path | app | all` to fetch the whole map on demand; `browser-link map show` prints builds, learned targets and readers.
+- **feedback:** `browser.feedback({ tool, observed, expected })` records what fell short; `browser-link feedback` lists it and `browser-link feedback issue <id>` drafts a GitHub issue that is created only after you confirm in the console.
+- **instructions:** the installed block in `CLAUDE.md`/`AGENTS.md` shrinks to a trigger under 600 characters; the rules (under 2,000 characters, only what changes a decision) arrive with the first browser tool call of every session, and `browser-link instructions install --with-core` keeps them installed for clients that prefer it. The start-time refresh keeps the mode a block was installed with.
+- **activity:** map tools and `browser.manual` are recorded in the trail; every record stores its result size; the friction report adds total and per-tool bytes, the `evaluate` share and map usage counters so cost can be compared release to release.
+
 ## [0.44.1](https://github.com/jobshimo/browser-link/compare/v0.44.0...v0.44.1) (2026-11-09)
 
 ### Features

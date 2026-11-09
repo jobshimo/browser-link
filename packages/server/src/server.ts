@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeDb } from './map/db.js';
-import { getMapHints } from './map/queries.js';
+import { getActionHint, getKnowledge, getMapHints } from './map/queries.js';
 import { learnFromDispatch } from './map/learning.js';
 import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
@@ -63,6 +63,8 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
       url: t.url,
       title: t.title,
       ...(t.extensionVersion !== undefined ? { extension_version: t.extensionVersion } : {}),
+      ...(t.build !== undefined ? { build: t.build } : {}),
+      ...(t.viewSig !== undefined ? { view_sig: t.viewSig } : {}),
     }));
 }
 
@@ -294,6 +296,23 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
         return getMapHints(origins);
       } catch {
         return new Map();
+      }
+    },
+    // The start pack (list_tabs, navigate) and action hints (click, type,
+    // press, find) read the same map DB on hot paths: same rule as the hint
+    // above, a map problem means no field, never a failed tool call.
+    getKnowledge: (input) => {
+      try {
+        return getKnowledge(input);
+      } catch {
+        return null;
+      }
+    },
+    getActionHint: (input) => {
+      try {
+        return getActionHint(input);
+      } catch {
+        return null;
       }
     },
     // Activity trail. Wired only when enabled, so a disabled config means the

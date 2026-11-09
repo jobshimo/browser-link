@@ -2,8 +2,8 @@
  * Hand-written topic sections of the agent manual: cross-cutting depth that
  * belongs to no single tool. Per-tool depth lives in each tool's `doc` block
  * (`tools/browser-definitions.ts`, `map/tools.ts`); a topic only carries what
- * those blocks do not. `browser.manual({ topic })` serves one topic, and the
- * installed instructions block embeds a few of them after the core.
+ * those blocks do not. `browser.manual({ topic })` serves one topic; the
+ * installed instructions block carries none of them.
  *
  * A topic never repeats a sentence of the core (`manual.test.ts` pins it).
  */
@@ -17,6 +17,7 @@ export const TOPIC_NAMES = [
   'token-efficiency',
   'multi-agent',
   'cdp-direct',
+  'results',
 ] as const;
 
 export type TopicName = (typeof TOPIC_NAMES)[number];
@@ -110,6 +111,8 @@ export const TOPICS: Record<TopicName, Topic> = {
     title: 'Sharing tabs with other agents (multi-agent mode)',
     body: lines(
       'Several MCP clients can share one bridge; a cooperative claim layer keeps two agents off the same tab.',
+      '- `browser.claim_tab` before a multi-step flow, `browser.release_tab` after.',
+      '- On a claim conflict do not spin-retry: use another tab or ask the user.',
       '- Action tools (`browser.click`, `browser.type`, `browser.navigate`, `browser.evaluate`) auto-claim a free tab on first use. If another agent holds it they fail naming the owner: ask the user whose tab it is, or use a different one.',
       '- Read tools (`browser.snapshot`, `browser.state`, `browser.console`, `browser.network`, `browser.network_body`, `browser.events`, `browser.ping`) ignore claims.',
       '- Give `browser.claim_tab` a stable `label` ("claude-code", "opencode"); claims also end on disconnect and after the inactivity TTL. The label is display only: ownership rests on the IPC session id, not on what an agent calls itself.',
@@ -124,7 +127,26 @@ export const TOPICS: Record<TopicName, Topic> = {
       "A `cdp:` tab was reached over Chrome's remote-debugging protocol instead of the extension. It appears only when the user has BOTH enabled cdp-direct AND granted a live, time-boxed permission; you cannot request, enable or grant it.",
       '- Every other tool works on it exactly as on an extension tab, including `browser.download` by `url` and `browser.screenshot`.',
       '- Unsupported tools (and a `drag` step inside a flow) fail with a clear error naming the extension as the fallback.',
-      '- The two gate errors are the permission model talking, not a bug: relay the exact command they suggest.',
+      '- `cdp:` tabs (`transport: "cdp"`) lack drag, console, network, network_body, canvas_screenshot, dialog_respond, set_permission, wait_for_tab and download by selector.',
+      '- The two gate errors are the permission model talking, not a bug: "cdp-direct is disabled" / "requires an active grant" → relay `browser-link config set cdp-direct.enabled true` or `browser-link cdp allow` to the user; there is no workaround.',
+    ),
+  },
+  results: {
+    title: 'Reading results — what an ok does not prove',
+    body: lines(
+      'An `ok` result can still mean the action missed. The fields that say so:',
+      '- `hit_element` on `click` (and flow click steps) appears when a `pointer-events: none` target passes the click on, or on `force: true`; it names the real receiver: if it is not your target or inside it, the click missed → do not proceed; `find` the element that receives clicks by its text.',
+      '- `retargeted` error on `click`: the click would land on an ancestor of your target (clipped or covered by its own container) → scroll or expand the container, or `find` the element that receives clicks; `force: true` clicks there anyway.',
+      '- `mutation_count: 0` or `settle.settled: false` → `expect` or `wait_for` the effect you need.',
+      '- `since_status` on `snapshot`: you received a full snapshot → keep its new `snapshot_id`.',
+      '- `reresolved: true`: the node was replaced and re-found → fine.',
+      '- `ref-stale` → take a fresh `snapshot`/`find`; never retry the same ref.',
+      '- `wait_for` returning `matched: false` is not an error → decide.',
+      '- `extension_outdated: true` on `list_tabs` → extension older than server, fields may be missing: ask the user to update or reload the extension.',
+      '- "Tab not connected" → `browser.events` for the renamed tab_id, then retry.',
+      '- One full `snapshot` per view, then `snapshot({ since: snapshot_id })` for every later look.',
+      '- Before suggesting a UI code change or a click, `browser.snapshot` and verify the element exists.',
+      '- Never inject attributes with `evaluate` to build selectors: synthetic events are `isTrusted: false`, apps ignore them, and nothing records what happened.',
     ),
   },
 };

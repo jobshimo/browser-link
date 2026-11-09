@@ -47,16 +47,24 @@ import {
   type DownloadResult,
   type FetchDownloadOutcome,
 } from '../downloads.js';
-import type { MapHint } from '../map/queries.js';
+import type {
+  ActionHint,
+  ActionHintInput,
+  Knowledge,
+  KnowledgeInput,
+  MapHint,
+} from '../map/queries.js';
+import { durableTarget, splitUrl } from '../map/keys.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ActivityInput } from '../activity/types.js';
-import { buildActivityRow } from '../activity/extract.js';
+import { buildActivityRow, serializedBytes } from '../activity/extract.js';
 import {
   listAgents as listActivityAgents,
   query as queryActivity,
   redact as redactActivity,
 } from '../activity/queries.js';
 import { getActivityDb } from '../activity/db.js';
+import { recordFeedback } from '../activity/feedback.js';
 import { summarizeActivity } from '../activity/summary.js';
 import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
@@ -85,6 +93,12 @@ export interface TabSnapshot {
   /** The extension's version as sent at `tab.register`. Absent on cdp
    * tabs and on tabs of an extension that predates the field. */
   extension_version?: string;
+  /** Build fingerprint of the top document (the observer's `doc_info`).
+   * Absent until the page reported one, on cdp tabs and with older
+   * extensions. */
+  build?: string;
+  /** View signature of the top document, from the same report. */
+  view_sig?: string;
 }
 
 /** Public view of a TabClaim — what other agents and the user are allowed to see.
@@ -112,6 +126,10 @@ export interface EnrichedTabSnapshot extends TabSnapshot {
   /** Present (always `true`) only when `extension_version` is a plain
    * MAJOR.MINOR.PATCH lower than the server's version. */
   extension_outdated?: true;
+  /** The start pack (see `map/queries.ts`'s `getKnowledge`): what the map
+   * knows for this tab's app and path, ranked, with confidence and evidence.
+   * Omitted when the map has nothing with evidence. */
+  knowledge?: Knowledge;
 }
 
 /** True when an extension tab's reported version is a plain semver lower
@@ -179,6 +197,16 @@ export interface BrowserToolDeps {
    * without the map DB wired up just omits the field on every tab, same
    * degrade-gracefully pattern as `tabClaims`. */
   getMapHints?(origins: string[]): Map<string, MapHint>;
+  /** Optional start-pack lookup (see `map/queries.ts`'s `getKnowledge`):
+   * backs the `knowledge` field of `list_tabs` (per tab) and of
+   * `navigate` (where it landed). Must not throw; null means "nothing with
+   * evidence" and adds no field. Absent in tests and builds without the map. */
+  getKnowledge?(input: KnowledgeInput): Knowledge | null;
+  /** Optional action-time hint lookup (see `map/queries.ts`'s
+   * `getActionHint`): backs the `known` field click/type/press/find carry
+   * when their selector (or find key) has evidence on this app. Must not
+   * throw; null adds no field. */
+  getActionHint?(input: ActionHintInput): ActionHint | null;
   /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
    * merges its result into `listTabs()`'s. Internally gated on
    * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
@@ -290,6 +318,9 @@ const BROWSER_TOOL_NAMES = [
   'browser.dialog_respond',
   'browser.set_permission',
   'browser.download',
+  'browser.wrap_up',
+  'browser.read',
+  'browser.feedback',
 ] as const;
 type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
 const BROWSER_TOOL_NAME_SET: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
@@ -1310,14 +1341,65 @@ async function handleListTabs(
     const claim = deps.tabClaims?.getClaim(t.tab_id) ?? null;
     const origin = originOf(t.url);
     const hint = origin ? (hintsByOrigin.get(origin) ?? null) : null;
+    const knowledge = knowledgeFor(deps, t.url, t.build);
     return {
       ...t,
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
       ...(hint ? { map: hint } : {}),
       ...(isExtensionOutdated(t) ? { extension_outdated: true as const } : {}),
+      ...(knowledge ? { knowledge } : {}),
     } satisfies EnrichedTabSnapshot;
   });
+}
+
+/** The start pack for a URL, or null (no lookup wired, no usable origin,
+ * nothing with evidence). */
+function knowledgeFor(
+  deps: BrowserToolDeps,
+  url: string | undefined,
+  build: string | undefined,
+): Knowledge | null {
+  if (!deps.getKnowledge) return null;
+  const at = splitUrl(url);
+  if (!at) return null;
+  return deps.getKnowledge({ origin: at.origin, pathname: at.pathname, build: build ?? null });
+}
+
+/** The tab a call addressed, from the live tab table. */
+function findTab(deps: BrowserToolDeps, tabId: string): TabSnapshot | undefined {
+  return deps.listTabs().find((t) => t.tab_id === tabId);
+}
+
+/**
+ * Add `known` (knowledge-loop S6) to a click/type/press/find result when
+ * the call named a durable target (a selector, or a find key) that has
+ * evidence on this app. Looked up after the call settles and before the
+ * learner records it, so it reports the evidence the call was made with.
+ * Only the target string reaches the lookup, never typed text or values.
+ */
+function withKnown(
+  deps: BrowserToolDeps,
+  tool: string,
+  action: string,
+  args: unknown,
+  result: unknown,
+): unknown {
+  if (!deps.getActionHint) return result;
+  const target = durableTarget(tool, args);
+  if (!target) return result;
+  const tab = findTab(deps, requireTabId(args));
+  const at = splitUrl(tab?.url);
+  if (!at) return result;
+  const known = deps.getActionHint({
+    origin: at.origin,
+    pathname: at.pathname,
+    build: tab?.build ?? null,
+    target: target.target,
+    target_kind: target.target_kind,
+    action,
+  });
+  return known ? withExtras(result, { known }) : result;
 }
 
 function handleClaimTab(args: unknown, deps: BrowserToolDeps, caller: AgentCaller): unknown {
@@ -1373,6 +1455,330 @@ async function handleManual(args: unknown, deps: BrowserToolDeps): Promise<strin
 function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: PublicClaim[] } {
   if (!deps.tabClaims) return { claims: [] };
   return { claims: deps.tabClaims.myTabs(caller).map(toPublicClaim) };
+}
+
+/* ------------------------------ knowledge loop: wrap_up, read, feedback ---
+ *
+ * The map modules are imported lazily, like the manual: only these calls
+ * need them, and a build without a data dir never loads them. */
+
+/** Origin of a connected tab, or null. */
+function tabOrigin(deps: BrowserToolDeps, tabId: string): string | null {
+  const tab = findTab(deps, tabId);
+  return tab ? originOf(tab.url) : null;
+}
+
+/** What the agent typed: this session's values and the process ring. */
+async function typedFor(caller: AgentCaller): Promise<string[]> {
+  const [{ peekSession }, { typedValues }] = await Promise.all([
+    import('../map/session.js'),
+    import('../map/readers.js'),
+  ]);
+  return [...(peekSession(caller.agent_id)?.typedValues ?? []), ...typedValues()];
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The optional `values` argument: placeholder name → value. */
+function valuesArg(tool: string, args: unknown): Record<string, unknown> | null {
+  const v = (args as { values?: unknown } | undefined)?.values;
+  if (v === undefined) return null;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`${tool}: values must be an object mapping placeholder names to strings`);
+  }
+  return v as Record<string, unknown>;
+}
+
+/** Where a `browser.flow` run's steps come from. `template` is what the
+ * session remembers (placeholders unfilled); `steps` is what runs. */
+interface FlowSource {
+  steps: unknown;
+  template: unknown[];
+  name: string | null;
+  saved: { id: number; name: string } | null;
+  origin: string | null;
+}
+
+/**
+ * `browser.flow`'s steps: inline `steps` (placeholders filled when `values`
+ * is given, untouched otherwise), or with `name` and no `steps`, the saved
+ * flow of that name on the tab's app with every placeholder filled.
+ */
+async function resolveFlowSteps(args: unknown, deps: BrowserToolDeps): Promise<FlowSource> {
+  const a = (args ?? {}) as { steps?: unknown; name?: unknown };
+  if (a.name !== undefined && (typeof a.name !== 'string' || a.name.length === 0)) {
+    throw new Error('browser.flow: name must be a non-empty string');
+  }
+  const name = typeof a.name === 'string' ? a.name : null;
+  const values = valuesArg('browser.flow', args);
+  const { fillStepPlaceholders } = await import('../map/curation.js');
+  const fill = (steps: unknown, vals: Record<string, unknown>): unknown => {
+    try {
+      return fillStepPlaceholders(steps, vals);
+    } catch (err) {
+      throw new Error(`browser.flow: ${errorText(err)}`, { cause: err });
+    }
+  };
+  if (a.steps === undefined && name !== null) {
+    const tabId = requireTabId(args);
+    const origin = tabOrigin(deps, tabId);
+    if (!origin) throw new Error(`browser.flow: tab ${tabId} has no web app to find "${name}" in`);
+    const [{ getDb }, { winnerApp, findFlow, listFlows }] = await Promise.all([
+      import('../map/db.js'),
+      import('../map/queries.js'),
+    ]);
+    const app = winnerApp(getDb(), origin);
+    const flow = app ? findFlow(app.id, name) : null;
+    if (!app || !flow) {
+      const saved = app ? listFlows(app.id).map((f) => f.name) : [];
+      throw new Error(
+        `browser.flow: no saved flow "${name}" for ${origin}` +
+          (saved.length > 0 ? ` (saved: ${saved.join(', ')})` : ''),
+      );
+    }
+    const template = Array.isArray(flow.steps) ? flow.steps : [];
+    return {
+      steps: fill(template, values ?? {}),
+      template,
+      name: null,
+      saved: { id: flow.id, name },
+      origin,
+    };
+  }
+  return {
+    steps: values ? fill(a.steps, values) : a.steps,
+    template: Array.isArray(a.steps) ? a.steps : [],
+    name,
+    saved: null,
+    origin: null,
+  };
+}
+
+/** Remember a foreground flow run for `wrap_up`, and count a replay of a
+ * saved flow that worked. Never throws: it must not break the flow. */
+async function rememberFlowRun(
+  tabId: string,
+  source: FlowSource,
+  result: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<void> {
+  try {
+    const r = (typeof result === 'object' && result !== null ? result : {}) as {
+      ok?: unknown;
+      stopped_by?: unknown;
+    };
+    const stoppedBy = typeof r.stopped_by === 'string' ? r.stopped_by : null;
+    const ok =
+      r.ok === true &&
+      (stoppedBy === null || stoppedBy === 'condition' || stoppedBy === 'max_iterations');
+    const [{ recordSessionFlow }, { bumpFlowUse }] = await Promise.all([
+      import('../map/session.js'),
+      import('../map/queries.js'),
+    ]);
+    recordSessionFlow(caller.agent_id, {
+      origin: source.origin ?? tabOrigin(deps, tabId),
+      name: source.name,
+      saved_name: source.saved?.name ?? null,
+      steps: source.template,
+      stopped_by: stoppedBy,
+      ok,
+    });
+    if (ok && source.saved) bumpFlowUse(source.saved.id);
+  } catch (err) {
+    console.error(`[browser-link] flow bookkeeping failed: ${errorText(err)}`);
+  }
+}
+
+/** A call refused by argument validation before anything ran on the page.
+ * It stays on the trail (the agent did ask), but the map learner never sees
+ * it: nothing was tried, so there is no outcome to count against the
+ * expression or selector. */
+class RefusedBeforeRun extends Error {}
+
+/** `browser.evaluate`'s optional `as`: refused before the call runs when it
+ * breaks rule 4 (names) or rule 7 (typed values). */
+async function requireValidAsName(args: unknown): Promise<void> {
+  const as = (args as { as?: unknown } | undefined)?.as;
+  if (as === undefined) return;
+  const { readerNameProblem } = await import('../map/readers.js');
+  const problem = readerNameProblem(as);
+  if (problem) throw new RefusedBeforeRun(`browser.evaluate: as ${problem} (curation rule 4)`);
+}
+
+/** `browser.wrap_up`: step 1 without a body, step 2 with one (see
+ * `map/curation.ts`). */
+async function handleWrapUp(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<unknown> {
+  const [{ getDb }, { runWrapUp }, { sessionFor }] = await Promise.all([
+    import('../map/db.js'),
+    import('../map/curation.js'),
+    import('../map/session.js'),
+  ]);
+  const session = sessionFor(caller.agent_id);
+  const tabs = deps.listTabs();
+  const origins = [
+    ...session.origins,
+    ...tabs.map((t) => originOf(t.url)).filter((o): o is string => o !== null && o !== 'null'),
+  ];
+  const typed = await typedFor(caller);
+  const where = feedbackWhere(session.origins, tabs);
+  return runWrapUp(getDb(), args, {
+    session,
+    origins,
+    typedValues: typed,
+    validateSteps: (steps) => {
+      const v = validateFlowSteps(steps);
+      return v.ok ? null : v.error;
+    },
+    recordFeedback: (fb) => {
+      recordFeedback(getActivityDb(), { ...fb, agentId: caller.agent_id, ...where });
+    },
+  });
+}
+
+/** The app a feedback entry is about: the session's latest origin and the
+ * build of a connected tab on it, when known. */
+function feedbackWhere(
+  origins: ReadonlySet<string> | undefined,
+  tabs: readonly TabSnapshot[],
+): { origin: string | null; build: string | null } {
+  const list = origins ? [...origins] : [];
+  const origin = list.length > 0 ? list[list.length - 1] : null;
+  const tab = origin ? tabs.find((t) => originOf(t.url) === origin) : undefined;
+  return { origin, build: tab?.build ?? null };
+}
+
+/** `browser.read`: run a kept reader of the tab's app by name or id, with
+ * its template's placeholders filled from `values`, and count the outcome
+ * on the reader. The result is the raw value, as `browser.evaluate`. */
+async function handleRead(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<unknown> {
+  const tabId = requireTabId(args);
+  const { name, id, timeout_ms } = (args ?? {}) as {
+    name?: unknown;
+    id?: unknown;
+    timeout_ms?: number;
+  };
+  if ((name === undefined) === (id === undefined)) {
+    throw new Error('browser.read: pass exactly one of name or id');
+  }
+  if (name !== undefined && (typeof name !== 'string' || name.length === 0)) {
+    throw new Error('browser.read: name must be a non-empty string');
+  }
+  if (id !== undefined && (typeof id !== 'number' || !Number.isInteger(id))) {
+    throw new Error('browser.read: id must be an integer');
+  }
+  const values = valuesArg('browser.read', args);
+  const tab = findTab(deps, tabId);
+  const origin = tab ? originOf(tab.url) : null;
+  if (!origin || origin === 'null') {
+    throw new Error(`browser.read: tab ${tabId} is not connected or has no web app`);
+  }
+  const [{ getDb }, { winnerApp }, readers, { fillPlaceholders }] = await Promise.all([
+    import('../map/db.js'),
+    import('../map/queries.js'),
+    import('../map/readers.js'),
+    import('../map/curation.js'),
+  ]);
+  const db = getDb();
+  const app = winnerApp(db, origin);
+  const ref = typeof name === 'string' ? { name } : { id: id as number };
+  const reader = app ? readers.findKeptReader(db, app.id, ref) : null;
+  if (!app || !reader) {
+    const kept = app
+      ? readers
+          .listReaders(db, app.id, { status: 'kept' })
+          .map((r) => r.name)
+          .filter((n): n is string => n !== null)
+      : [];
+    throw new Error(
+      `browser.read: no kept reader ${typeof name === 'string' ? `"${name}"` : `#${String(id)}`} for ${origin}` +
+        (kept.length > 0 ? ` (kept: ${kept.join(', ')})` : ''),
+    );
+  }
+  let expression = reader.expression;
+  if (reader.template) {
+    try {
+      expression = fillPlaceholders(reader.template, values ?? {}, 'js');
+    } catch (err) {
+      throw new Error(`browser.read: ${errorText(err)}`, { cause: err });
+    }
+  }
+  const record = (ok: boolean, result?: unknown): void => {
+    try {
+      if (loadConfig().mapLearningEnabled === false) return;
+      readers.upsertReader(db, {
+        appId: app.id,
+        expression: reader.expression,
+        ok,
+        build: tab?.build ?? null,
+        resultBytes: ok ? serializedBytes(result) : null,
+      });
+    } catch (err) {
+      console.error(`[browser-link] reader outcome not recorded: ${errorText(err)}`);
+    }
+  };
+  let result: unknown;
+  try {
+    result = await runAction(
+      'evaluate',
+      tabId,
+      { expression },
+      deps,
+      caller,
+      evaluateTimeoutMs(timeout_ms),
+    );
+  } catch (err) {
+    record(false);
+    throw err;
+  }
+  record(true, result);
+  return result;
+}
+
+/** `browser.feedback`: store one note about a tool that misbehaved, in the
+ * local activity DB. Only the owner turns it into an issue. */
+async function handleFeedback(
+  args: unknown,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<{ id: number; stored: 'local' }> {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const field = (key: 'tool' | 'observed' | 'expected'): string => {
+    const v = a[key];
+    if (typeof v !== 'string' || v.trim().length === 0 || v.length > 500) {
+      throw new Error(
+        `browser.feedback: ${key} must be a non-empty string of at most 500 characters`,
+      );
+    }
+    return v;
+  };
+  const item = { tool: field('tool'), observed: field('observed'), expected: field('expected') };
+  const { containsTypedValue, hasSecretValue } = await import('../map/readers.js');
+  const text = `${item.tool}\n${item.observed}\n${item.expected}`;
+  if (containsTypedValue(text, await typedFor(caller))) {
+    throw new Error(
+      'browser.feedback: contains something typed this session (curation rule 7): describe the tool, not the data',
+    );
+  }
+  if (hasSecretValue(text)) {
+    throw new Error(
+      'browser.feedback: looks like it carries a credential or storage value (curation rule 3)',
+    );
+  }
+  const { peekSession } = await import('../map/session.js');
+  const where = feedbackWhere(peekSession(caller.agent_id)?.origins, deps.listTabs());
+  const { id } = recordFeedback(getActivityDb(), { ...item, agentId: caller.agent_id, ...where });
+  return { id, stored: 'local' };
 }
 
 /**
@@ -1712,14 +2118,26 @@ async function dispatchBrowserTool(
       return routeToolCall('ping', requireTabId(args), {}, deps);
     case 'browser.navigate': {
       const { url, wait_for_load = true } = args as { url: string; wait_for_load?: boolean };
-      return runAction(
+      const tabId = requireTabId(args);
+      const result = await runAction(
         'navigate',
-        requireTabId(args),
+        tabId,
         { url, wait_for_load },
         deps,
         caller,
         NAVIGATE_TIMEOUT_MS,
       );
+      if (!deps.getKnowledge) return result;
+      // The start pack of where it landed: the result's final URL when it
+      // has one, else the tab's (re-read after the navigation).
+      const tab = findTab(deps, tabId);
+      const landed = (result as { url?: unknown } | null)?.url;
+      const knowledge = knowledgeFor(
+        deps,
+        typeof landed === 'string' && landed.length > 0 ? landed : tab?.url,
+        tab?.build,
+      );
+      return knowledge ? withExtras(result, { knowledge }) : result;
     }
     case 'browser.snapshot': {
       const { within_selector, only_interactive, exclude, max_interactive, since } = (args ??
@@ -1769,7 +2187,13 @@ async function dispatchBrowserTool(
       if (key !== undefined) {
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
-        return routeToolCall('find', requireTabId(args), { key: key as SemanticKey }, deps);
+        const found = await routeToolCall(
+          'find',
+          requireTabId(args),
+          { key: key as SemanticKey },
+          deps,
+        );
+        return withKnown(deps, 'browser.find', 'find', args, found);
       }
       if (ref !== undefined) {
         // With a ref, find describes that element (see buildFindJs).
@@ -1919,7 +2343,7 @@ async function dispatchBrowserTool(
       }
       requireValidRef('browser.click', ref);
       requireValidExpect('browser.click', expectArg);
-      return runAction(
+      const clicked = await runAction(
         'click',
         requireTabId(args),
         { selector, ...refArg(ref), force, settle_ms, settle_timeout_ms, expect: expectArg },
@@ -1927,6 +2351,7 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      return withKnown(deps, 'browser.click', 'click', args, clicked);
     }
     case 'browser.type': {
       const {
@@ -1951,7 +2376,7 @@ async function dispatchBrowserTool(
       }
       requireValidRef('browser.type', ref);
       requireValidExpect('browser.type', expectArg);
-      return runAction(
+      const typed = await runAction(
         'type',
         requireTabId(args),
         { selector, ...refArg(ref), text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
@@ -1959,6 +2384,7 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      return withKnown(deps, 'browser.type', 'type', args, typed);
     }
     case 'browser.press': {
       const {
@@ -1998,7 +2424,7 @@ async function dispatchBrowserTool(
         throw new Error('browser.press accepts at most one of selector or ref');
       }
       requireValidExpect('browser.press', expectArg);
-      return runAction(
+      const pressed = await runAction(
         'press',
         requireTabId(args),
         {
@@ -2014,6 +2440,8 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      // `key` here is the keyboard key, never a target: only `selector` counts.
+      return withKnown(deps, 'browser.press', 'press', args, pressed);
     }
     case 'browser.drag': {
       const {
@@ -2068,11 +2496,11 @@ async function dispatchBrowserTool(
       );
     }
     case 'browser.flow': {
-      const { steps, dry_run, detach } = (args ?? {}) as {
-        steps?: unknown;
-        dry_run?: unknown;
-        detach?: unknown;
-      };
+      const { dry_run, detach } = (args ?? {}) as { dry_run?: unknown; detach?: unknown };
+      // knowledge-loop S11: `name` without `steps` replays a saved flow of
+      // the tab's app; `values` fills `<PLACEHOLDER>` tokens either way.
+      const source = await resolveFlowSteps(args, deps);
+      const steps = source.steps;
       // Strict `=== true` on both: anything else runs the flow FOR REAL,
       // in the foreground. A dry run that silently became a real run, or a
       // foreground run that silently detached, are the worst failures
@@ -2140,6 +2568,7 @@ async function dispatchBrowserTool(
             requires_detach: validated.budgetMs > MAX_FLOW_TIMEOUT_MS,
           })
         : result;
+      if (foreground) await rememberFlowRun(flowTabId, source, result, deps, caller);
       return withFlowId(decorated, flowId);
     }
     case 'browser.flow_status': {
@@ -2181,6 +2610,9 @@ async function dispatchBrowserTool(
     }
     case 'browser.evaluate': {
       const { expression, timeout_ms } = args as { expression: string; timeout_ms?: number };
+      // knowledge-loop S11: `as` names the registry row (still `pending`);
+      // a bad name is refused before anything runs.
+      await requireValidAsName(args);
       return runAction(
         'evaluate',
         requireTabId(args),
@@ -2194,6 +2626,12 @@ async function dispatchBrowserTool(
       return handleEvents(args, deps);
     case 'browser.activity':
       return handleActivity(args);
+    case 'browser.wrap_up':
+      return handleWrapUp(args, deps, caller);
+    case 'browser.read':
+      return handleRead(args, deps, caller);
+    case 'browser.feedback':
+      return handleFeedback(args, deps, caller);
     case 'browser.reset':
       return handleReset(deps);
     case 'browser.wait_for_tab': {
@@ -2450,7 +2888,7 @@ function observe(
     tab = undefined;
   }
   if (deps.recordActivity) writeTrail(deps, name, args, caller, durationMs, settled, tab);
-  if (deps.recordOutcome) {
+  if (deps.recordOutcome && !(settled.error instanceof RefusedBeforeRun)) {
     try {
       deps.recordOutcome({
         tool: name,
@@ -2459,6 +2897,8 @@ function observe(
         error: settled.error,
         url: tab?.url ?? null,
         title: tab?.title ?? null,
+        ...(tab?.build !== undefined ? { build: tab.build } : {}),
+        ...(tab?.view_sig !== undefined ? { viewSig: tab.view_sig } : {}),
       });
     } catch (err) {
       // Learning must never break the call it learns from.

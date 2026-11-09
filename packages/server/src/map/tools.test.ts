@@ -116,6 +116,29 @@ describe('handleMapTool — routing', () => {
     });
   });
 
+  test.each(['path', 'app', 'all'] as const)('recall: forwards scope %s', (scope) => {
+    handleMapTool('browser.map.recall', { origin: 'http://x', scope });
+    expect(recall).toHaveBeenCalledWith({ origin: 'http://x', app_key: null, url: null, scope });
+  });
+
+  test('recall: an unknown scope is rejected before any read', () => {
+    expect(() =>
+      handleMapTool('browser.map.recall', { origin: 'http://x', scope: 'everything' }),
+    ).toThrow("browser.map.recall: scope must be one of 'path' | 'app' | 'all'");
+    expect(recall).not.toHaveBeenCalled();
+  });
+
+  test('recall: the schema declares scope as an optional path | app | all enum', () => {
+    const def = MAP_TOOL_DEFINITIONS.find((d) => d.name === 'browser.map.recall')!;
+    const schema = def.inputSchema as {
+      properties: Record<string, { enum?: string[] }>;
+      required: string[];
+    };
+    expect(schema.properties.scope?.enum).toEqual(['path', 'app', 'all']);
+    expect(schema.required).toEqual(['origin']);
+    expect(def.description).toContain('scope');
+  });
+
   test('save: defaults app_key, title and notes to null when omitted', () => {
     handleMapTool('browser.map.save', {
       origin: 'http://x',

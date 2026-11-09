@@ -9,7 +9,9 @@ import {
   buildRegisterSettingsUpdate,
   buildTabRegisteredPayload,
   resolveBridgeOptions,
+  applyTabDocInfo,
   applyTabNavigated,
+  recordDocInfoBuild,
   buildTabDisconnectedData,
   buildTabSession,
   handleAdminMessage,
@@ -22,7 +24,8 @@ import {
   isAllowedHandshakeOrigin,
 } from './ws-bridge.js';
 import { BridgeEventLog, isExtensionEventKind } from './events.js';
-import { closeDb } from '../map/db.js';
+import { closeDb, getDb } from '../map/db.js';
+import { saveConfig } from '../config.js';
 import { closeActivityDb } from '../activity/db.js';
 import { recall } from '../map/queries.js';
 import type { AdminState, FlowRecordedPayload, ServerToExtension } from '../messages.js';
@@ -737,5 +740,88 @@ describe('isAllowedHandshakeOrigin — web pages never open the bridge (0.42.0)'
     expect(isAllowedHandshakeOrigin('http://localhost:3000')).toBe(false);
     expect(isAllowedHandshakeOrigin('null')).toBe(false);
     expect(isAllowedHandshakeOrigin('file://')).toBe(false);
+  });
+});
+
+/*
+ * `tab-doc-info` (knowledge-loop S1): the page observer reports the top
+ * document's build fingerprint and view signature; the bridge keeps them on
+ * the session (list_tabs shows them) and records the build per app.
+ */
+describe('applyTabDocInfo', () => {
+  function sessions(): { tabs: Map<string, TabSession>; mine: FakeWs } {
+    const mine = fakeSession('tab_1', WebSocket.OPEN);
+    const other = fakeSession('tab_2', WebSocket.OPEN);
+    const tabs = new Map<string, TabSession>([
+      ['tab_1', mine.session],
+      ['tab_2', other.session],
+    ]);
+    return { tabs, mine };
+  }
+  const data = { url: 'https://example.com/tab_1', build: '3f9a2b1c', view_sig: '00aa11bb' };
+
+  test('stores the build and view signature on the sending tab', () => {
+    const { tabs, mine } = sessions();
+    expect(applyTabDocInfo(tabs, mine.session.ws, 'tab_1', 'tab_1', data)).toEqual({
+      ok: true,
+      url: 'https://example.com/tab_1',
+      build: '3f9a2b1c',
+      viewSig: '00aa11bb',
+    });
+    expect(tabs.get('tab_1')).toMatchObject({ build: '3f9a2b1c', viewSig: '00aa11bb' });
+    expect(tabs.get('tab_2')!.build).toBeUndefined();
+  });
+
+  test('ignores a report for another tab or from a socket that lost the session', () => {
+    const { tabs, mine } = sessions();
+    expect(applyTabDocInfo(tabs, mine.session.ws, 'tab_1', 'tab_2', data)).toEqual({
+      ok: false,
+      reason: 'tab_id does not match this connection',
+    });
+    const stranger = fakeSession('tab_1', WebSocket.OPEN).session.ws;
+    expect(applyTabDocInfo(tabs, stranger, 'tab_1', 'tab_1', data).ok).toBe(false);
+    expect(tabs.get('tab_1')!.build).toBeUndefined();
+  });
+
+  test.each([
+    ['a non-hex build', { ...data, build: 'BUILD!' }],
+    ['an over-long view signature', { ...data, view_sig: 'a'.repeat(65) }],
+    ['a missing url', { build: data.build, view_sig: data.view_sig }],
+    ['a non-object payload', 'nope'],
+  ])('rejects %s and leaves the session untouched', (_label, payload) => {
+    const { tabs, mine } = sessions();
+    expect(applyTabDocInfo(tabs, mine.session.ws, 'tab_1', 'tab_1', payload)).toEqual({
+      ok: false,
+      reason: 'malformed tab-doc-info payload',
+    });
+    expect(tabs.get('tab_1')!.build).toBeUndefined();
+  });
+});
+
+describe('recordDocInfoBuild', () => {
+  let dataDir: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-doc-info-test-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+  });
+  afterEach(() => {
+    closeDb();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const builds = (): unknown[] =>
+    getDb().prepare('SELECT fingerprint FROM app_builds').all() as unknown[];
+
+  test('records the build for the origin of the url', () => {
+    recordDocInfoBuild('https://example.com/a/1', '3f9a2b1c');
+    expect(builds()).toEqual([{ fingerprint: '3f9a2b1c' }]);
+  });
+
+  test('records nothing with map learning off or an opaque origin', () => {
+    saveConfig({ mapLearningEnabled: false });
+    recordDocInfoBuild('https://example.com/a', '3f9a2b1c');
+    saveConfig({ mapLearningEnabled: true });
+    recordDocInfoBuild('about:blank', '3f9a2b1c');
+    expect(builds()).toEqual([]);
   });
 });

@@ -27,6 +27,7 @@ export interface ObserverMirror {
 export type ObserverMessageOutcome =
   | { kind: 'doc_start'; url: string }
   | { kind: 'nav'; url: string }
+  | { kind: 'doc_info'; url: string; build: string; view_sig: string; title: string }
   | { kind: 'summary' }
   | { kind: 'ignored' };
 
@@ -78,10 +79,15 @@ function hasChangeCounts(value: Record<string, unknown>): boolean {
   );
 }
 
+/** A page identity hash as `doc_info` carries it: lowercase hex, at most
+ * 64 characters (the observer sends 8). */
+const IDENTITY_HASH = /^[0-9a-f]{1,64}$/;
+
 /**
  * Parse one binding payload. The binding is a page-visible global, so the
- * payload is untrusted: anything that is not valid JSON in one of the three
- * observer message shapes yields `null`.
+ * payload is untrusted: anything that is not valid JSON in one of the four
+ * observer message shapes yields `null`. A `doc_info` is rebuilt from its
+ * known fields only.
  */
 export function parseObserverMessage(payload: string): PageObserverMessage | null {
   let raw: unknown;
@@ -102,6 +108,22 @@ export function parseObserverMessage(payload: string): PageObserverMessage | nul
         : null;
     case 'nav':
       return typeof raw.url === 'string' ? (raw as unknown as PageObserverMessage) : null;
+    case 'doc_info':
+      return typeof raw.url === 'string' &&
+        typeof raw.build === 'string' &&
+        IDENTITY_HASH.test(raw.build) &&
+        typeof raw.view_sig === 'string' &&
+        IDENTITY_HASH.test(raw.view_sig) &&
+        typeof raw.title === 'string'
+        ? {
+            type: 'doc_info',
+            doc_id: raw.doc_id,
+            url: raw.url,
+            build: raw.build,
+            view_sig: raw.view_sig,
+            title: raw.title,
+          }
+        : null;
     default:
       return null;
   }
@@ -114,7 +136,9 @@ export function parseObserverMessage(payload: string): PageObserverMessage | nul
  * script also runs in same-process child frames. Summaries from a child
  * frame (`roots.frame`) or from a document other than the mirrored one are
  * ignored. A `nav` that does not change the URL (e.g. a state-only
- * `replaceState`) is ignored so it does not emit a navigation event.
+ * `replaceState`) is ignored so it does not emit a navigation event. A
+ * `doc_info` (top document confirmed by the caller, like `doc_start`)
+ * leaves the mirror untouched and reports the page identity it carries.
  */
 export function applyObserverMessage(
   mirror: ObserverMirror,
@@ -134,6 +158,14 @@ export function applyObserverMessage(
       if (message.url === mirror.url) return { kind: 'ignored' };
       mirror.url = message.url;
       return { kind: 'nav', url: message.url };
+    case 'doc_info':
+      return {
+        kind: 'doc_info',
+        url: message.url,
+        build: message.build,
+        view_sig: message.view_sig,
+        title: message.title,
+      };
     case 'summary':
       if (message.roots.frame) return { kind: 'ignored' };
       if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id)

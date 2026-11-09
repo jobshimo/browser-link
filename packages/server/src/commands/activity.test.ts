@@ -187,6 +187,13 @@ describe('activity report', () => {
         '  SESSION                               AGENT           ACTIONS   ERRORS   FLAGS',
         '  s-2                                   opencode        1         0        —',
         '  s-1                                   claude-code     2         1        timeout 1, unmatched 1',
+        '',
+        'Cost and map usage',
+        '  result bytes            0 B',
+        '  evaluate share          33%',
+        '  list_tabs calls         0',
+        '  map.recall calls        0',
+        '  readers run             0',
       ].join('\n'),
     );
   });
@@ -212,8 +219,45 @@ describe('activity report', () => {
         '  SESIÓN                                AGENTE          ACCIONES  ERRORES  SEÑALES',
         '  s-2                                   opencode        1         0        —',
         '  s-1                                   claude-code     2         1        timeout 1, unmatched 1',
+        '',
+        'Coste y uso del mapa',
+        '  bytes de resultados     0 B',
+        '  cuota de evaluate       33%',
+        '  llamadas a list_tabs    0',
+        '  llamadas a map.recall   0',
+        '  lectores ejecutados     0',
       ].join('\n'),
     );
+  });
+
+  test('prints result bytes by tool and the map counters, in both languages', () => {
+    record(row({ tool: 'browser.evaluate', selector: null, resultBytes: 3000 }));
+    record(row({ tool: 'browser.map.recall', tabId: null, selector: null, resultBytes: 200 }));
+    record(row({ tool: 'browser.list_tabs', tabId: null, selector: null, resultBytes: 100 }));
+    record(row({ tool: 'browser.read', selector: null, resultBytes: 50 }));
+    const en = runActivityCommand(['report']).split('\n');
+    expect(en.slice(en.indexOf('Cost and map usage'))).toEqual([
+      'Cost and map usage',
+      '  result bytes            3.3 KB',
+      '  evaluate share          25%',
+      '  list_tabs calls         1',
+      '  map.recall calls        1',
+      '  readers run             1',
+      '',
+      'Result bytes by tool',
+      '  browser.evaluate        2.9 KB',
+      '  browser.map.recall      200 B',
+      '  browser.list_tabs       100 B',
+      '  browser.read            50 B',
+    ]);
+    const es = runActivityCommand(['report'], 'es').split('\n');
+    expect(es.slice(es.indexOf('Bytes de resultados por herramienta'))).toEqual([
+      'Bytes de resultados por herramienta',
+      '  browser.evaluate        2.9 KB',
+      '  browser.map.recall      200 B',
+      '  browser.list_tabs       100 B',
+      '  browser.read            50 B',
+    ]);
   });
 
   test('--agent narrows to one session id', () => {
@@ -259,7 +303,7 @@ describe('existing subcommands keep their output', () => {
   });
 
   test('csv export keeps exactly the previous columns', () => {
-    record(row({ flag: 'timeout', agentId: 's-1' }));
+    record(row({ flag: 'timeout', agentId: 's-1', resultBytes: 42 }));
     const out = join(dataDir, 'out.csv');
     runActivityCommand(['export', '--format', 'csv', '--out', out]);
     expect(readFileSync(out, 'utf8').split('\n')[0]).toBe(

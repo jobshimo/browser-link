@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { VERSION } from './version.js';
 import type { InstructionsReport } from './commands/instructions.js';
 import type { ClientId } from './installers/index.js';
+import type { InstructionsMode } from './agent-instructions/types.js';
 import type { Language } from './commands/welcome.js';
 
 // Only the real entry point enables Node's on-disk compile cache, before any
@@ -60,6 +61,8 @@ interface CliI18n {
   unknownInstructionsAction: (val: string) => string;
   instructionsInstallNext: string;
   instructionsUninstallDone: string;
+  instructionsModeHeader: string;
+  instructionsMode: Record<InstructionsMode, string>;
 }
 
 function buildHelp(language: Language): string {
@@ -178,12 +181,24 @@ Uso:
                                 los títulos y las query strings de las URLs.
   browser-link activity clear [--older-than 7d] [--yes]
                                 Borra el rastro. Sin --older-than exige --yes.
+  browser-link feedback [--limit <n>]
+                                Lo que los agentes reportaron sobre browser-link,
+                                más reciente primero.
+  browser-link feedback issue <id>
+                                Muestra un borrador de issue de GitHub para esa
+                                entrada y lo crea con gh
+                                solo después de que escribas y en la consola.
   browser-link instructions     Muestra si el bloque de instrucciones de browser-link
                                 está presente en el .md global de cada cliente
-                                (Claude, OpenCode, Copilot CLI).
+                                (Claude, OpenCode, Copilot CLI) y qué contiene.
   browser-link instructions install
   browser-link instructions install --client <claude|opencode|copilot>
-                                Inserta o refresca el bloque en el .md global.
+                                Inserta o refresca el bloque en el .md global: un
+                                disparador corto;
+                                la primera llamada al navegador devuelve las reglas.
+  browser-link instructions install --with-core
+                                Igual, pero deja también las reglas básicas en el
+                                bloque (unos 2.700 caracteres en vez de 600).
   browser-link instructions uninstall
   browser-link instructions uninstall --client <id>
                                 Quita el bloque, deja el resto del archivo intacto.
@@ -311,12 +326,23 @@ Usage:
   browser-link activity clear [--older-than 7d] [--yes]
                                 Delete the trail. Without --older-than, --yes is
                                 required.
+  browser-link feedback [--limit <n>]
+                                What agents reported about browser-link, newest
+                                first.
+  browser-link feedback issue <id>
+                                Print a GitHub issue draft for that entry and create
+                                it with gh only after you type y in the console.
   browser-link instructions     Show whether the browser-link instructions block
                                 is present in each client's global .md file
-                                (Claude, OpenCode, Copilot CLI).
+                                (Claude, OpenCode, Copilot CLI) and what it holds.
   browser-link instructions install
   browser-link instructions install --client <claude|opencode|copilot>
-                                Insert or refresh the block in the global .md file.
+                                Insert or refresh the block in the global .md file:
+                                a short trigger, because
+                                the first browser call returns the rules.
+  browser-link instructions install --with-core
+                                The same, but keep the core rules in the block too
+                                (about 2,700 characters instead of 600).
   browser-link instructions uninstall
   browser-link instructions uninstall --client <id>
                                 Remove the block, leaving the rest of the file
@@ -351,6 +377,11 @@ const CLI_I18N: Record<Language, CliI18n> = {
     instructionsInstallNext:
       'Restart your MCP client so it picks up the new instructions on its next session.',
     instructionsUninstallDone: 'Block removed. The rest of each file was left untouched.',
+    instructionsModeHeader: 'Block contents:',
+    instructionsMode: {
+      trigger: 'trigger only (the rules arrive with the first browser call)',
+      core: 'trigger + core rules (installed with --with-core)',
+    },
   },
   es: {
     help: '',
@@ -365,6 +396,11 @@ const CLI_I18N: Record<Language, CliI18n> = {
     instructionsInstallNext:
       'Reiniciá tu cliente MCP para que tome las nuevas instrucciones en la próxima sesión.',
     instructionsUninstallDone: 'Bloque eliminado. El resto del archivo quedó intacto.',
+    instructionsModeHeader: 'Contenido del bloque:',
+    instructionsMode: {
+      trigger: 'solo el disparador (las reglas llegan con la primera llamada al navegador)',
+      core: 'disparador + reglas básicas (instalado con --with-core)',
+    },
   },
 };
 
@@ -374,6 +410,58 @@ function printInstructionsReports(reports: InstructionsReport[]): void {
     const msg = r.message ?? r.filePath;
     console.log(`${prefix} ${r.displayName}: ${msg}`);
   }
+}
+
+/** The mode of each installed block, one line per client, after the status
+ * table; empty when no block is installed. A block written before modes
+ * existed reads as `trigger`: the next refresh rewrites it as one. */
+function formatInstructionsModes(reports: InstructionsReport[], t: CliI18n): string[] {
+  const installed = reports.filter(
+    (r) => r.state.kind === 'installed' || r.state.kind === 'installed-outdated',
+  );
+  if (installed.length === 0) return [];
+  const width = Math.max(...installed.map((r) => r.displayName.length)) + 2;
+  return [
+    '',
+    t.instructionsModeHeader,
+    ...installed.map((r) => {
+      const mode = 'mode' in r.state && r.state.mode === 'core' ? 'core' : 'trigger';
+      return `  ${r.displayName.padEnd(width)}${t.instructionsMode[mode]}`;
+    }),
+  ];
+}
+
+/** `instructions install --with-core`: the same report shape as
+ * `commands/instructions.ts`, written through each installer with the core
+ * kept in the block. A failing client is reported, never thrown. */
+async function installInstructionsWithCore(client: ClientId | null): Promise<InstructionsReport[]> {
+  const { INSTRUCTIONS_INSTALLERS, getInstructionsInstaller } =
+    await import('./agent-instructions/index.js');
+  const installers = client ? [getInstructionsInstaller(client)] : INSTRUCTIONS_INSTALLERS;
+  return installers.map((inst) => {
+    const before = inst.detect();
+    try {
+      const message = inst.install({ withCore: true });
+      const after = inst.detect();
+      return {
+        client: inst.id,
+        displayName: inst.displayName,
+        filePath: after.filePath,
+        state: after.state,
+        message,
+        ok: true,
+      };
+    } catch (err) {
+      return {
+        client: inst.id,
+        displayName: inst.displayName,
+        filePath: before.filePath,
+        state: before.state,
+        message: err instanceof Error ? err.message : String(err),
+        ok: false,
+      };
+    }
+  });
 }
 
 function parseClient(argv: string[], language: Language): ClientId | null {
@@ -495,6 +583,12 @@ export async function dispatch(argv: string[]): Promise<void> {
       console.log(runActivityCommand(rest, language));
       return;
     }
+    case 'feedback': {
+      const { runFeedbackCommand } = await import('./commands/feedback.js');
+      const code = await runFeedbackCommand(rest, language);
+      if (code !== 0) process.exit(code);
+      return;
+    }
     case 'instructions': {
       // `rest.at(0)` correctly types the missing-arg case as `undefined`
       // (vs. `rest[0]: string` under the project's loose index access).
@@ -504,13 +598,16 @@ export async function dispatch(argv: string[]): Promise<void> {
         const client = parseClient(rest, language);
         const reports = client ? [instructions.statusFor(client)] : instructions.statusAll();
         console.log(instructions.formatStatus(reports, language));
+        for (const line of formatInstructionsModes(reports, t)) console.log(line);
         return;
       }
       if (action === 'install') {
         const client = parseClient(rest, language);
-        const reports = client
-          ? [instructions.installInstructionsFor(client)]
-          : instructions.installInstructionsAll();
+        const reports = rest.includes('--with-core')
+          ? await installInstructionsWithCore(client)
+          : client
+            ? [instructions.installInstructionsFor(client)]
+            : instructions.installInstructionsAll();
         printInstructionsReports(reports);
         console.log('');
         console.log(t.instructionsInstallNext);

@@ -2,6 +2,9 @@ import type Database from 'better-sqlite3';
 import { loadConfig } from '../config.js';
 import { getDb } from './db.js';
 import { resolveLearnerApp } from './queries.js';
+import { incrementsStructural, type PreviousFailure } from './confidence.js';
+import { durableTarget, pathPattern, type TargetKind } from './keys.js';
+import { recordReaderFromDispatch } from './readers.js';
 
 /**
  * The map learns from use.
@@ -41,7 +44,7 @@ export type LearnedReason = (typeof LEARNED_REASONS)[number];
 
 export type LearnedOutcome = { ok: true } | { ok: false; reason: LearnedReason };
 
-export type TargetKind = 'selector' | 'key';
+export type { TargetKind };
 
 /** Rows kept per app. Past it, the least used row is evicted. */
 export const MAX_LEARNED_PER_APP = 200;
@@ -56,39 +59,8 @@ const LEARNABLE_ACTIONS: Readonly<Record<string, string | undefined>> = {
   'browser.wait_for': 'wait_for',
 };
 
-interface DurableTarget {
-  target: string;
-  target_kind: TargetKind;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
-}
-
-/**
- * The durable target of a call, or null. A selector string counts for every
- * learnable tool. A semantic key counts only for `browser.find` — on
- * `browser.press`, `key` is the keyboard key, not an element. A `ref` (or
- * `find` by text) names no durable target: refs die with the document and
- * text is a value, so such calls learn nothing.
- */
-function durableTarget(tool: string, args: unknown): DurableTarget | null {
-  const a = asRecord(args);
-  if (!a) return null;
-  if (typeof a.selector === 'string' && a.selector.length > 0) {
-    return { target: a.selector, target_kind: 'selector' };
-  }
-  if (tool === 'browser.find') {
-    const key = asRecord(a.key);
-    if (key) {
-      // Fixed field order so the same key always yields the same row.
-      return {
-        target: JSON.stringify({ role: key.role, name: key.name, path: key.path }),
-        target_kind: 'key',
-      };
-    }
-  }
-  return null;
 }
 
 /** Results normally arrive raw; an MCP `{ content: [{ type: 'text', text }] }`
@@ -179,11 +151,16 @@ export function classifyOutcome(
 
 export interface RecordOutcomeInput {
   origin: string;
+  /** Stored as given: `learnFromDispatch` passes the path pattern. */
   pathname: string;
   target: string;
   target_kind: TargetKind;
   action: string;
   outcome: LearnedOutcome;
+  /** Build fingerprint of the page when the call settled, when known. */
+  build?: string | null;
+  /** View signature of the page when the call settled, when known. */
+  view_sig?: string | null;
 }
 
 /**
@@ -202,18 +179,46 @@ export function recordOutcome(db: Database.Database, input: RecordOutcomeInput):
   const ts = new Date().toISOString();
   const ok = input.outcome.ok;
   const reason = input.outcome.ok ? null : input.outcome.reason;
+  const build = input.build ?? null;
 
   db.transaction(() => {
+    const previous =
+      reason === 'expect-failed'
+        ? ((db
+            .prepare(
+              `SELECT last_reason, last_fail_build FROM selector_outcomes
+                WHERE app_id = ? AND url_pattern = ? AND target = ? AND target_kind = ? AND action = ?`,
+            )
+            .get(app.id, input.pathname, input.target, input.target_kind, input.action) as
+            PreviousFailure | undefined) ?? null)
+        : null;
+    // A failure that counts toward `failing` (see confidence.ts) on this build.
+    const structural = !ok && incrementsStructural(reason, previous, build);
     db.prepare(
       `INSERT INTO selector_outcomes
-         (app_id, url_pattern, target, target_kind, action, ok_n, fail_n, last_reason, last_ok_at, last_fail_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (app_id, url_pattern, target, target_kind, action, ok_n, fail_n, last_reason, last_ok_at, last_fail_at,
+          view_sig, last_ok_build, last_fail_build, struct_fail_n, struct_fail_build)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(app_id, url_pattern, target, target_kind, action) DO UPDATE SET
          ok_n = ok_n + excluded.ok_n,
          fail_n = fail_n + excluded.fail_n,
          last_reason = COALESCE(excluded.last_reason, last_reason),
          last_ok_at = COALESCE(excluded.last_ok_at, last_ok_at),
-         last_fail_at = COALESCE(excluded.last_fail_at, last_fail_at)`,
+         last_fail_at = COALESCE(excluded.last_fail_at, last_fail_at),
+         view_sig = COALESCE(excluded.view_sig, view_sig),
+         last_ok_build = COALESCE(excluded.last_ok_build, last_ok_build),
+         last_fail_build = COALESCE(excluded.last_fail_build, last_fail_build),
+         struct_fail_n = CASE
+           WHEN excluded.ok_n = 1 THEN 0
+           WHEN excluded.struct_fail_n = 1 AND struct_fail_build IS excluded.struct_fail_build
+             THEN struct_fail_n + 1
+           WHEN excluded.struct_fail_n = 1 THEN 1
+           ELSE struct_fail_n
+         END,
+         struct_fail_build = CASE
+           WHEN excluded.struct_fail_n = 1 THEN excluded.struct_fail_build
+           ELSE struct_fail_build
+         END`,
     ).run(
       app.id,
       input.pathname,
@@ -225,6 +230,11 @@ export function recordOutcome(db: Database.Database, input: RecordOutcomeInput):
       reason,
       ok ? ts : null,
       ok ? null : ts,
+      input.view_sig ?? null,
+      ok ? build : null,
+      ok ? null : build,
+      structural ? 1 : 0,
+      structural ? build : null,
     );
 
     const { n } = db
@@ -265,34 +275,57 @@ export interface DispatchOutcomeContext {
   /** The tab's title. Part of the dispatcher contract but deliberately
    * ignored by the learner: it never resolves apps from or stores titles. */
   title: string | null;
+  /** The page's build fingerprint (`doc_info`), when the tab reported one. */
+  build?: string | null;
+  /** The page's view signature (`doc_info`), when the tab reported one. */
+  viewSig?: string | null;
 }
 
 /**
  * The dispatcher's `recordOutcome` dep in production (wired in server.ts).
- * Classifies first, so calls with nothing to learn cost no config read and
- * no DB access; then honours the `mapLearningEnabled` switch, read on every
- * call so `browser-link config set map-learning off` applies at once.
+ * `browser.evaluate` goes to the JS registry (map/readers.ts). Every other
+ * call is classified first, so calls with nothing to learn cost no config
+ * read and no DB access; then the `mapLearningEnabled` switch is honoured,
+ * read on every call so `browser-link config set map-learning off` applies
+ * at once. The row is keyed by the path pattern (`/facturas/:id`, see
+ * keys.ts) and stamped with the tab's build and view signature.
+ *
+ * Never throws: a failed write logs one line and the call it learns from is
+ * untouched.
  */
 export function learnFromDispatch(ctx: DispatchOutcomeContext): void {
-  const outcome = classifyOutcome(ctx.tool, ctx.args, ctx.result, ctx.error);
-  if (!outcome) return;
-  const target = durableTarget(ctx.tool, ctx.args);
-  const action = LEARNABLE_ACTIONS[ctx.tool];
-  if (!target || !action || !ctx.url) return;
-  let url: URL;
   try {
-    url = new URL(ctx.url);
-  } catch {
-    return;
+    if (ctx.tool === 'browser.evaluate') {
+      if (loadConfig().mapLearningEnabled === false) return;
+      recordReaderFromDispatch({ ...ctx, build: ctx.build ?? null });
+      return;
+    }
+    const outcome = classifyOutcome(ctx.tool, ctx.args, ctx.result, ctx.error);
+    if (!outcome) return;
+    const target = durableTarget(ctx.tool, ctx.args);
+    const action = LEARNABLE_ACTIONS[ctx.tool];
+    if (!target || !action || !ctx.url) return;
+    let url: URL;
+    try {
+      url = new URL(ctx.url);
+    } catch {
+      return;
+    }
+    if (url.origin === 'null') return;
+    if (loadConfig().mapLearningEnabled === false) return;
+    recordOutcome(getDb(), {
+      origin: url.origin,
+      pathname: pathPattern(url.pathname),
+      target: target.target,
+      target_kind: target.target_kind,
+      action,
+      outcome,
+      build: ctx.build ?? null,
+      view_sig: ctx.viewSig ?? null,
+    });
+  } catch (err) {
+    // Learning must never break the call it learns from.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[browser-link] map learning failed for ${ctx.tool}: ${message}`);
   }
-  if (url.origin === 'null') return;
-  if (loadConfig().mapLearningEnabled === false) return;
-  recordOutcome(getDb(), {
-    origin: url.origin,
-    pathname: url.pathname,
-    target: target.target,
-    target_kind: target.target_kind,
-    action,
-    outcome,
-  });
 }

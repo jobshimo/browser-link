@@ -274,3 +274,51 @@ describe('readObserverMark', () => {
     }
   });
 });
+
+describe('doc_info messages', () => {
+  const info = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      type: 'doc_info',
+      doc_id: 'doc-a',
+      url: 'https://a.test/x',
+      build: '3f9a2b1c',
+      view_sig: '0011aabb',
+      title: 'Invoices',
+      ...over,
+    });
+
+  test('parses a well-formed doc_info and keeps only its known fields', () => {
+    expect(parseObserverMessage(info({ extra: 'dropped' }))).toEqual({
+      type: 'doc_info',
+      doc_id: 'doc-a',
+      url: 'https://a.test/x',
+      build: '3f9a2b1c',
+      view_sig: '0011aabb',
+      title: 'Invoices',
+    });
+  });
+
+  test.each([
+    ['a missing url', { url: undefined }],
+    ['a non-hex build', { build: 'not hex!' }],
+    ['an over-long build', { build: 'a'.repeat(65) }],
+    ['an empty view_sig', { view_sig: '' }],
+    ['a non-string title', { title: 42 }],
+  ])('rejects %s', (_label, over) => {
+    expect(parseObserverMessage(info(over))).toBeNull();
+  });
+
+  test('applying it reports the page identity without touching the mirror', () => {
+    const mirror = createObserverMirror();
+    apply(mirror, docStart('doc-a', 'https://a.test/x'));
+    const before = JSON.stringify(mirror);
+    expect(apply(mirror, info())).toEqual({
+      kind: 'doc_info',
+      url: 'https://a.test/x',
+      build: '3f9a2b1c',
+      view_sig: '0011aabb',
+      title: 'Invoices',
+    });
+    expect(JSON.stringify(mirror)).toBe(before);
+  });
+});
