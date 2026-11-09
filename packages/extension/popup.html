@@ -212,6 +212,13 @@
         }
       }
 
+      /* The card grows with its text and never clips it: a long label wraps
+       * inside the flex row instead of pushing the tab id out of the card. */
+      .status-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
       .tab-id {
         margin-left: auto;
         font-family:
@@ -235,12 +242,6 @@
         color: var(--text-muted);
         word-break: break-all;
         line-height: 1.5;
-        max-height: 32px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
       }
 
       /* Explanation slot — shown for portCollision, hidden otherwise.
@@ -252,6 +253,7 @@
         font-size: 12px;
         color: var(--text-muted);
         line-height: 1.45;
+        overflow-wrap: anywhere;
       }
       .explanation code {
         font-family:
@@ -697,101 +699,6 @@
         max-height: 132px;
         overflow-y: auto;
       }
-
-      /* Admin section — rendered generically from the server's AdminState
-       * (admin-view.ts). Collapsed by default so the popup keeps its size
-       * for the common case; every label inside comes from the server. */
-      .admin-panel {
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px solid rgba(15, 23, 42, 0.06);
-        font-size: 11.5px;
-        color: var(--text-muted);
-      }
-
-      .admin-panel > summary {
-        cursor: pointer;
-        font-weight: 600;
-        color: var(--text);
-      }
-
-      .admin-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 5px 0;
-        border-top: 1px solid rgba(15, 23, 42, 0.05);
-      }
-
-      .admin-row-label {
-        min-width: 0;
-      }
-
-      .admin-row-value {
-        color: var(--text);
-        text-align: right;
-        overflow-wrap: anywhere;
-      }
-
-      .admin-row select,
-      .admin-row button {
-        font-family: inherit;
-        font-size: 11.5px;
-        color: var(--text);
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 4px 6px;
-        cursor: pointer;
-      }
-
-      .admin-row input[type='checkbox'] {
-        width: 15px;
-        height: 15px;
-        cursor: pointer;
-        accent-color: var(--brand-to);
-      }
-
-      .admin-note {
-        font-size: 10.5px;
-        color: var(--text-faint);
-        overflow-wrap: anywhere;
-      }
-
-      .admin-section-title {
-        margin-top: 10px;
-      }
-
-      .admin-status {
-        margin-top: 8px;
-        color: var(--text);
-      }
-
-      .admin-status[data-kind='error'] {
-        color: var(--error-fg);
-      }
-
-      .admin-confirm {
-        margin-top: 8px;
-      }
-
-      .admin-confirm-preview {
-        margin-bottom: 8px;
-        color: var(--text);
-      }
-
-      .admin-output {
-        margin: 8px 0 0;
-        padding: 6px 8px;
-        max-height: 160px;
-        overflow: auto;
-        font-size: 10.5px;
-        background: var(--bg-soft);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        white-space: pre-wrap;
-      }
     </style>
   </head>
   <body>
@@ -811,7 +718,7 @@
           </svg>
         </div>
         <div class="title">
-          <strong>browser-link</strong>
+          <strong id="app-name">browser-link</strong>
           <span>MCP bridge · per-tab manual</span>
         </div>
       </header>
@@ -994,23 +901,25 @@
         Activity
       </button>
 
-      <!-- Admin section. Rendered by popup.ts from the server's AdminState
-           (admin.describe over any connected tab's socket): the same
-           sections, options and labels as the console. Disk-writing actions
-           show the server's preview with Confirm/Cancel before applying. -->
-      <details id="admin-panel" class="admin-panel">
-        <summary>Admin</summary>
-        <div id="admin-confirm" class="admin-confirm" hidden>
-          <div id="admin-confirm-preview" class="admin-confirm-preview"></div>
-          <div class="dialog-actions">
-            <button id="admin-confirm-yes" class="primary" type="button">Confirm</button>
-            <button id="admin-confirm-no" class="danger" type="button">Cancel</button>
-          </div>
-        </div>
-        <div id="admin-status" class="admin-status" hidden></div>
-        <pre id="admin-output" class="admin-output" hidden></pre>
-        <div id="admin-body"></div>
-      </details>
+      <!-- Opens the Admin window: the server's settings, rendered from its
+           AdminState (admin.describe over any connected tab's socket) with the
+           same sections, options and labels as the console. A window of its
+           own, like Activity, because this popup closes on focus loss. -->
+      <button id="open-admin" class="activity-button" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          />
+          <circle cx="5.5" cy="4.5" r="1.6" fill="currentColor" />
+          <circle cx="10.5" cy="8" r="1.6" fill="currentColor" />
+          <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+        </svg>
+        Admin
+      </button>
 
       <div class="notice-line">
         <span id="notice-line-text"></span>

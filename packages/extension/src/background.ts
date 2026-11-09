@@ -519,6 +519,8 @@ type RuntimeMessage =
   // shows the trail across EVERY tab and every agent, so scoping it to one
   // would be scoping away the point of it.
   | { action: 'openActivityWindow' }
+  // The Admin window, tab-independent like the admin actions it hosts.
+  | { action: 'openAdminWindow' }
   | { action: 'activityQuery'; query?: Record<string, unknown> }
   | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean }
   // Tab-independent: administration acts on the server, not on one tab.
@@ -531,6 +533,7 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (m.action === 'versionCheck') return true;
   if (m.action === 'repairConnection') return true;
   if (m.action === 'openActivityWindow') return true;
+  if (m.action === 'openAdminWindow') return true;
   if (m.action === 'activityQuery') return true;
   if (m.action === 'activityPurge') return true;
   if (m.action === 'adminDescribe') return true;
@@ -790,6 +793,43 @@ async function openActivityWindow(): Promise<{ ok: true; windowId: number }> {
 
 chrome.windows.onRemoved.addListener((closedId) => {
   if (closedId === activityWindowId) activityWindowId = null;
+});
+
+/** Chrome window geometry for the Admin panel: a form of labelled rows, so
+ * narrower than the Activity table but tall enough for every section. */
+const ADMIN_WINDOW = { width: 560, height: 720 } as const;
+
+/**
+ * Open the Admin window, or focus it if it is already open. Same contract as
+ * `openActivityWindow`: a dedicated window rather than a section of the popup,
+ * which closes the moment it loses focus and is too narrow for the form.
+ */
+let adminWindowId: number | null = null;
+
+async function openAdminWindow(): Promise<{ ok: true; windowId: number }> {
+  if (adminWindowId !== null) {
+    try {
+      const existing = await chrome.windows.get(adminWindowId);
+      if (existing.id !== undefined) {
+        await chrome.windows.update(existing.id, { focused: true });
+        return { ok: true, windowId: existing.id };
+      }
+    } catch {
+      // Closed since we last saw it — fall through and open a fresh one.
+      adminWindowId = null;
+    }
+  }
+  const created = await chrome.windows.create({
+    url: chrome.runtime.getURL('admin.html'),
+    type: 'popup',
+    ...ADMIN_WINDOW,
+  });
+  adminWindowId = created?.id ?? null;
+  return { ok: true, windowId: created?.id ?? -1 };
+}
+
+chrome.windows.onRemoved.addListener((closedId) => {
+  if (closedId === adminWindowId) adminWindowId = null;
 });
 
 /**
@@ -4199,6 +4239,10 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   }
   if (msg.action === 'openActivityWindow') {
     void openActivityWindow().then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'openAdminWindow') {
+    void openAdminWindow().then(sendResponse);
     return true;
   }
   if (msg.action === 'activityQuery') {
