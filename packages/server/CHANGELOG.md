@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.44.1](https://github.com/jobshimo/browser-link/compare/v0.44.0...v0.44.1) (2026-11-09)
+
+### Features
+
+- **extension:** the popup's Admin section is now a button that opens the administration in its own window (`admin.html`), the same way the Activity window opens and focuses; the popup itself is shorter again. The popup header shows the installed version next to the name: `browser-link (0.44.1)`.
+
+### Bug Fixes
+
+- **extension:** the status card never clips its text any more: a long URL or a long explanation is shown in full and the card grows with it, with no scrolling inside the card.
+- **extension:** the Activity window shows a horizontal scrollbar only when its table really cannot fit (fixed column layout, wrapping tool and agent names); at the default window size there is none.
+
 ## [0.44.0](https://github.com/jobshimo/browser-link/compare/v0.43.0...v0.44.0) (2026-11-09)
 
 ### Features
