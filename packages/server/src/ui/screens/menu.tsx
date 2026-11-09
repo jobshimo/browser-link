@@ -8,6 +8,7 @@ import { statusAll } from '../../commands/instructions.js';
 import { useBackgroundUpdateCheck, type UpdateCheckState } from '../hooks/use-update-check.js';
 import { VERSION } from '../../version.js';
 import type { CommonProps } from './types.js';
+import { BRIDGE_PORT } from '../../bridge/protocol.js';
 
 /* Main menu — reorganized in v0.9.0 into three groups (SETUP / DIAGNOSE
  * / REFERENCE) with per-row hotkeys. Layout source:
@@ -113,7 +114,7 @@ const MENU_I18N: Record<Language, MenuI18n> = {
       extension: 'Show Chrome extension install steps',
       doctor: 'Run doctor (diagnose current setup)',
       updates: 'Check for updates on npm',
-      freePort: 'Free port — stop a stuck browser-link holding 17529',
+      freePort: `Free port — stop a stuck browser-link holding ${BRIDGE_PORT}`,
       language: 'Language — switch between English and Español',
       welcome: 'Show the welcome screen',
       about: 'About / Help — what is this and how it works',
@@ -154,7 +155,7 @@ const MENU_I18N: Record<Language, MenuI18n> = {
       extension: 'Ver pasos para instalar la extensión de Chrome',
       doctor: 'Diagnóstico (estado actual de la instalación)',
       updates: 'Buscar actualizaciones en npm',
-      freePort: 'Liberar puerto — matar el browser-link colgado en 17529',
+      freePort: `Liberar puerto — matar el browser-link colgado en ${BRIDGE_PORT}`,
       language: 'Idioma — cambiar entre English y Español',
       welcome: 'Mostrar la pantalla de bienvenida',
       about: 'Información / ayuda — qué es esto y cómo funciona',

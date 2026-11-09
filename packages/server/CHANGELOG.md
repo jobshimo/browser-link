@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.47.0](https://github.com/jobshimo/browser-link/compare/v0.46.0...v0.47.0) (2026-11-09)
+
+Small operability and code-quality fixes from the 2026-11-09 audit. No tool, flag or wire format changes.
+
+### Bug Fixes
+
+- **multi-agent:** the primary no longer dies when a proxy connection is reset while its peer process is being identified. The IPC server attaches its socket error listener before the lookup, logs the reset and drops only that connection; every other agent keeps working.
+- **config:** `config.json` is written to a sibling temp file and renamed over the original, so a primary re-reading it on a tool call sees the old file or the new one, never a truncated one that briefly emptied the tool deny-list.
+- **bridge:** when a tab's WebSocket closes, its in-flight tool calls fail at once with `tab <id> disconnected (close code <code>) while <tool> was in flight` instead of waiting 30 to 90 seconds for a misleading timeout. Calls on other tabs are untouched.
+- **mcp:** the MCP server announces the running version in `serverInfo` instead of `0.0.1`.
+- **bridge:** a refused extension handshake logs why the peer lookup failed (`timeout`, `command-missing`, `command-failed:<exit>`, `parse-miss`, `self`, `unsupported-platform`). The response to the client is unchanged.
+- **shutdown:** on SIGTERM or SIGINT the primary waits for the IPC server to tell its proxies `primary-closing` and close, up to 2 seconds, before exiting. Windows step-down is unchanged.
+- **console:** a malformed client config (for example `~/.claude.json`) no longer crashes the setup console; the header shows that client as `unknown (config unreadable)`.
+
+### Code Refactoring
+
+- **ports:** the bridge port 17529 is one constant, `BRIDGE_PORT`, in `@browser-link/shared`, with copies in the server and the extension (neither can import the workspace package at runtime) and a drift test that fails the build when they disagree. The port and every message that prints it are unchanged.
+- **console:** the header status bar reads the client configs once per screen instead of on every keystroke.
+- **console:** the App-level Ctrl+C handler is removed; it never fired because Ink's `exitOnCtrlC` consumes the keystroke first. Ctrl+C still exits.
+
 ## [0.46.0](https://github.com/jobshimo/browser-link/compare/v0.45.0...v0.46.0) (2026-11-09)
 
 The release pipeline is hardened before 1.0.0. No change to the published tools or their behaviour.

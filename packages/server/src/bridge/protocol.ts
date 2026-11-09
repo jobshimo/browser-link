@@ -9,6 +9,11 @@
  * This module is pure data + helpers; no I/O.
  */
 
+/** The WS bridge port the extension connects to. Server copy of
+ * `@browser-link/shared`'s BRIDGE_PORT (the published server cannot depend
+ * on the private workspace package); `config.drift.test.ts` keeps them equal. */
+export const BRIDGE_PORT = 17529;
+
 export const IPC_HOST = '127.0.0.1';
 export const IPC_PORT = 17530;
 export const IPC_PROTOCOL_VERSION = '1';

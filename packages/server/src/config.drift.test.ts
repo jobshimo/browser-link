@@ -8,6 +8,8 @@ import {
   MAX_IDLE_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
 } from './config.js';
+import { BRIDGE_PORT } from './bridge/protocol.js';
+import { WS_PORT } from './bridge/ws-bridge.js';
 
 /*
  * DRIFT GUARD for the idle-TTL clamp — `config.ts`'s `clampIdleTtlMinutes`
@@ -136,5 +138,38 @@ describe('config idle-ttl clamp drift guard: packages/extension/src/idle-policy.
       const srvResult = clampIdleTtlMinutes(probe as number);
       expect(srvResult, `probe ${JSON.stringify(probe) ?? String(probe)}`).toBe(extResult);
     }
+  });
+});
+
+/*
+ * DRIFT GUARD for the WS bridge port. `@browser-link/shared` defines
+ * BRIDGE_PORT; the server (`bridge/protocol.ts`, published standalone) and
+ * the extension (`background.ts`, compiled by plain tsc with no bundler)
+ * each keep a copy because neither can import the workspace package at
+ * runtime. All three must agree, or the extension dials a port nobody
+ * listens on.
+ */
+describe('BRIDGE_PORT drift guard', () => {
+  const SHARED_INDEX = join(here, '..', '..', 'shared', 'src', 'index.ts');
+  const EXT_BACKGROUND = join(here, '..', '..', 'extension', 'src', 'background.ts');
+
+  function portIn(file: string): number {
+    const m = /^(?:export )?const BRIDGE_PORT = (\d+);$/m.exec(read(file));
+    if (!m) throw new Error(`could not find BRIDGE_PORT in ${file}`);
+    return Number(m[1]);
+  }
+
+  test('the server, shared and extension copies are equal, and the WS bridge binds it', () => {
+    expect(portIn(SHARED_INDEX)).toBe(BRIDGE_PORT);
+    expect(portIn(EXT_BACKGROUND)).toBe(BRIDGE_PORT);
+    expect(WS_PORT).toBe(BRIDGE_PORT);
+  });
+
+  test('the extension dials the constant, not a literal', () => {
+    expect(read(EXT_BACKGROUND)).toMatch(/const WS_URL = `ws:\/\/127\.0\.0\.1:\$\{BRIDGE_PORT\}`;/);
+  });
+
+  test('the port is still 17529 (no runtime change)', () => {
+    expect(BRIDGE_PORT).toBe(17529);
   });
 });

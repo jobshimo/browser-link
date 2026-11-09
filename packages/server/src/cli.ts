@@ -10,6 +10,7 @@ import type { InstructionsReport } from './commands/instructions.js';
 import type { ClientId } from './installers/index.js';
 import type { InstructionsMode } from './agent-instructions/types.js';
 import type { Language } from './commands/welcome.js';
+import { BRIDGE_PORT } from './bridge/protocol.js';
 
 // Only the real entry point enables Node's on-disk compile cache, before any
 // command module loads, so later runs reuse the compiled code. Importing this
@@ -203,7 +204,7 @@ Uso:
   browser-link instructions uninstall --client <id>
                                 Quita el bloque, deja el resto del archivo intacto.
   browser-link stop             Mata el proceso browser-link que esté ocupando el
-                                puerto 17529 (útil si un cliente MCP quedó zombie)
+                                puerto ${BRIDGE_PORT} (útil si un cliente MCP quedó zombie)
                                 y todos los demás servidores browser-link vivos,
                                 una línea por proceso.
   browser-link about            Muestra la explicación completa.
@@ -347,7 +348,7 @@ Usage:
   browser-link instructions uninstall --client <id>
                                 Remove the block, leaving the rest of the file
                                 intact.
-  browser-link stop             Kill the browser-link process holding port 17529
+  browser-link stop             Kill the browser-link process holding port ${BRIDGE_PORT}
                                 (useful when an MCP client left a zombie behind)
                                 and every other live browser-link server, one
                                 line per process.

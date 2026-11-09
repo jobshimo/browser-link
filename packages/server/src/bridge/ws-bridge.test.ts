@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +19,11 @@ import {
   pushSettingsToAllTabs,
   routeRequestMessage,
   sendToolCancel,
+  sendToolRequest,
+  settlePendingRequest,
+  failPendingRequestsOnClose,
   type AdminHandlers,
+  type PendingRequest,
   type TabSession,
   isAllowedHandshakeOrigin,
 } from './ws-bridge.js';
@@ -400,6 +404,79 @@ describe('sendToolCancel', () => {
     const returned: unknown = sendToolCancel(tabs, 'tab_1', 'flow_abc');
     expect(returned).toBe(true);
     expect(returned).not.toBeInstanceOf(Promise);
+  });
+});
+
+describe('in-flight tool requests and the tab socket lifecycle', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('closing a tab socket rejects its in-flight requests at once; other tabs keep waiting', async () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const b = fakeSession('tab_2', WebSocket.OPEN);
+    const tabs = new Map([
+      ['tab_1', a.session],
+      ['tab_2', b.session],
+    ]);
+    const pending = new Map<string, PendingRequest>();
+    const first = sendToolRequest(tabs, pending, 'tab_1', 'req_1', 'browser.click', {}, 30_000);
+    const second = sendToolRequest(tabs, pending, 'tab_2', 'req_2', 'browser.read', {}, 30_000);
+    let secondSettled = false;
+    void second.then(
+      () => (secondSettled = true),
+      () => (secondSettled = true),
+    );
+
+    failPendingRequestsOnClose(pending, a.session.ws, 'tab_1', 1006);
+
+    await expect(first).rejects.toThrow(
+      'tab tab_1 disconnected (close code 1006) while browser.click was in flight',
+    );
+    expect(pending.has('req_1')).toBe(false);
+    expect(pending.has('req_2')).toBe(true);
+    // Only the second request's timer is still armed.
+    expect(vi.getTimerCount()).toBe(1);
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+
+    vi.advanceTimersByTime(30_000);
+    await expect(second).rejects.toThrow("Tool 'browser.read' timed out after 30000ms");
+  });
+
+  test('a request answered normally still resolves and clears its timer', async () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    const pending = new Map<string, PendingRequest>();
+    const req = sendToolRequest(tabs, pending, 'tab_1', 'req_1', 'browser.click', { x: 1 }, 30_000);
+    expect(JSON.parse(a.sent[0])).toEqual({
+      kind: 'tool.request',
+      id: 'req_1',
+      tool: 'browser.click',
+      params: { x: 1 },
+    });
+
+    settlePendingRequest(pending, 'req_1', { ok: true, result: { clicked: true } });
+
+    await expect(req).resolves.toEqual({ clicked: true });
+    expect(pending.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('a request answered with an error still rejects with the extension message', async () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    const pending = new Map<string, PendingRequest>();
+    const req = sendToolRequest(tabs, pending, 'tab_1', 'req_1', 'browser.click', {}, 30_000);
+
+    settlePendingRequest(pending, 'req_1', { ok: false, error: 'no such element' });
+
+    await expect(req).rejects.toThrow('no such element');
+    expect(pending.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

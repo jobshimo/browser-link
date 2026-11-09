@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
-import { Frame } from '../components.js';
+import { Frame, UNREADABLE_CLIENT_LABEL, safeDetect } from '../components.js';
 import { GLYPHS } from '../tokens.js';
 import { Badge, FooterKeys, MenuRow } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
@@ -32,6 +32,7 @@ const PICKER_I18N: Record<
     registered: string;
     notRegistered: string;
     notDetected: string;
+    unreadable: string;
   }
 > = {
   en: {
@@ -44,6 +45,7 @@ const PICKER_I18N: Record<
     registered: 'registered',
     notRegistered: 'not registered',
     notDetected: 'not detected',
+    unreadable: UNREADABLE_CLIENT_LABEL,
   },
   es: {
     title: 'Registrar browser-link en…',
@@ -56,6 +58,7 @@ const PICKER_I18N: Record<
     registered: 'registrado',
     notRegistered: 'no registrado',
     notDetected: 'no detectado',
+    unreadable: 'desconocido (config ilegible)',
   },
 };
 
@@ -76,13 +79,18 @@ export function ClientPicker({ language, onPick, onBack }: ClientPickerProps) {
   /* Build the row payload once per render — calling detect() inside
    * the JSX leaks a stat() into every row's diff path. */
   const rows = INSTALLERS.map((inst) => {
-    const d = inst.detect();
+    const detected = safeDetect(inst);
     let kind: 'ok' | 'warn' | 'off';
     let label: string;
-    if (!d.installed) {
+    if (!detected.ok) {
+      // The config exists but cannot be parsed: still pickable, so the
+      // install attempt can report the exact file to fix.
+      kind = 'off';
+      label = t.unreadable;
+    } else if (!detected.result.installed) {
       kind = 'off';
       label = t.notDetected;
-    } else if (d.registered) {
+    } else if (detected.result.registered) {
       kind = 'ok';
       label = t.registered;
     } else {

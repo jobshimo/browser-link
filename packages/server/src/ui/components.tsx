@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
-import type { ReactNode } from 'react';
-import { INSTALLERS } from '../installers/index.js';
+import { useState, type ReactNode } from 'react';
+import { INSTALLERS, type Installer } from '../installers/index.js';
+import type { DetectResult } from '../installers/types.js';
 import { COLORS, GLYPHS } from './tokens.js';
 import { StatusBar, type ClientState, type StatusBarItem } from './primitives/index.js';
 
@@ -70,8 +71,40 @@ function FooterText({ text }: { text: string }) {
  * shape. Held inside this module so the rest of the UI doesn't reach
  * into INSTALLERS just to render the header. */
 function LiveStatusBar() {
-  const items: StatusBarItem[] = INSTALLERS.map((inst) => {
-    const d = inst.detect();
+  // Read the client configs once per mount: every screen renders its own
+  // Frame, so navigation (the console's refresh signal) remounts this and
+  // re-reads, while keystrokes that re-render the same screen do not touch
+  // disk.
+  const [items] = useState(readStatusItems);
+  return <StatusBar items={items} />;
+}
+
+/** Wording for a client whose config exists but cannot be read or parsed. */
+export const UNREADABLE_CLIENT_LABEL = 'unknown (config unreadable)';
+
+export type SafeDetectResult = { ok: true; result: DetectResult } | { ok: false; error: unknown };
+
+/**
+ * The console's only way to call an installer's detect(): a malformed or
+ * unreadable client config (detect() throws on a JSON parse error) must
+ * never crash the setup console. Callers render `{ ok: false }` with
+ * UNREADABLE_CLIENT_LABEL.
+ */
+export function safeDetect(inst: Installer): SafeDetectResult {
+  try {
+    return { ok: true, result: inst.detect() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function readStatusItems(): StatusBarItem[] {
+  return INSTALLERS.map((inst) => {
+    const detected = safeDetect(inst);
+    if (!detected.ok) {
+      return { name: inst.displayName, state: 'not detected', label: UNREADABLE_CLIENT_LABEL };
+    }
+    const d = detected.result;
     let state: ClientState;
     let label: string;
     if (!d.installed) {
@@ -86,7 +119,6 @@ function LiveStatusBar() {
     }
     return { name: inst.displayName, state, label };
   });
-  return <StatusBar items={items} />;
 }
 
 interface MenuItem<V extends string> {

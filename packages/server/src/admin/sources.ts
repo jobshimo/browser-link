@@ -1,5 +1,5 @@
 import { loadConfig } from '../config.js';
-import { IPC_PORT } from '../bridge/protocol.js';
+import { IPC_PORT, BRIDGE_PORT } from '../bridge/protocol.js';
 import { detectInstructionsStatus } from '../manual/status.js';
 import { INSTALLERS } from '../installers/index.js';
 import { isGrantLive, loadGrant, remainingMs } from '../cdp/grant.js';
@@ -22,7 +22,7 @@ import type { AdminClient, AdminInput } from './descriptor.js';
 
 /** The WS bridge port; `ws-bridge.ts` owns it, repeated here (as `doctor`
  * does) so the console does not load the bridge to read a number. */
-const WS_BRIDGE_PORT = 17529;
+const WS_BRIDGE_PORT = BRIDGE_PORT;
 
 export interface AdminSourceOptions {
   /** The running primary against the installed version. */

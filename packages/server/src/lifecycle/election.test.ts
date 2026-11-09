@@ -7,6 +7,9 @@ import {
   retryBind,
   runElection,
   stepDownProcess,
+  shutdownOnSignal,
+  SHUTDOWN_IPC_DEADLINE_MS,
+  STEP_DOWN_GRACE_MS,
   type ElectionDeps,
   type VersionProbe,
 } from './election.js';
@@ -395,5 +398,68 @@ describe('a primary in the middle of a repair hand-off (A1)', () => {
     running.push(wss);
     const probe = await probeVersion((wss.address() as AddressInfo).port);
     expect(probe.kind === 'version' && probe.info.repairing).toBe(true);
+  });
+});
+
+describe('shutdownOnSignal awaits the IPC server before exiting', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('exit waits until the IPC server has closed', async () => {
+    vi.useFakeTimers();
+    let closeIpc: () => void = () => undefined;
+    const order: string[] = [];
+    const done = shutdownOnSignal({
+      stopIpc: () =>
+        new Promise<void>((resolve) => (closeIpc = resolve)).then(() => {
+          order.push('ipc-closed');
+        }),
+      closeDb: () => order.push('db-closed'),
+      exit: (code) => order.push(`exit:${code}`),
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(order).toEqual([]);
+    closeIpc();
+    await done;
+    expect(order).toEqual(['ipc-closed', 'db-closed', 'exit:0']);
+  });
+
+  test('an IPC close that never resolves is abandoned at the deadline', async () => {
+    vi.useFakeTimers();
+    const exit = vi.fn();
+    const done = shutdownOnSignal({
+      stopIpc: () => new Promise<void>(() => undefined),
+      closeDb: () => undefined,
+      exit,
+    });
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_IPC_DEADLINE_MS - 1);
+    expect(exit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(exit).toHaveBeenCalledWith(0);
+    // The deadline stays inside the Unix step-down grace, so a SIGTERM'd
+    // primary finishes before the SIGKILL that would follow.
+    expect(SHUTDOWN_IPC_DEADLINE_MS).toBeLessThan(STEP_DOWN_GRACE_MS);
+  });
+
+  test('without an IPC server (multi-agent off) it exits 0 at once, as before', async () => {
+    const order: string[] = [];
+    await shutdownOnSignal({
+      stopIpc: null,
+      closeDb: () => order.push('db-closed'),
+      exit: (code) => order.push(`exit:${code}`),
+    });
+    expect(order).toEqual(['db-closed', 'exit:0']);
+  });
+
+  test('a rejecting IPC close still exits 0', async () => {
+    const exit = vi.fn();
+    await shutdownOnSignal({
+      stopIpc: () => Promise.reject(new Error('boom')),
+      closeDb: () => undefined,
+      exit,
+    });
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

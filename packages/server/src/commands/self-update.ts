@@ -2,7 +2,7 @@
  * One-shot self-update for the browser-link CLI / MCP server.
  *
  * Strategy:
- *   1. Optionally free port 17529 — if a primary is running, npm install
+ *   1. Optionally free port BRIDGE_PORT — if a primary is running, npm install
  *      can race with the live binary on Windows (file lock) and produces
  *      confusing errors on Unix when the process is rebound to a stale
  *      dist/. Stopping the primary first keeps the install clean and

@@ -5,12 +5,13 @@ import { COLORS, GLYPHS } from '../tokens.js';
 import { FooterKeys, MenuRow, SectionHead } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
 import type { CommonProps } from './types.js';
+import { BRIDGE_PORT } from '../../bridge/protocol.js';
 
 /* Port collision (EADDRINUSE) entry-point screen.
  *
  * Design source: states.jsx → StateError.
  *
- * Reached when the bootstrap detects port 17529 is already bound and the
+ * Reached when the bootstrap detects port BRIDGE_PORT is already bound and the
  * server can't start. This is a full-frame replacement of the normal
  * Welcome/Menu path — the user has to resolve the collision before they
  * can do anything else.
@@ -27,7 +28,7 @@ import type { CommonProps } from './types.js';
  * Missing handlers render their row dimmed, with no associated effect.
  */
 interface PortCollisionInfo {
-  /** PID currently holding 127.0.0.1:17529. null when the lookup failed
+  /** PID currently holding 127.0.0.1:BRIDGE_PORT. null when the lookup failed
    * (we still show the screen — the headline still applies). */
   pid: number | null;
   /** Best-effort image or command line of the holder. null when we
@@ -65,8 +66,8 @@ const PORT_I18N: Record<
   }
 > = {
   en: {
-    title: 'Port 17529 is already in use',
-    body1: 'browser-link could not bind 127.0.0.1:17529.',
+    title: `Port ${BRIDGE_PORT} is already in use`,
+    body1: `browser-link could not bind 127.0.0.1:${BRIDGE_PORT}.`,
     body2:
       "Another process is already holding it — usually a previous instance that didn't shut down cleanly.",
     processHeader: 'Process holding the port',
@@ -84,8 +85,8 @@ const PORT_I18N: Record<
     footerQuit: 'quit',
   },
   es: {
-    title: 'El puerto 17529 ya está en uso',
-    body1: 'browser-link no pudo bindear 127.0.0.1:17529.',
+    title: `El puerto ${BRIDGE_PORT} ya está en uso`,
+    body1: `browser-link no pudo bindear 127.0.0.1:${BRIDGE_PORT}.`,
     body2: 'Otro proceso lo tiene tomado — normalmente una instancia anterior que no cerró bien.',
     processHeader: 'Proceso que tiene el puerto',
     fixHeader: 'Cómo arreglarlo',

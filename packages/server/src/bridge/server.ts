@@ -210,6 +210,18 @@ export class IpcServer {
   }
 
   private async handleConnection(socket: Socket): Promise<void> {
+    // Attach the error listener BEFORE the first await: the peer lookup can
+    // take seconds (netstat/tasklist on Windows), and an ECONNRESET on a
+    // socket with no 'error' listener is an uncaught exception that kills
+    // the primary for every agent. Node destroys the socket after 'error',
+    // so the connection is dropped and the accept loop keeps serving.
+    // Only the error code is logged (a fixed token like ECONNRESET), never the
+    // raw message, so peer-influenced text cannot reach the log.
+    socket.on('error', (err) => {
+      const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+      const safe = /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unknown';
+      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${JSON.stringify(safe)}`);
+    });
     const remoteAddr = normaliseLoopback(socket.remoteAddress ?? '');
     const remotePort = socket.remotePort;
 
@@ -322,10 +334,6 @@ export class IpcServer {
           console.error(`${IPC_LOG_PREFIX} Proxy disconnected: session=${sessionId}`);
         }
       }
-    });
-    socket.on('error', (err) => {
-      const reason = err.message.replace(/\n|\r/g, ' ');
-      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${reason}`);
     });
   }
 
