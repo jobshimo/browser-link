@@ -14,6 +14,7 @@ import {
   MultiAgentView,
   NoticeScreen,
   PermissionsView,
+  StatusView,
   UpdatesView,
   WelcomeScreen,
   type MenuAction,
@@ -24,12 +25,14 @@ import { installFor, type InstallReport } from '../commands/install.js';
 import { statusAll } from '../commands/instructions.js';
 import { openUrl } from '../utils/open-url.js';
 import { INSTALLERS, type ClientId } from '../installers/index.js';
+import type { AdminInput } from '../admin/descriptor.js';
 
 const REPO_URL = 'https://github.com/jobshimo/browser-link';
 
 type Screen =
   | { kind: 'notice' }
   | { kind: 'welcome'; hideDismiss: boolean }
+  | { kind: 'status' }
   | { kind: 'menu' }
   | { kind: 'pick-client' }
   | { kind: 'empty-clients' }
@@ -50,6 +53,8 @@ interface AppProps {
   /** False until the user confirmed the product notice; the notice is then
    * the first screen, whatever `skipWelcome` says. */
   noticeAcknowledged: boolean;
+  /** Test seam for the status view's facts; production reads the machine. */
+  statusInput?: () => Promise<AdminInput>;
 }
 
 /* True when at least one of the supported MCP clients is detected on
@@ -62,12 +67,13 @@ function anyClientDetected(): boolean {
   return INSTALLERS.some((i) => i.detect().installed);
 }
 
-export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppProps) {
+export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusInput }: AppProps) {
   const { exit } = useApp();
   const [language, setLanguage] = useState<Language>(initialLanguage);
-  // The screen the console opens on once the notice is out of the way.
+  // The screen the console opens on once the notice is out of the way:
+  // the welcome on first run, the status view after it.
   const firstRunScreen: Screen = skipWelcome
-    ? { kind: 'menu' }
+    ? { kind: 'status' }
     : { kind: 'welcome', hideDismiss: false };
   const [screen, setScreen] = useState<Screen>(
     noticeAcknowledged ? firstRunScreen : { kind: 'notice' },
@@ -85,6 +91,9 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppPro
   const backToMenu = () => {
     setScreen({ kind: 'menu' });
   };
+  const toStatus = () => {
+    setScreen({ kind: 'status' });
+  };
 
   /* When the user picks Register from the menu, we route to either the
    * full picker or the empty state depending on whether any client is
@@ -94,6 +103,33 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppPro
   const enterPickClient = (): void => {
     if (anyClientDetected()) setScreen({ kind: 'pick-client' });
     else setScreen({ kind: 'empty-clients' });
+  };
+
+  /* One routing for the menu rows, shared by the menu and the status view
+   * (which shows the same rows below the server state). */
+  const selectMenuAction = (action: MenuAction): void => {
+    if (action === 'register') enterPickClient();
+    else if (action === 'instructions') {
+      // If at least one client is outdated, auto-focus the first one
+      // so the next Enter refreshes it. The lookup is cheap (three
+      // file stats); doing it here keeps the navigation contract
+      // out of the menu screen and away from the installer module.
+      const firstOutdated = statusAll().find((r) => r.state.kind === 'installed-outdated');
+      setScreen({
+        kind: 'agent-instructions',
+        initialCursorClient: firstOutdated?.client,
+      });
+    } else if (action === 'permissions') setScreen({ kind: 'permissions' });
+    else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
+    else if (action === 'extension') setScreen({ kind: 'extension' });
+    else if (action === 'doctor') setScreen({ kind: 'doctor' });
+    else if (action === 'updates') setScreen({ kind: 'updates' });
+    else if (action === 'freePort') setScreen({ kind: 'free-port' });
+    else if (action === 'language') setScreen({ kind: 'language' });
+    else if (action === 'about') setScreen({ kind: 'about' });
+    else if (action === 'welcome') setScreen({ kind: 'welcome', hideDismiss: true });
+    else if (action === 'repo') openUrl(REPO_URL);
+    // 'quit' is handled by onQuit instead.
   };
 
   switch (screen.kind) {
@@ -114,14 +150,28 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppPro
           language={language}
           hideDismiss={screen.hideDismiss}
           onAccept={() => {
-            backToMenu();
+            // Re-opened from the menu (`w`): back where it came from.
+            if (screen.hideDismiss) backToMenu();
+            else toStatus();
           }}
           onDismiss={() => {
             saveConfig({ skipWelcome: true, language });
-            backToMenu();
+            toStatus();
           }}
           onSwapLang={swapLang}
           onQuit={exit}
+        />
+      );
+
+    case 'status':
+      return (
+        <StatusView
+          language={language}
+          onSelect={selectMenuAction}
+          onOpenMenu={backToMenu}
+          onSwapLang={swapLang}
+          onQuit={exit}
+          {...(statusInput ? { loadInput: statusInput } : {})}
         />
       );
 
@@ -129,30 +179,7 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged }: AppPro
       return (
         <MainMenu
           language={language}
-          onSelect={(action: MenuAction) => {
-            if (action === 'register') enterPickClient();
-            else if (action === 'instructions') {
-              // If at least one client is outdated, auto-focus the first one
-              // so the next Enter refreshes it. The lookup is cheap (three
-              // file stats); doing it here keeps the navigation contract
-              // out of the menu screen and away from the installer module.
-              const firstOutdated = statusAll().find((r) => r.state.kind === 'installed-outdated');
-              setScreen({
-                kind: 'agent-instructions',
-                initialCursorClient: firstOutdated?.client,
-              });
-            } else if (action === 'permissions') setScreen({ kind: 'permissions' });
-            else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
-            else if (action === 'extension') setScreen({ kind: 'extension' });
-            else if (action === 'doctor') setScreen({ kind: 'doctor' });
-            else if (action === 'updates') setScreen({ kind: 'updates' });
-            else if (action === 'freePort') setScreen({ kind: 'free-port' });
-            else if (action === 'language') setScreen({ kind: 'language' });
-            else if (action === 'about') setScreen({ kind: 'about' });
-            else if (action === 'welcome') setScreen({ kind: 'welcome', hideDismiss: true });
-            else if (action === 'repo') openUrl(REPO_URL);
-            // 'quit' is handled by onQuit instead.
-          }}
+          onSelect={selectMenuAction}
           onSwapLang={swapLang}
           onQuit={exit}
         />

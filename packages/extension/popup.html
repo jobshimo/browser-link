@@ -697,6 +697,101 @@
         max-height: 132px;
         overflow-y: auto;
       }
+
+      /* Admin section — rendered generically from the server's AdminState
+       * (admin-view.ts). Collapsed by default so the popup keeps its size
+       * for the common case; every label inside comes from the server. */
+      .admin-panel {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      .admin-panel > summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .admin-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 5px 0;
+        border-top: 1px solid rgba(15, 23, 42, 0.05);
+      }
+
+      .admin-row-label {
+        min-width: 0;
+      }
+
+      .admin-row-value {
+        color: var(--text);
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+
+      .admin-row select,
+      .admin-row button {
+        font-family: inherit;
+        font-size: 11.5px;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
+
+      .admin-row input[type='checkbox'] {
+        width: 15px;
+        height: 15px;
+        cursor: pointer;
+        accent-color: var(--brand-to);
+      }
+
+      .admin-note {
+        font-size: 10.5px;
+        color: var(--text-faint);
+        overflow-wrap: anywhere;
+      }
+
+      .admin-section-title {
+        margin-top: 10px;
+      }
+
+      .admin-status {
+        margin-top: 8px;
+        color: var(--text);
+      }
+
+      .admin-status[data-kind='error'] {
+        color: var(--error-fg);
+      }
+
+      .admin-confirm {
+        margin-top: 8px;
+      }
+
+      .admin-confirm-preview {
+        margin-bottom: 8px;
+        color: var(--text);
+      }
+
+      .admin-output {
+        margin: 8px 0 0;
+        padding: 6px 8px;
+        max-height: 160px;
+        overflow: auto;
+        font-size: 10.5px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        white-space: pre-wrap;
+      }
     </style>
   </head>
   <body>
@@ -898,6 +993,24 @@
         </svg>
         Activity
       </button>
+
+      <!-- Admin section. Rendered by popup.ts from the server's AdminState
+           (admin.describe over any connected tab's socket): the same
+           sections, options and labels as the console. Disk-writing actions
+           show the server's preview with Confirm/Cancel before applying. -->
+      <details id="admin-panel" class="admin-panel">
+        <summary>Admin</summary>
+        <div id="admin-confirm" class="admin-confirm" hidden>
+          <div id="admin-confirm-preview" class="admin-confirm-preview"></div>
+          <div class="dialog-actions">
+            <button id="admin-confirm-yes" class="primary" type="button">Confirm</button>
+            <button id="admin-confirm-no" class="danger" type="button">Cancel</button>
+          </div>
+        </div>
+        <div id="admin-status" class="admin-status" hidden></div>
+        <pre id="admin-output" class="admin-output" hidden></pre>
+        <div id="admin-body"></div>
+      </details>
 
       <div class="notice-line">
         <span id="notice-line-text"></span>

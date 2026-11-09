@@ -2,6 +2,10 @@ import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
   ActivityPurgeMessage,
+  AdminActionMessage,
+  AdminActionResult,
+  AdminDescribeMessage,
+  AdminState,
   ActivityQueryMessage,
   ActivityStatsPayload,
   ExtensionToServer,
@@ -106,6 +110,20 @@ export interface WsBridgeOptions {
   /** Starts the popup "Repair connection" restart (see lifecycle/repair.ts).
    * Absent → `bridge.repair` is answered with `ok: false`. */
   onRepair?: () => boolean;
+  /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
+   * primary. Absent → `admin.*` is answered with `ok: false`. */
+  admin?: AdminHandlers;
+}
+
+/** What the primary hands the bridge to answer `admin.describe` and
+ * `admin.action`. Both may reject; the bridge turns that into `ok: false`. */
+export interface AdminHandlers {
+  describe: () => Promise<AdminState>;
+  action: (req: {
+    id: string;
+    value?: string | number | boolean;
+    confirm?: boolean;
+  }) => Promise<AdminActionResult>;
 }
 
 /** The effective bind target and reported version. Exported so the
@@ -144,6 +162,19 @@ export function buildTabRegisteredPayload(
  * `WebSocketServer` (same Chromium-only `verifyClient`), `GET /version`
  * answers the election probe and every other plain request is a 404.
  * Closing the returned `WebSocketServer` also closes the HTTP server. */
+/**
+ * Whether a WebSocket handshake's `Origin` may open the bridge. A web page
+ * running inside Chrome passes the peer-process check (the owning process is
+ * Chromium) but always announces its own http(s) origin; only the extension's
+ * own context (`chrome-extension://<id>`) is allowed, and a missing `Origin`
+ * (non-browser clients) is left to the peer-process check. Pure; exported for
+ * tests. Since 0.42.0.
+ */
+export function isAllowedHandshakeOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === '') return true;
+  return origin.startsWith('chrome-extension://');
+}
+
 export function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
@@ -160,6 +191,13 @@ export function startWsBridge(
       // Refuse the upgrade unless the OS confirms the peer is a Chromium-based
       // browser. The check happens before any application bytes are exchanged.
       verifyClient: (info, cb) => {
+        // ws fills info.origin from the Origin header (undefined when absent).
+        const origin: string | undefined = info.origin;
+        if (!isAllowedHandshakeOrigin(origin)) {
+          log(`Rejected WS handshake from origin ${origin}: only the extension may connect.`);
+          cb(false, 403, 'Origin not allowed');
+          return;
+        }
         const remoteAddress = normaliseLoopback(info.req.socket.remoteAddress ?? '');
         const remotePort = info.req.socket.remotePort;
         if (!remoteAddress || remotePort == null) {
@@ -355,6 +393,19 @@ export function startWsBridge(
             },
             options.onRepair,
           );
+          return;
+        }
+
+        if (msg.kind === 'admin.describe' || msg.kind === 'admin.action') {
+          // Same boundary as activity.query below: not tab-scoped, any
+          // authenticated extension connection may ask. The action side is a
+          // closed allowlist with a confirm step for every disk write
+          // (admin/actions.ts), so the socket can only reach the writes the
+          // console already offers. Async (doctor, update check): the reply
+          // goes out only while the socket is still open.
+          void handleAdminMessage(msg, options.admin).then((reply) => {
+            if (ws.readyState === WebSocket.OPEN) send(ws, reply);
+          });
           return;
         }
 
@@ -606,6 +657,92 @@ export function handleActivityQueryMessage(msg: ActivityQueryMessage): ServerToE
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const ADMIN_UNAVAILABLE = 'admin panel unavailable';
+
+/**
+ * Answer one `admin.describe` or `admin.action` frame. Exported so it is
+ * unit-testable directly, like `handleActivityQueryMessage`. Never rejects:
+ * a handler that throws, a malformed frame or a bridge without handlers
+ * comes back as `ok: false`. Only the typed fields of an action reach the
+ * handler.
+ */
+export async function handleAdminMessage(
+  msg: AdminDescribeMessage | AdminActionMessage,
+  admin?: AdminHandlers,
+): Promise<ServerToExtension> {
+  if (msg.kind === 'admin.describe') {
+    if (!admin) {
+      return {
+        kind: 'admin.state',
+        request_id: msg.request_id,
+        ok: false,
+        error: ADMIN_UNAVAILABLE,
+      };
+    }
+    try {
+      return {
+        kind: 'admin.state',
+        request_id: msg.request_id,
+        ok: true,
+        state: await admin.describe(),
+      };
+    } catch (error) {
+      return {
+        kind: 'admin.state',
+        request_id: msg.request_id,
+        ok: false,
+        error: errorMessage(error),
+      };
+    }
+  }
+  const fail = (error: string): ServerToExtension => ({
+    kind: 'admin.action.result',
+    request_id: msg.request_id,
+    result: { ok: false, error },
+  });
+  if (!admin) return fail(ADMIN_UNAVAILABLE);
+  const raw: unknown = msg.id;
+  if (typeof raw !== 'string') return fail('admin.action: id must be a string');
+  const value: unknown = msg.value;
+  const req = {
+    id: raw,
+    ...(typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? { value }
+      : {}),
+    ...(msg.confirm === true ? { confirm: true } : {}),
+  };
+  try {
+    return {
+      kind: 'admin.action.result',
+      request_id: msg.request_id,
+      result: await admin.action(req),
+    };
+  } catch (error) {
+    return fail(errorMessage(error));
+  }
+}
+
+/**
+ * The request/response frames the bridge answers without a tab scope:
+ * `activity.query` (synchronous, as before) and `admin.*` (asynchronous).
+ * `null` for every other kind. Exported so the dispatch is testable without
+ * binding the bridge port.
+ */
+export function routeRequestMessage(
+  msg: ExtensionToServer,
+  admin?: AdminHandlers,
+): ServerToExtension | Promise<ServerToExtension> | null {
+  if (msg.kind === 'activity.query') return handleActivityQueryMessage(msg);
+  if (msg.kind === 'admin.describe' || msg.kind === 'admin.action') {
+    return handleAdminMessage(msg, admin);
+  }
+  return null;
 }
 
 /** camelCase store shape → snake_case wire shape. One mapper so the two can

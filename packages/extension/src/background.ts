@@ -1,5 +1,7 @@
 import type {
   ActivityPurgeResultMessage,
+  AdminActionResultMessage,
+  AdminStateMessage,
   ActivityResultMessage,
   BridgeRepairResultMessage,
   ExtensionToServer,
@@ -518,7 +520,10 @@ type RuntimeMessage =
   // would be scoping away the point of it.
   | { action: 'openActivityWindow' }
   | { action: 'activityQuery'; query?: Record<string, unknown> }
-  | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean };
+  | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean }
+  // Tab-independent: administration acts on the server, not on one tab.
+  | { action: 'adminDescribe' }
+  | { action: 'adminAction'; id: string; value?: string | number | boolean; confirm?: boolean };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
@@ -528,6 +533,14 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (m.action === 'openActivityWindow') return true;
   if (m.action === 'activityQuery') return true;
   if (m.action === 'activityPurge') return true;
+  if (m.action === 'adminDescribe') return true;
+  if (m.action === 'adminAction') {
+    const v = m.value;
+    return (
+      typeof m.id === 'string' &&
+      (v === undefined || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+    );
+  }
   if (m.action === 'saveRecording') {
     return typeof m.tabId === 'number' && typeof m.name === 'string';
   }
@@ -651,6 +664,88 @@ function purgeActivity(input: {
     }),
     // A dry run only counts — no VACUUM, so it gets the short budget.
     input.dryRun === true ? ACTIVITY_QUERY_TIMEOUT_MS : ACTIVITY_PURGE_TIMEOUT_MS,
+  );
+}
+
+/**
+ * In-flight `admin.describe` / `admin.action` frames, keyed by request id.
+ * Same correlation as the activity trail: the popup re-describes after every
+ * applied action, so a late reply to a superseded request must be droppable.
+ */
+type AdminReply = AdminStateMessage | AdminActionResultMessage;
+
+const pendingAdminRequests = new Map<string, (reply: AdminReply) => void>();
+
+/** Settle one admin reply; an unknown or timed-out id is dropped (see
+ * `settleActivityRequest` for why). */
+function settleAdminRequest(requestId: string, reply: AdminReply): void {
+  const pending = pendingAdminRequests.get(requestId);
+  if (typeof pending !== 'function') return;
+  pendingAdminRequests.delete(requestId);
+  pending(reply);
+}
+
+/** Describing and most actions are local config reads and writes. */
+const ADMIN_TIMEOUT_MS = 5_000;
+/** `doctor` probes ports and processes server-side and is slow by nature. */
+const ADMIN_DOCTOR_TIMEOUT_MS = 20_000;
+
+/**
+ * One correlated admin round trip over any connected tab's socket — the same
+ * shape as `activityRoundTrip`. `onFailure` builds the reply kind the caller
+ * expects, so `not-connected` and `timeout` reach the popup in the same
+ * envelope a real answer would.
+ */
+async function adminRoundTrip(
+  frame: (requestId: string) => ExtensionToServer,
+  timeoutMs: number,
+  onFailure: (requestId: string, error: string) => AdminReply,
+): Promise<AdminReply> {
+  const socket = [...tabStates.values()]
+    .map((s) => s.ws)
+    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  if (!socket) return onFailure('', 'not-connected');
+  const requestId = crypto.randomUUID();
+  return new Promise<AdminReply>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingAdminRequests.delete(requestId);
+      resolve(onFailure(requestId, 'timeout'));
+    }, timeoutMs);
+    pendingAdminRequests.set(requestId, (reply) => {
+      clearTimeout(timer);
+      resolve(reply);
+    });
+    send(socket, frame(requestId));
+  });
+}
+
+function adminDescribe(): Promise<AdminReply> {
+  return adminRoundTrip(
+    (request_id) => ({ kind: 'admin.describe', request_id }),
+    ADMIN_TIMEOUT_MS,
+    (request_id, error) => ({ kind: 'admin.state', request_id, ok: false, error }),
+  );
+}
+
+function adminAction(input: {
+  id: string;
+  value?: string | number | boolean;
+  confirm?: boolean;
+}): Promise<AdminReply> {
+  return adminRoundTrip(
+    (request_id) => ({
+      kind: 'admin.action',
+      request_id,
+      id: input.id,
+      ...(input.value !== undefined ? { value: input.value } : {}),
+      ...(input.confirm === true ? { confirm: true } : {}),
+    }),
+    input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,
+    (request_id, error) => ({
+      kind: 'admin.action.result',
+      request_id,
+      result: { ok: false, error },
+    }),
   );
 }
 
@@ -3515,6 +3610,12 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             settleActivityRequest(msg.request_id, msg);
             return;
           }
+          // Not tab activity either: only the popup's Admin section waits on it.
+          case 'admin.state':
+          case 'admin.action.result': {
+            settleAdminRequest(msg.request_id, msg);
+            return;
+          }
           case 'bridge.repair.result': {
             // Not tab activity: the popup's Repair button is waiting on it.
             settleRepairRequest(msg);
@@ -4106,6 +4207,14 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
   }
   if (msg.action === 'activityPurge') {
     void purgeActivity(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'adminDescribe') {
+    void adminDescribe().then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'adminAction') {
+    void adminAction(msg).then(sendResponse);
     return true;
   }
   if (msg.action === 'recordingStatus') {

@@ -18,6 +18,7 @@ import { App } from '../app.js';
 import { loadConfig, saveConfig } from '../../config.js';
 import { NOTICE } from '../../notice.js';
 import { I18N_ABOUT } from '../../commands/about.js';
+import type { AdminInput } from '../../admin/descriptor.js';
 
 /*
  * Render-time crash guard for every Ink screen component. This file ONLY
@@ -272,6 +273,24 @@ describe('NoticeScreen', () => {
 describe('App first-run notice gate', () => {
   const WELCOME = 'I understand, continue';
   const MENU = 'browser-link — setup';
+  const STATUS = 'browser-link — status';
+  // The status view's facts, injected so no live primary is probed.
+  const statusInput = (): Promise<AdminInput> =>
+    Promise.resolve({
+      config: {},
+      now: 0,
+      version: '0.42.0',
+      server: { running: null, installed: '0.42.0', outdated: false },
+      tabsConnected: null,
+      ports: { ws: 17529, ipc: 17530 },
+      extension: { path: null, connectedVersion: null },
+      instructions: [],
+      clients: [],
+      cdpGrant: { live: false, remainingMs: null },
+      update: null,
+      toolNames: [],
+      downloadsDir: '/d',
+    });
 
   test('not acknowledged: the notice comes first, Enter persists and continues to welcome', async () => {
     const { lastFrame, stdin } = render(
@@ -286,10 +305,15 @@ describe('App first-run notice gate', () => {
     expect(lastFrame()).toContain(WELCOME);
   });
 
-  test('not acknowledged with skipWelcome: the notice still comes first, then the menu', async () => {
+  test('not acknowledged with skipWelcome: the notice still comes first, then the status view', async () => {
     saveConfig({ skipWelcome: true });
     const { lastFrame, stdin } = render(
-      <App initialLanguage="es" skipWelcome={true} noticeAcknowledged={false} />,
+      <App
+        initialLanguage="es"
+        skipWelcome={true}
+        noticeAcknowledged={false}
+        statusInput={statusInput}
+      />,
     );
     await tick();
     expect(lastFrame()).toContain(NOTICE.es.title);
@@ -297,7 +321,7 @@ describe('App first-run notice gate', () => {
     await tick();
     expect(loadConfig().noticeAcknowledged).toBe(true);
     expect(loadConfig().skipWelcome).toBe(true);
-    expect(lastFrame()).toContain('browser-link — configuración');
+    expect(lastFrame()).toContain('browser-link — estado');
   });
 
   test('acknowledged: welcome is the first screen when not skipped', async () => {
@@ -309,12 +333,51 @@ describe('App first-run notice gate', () => {
     expect(lastFrame()).toContain(WELCOME);
   });
 
-  test('acknowledged: skipWelcome still lands on the menu', async () => {
+  test('acknowledged: skipWelcome lands on the status view, with every menu row', async () => {
     const { lastFrame } = render(
-      <App initialLanguage="en" skipWelcome={true} noticeAcknowledged={true} />,
+      <App
+        initialLanguage="en"
+        skipWelcome={true}
+        noticeAcknowledged={true}
+        statusInput={statusInput}
+      />,
     );
     await tick();
     expect(lastFrame()).not.toContain(NOTICE.en.title);
+    expect(lastFrame()).toContain(STATUS);
+    expect(lastFrame()).toContain('not running');
+    expect(lastFrame()).toContain('Register browser-link with an MCP client');
+  });
+
+  test('dismissing the welcome screen lands on the status view', async () => {
+    const { lastFrame, stdin } = render(
+      <App
+        initialLanguage="en"
+        skipWelcome={false}
+        noticeAcknowledged={true}
+        statusInput={statusInput}
+      />,
+    );
+    await tick();
+    stdin.write('d');
+    await tick();
+    expect(loadConfig().skipWelcome).toBe(true);
+    expect(lastFrame()).toContain(STATUS);
+  });
+
+  test('Tab from the status view reaches the menu, and back from a screen returns to the menu', async () => {
+    const { lastFrame, stdin } = render(
+      <App
+        initialLanguage="en"
+        skipWelcome={true}
+        noticeAcknowledged={true}
+        statusInput={statusInput}
+      />,
+    );
+    await tick();
+    stdin.write('	');
+    await tick();
     expect(lastFrame()).toContain(MENU);
+    expect(lastFrame()).not.toContain(STATUS);
   });
 });
