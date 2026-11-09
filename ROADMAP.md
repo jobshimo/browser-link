@@ -13,7 +13,9 @@ Check items off as they ship; when an item is done, leave it ticked here and lin
 
 ## Queued (in priority order)
 
-Nothing is queued as a roadmap item. The next planned work is the plans layer (signals and restarts over the page observer); `packages/plan/SPEC.md` is its index, and v5, the document that specifies it, is not yet written.
+- [ ] **Windows e2e CI job** — **The pain:** the real-Chrome net only runs on ubuntu, so Windows-only regressions in the bridge, IPC or election surface late. **The idea:** add a `windows-latest` leg to the `e2e` job once the Ubuntu job has a few green runs. **Cost:** S. **Files:** `.github/workflows/ci.yml`.
+
+The next planned work is the plans layer (signals and restarts over the page observer); `packages/plan/SPEC.md` is its index, and v5, the document that specifies it, is not yet written.
 
 ---
 

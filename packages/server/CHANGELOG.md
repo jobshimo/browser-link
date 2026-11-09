@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.50.0](https://github.com/jobshimo/browser-link/compare/v0.49.0...v0.50.0) (2026-11-09)
+
+A real-Chrome end-to-end net now runs on every pull request and gates the release. The extension declares its minimum Chrome, and two environment overrides allow an isolated second instance. No tool or wire-format changes.
+
+### Features
+
+- **ports:** `BROWSER_LINK_WS_PORT` and `BROWSER_LINK_IPC_PORT` (integer 1024-65535) override the bridge and election ports for an isolated instance. An invalid value keeps the default and prints one warning (`packages/server/src/bridge/protocol.ts`).
+
+### Tests
+
+- **e2e:** the `packages/e2e` harness (`pnpm test:e2e`) loads the built extension in headless Chrome through CDP `Extensions.loadUnpacked`, connects a tab without human action through the popup's `connect` message, and drives `list_tabs`, `snapshot`, `find`, `type`, `click`, `wait_for`, `press`, `read` and `flow` through the MCP stdio client, asserting each effect. It uses a temporary HOME and data dir, cleans up after itself, and `E2E_EXPECT_FAIL=<tool>` forces a failure for probing.
+
+### Continuous Integration
+
+- **e2e:** new `e2e (real Chrome, ubuntu)` job after build. The release job now `needs: [ci, e2e]`.
+
+### Build System
+
+- **manifest:** `minimum_chrome_version` is `"118"`, the first Chrome where an attached debugger keeps the service worker alive.
+
+### Documentation
+
+- **lab:** `packages/plan/lab/2026-11-09-e2e-net/` (results A1-A5) is committed.
+- **readme:** documents the port overrides and the Chrome 118 requirement.
+
 ## [0.49.0](https://github.com/jobshimo/browser-link/compare/v0.48.0...v0.49.0) (2026-11-09)
 
 Hand copies are now guarded against drift and the untested server orchestration has tests. One shared error-category table replaces two private ones. No tool, flag or wire format changes.
