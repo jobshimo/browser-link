@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.40.0](https://github.com/jobshimo/browser-link/compare/v0.39.0...v0.40.0) (2026-11-09)
+
+### Features
+
+- **notice:** one legal notice, in Spanish and English, states what browser-link is and what an agent can reach in a connected tab: everything the browser holds there, including active logins, cookies and tokens, autofilled passwords and payment cards, email and documents; connecting only the tabs an agent should operate, and what the agent does with that access, is the user's responsibility; the software is provided "as is" under MIT. The text lives once in `@browser-link/shared` (server copy parity-tested) and is rendered everywhere it appears.
+- **console:** the notice is the first screen of `browser-link` until you confirm it with Enter (`noticeAcknowledged: true` is then stored in the config); `browser-link about` and the About screen open with it.
+- **extension:** the popup shows a one-line notice with the full text available inside the popup, and asks you to confirm the full notice once before the first tab is connected on this profile.
+- **docs:** the README and the npm readme open their "read this before installing" block with the notice. Agent-facing texts are unchanged.
+
 ## [0.39.0](https://github.com/jobshimo/browser-link/compare/v0.38.0...v0.39.0) (2026-11-09)
 
 ### Features
