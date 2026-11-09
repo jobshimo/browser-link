@@ -405,3 +405,46 @@ describe('redact', () => {
     expect(redact(stored!).url).toBe('[redacted]');
   });
 });
+
+describe('flag and agent_id', () => {
+  test('record writes flag and agentId and query reads them back', () => {
+    record(row({ flag: 'unmatched', agentId: 'session-1' }));
+    const [stored] = query().records;
+    expect(stored.flag).toBe('unmatched');
+    expect(stored.agentId).toBe('session-1');
+  });
+
+  test('a row recorded without the new fields reads back null, everything else as before', () => {
+    record(row({ payload: 'hunter2' }));
+    const [stored] = query().records;
+    expect(stored).toMatchObject({ selector: '#submit', payload: 'hunter2', outcome: 'ok' });
+    expect(stored.flag).toBeNull();
+    expect(stored.agentId).toBeNull();
+  });
+
+  test('an unknown flag is stored as null rather than as free text', () => {
+    record(row({ flag: 'made-up' as never }));
+    expect(query().records[0].flag).toBeNull();
+  });
+
+  test('query filters by flag', () => {
+    record(row({ selector: '#a', flag: 'timeout' }));
+    record(row({ selector: '#b', flag: 'unsettled' }));
+    record(row({ selector: '#c' }));
+    const page = query({ flag: 'timeout' });
+    expect(page.records.map((r) => r.selector)).toEqual(['#a']);
+    expect(page.total).toBe(1);
+  });
+
+  test('query filters by agentId', () => {
+    record(row({ selector: '#a', agentId: 's-1' }));
+    record(row({ selector: '#b', agentId: 's-2' }));
+    expect(query({ agentId: 's-2' }).records.map((r) => r.selector)).toEqual(['#b']);
+  });
+
+  test('query without the new filters still returns every row', () => {
+    record(row({ flag: 'timeout', agentId: 's-1' }));
+    record(row());
+    expect(query().total).toBe(2);
+  });
+});

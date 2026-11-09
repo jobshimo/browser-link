@@ -1,4 +1,4 @@
-import type { ActivityInput, ActivityTransport } from './types.js';
+import type { ActivityFlag, ActivityInput, ActivityTransport } from './types.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 
 /**
@@ -113,6 +113,120 @@ export interface BuildRowInput {
   /** False when `activity.record-payloads` is off: the row is still written,
    * with its shape intact, minus the free text. */
   recordPayloads: boolean;
+  /** The resolved tool response, when the call did not throw. Read only to
+   * classify `flag`; never stored. */
+  result?: unknown;
+  /** IPC session uuid of the caller; `'primary'` when absent. */
+  agentId?: string | null;
+}
+
+/* ---------------------------------------------------------- flags ------
+ *
+ * A trail of bare `ok`/`error` loses the most useful evidence: calls that
+ * RESOLVED but did not do what was asked (`wait_for` matched nothing, a flow
+ * ran out of time, a click landed on another element). `classifyFlag` names
+ * that friction, and the well-known thrown failures, with a closed enum so a
+ * report can GROUP BY it instead of regexing error text.
+ */
+
+/** Thrown (or `isError`) messages, matched in order. The strings are the
+ * stable prefixes the transports emit: `ref-stale:` (`flow.ts`), the
+ * retargeted click message (`retargetedClickMessage`), `expectation not met`
+ * (`cdp/expect.ts`) and the bridge's `Tool '<name>' timed out`. */
+const ERROR_FLAGS: readonly (readonly [RegExp, ActivityFlag])[] = [
+  [/\bref-stale\b/, 'ref-stale'],
+  [/\bretargeted\b|\bClick would land on\b/, 'retargeted'],
+  [/\bexpectation not met\b/, 'expect-failed'],
+  [/\bTool '[^']*' timed out\b/, 'timeout'],
+];
+
+/** Tools whose resolved result is worth parsing. Everything else (snapshots,
+ * screenshots, list_tabs) can be large and never carries a friction signal,
+ * so it is not JSON-parsed on the hot path. */
+const RESULT_TOOLS: ReadonlySet<string> = new Set([
+  'browser.click',
+  'browser.type',
+  'browser.press',
+  'browser.drag',
+  'browser.find',
+  'browser.wait_for',
+  'browser.flow',
+  'browser.download',
+]);
+
+function flagFromMessage(message: string): ActivityFlag | null {
+  for (const [pattern, flag] of ERROR_FLAGS) if (pattern.test(message)) return flag;
+  return null;
+}
+
+/** The first text block of an MCP response, or null when it is not one. */
+function firstText(result: unknown): string | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  const block: unknown = content[0];
+  if (typeof block !== 'object' || block === null) return null;
+  const text = (block as { text?: unknown }).text;
+  return typeof text === 'string' ? text : null;
+}
+
+function isMcpResponse(result: unknown): boolean {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    Array.isArray((result as { content?: unknown }).content)
+  );
+}
+
+function flagFromData(tool: string, data: unknown): ActivityFlag | null {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
+  const d = data as Record<string, unknown>;
+  if (tool === 'browser.flow' && d.stopped_by === 'timeout') return 'flow-timeout';
+  if (tool === 'browser.download' && (d.state === 'timeout' || d.state === 'interrupted')) {
+    return 'download-timeout';
+  }
+  if (d.matched === false) {
+    if (d.reason === 'not-found') return 'not-found';
+    if (d.reason === 'multiple-matches') return 'multiple-matches';
+    if (d.reason === 'ref-stale') return 'ref-stale';
+    return 'unmatched';
+  }
+  // The click builder reports `hit_element` ONLY when the click lands on an
+  // element that is neither the target nor inside it (`buildClickResolveJs`),
+  // so its presence on a resolved call is the mismatch itself.
+  if (typeof d.hit_element === 'string' && d.hit_element.length > 0) return 'hit-mismatch';
+  const settle = d.settle;
+  if (typeof settle === 'object' && settle !== null) {
+    if ((settle as { settled?: unknown }).settled === false) return 'unsettled';
+  }
+  return null;
+}
+
+/**
+ * Classify one call. `error` is the thrown value (undefined on success);
+ * `result` is the resolved response — an MCP `{ content: [...] }` envelope as
+ * `dispatchBrowserTool` returns it, or a raw result object. Total and
+ * throw-free: anything unreadable is simply "no flag".
+ */
+export function classifyFlag(
+  tool: string,
+  _args: unknown,
+  result: unknown,
+  error: unknown,
+): ActivityFlag | null {
+  try {
+    if (error !== undefined) return flagFromMessage(errorMessage(error));
+    if (isMcpResponse(result)) {
+      const text = firstText(result);
+      if (text === null) return null;
+      if ((result as { isError?: unknown }).isError === true) return flagFromMessage(text);
+      if (!RESULT_TOOLS.has(tool)) return null;
+      return flagFromData(tool, JSON.parse(text) as unknown);
+    }
+    return flagFromData(tool, result);
+  } catch {
+    return null;
+  }
 }
 
 /** Assemble the row. Deliberately total — every branch returns something
@@ -125,6 +239,8 @@ export function buildRow({
   durationMs,
   error,
   recordPayloads,
+  result,
+  agentId,
 }: BuildRowInput): ActivityInput {
   const tabId = extractTabId(args);
   return {
@@ -143,7 +259,16 @@ export function buildRow({
     error: error === undefined ? null : errorMessage(error),
     durationMs,
     flowId: extractFlowId(args),
+    flag: classifyFlag(tool, args, result, error),
+    agentId: agentId ?? 'primary',
   };
+}
+
+/** `buildRow` with the arguments split out — the signature the dispatcher's
+ * `writeTrail` calls. `meta` is `BuildRowInput` minus `args`, so a caller on
+ * the previous shape (no `result`, no `agentId`) keeps compiling. */
+export function buildActivityRow(args: unknown, meta: Omit<BuildRowInput, 'args'>): ActivityInput {
+  return buildRow({ ...meta, args });
 }
 
 function errorMessage(error: unknown): string {

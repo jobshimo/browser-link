@@ -12,6 +12,7 @@ import {
   redact,
   stats,
 } from '../activity/queries.js';
+import { summarizeActivity, type ActivitySummaryFilters } from '../activity/summary.js';
 import type { ActivityQuery, ActivityRecord } from '../activity/types.js';
 
 /**
@@ -44,8 +45,19 @@ const I18N = {
     badFormat: (v: string) => `Unknown format "${v}". Use json, ndjson or csv.`,
     badOlderThan: (v: string) =>
       `Could not read "${v}" as a duration. Use forms like 30m, 12h, 7d.`,
+    badSince: (v: string) =>
+      `Could not read "${v}" as a duration or a date. Use forms like 30m, 12h, 7d or 2026-11-09.`,
+    reportTitle: (records: number, errors: number, timeouts: number, evaluate: number) =>
+      `Friction report: ${records} actions, ${errors} errors, ${timeouts} timeouts, ${evaluate} evaluate calls`,
+    reportFlags: 'Flags',
+    reportToolErrors: 'Errors by tool',
+    reportTargets: 'Top failing targets',
+    reportTargetsHeader: ['TARGET', 'TOOL', 'COUNT', 'LAST FLAG'],
+    reportSessions: 'Sessions',
+    reportSessionsHeader: ['SESSION', 'AGENT', 'ACTIONS', 'ERRORS', 'FLAGS'],
     usage: [
       'browser-link activity [filters]            Recent actions (newest first)',
+      'browser-link activity report [options]     Friction report: what failed, per session',
       'browser-link activity export [options]     Write the trail to a file',
       'browser-link activity stats                How big the trail is right now',
       'browser-link activity clear [options]      Delete trail entries',
@@ -57,6 +69,10 @@ const I18N = {
       '  --flow <id>         Only steps belonging to this flow',
       '  --failed            Only actions that errored',
       '  --limit <n>         Rows to show (default 50, max 500)',
+      '',
+      'report options:',
+      '  --since <when>      Only since 30m / 12h / 7d ago, or an ISO date/time',
+      '  --agent <id>        Only this session id ("primary" or an IPC session uuid)',
       '',
       'export options:',
       '  --out <file>        Destination (default activity.json in the cwd)',
@@ -92,8 +108,19 @@ const I18N = {
     badFormat: (v: string) => `Formato "${v}" desconocido. Usa json, ndjson o csv.`,
     badOlderThan: (v: string) =>
       `No se ha podido interpretar "${v}" como duración. Usa formas como 30m, 12h, 7d.`,
+    badSince: (v: string) =>
+      `No se ha podido interpretar "${v}" como duración ni como fecha. Usa formas como 30m, 12h, 7d o 2026-11-09.`,
+    reportTitle: (records: number, errors: number, timeouts: number, evaluate: number) =>
+      `Informe de fricción: ${records} acciones, ${errors} errores, ${timeouts} timeouts, ${evaluate} llamadas a evaluate`,
+    reportFlags: 'Señales',
+    reportToolErrors: 'Errores por herramienta',
+    reportTargets: 'Objetivos que más fallan',
+    reportTargetsHeader: ['OBJETIVO', 'HERRAMIENTA', 'VECES', 'ÚLTIMA SEÑAL'],
+    reportSessions: 'Sesiones',
+    reportSessionsHeader: ['SESIÓN', 'AGENTE', 'ACCIONES', 'ERRORES', 'SEÑALES'],
     usage: [
       'browser-link activity [filtros]            Acciones recientes (más nuevas primero)',
+      'browser-link activity report [opciones]    Informe de fricción: qué falló, por sesión',
       'browser-link activity export [opciones]    Escribe el rastro en un fichero',
       'browser-link activity stats                Cuánto ocupa el rastro ahora mismo',
       'browser-link activity clear [opciones]     Borra entradas del rastro',
@@ -105,6 +132,10 @@ const I18N = {
       '  --flow <id>         Sólo los pasos de este flow',
       '  --failed            Sólo las acciones que fallaron',
       '  --limit <n>         Filas a mostrar (por defecto 50, máximo 500)',
+      '',
+      'opciones de report:',
+      '  --since <cuándo>    Sólo desde hace 30m / 12h / 7d, o una fecha/hora ISO',
+      '  --agent <id>        Sólo esta sesión ("primary" o el uuid de una sesión IPC)',
       '',
       'opciones de export:',
       '  --out <fichero>     Destino (por defecto activity.json en el cwd)',
@@ -257,7 +288,7 @@ function toCsv(records: Iterable<ActivityRecord>): string {
     'flowId',
   ];
   const lines = [columns.join(',')];
-  for (const row of records) lines.push(columns.map((c) => escape(row[c])).join(','));
+  for (const row of records) lines.push(columns.map((c) => escape(row[c] ?? null)).join(','));
   return lines.join('\n');
 }
 
@@ -348,12 +379,93 @@ function runClear(argv: string[], language: Language): string {
   return removed === 0 ? t.clearedNone : t.cleared(removed);
 }
 
+/** `--since` for the report: a duration back from now (`30m`, `12h`, `7d`),
+ * a bare local calendar day (same rule as `--from`), or any ISO date-time.
+ * Null when it is none of those, so a typo is refused instead of silently
+ * widening the report to the whole trail. */
+export function parseSince(value: string, now = Date.now()): string | null {
+  const ms = parseDuration(value);
+  if (ms !== null) return new Date(now - ms).toISOString();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return localDayToUtc(value, 'start');
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function countList(counts: Record<string, number | undefined>): string {
+  const parts = Object.entries(counts)
+    .filter((entry): entry is [string, number] => entry[1] !== undefined)
+    .map(([name, n]) => `${name} ${n}`);
+  return parts.length > 0 ? parts.join(', ') : '—';
+}
+
+/** `browser-link activity report` — the same summary `browser.activity`
+ * returns with `summary: true`, laid out for a terminal. */
+function runReport(argv: string[], language: Language): string {
+  const t = I18N[language];
+  const sinceRaw = flagValue(argv, 'since');
+  const agentId = flagValue(argv, 'agent');
+  const filters: ActivitySummaryFilters = {};
+  if (sinceRaw !== undefined) {
+    const since = parseSince(sinceRaw);
+    if (since === null) return t.badSince(sinceRaw);
+    filters.since = since;
+  }
+  if (agentId !== undefined) filters.agentId = agentId;
+
+  const s = summarizeActivity(undefined, filters);
+  if (s.records === 0) return `${t.empty}\n${t.disabledHint}`;
+
+  const lines = [t.reportTitle(s.records, s.errors, s.timeouts, s.evaluate_calls)];
+  const counted = (title: string, counts: Record<string, number | undefined>): void => {
+    const entries = Object.entries(counts).filter(
+      (entry): entry is [string, number] => entry[1] !== undefined,
+    );
+    if (entries.length === 0) return;
+    lines.push('', title, ...entries.map(([name, n]) => `  ${pad(name, 18)}  ${n}`));
+  };
+  counted(t.reportFlags, s.by_flag);
+  counted(t.reportToolErrors, s.by_tool_errors);
+
+  if (s.top_failing_targets.length > 0) {
+    const [target, tool, count, lastFlag] = t.reportTargetsHeader;
+    lines.push(
+      '',
+      t.reportTargets,
+      `  ${[pad(target, 30), pad(tool, 24), pad(count, 6), lastFlag].join('  ')}`,
+      ...s.top_failing_targets.map(
+        (f) =>
+          `  ${[pad(f.selector, 30), pad(f.tool, 24), pad(String(f.n), 6), f.last_flag ?? '—'].join('  ')}`,
+      ),
+    );
+  }
+
+  const [session, agent, actions, errors, flags] = t.reportSessionsHeader;
+  lines.push(
+    '',
+    t.reportSessions,
+    `  ${[pad(session, 36), pad(agent, 14), pad(actions, 8), pad(errors, 7), flags].join('  ')}`,
+    ...s.sessions.map(
+      (x) =>
+        `  ${[
+          pad(x.agent_id ?? '—', 36),
+          pad(x.agent ?? '—', 14),
+          pad(String(x.records), 8),
+          pad(String(x.errors), 7),
+          countList(x.flags),
+        ].join('  ')}`,
+    ),
+  );
+  return lines.join('\n');
+}
+
 export function runActivityCommand(argv: string[], language: Language = 'en'): string {
   const t = I18N[language];
   const sub = argv[0];
 
   if (sub === 'help' || hasFlag(argv, 'help')) return t.usage;
   if (sub === 'stats') return runStats(language);
+  if (sub === 'report') return runReport(argv.slice(1), language);
   if (sub === 'export') return runExport(argv.slice(1), language);
   if (sub === 'clear') return runClear(argv.slice(1), language);
 

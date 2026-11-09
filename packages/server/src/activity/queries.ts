@@ -2,12 +2,13 @@ import type Database from 'better-sqlite3';
 import { statSync } from 'node:fs';
 import { getActivityDb, MAX_ACTIVITY_ROWS, pruneIfDue } from './db.js';
 import { getActivityDbPath } from './paths.js';
-import type {
-  ActivityInput,
-  ActivityPage,
-  ActivityQuery,
-  ActivityRecord,
-  ActivityTransport,
+import {
+  isActivityFlag,
+  type ActivityInput,
+  type ActivityPage,
+  type ActivityQuery,
+  type ActivityRecord,
+  type ActivityTransport,
 } from './types.js';
 
 /** Hard ceiling on rows a single read can return, whatever `limit` asks for.
@@ -46,6 +47,8 @@ interface ActivityRow {
   error: string | null;
   duration_ms: number;
   flow_id: string | null;
+  flag: string | null;
+  agent_id: string | null;
 }
 
 function toRecord(row: ActivityRow): ActivityRecord {
@@ -65,6 +68,8 @@ function toRecord(row: ActivityRow): ActivityRecord {
     error: row.error,
     durationMs: row.duration_ms,
     flowId: row.flow_id,
+    flag: isActivityFlag(row.flag) ? row.flag : null,
+    agentId: row.agent_id,
   };
 }
 
@@ -80,12 +85,17 @@ export function record(input: ActivityInput, db?: Database.Database): ActivityRe
   try {
     const handle = db ?? getActivityDb();
     const at = new Date().toISOString();
+    // The flag column is a closed enum enforced here, not by a CHECK: an
+    // unknown value is stored as null rather than as free text.
+    const flag = isActivityFlag(input.flag) ? input.flag : null;
+    const agentId = truncate(input.agentId ?? null, 200);
     const result = handle
       .prepare(
         `INSERT INTO activity
            (at, tool, tab_id, transport, url, title, agent, agent_pid,
-            selector, payload, outcome, error, duration_ms, flow_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            selector, payload, outcome, error, duration_ms, flow_id,
+            flag, agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         at,
@@ -102,9 +112,11 @@ export function record(input: ActivityInput, db?: Database.Database): ActivityRe
         truncate(input.error),
         Math.max(0, Math.round(input.durationMs)),
         input.flowId,
+        flag,
+        agentId,
       );
     pruneIfDue(handle);
-    return { ...input, id: Number(result.lastInsertRowid), at };
+    return { ...input, flag, agentId, id: Number(result.lastInsertRowid), at };
   } catch {
     return null;
   }
@@ -143,6 +155,14 @@ function buildFilter(q: ActivityQuery): { where: string; params: unknown[] } {
   if (q.outcome !== undefined) {
     clauses.push('outcome = ?');
     params.push(q.outcome);
+  }
+  if (q.flag !== undefined) {
+    clauses.push('flag = ?');
+    params.push(q.flag);
+  }
+  if (q.agentId !== undefined) {
+    clauses.push('agent_id = ?');
+    params.push(q.agentId);
   }
   if (q.since !== undefined) {
     clauses.push('at >= ?');

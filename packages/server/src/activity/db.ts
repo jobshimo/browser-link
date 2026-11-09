@@ -68,6 +68,26 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_activity_flow ON activity(flow_id);
     CREATE INDEX IF NOT EXISTS idx_activity_agent ON activity(agent);
   `);
+
+  // Columns added after the table first shipped. `ADD COLUMN` has no
+  // IF NOT EXISTS form, so each one is guarded by `table_info`: a reopen is a
+  // no-op, and an upgraded file keeps every stored row exactly as it was —
+  // the new columns read back NULL for history, never a guessed value.
+  // Nullable with no CHECK on purpose: SQLite cannot alter a CHECK later, so
+  // the closed `flag` enum is enforced by `record` (see `ACTIVITY_FLAGS`).
+  const present = new Set(
+    (db.prepare('PRAGMA table_info(activity)').all() as { name: string }[]).map((c) => c.name),
+  );
+  for (const [column, ddl] of [
+    ['flag', 'ALTER TABLE activity ADD COLUMN flag TEXT'],
+    ['agent_id', 'ALTER TABLE activity ADD COLUMN agent_id TEXT'],
+  ] as const) {
+    if (!present.has(column)) db.exec(ddl);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_activity_flag ON activity(flag);
+    CREATE INDEX IF NOT EXISTS idx_activity_agent_id ON activity(agent_id);
+  `);
 }
 
 /**

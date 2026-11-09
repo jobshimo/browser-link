@@ -48,6 +48,41 @@ export type ActivityOutcome = 'ok' | 'error';
  * "how this reached the page" rather than being forced to lie. */
 export type ActivityTransport = 'extension' | 'cdp';
 
+/**
+ * Why a call deserves a second look, beyond its bare `ok`/`error` outcome.
+ *
+ * Most of these are failures that RESOLVE: a `wait_for` with `matched: false`,
+ * a flow that ran out of time, a click whose settle window never went quiet.
+ * They come back `ok`, so without this column the trail would record them as
+ * successes and the evidence of friction would vanish. The rest name the
+ * well-known thrown failures, so a report can count them without regexing
+ * error text.
+ *
+ * Closed on purpose, and enforced in code rather than with a CHECK: `record`
+ * stores an unknown value as null so the report never grows a bucket per typo,
+ * and growing the list later needs no table rebuild (SQLite cannot alter a
+ * CHECK on an existing column).
+ */
+export const ACTIVITY_FLAGS = [
+  'retargeted',
+  'ref-stale',
+  'expect-failed',
+  'timeout',
+  'unmatched',
+  'not-found',
+  'multiple-matches',
+  'flow-timeout',
+  'download-timeout',
+  'unsettled',
+  'hit-mismatch',
+] as const;
+
+export type ActivityFlag = (typeof ACTIVITY_FLAGS)[number];
+
+export function isActivityFlag(value: unknown): value is ActivityFlag {
+  return typeof value === 'string' && (ACTIVITY_FLAGS as readonly string[]).includes(value);
+}
+
 /** One dispatched tool call, as stored. Field order mirrors the table. */
 export interface ActivityRecord {
   /** Monotonic rowid. Also the pagination cursor — see `queries.ts`. */
@@ -85,6 +120,15 @@ export interface ActivityRecord {
   /** Set when this call was a step inside a `browser.flow`, so the window can
    * group a 40-step flow under one heading instead of flooding the timeline. */
   flowId: string | null;
+  /** Friction classification (see `ActivityFlag`), or null for a clean call
+   * and for every row recorded before the column existed. Optional so a
+   * caller built against the previous shape still compiles. */
+  flag?: ActivityFlag | null;
+  /** The IPC session uuid of the calling agent, or `'primary'` for the stdio
+   * agent. Unlike `agent` (a label two runs can share) it tells two sessions
+   * apart, which is what the per-session report groups by. Null for rows
+   * recorded before the column existed. */
+  agentId?: string | null;
 }
 
 /** What the recorder is handed. `id` and `at` are assigned on write — a
@@ -106,6 +150,9 @@ export interface ActivityQuery {
   tool?: string;
   flowId?: string;
   outcome?: ActivityOutcome;
+  flag?: ActivityFlag;
+  /** Exact session id (`ActivityRecord.agentId`), not the agent label. */
+  agentId?: string;
   /** Rows at or after this ISO timestamp. */
   since?: string;
   /** Hard cap on rows returned. Clamped by the query layer — an unbounded
