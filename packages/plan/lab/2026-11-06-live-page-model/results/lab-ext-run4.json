@@ -1,0 +1,60 @@
+{
+  "finishedAt": 1793979199277,
+  "phaseA": {
+    "agent": {
+      "closedRoots": 0,
+      "doc": "file:///<lab-dir>/storm.html",
+      "flushes": 8917,
+      "records": 5885238,
+      "roots": 21
+    },
+    "agentAfter": {
+      "closedRoots": 0,
+      "doc": "file:///<lab-dir>/storm.html",
+      "flushes": 8917,
+      "records": 5885238,
+      "roots": 21
+    },
+    "wire": {
+      "byDoc": {},
+      "bytes": 0,
+      "bytes_per_s": 0,
+      "messages": 0,
+      "records": 0
+    }
+  },
+  "phaseB": {
+    "agent": {
+      "closedRoots": 0,
+      "doc": "file:///<lab-dir>/storm.html",
+      "flushes": 1,
+      "records": 238,
+      "roots": 21
+    },
+    "wireDelta": {
+      "messages": 1,
+      "records": 238
+    }
+  },
+  "phaseC": {
+    "closedRootsSeen": 1,
+    "recordsPushed": 3
+  },
+  "startedAt": 1793979184250,
+  "status": "done",
+  "steps": [
+    "attached",
+    "binding added",
+    "script added 1",
+    "loadEventFired"
+  ],
+  "tabId": 1875365531,
+  "wire": {
+    "byDoc": {
+      "file:///<lab-dir>/storm.html": 2
+    },
+    "bytes": 317,
+    "messages": 2,
+    "records": 241
+  }
+}

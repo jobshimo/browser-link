@@ -1,0 +1,107 @@
+{
+  "question": "Precision of semantic re-resolution (role + name hard filter, tag-path similarity, sibling-index tie-break, ties refused) after list re-renders",
+  "scenario": "react",
+  "page": "https://github.com/facebook/react/issues",
+  "runs": [
+    {
+      "step": "filter \"hooks\" + Enter",
+      "act_result": "typed",
+      "tagged": {
+        "total": 195,
+        "with_name": 195
+      },
+      "live_total": 198,
+      "tagged_total": 195,
+      "kept": 111,
+      "gone": 84,
+      "unique_correct": 45,
+      "unique_wrong": 0,
+      "tie": 3,
+      "no_match": 36,
+      "no_name": 0,
+      "candidates_1": 22,
+      "candidates_2plus": 26,
+      "samples": {
+        "wrong": [],
+        "tie": [
+          {
+            "role": "button",
+            "name": "Filter by label Status: Unconfirmed",
+            "candidates": 7
+          },
+          {
+            "role": "button",
+            "name": "Filter by label Status: Unconfirmed",
+            "candidates": 7
+          },
+          {
+            "role": "button",
+            "name": "Filter by label Type: Bug",
+            "candidates": 7
+          }
+        ]
+      },
+      "dup_role_name": 37,
+      "dup_role_name_tagpath": 37,
+      "dup_role_name_fullpath": 2
+    },
+    {
+      "step": "filter back to open issues + Enter",
+      "act_result": "typed",
+      "tagged": {
+        "total": 198,
+        "with_name": 198
+      },
+      "live_total": 195,
+      "tagged_total": 198,
+      "kept": 111,
+      "gone": 87,
+      "unique_correct": 46,
+      "unique_wrong": 0,
+      "tie": 0,
+      "no_match": 41,
+      "no_name": 0,
+      "candidates_1": 20,
+      "candidates_2plus": 26,
+      "samples": {
+        "wrong": [],
+        "tie": []
+      },
+      "dup_role_name": 45,
+      "dup_role_name_tagpath": 45,
+      "dup_role_name_fullpath": 2
+    },
+    {
+      "step": "filter \"suspense\" + Enter",
+      "act_result": "typed",
+      "tagged": {
+        "total": 195,
+        "with_name": 195
+      },
+      "live_total": 189,
+      "tagged_total": 195,
+      "kept": 108,
+      "gone": 87,
+      "unique_correct": 16,
+      "unique_wrong": 0,
+      "tie": 1,
+      "no_match": 70,
+      "no_name": 0,
+      "candidates_1": 3,
+      "candidates_2plus": 14,
+      "samples": {
+        "wrong": [],
+        "tie": [
+          {
+            "role": "button",
+            "name": "Filter by label Status: Unconfirmed",
+            "candidates": 6
+          }
+        ]
+      },
+      "dup_role_name": 23,
+      "dup_role_name_tagpath": 23,
+      "dup_role_name_fullpath": 2
+    }
+  ]
+}

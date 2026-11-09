@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>mutation storm</title></head>
+<body>
+<h1>storm</h1>
+<div id="hosts"></div>
+<script>
+  // 20 open shadow roots x 10 tickers each = 200 text nodes mutating every
+  // animation frame, plus one attribute flip per host per frame.
+  // Roughly (200 characterData + 20 attributes) * 60 fps ≈ 13k mutations/s.
+  const hosts = document.getElementById('hosts');
+  const cells = [];
+  for (let h = 0; h < 20; h++) {
+    const host = document.createElement('div');
+    host.className = 'host';
+    hosts.appendChild(host);
+    const root = host.attachShadow({ mode: 'open' });
+    for (let i = 0; i < 10; i++) {
+      const span = document.createElement('span');
+      span.textContent = '0';
+      root.appendChild(span);
+      cells.push(span.firstChild);
+    }
+  }
+  let frame = 0;
+  function tick() {
+    frame++;
+    for (const t of cells) t.data = String(frame);
+    for (const host of hosts.children) host.setAttribute('data-frame', String(frame));
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body></html>

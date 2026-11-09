@@ -1,0 +1,52 @@
+{
+  "target": "https://www.timeanddate.com/worldclock/",
+  "script_id": "1",
+  "window_ms": 8000,
+  "phase_a_live_inject": {
+    "agent": {
+      "roots": 3,
+      "closedRoots": 1,
+      "flushes": 0,
+      "records": 1941,
+      "doc": "https://www.timeanddate.com/worldclock/"
+    },
+    "wire": {
+      "messages": 0,
+      "bytes": 0,
+      "records": 0,
+      "bytes_per_s": 0,
+      "msgs_per_s": 0
+    },
+    "agent_after": {
+      "roots": 3,
+      "closedRoots": 1,
+      "flushes": 0,
+      "records": 1941,
+      "doc": "https://www.timeanddate.com/worldclock/"
+    }
+  },
+  "phase_b_after_reload": {
+    "agent": {
+      "roots": 2,
+      "closedRoots": 0,
+      "flushes": 4,
+      "records": 1929,
+      "doc": "https://www.timeanddate.com/worldclock/"
+    },
+    "wire": {
+      "messages": 6,
+      "bytes": 1433,
+      "records": 1937,
+      "bytes_per_s": 179
+    }
+  },
+  "docs_seen": {
+    "https://www.timeanddate.com/worldclock/": 5,
+    "about:blank": 2
+  },
+  "phase_c_closed_root": {
+    "closed_roots_seen_by_agent": 1,
+    "records_pushed": 4,
+    "messages": 1
+  }
+}

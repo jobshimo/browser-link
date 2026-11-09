@@ -1,0 +1,111 @@
+{
+  "question": "Precision of semantic re-resolution (role + name hard filter, tag-path similarity, sibling-index tie-break, ties refused) after list re-renders",
+  "scenario": "ha",
+  "page": "http://homeassistant.local:8123/config/entities",
+  "runs": [
+    {
+      "step": "filter \"sensor\" (rows replaced)",
+      "act_result": "typed",
+      "tagged": {
+        "total": 115,
+        "with_name": 79
+      },
+      "live_total": 118,
+      "tagged_total": 115,
+      "kept": 97,
+      "gone": 18,
+      "unique_correct": 9,
+      "unique_wrong": 0,
+      "tie": 0,
+      "no_match": 9,
+      "no_name": 0,
+      "candidates_1": 0,
+      "candidates_2plus": 9,
+      "samples": {
+        "wrong": [],
+        "tie": []
+      },
+      "dup_role_name": 68,
+      "dup_role_name_tagpath": 66,
+      "dup_role_name_fullpath": 0
+    },
+    {
+      "step": "clear filter (rows restored)",
+      "act_result": "typed",
+      "tagged": {
+        "total": 118,
+        "with_name": 82
+      },
+      "live_total": 115,
+      "tagged_total": 118,
+      "kept": 98,
+      "gone": 20,
+      "unique_correct": 11,
+      "unique_wrong": 0,
+      "tie": 0,
+      "no_match": 9,
+      "no_name": 0,
+      "candidates_1": 0,
+      "candidates_2plus": 11,
+      "samples": {
+        "wrong": [],
+        "tie": []
+      },
+      "dup_role_name": 68,
+      "dup_role_name_tagpath": 66,
+      "dup_role_name_fullpath": 0
+    },
+    {
+      "step": "filter \"light\"",
+      "act_result": "typed",
+      "tagged": {
+        "total": 115,
+        "with_name": 79
+      },
+      "live_total": 78,
+      "tagged_total": 115,
+      "kept": 52,
+      "gone": 63,
+      "unique_correct": 30,
+      "unique_wrong": 0,
+      "tie": 0,
+      "no_match": 33,
+      "no_name": 0,
+      "candidates_1": 28,
+      "candidates_2plus": 2,
+      "samples": {
+        "wrong": [],
+        "tie": []
+      },
+      "dup_role_name": 50,
+      "dup_role_name_tagpath": 48,
+      "dup_role_name_fullpath": 0
+    },
+    {
+      "step": "filter \"li\" (superset of light)",
+      "act_result": "typed",
+      "tagged": {
+        "total": 78,
+        "with_name": 42
+      },
+      "live_total": 95,
+      "tagged_total": 78,
+      "kept": 57,
+      "gone": 21,
+      "unique_correct": 14,
+      "unique_wrong": 0,
+      "tie": 0,
+      "no_match": 7,
+      "no_name": 0,
+      "candidates_1": 1,
+      "candidates_2plus": 13,
+      "samples": {
+        "wrong": [],
+        "tie": []
+      },
+      "dup_role_name": 59,
+      "dup_role_name_tagpath": 57,
+      "dup_role_name_fullpath": 0
+    }
+  ]
+}

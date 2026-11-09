@@ -1,0 +1,31 @@
+{
+  "window_s": 5,
+  "main_world": {
+    "roots": 21,
+    "closedRoots": 0,
+    "patched": true,
+    "records": 159078,
+    "flushes": 241,
+    "selfMs": 26,
+    "pushes_received": 265,
+    "self_ms_per_s": 5
+  },
+  "isolated_world": {
+    "ctx": 6,
+    "roots": 1,
+    "closedRoots": 0,
+    "patched": true,
+    "records": 14478,
+    "flushes": 241,
+    "selfMs": 6,
+    "pushes_received": 265,
+    "sees_main_patch": true,
+    "self_ms_per_s": 1
+  },
+  "after_closed_root_created_by_page": {
+    "main_closedRoots": 1,
+    "main_roots": 22,
+    "iso_closedRoots": 0,
+    "iso_roots": 1
+  }
+}
