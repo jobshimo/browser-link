@@ -162,6 +162,19 @@ export function buildTabRegisteredPayload(
  * `WebSocketServer` (same Chromium-only `verifyClient`), `GET /version`
  * answers the election probe and every other plain request is a 404.
  * Closing the returned `WebSocketServer` also closes the HTTP server. */
+/**
+ * Whether a WebSocket handshake's `Origin` may open the bridge. A web page
+ * running inside Chrome passes the peer-process check (the owning process is
+ * Chromium) but always announces its own http(s) origin; only the extension's
+ * own context (`chrome-extension://<id>`) is allowed, and a missing `Origin`
+ * (non-browser clients) is left to the peer-process check. Pure; exported for
+ * tests. Since 0.42.0.
+ */
+export function isAllowedHandshakeOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === '') return true;
+  return origin.startsWith('chrome-extension://');
+}
+
 export function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
@@ -178,6 +191,13 @@ export function startWsBridge(
       // Refuse the upgrade unless the OS confirms the peer is a Chromium-based
       // browser. The check happens before any application bytes are exchanged.
       verifyClient: (info, cb) => {
+        // ws fills info.origin from the Origin header (undefined when absent).
+        const origin: string | undefined = info.origin;
+        if (!isAllowedHandshakeOrigin(origin)) {
+          log(`Rejected WS handshake from origin ${origin}: only the extension may connect.`);
+          cb(false, 403, 'Origin not allowed');
+          return;
+        }
         const remoteAddress = normaliseLoopback(info.req.socket.remoteAddress ?? '');
         const remotePort = info.req.socket.remotePort;
         if (!remoteAddress || remotePort == null) {

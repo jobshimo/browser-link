@@ -19,6 +19,7 @@ import {
   sendToolCancel,
   type AdminHandlers,
   type TabSession,
+  isAllowedHandshakeOrigin,
 } from './ws-bridge.js';
 import { BridgeEventLog, isExtensionEventKind } from './events.js';
 import { closeDb } from '../map/db.js';
@@ -702,5 +703,26 @@ describe('routeRequestMessage: activity.query beside the admin dispatch', () => 
 
   test('every other kind is not a request it routes', () => {
     expect(routeRequestMessage({ kind: 'bridge.repair', request_id: 'b1' })).toBeNull();
+  });
+});
+
+describe('isAllowedHandshakeOrigin — web pages never open the bridge (0.42.0)', () => {
+  test('no Origin header: allowed, the peer-process check decides', () => {
+    expect(isAllowedHandshakeOrigin(undefined)).toBe(true);
+    expect(isAllowedHandshakeOrigin('')).toBe(true);
+  });
+
+  test('the extension context is allowed', () => {
+    expect(isAllowedHandshakeOrigin('chrome-extension://abcdefghijklmnopabcdefghijklmnop')).toBe(
+      true,
+    );
+  });
+
+  test('a web page origin is refused, loopback included', () => {
+    expect(isAllowedHandshakeOrigin('https://evil.example')).toBe(false);
+    expect(isAllowedHandshakeOrigin('http://127.0.0.1:5173')).toBe(false);
+    expect(isAllowedHandshakeOrigin('http://localhost:3000')).toBe(false);
+    expect(isAllowedHandshakeOrigin('null')).toBe(false);
+    expect(isAllowedHandshakeOrigin('file://')).toBe(false);
   });
 });
