@@ -52,7 +52,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "pnpm run clean && pnpm run build && node ./scripts/prepare-publish.mjs"
+    "prepack": "pnpm run clean && pnpm run build && node ./scripts/prepare-publish.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Pre-publish step run by `pnpm publish` (or `npm publish` if you prefer
-// the legacy command — the tarball uploaded to registry.npmjs.org is
-// identical either way):
+// Last step of the server's `prepack` hook, so it runs before both
+// `pnpm pack` / `npm pack` and `npm publish` — the tarball the release job
+// smoke-tests is the one it publishes:
 //  1) Build the Chrome extension, then bundle the assets into the server's
 //     dist/extension.
 //  2) Copy the repo-root LICENSE next to package.json so npm includes it.
@@ -27,7 +27,7 @@ const extensionTarget = join(serverPkgDir, 'dist', 'extension');
 // shipped untouched even after we bumped the source manifest. v0.5.3 hit
 // this exact trap: published with extension at 0.4.0 internally.
 //
-// `prepublishOnly` for the server only runs `tsc` in the server workspace,
+// `prepack` for the server only runs `tsc` in the server workspace,
 // so the extension needs its own rebuild before we copy. We blow away the
 // extension's own dist/ first to make sure no stale file lingers.
 console.log('[prepare-publish] cleaning + rebuilding the extension…');
