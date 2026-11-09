@@ -17,3 +17,21 @@ const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')) a
 
 export const PACKAGE_NAME: string = pkg.name;
 export const VERSION: string = pkg.version;
+
+/**
+ * The version currently installed on disk, re-read from `package.json` on
+ * every call. `VERSION` above is read once at boot, so it is the version
+ * this process is RUNNING; after `npm install -g` replaces the files, the
+ * two differ and the server knows it is outdated. `null` when the file
+ * cannot be read or parsed. `pkgPath` exists for tests.
+ */
+export function readInstalledVersion(
+  pkgPath: string = join(here, '..', 'package.json'),
+): string | null {
+  try {
+    const data = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: unknown };
+    return typeof data.version === 'string' ? data.version : null;
+  } catch {
+    return null;
+  }
+}

@@ -112,6 +112,8 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- Action tools (`browser.click`, `browser.type`, `browser.navigate`, `browser.evaluate`) auto-claim a free tab on first use. If another agent holds it they fail naming the owner: ask the user whose tab it is, or use a different one.',
       '- Read tools (`browser.snapshot`, `browser.state`, `browser.console`, `browser.network`, `browser.network_body`, `browser.events`, `browser.ping`) ignore claims.',
       '- Give `browser.claim_tab` a stable `label` ("claude-code", "opencode"); claims also end on disconnect and after the inactivity TTL. The label is display only: ownership rests on the IPC session id, not on what an agent calls itself.',
+      '- One server process is the primary. A newer browser-link that starts displaces an older primary (it reads `GET /version` on the bridge port, then stops the old process), and the extension reconnects by itself.',
+      '- A `list_tabs` hint "server running X, installed Y" means the package was updated under a live server: ask the user to run `browser-link stop` and restart the agent, or to click "Repair connection" in the extension popup. Do not kill processes yourself.',
     ),
   },
   'cdp-direct': {

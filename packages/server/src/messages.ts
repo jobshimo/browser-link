@@ -38,6 +38,14 @@ export interface TabRegisteredPayload {
    * extensions that don't know about the field can still parse the message.
    */
   serverVersion?: string;
+  /**
+   * Version installed on disk right now (re-read on every register). When it
+   * differs from `serverVersion`, the running server is outdated and the
+   * popup offers "Repair connection". Absent from servers older than 0.41.0.
+   */
+  installedVersion?: string;
+  /** PID of the server process that handed out this tabId (0.41.0+). */
+  serverPid?: number;
 }
 
 export interface TabRegisterMessage {
@@ -252,13 +260,29 @@ export type ActivityPurgeResultMessage =
     }
   | { kind: 'activity.purge.result'; request_id: string; ok: false; error: string };
 
+/**
+ * Popup "Repair connection": ask the running server to restart itself on
+ * the installed code. The server answers with `bridge.repair.result` first,
+ * then spawns the installed CLI detached, terminates every extension socket
+ * uncleanly (so the extension auto-reconnects) and exits.
+ */
+export interface BridgeRepairMessage {
+  kind: 'bridge.repair';
+  request_id: string;
+}
+
+export type BridgeRepairResultMessage =
+  | { kind: 'bridge.repair.result'; request_id: string; ok: true; action: 'restarting' }
+  | { kind: 'bridge.repair.result'; request_id: string; ok: false; error: string };
+
 export type ExtensionToServer =
   | TabRegisterMessage
   | ToolResponseMessage
   | BridgeEventMessage
   | FlowRecordedMessage
   | ActivityQueryMessage
-  | ActivityPurgeMessage;
+  | ActivityPurgeMessage
+  | BridgeRepairMessage;
 export type ServerToExtension =
   | TabRegisteredMessage
   | ToolRequestMessage
@@ -266,4 +290,5 @@ export type ServerToExtension =
   | SettingsUpdateMessage
   | FlowRecordedResultMessage
   | ActivityResultMessage
-  | ActivityPurgeResultMessage;
+  | ActivityPurgeResultMessage
+  | BridgeRepairResultMessage;

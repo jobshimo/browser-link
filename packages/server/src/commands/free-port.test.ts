@@ -285,3 +285,151 @@ describe('isNodeImage — image-name matching (via runFreePort)', () => {
     expect(r.ok).toBe(shouldKill);
   });
 });
+
+/**
+ * S2: `stop` kills every live browser-link bridge, not only the 17529 owner.
+ * The exec stub here is keyed by binary AND arguments, so each port and the
+ * process listing can answer differently.
+ */
+function withExec(fn: (cmd: string, args: readonly string[]) => string): void {
+  exec.mockImplementation(((cmd: string, args: readonly string[]) => fn(cmd, args)) as never);
+}
+
+function notFound(): never {
+  const err = new Error('exit 1') as NodeJS.ErrnoException;
+  err.code = '1';
+  throw err;
+}
+
+describe('runFreePort — every live browser-link process (Unix)', () => {
+  beforeEach(() => {
+    plat.mockReturnValue('linux');
+  });
+
+  const psList = [
+    '  100     1 Mon Nov  9 01:00:00 2026 node /usr/local/bin/browser-link',
+    '  200     1 Mon Nov  9 01:00:00 2026 node /usr/local/bin/browser-link',
+    '  300     1 Mon Nov  9 01:00:00 2026 node /usr/lib/node_modules/@jobshimo/browser-link/dist/cli.js start',
+    '  400     1 Mon Nov  9 01:00:00 2026 node /usr/local/bin/browser-link doctor',
+    '  500     1 Mon Nov  9 01:00:00 2026 node /srv/unrelated.js',
+    `${process.pid}     1 Mon Nov  9 01:00:00 2026 node /usr/local/bin/browser-link stop`,
+  ].join('\n');
+
+  test('kills the port owner, the 17530 owner and every other bridge; never non-bridge commands', () => {
+    withExec((cmd, args) => {
+      if (cmd === 'lsof' && args.includes('-iTCP:17529')) return '100\n';
+      if (cmd === 'lsof' && args.includes('-iTCP:17530')) return '200\n';
+      if (cmd === 'ps' && args[0] === '-axo') return psList;
+      if (cmd === 'ps' && args[0] === '-p') return 'node\n';
+      return notFound();
+    });
+    const r = runFreePort('en');
+    expect(r.ok).toBe(true);
+    expect(r.pid).toBe(100);
+    expect(r.message.split('\n')[0]).toMatch(/Stopped browser-link primary \(PID 100\)/);
+    expect(r.message).toMatch(/PID 200 {2}node browser-link {2}✓ stopped/);
+    expect(r.message).toMatch(/PID 300 {2}node browser-link start {2}✓ stopped/);
+    expect(r.message).not.toMatch(/PID 400|PID 500/);
+    expect(killSpy.mock.calls).toEqual([
+      [100, 'SIGTERM'],
+      [200, 'SIGTERM'],
+      [300, 'SIGTERM'],
+    ]);
+    expect(r.processes).toEqual([
+      { pid: 100, command: 'node browser-link', stopped: true },
+      { pid: 200, command: 'node browser-link', stopped: true },
+      { pid: 300, command: 'node browser-link start', stopped: true },
+    ]);
+  });
+
+  test('a stray bridge is stopped even when the port is already free', () => {
+    withExec((cmd, args) => {
+      if (cmd === 'ps' && args[0] === '-axo') return psList.split('\n')[2];
+      if (cmd === 'ps' && args[0] === '-p') return 'node\n';
+      return notFound();
+    });
+    const r = runFreePort('en');
+    expect(r.ok).toBe(true);
+    expect(r.pid).toBeNull();
+    expect(r.message.split('\n')[0]).toMatch(/already free/);
+    expect(r.message).toMatch(/Other browser-link processes:/);
+    expect(r.message).toMatch(/PID 300 {2}node browser-link start {2}✓ stopped/);
+    expect(killSpy).toHaveBeenCalledExactlyOnceWith(300, 'SIGTERM');
+  });
+
+  test('a bridge that cannot be killed makes the result not ok', () => {
+    withExec((cmd, args) => {
+      if (cmd === 'ps' && args[0] === '-axo') return psList.split('\n')[1];
+      return notFound();
+    });
+    killSpy.mockImplementation(() => {
+      throw new Error('EPERM');
+    });
+    const r = runFreePort('en');
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/PID 200 {2}node browser-link {2}✗ could not stop/);
+  });
+
+  test('localises the process lines', () => {
+    withExec((cmd, args) => {
+      if (cmd === 'ps' && args[0] === '-axo') return psList.split('\n')[1];
+      return notFound();
+    });
+    const r = runFreePort('es');
+    expect(r.message).toMatch(/Otros procesos de browser-link:/);
+    expect(r.message).toMatch(/PID 200 {2}node browser-link {2}✓ detenido/);
+  });
+
+  test('a 17530 owner that is not node is left alone', () => {
+    withExec((cmd, args) => {
+      if (cmd === 'lsof' && args.includes('-iTCP:17530')) return '600\n';
+      if (cmd === 'ps' && args[0] === '-p') return 'caddy\n';
+      return notFound();
+    });
+    const r = runFreePort('en');
+    expect(r.ok).toBe(true);
+    expect(killSpy).not.toHaveBeenCalled();
+    expect(r.processes).toBeUndefined();
+  });
+});
+
+describe('runFreePort — every live browser-link process (Windows)', () => {
+  beforeEach(() => {
+    plat.mockReturnValue('win32');
+  });
+
+  test('lists with Get-CimInstance and stops each bridge with taskkill', () => {
+    const commandLine = String.raw`"C:\nodejs\node.exe" "C:\nodejs\node_modules\@jobshimo\browser-link\dist\cli.js"`;
+    const list = JSON.stringify([
+      {
+        ProcessId: 13212,
+        ParentProcessId: 1,
+        CreationDate: '/Date(1794190664124)/',
+        CommandLine: commandLine,
+      },
+      {
+        ProcessId: 45544,
+        ParentProcessId: 1,
+        CreationDate: '/Date(1794190664124)/',
+        CommandLine: commandLine,
+      },
+    ]);
+    const killed: string[] = [];
+    withExec((cmd, args) => {
+      if (cmd === 'netstat')
+        return '  TCP    127.0.0.1:17529        0.0.0.0:0              LISTENING       13212';
+      if (cmd === 'tasklist') return '"node.exe","13212","Console","1","45,000 K"';
+      if (cmd === 'powershell') return list;
+      if (cmd === 'taskkill') {
+        killed.push(args.join(' '));
+        return '';
+      }
+      return notFound();
+    });
+    const r = runFreePort('en');
+    expect(r.ok).toBe(true);
+    expect(killed).toEqual(['/F /PID 13212', '/F /PID 45544']);
+    expect(r.message).toMatch(/PID 45544 {2}node browser-link {2}✓ stopped/);
+    expect(r.processes?.map((p) => p.pid)).toEqual([13212, 45544]);
+  });
+});
