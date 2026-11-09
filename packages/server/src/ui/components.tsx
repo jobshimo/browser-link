@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import { useState, type ReactNode } from 'react';
-import { INSTALLERS } from '../installers/index.js';
+import { INSTALLERS, type Installer } from '../installers/index.js';
+import type { DetectResult } from '../installers/types.js';
 import { COLORS, GLYPHS } from './tokens.js';
 import { StatusBar, type ClientState, type StatusBarItem } from './primitives/index.js';
 
@@ -79,18 +80,31 @@ function LiveStatusBar() {
 }
 
 /** Wording for a client whose config exists but cannot be read or parsed. */
-const UNREADABLE_CLIENT_LABEL = 'unknown (config unreadable)';
+export const UNREADABLE_CLIENT_LABEL = 'unknown (config unreadable)';
+
+export type SafeDetectResult = { ok: true; result: DetectResult } | { ok: false; error: unknown };
+
+/**
+ * The console's only way to call an installer's detect(): a malformed or
+ * unreadable client config (detect() throws on a JSON parse error) must
+ * never crash the setup console. Callers render `{ ok: false }` with
+ * UNREADABLE_CLIENT_LABEL.
+ */
+export function safeDetect(inst: Installer): SafeDetectResult {
+  try {
+    return { ok: true, result: inst.detect() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
 
 function readStatusItems(): StatusBarItem[] {
   return INSTALLERS.map((inst) => {
-    let d: ReturnType<typeof inst.detect>;
-    try {
-      d = inst.detect();
-    } catch {
-      // A malformed or unreadable client config must never crash the
-      // console; the header says so and every screen keeps working.
+    const detected = safeDetect(inst);
+    if (!detected.ok) {
       return { name: inst.displayName, state: 'not detected', label: UNREADABLE_CLIENT_LABEL };
     }
+    const d = detected.result;
     let state: ClientState;
     let label: string;
     if (!d.installed) {

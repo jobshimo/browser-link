@@ -24,7 +24,8 @@ import { saveConfig } from '../config.js';
 import { installFor, type InstallReport } from '../commands/install.js';
 import { statusAll } from '../commands/instructions.js';
 import { openUrl } from '../utils/open-url.js';
-import { INSTALLERS, type ClientId } from '../installers/index.js';
+import { INSTALLERS, getInstaller, type ClientId } from '../installers/index.js';
+import { safeDetect } from './components.js';
 import type { AdminInput } from '../admin/descriptor.js';
 
 const REPO_URL = 'https://github.com/jobshimo/browser-link';
@@ -62,9 +63,29 @@ interface AppProps {
  * EmptyClientsView instead of rendering a picker the user can't act on.
  *
  * `detect()` does a file existence check — cheap enough to run on every
- * navigation to the picker, and accurate after a manual install. */
+ * navigation to the picker, and accurate after a manual install. A config
+ * that exists but cannot be parsed counts as detected, so the picker shows
+ * that client marked as unreadable instead of the empty state. */
 function anyClientDetected(): boolean {
-  return INSTALLERS.some((i) => i.detect().installed);
+  return INSTALLERS.some((i) => {
+    const detected = safeDetect(i);
+    return !detected.ok || detected.result.installed;
+  });
+}
+
+/* Register one client. The installers throw on a config they cannot parse;
+ * the result screen shows that message instead of the console crashing. */
+function registerClient(id: ClientId): InstallReport {
+  try {
+    return installFor(id);
+  } catch (err) {
+    return {
+      client: id,
+      displayName: getInstaller(id).displayName,
+      installedClient: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusInput }: AppProps) {
@@ -187,7 +208,7 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
         <ClientPicker
           language={language}
           onPick={(id: ClientId) => {
-            const report = installFor(id);
+            const report = registerClient(id);
             setScreen({ kind: 'install-result', report });
           }}
           onBack={backToMenu}
