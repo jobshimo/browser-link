@@ -1,6 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  DEFAULT_BRIDGE_PORT,
+  DEFAULT_IPC_PORT,
   IPC_PROTOCOL_VERSION,
+  portFromEnv,
   encodeFrame,
   isCompatibleVersion,
   parseFrame,
@@ -192,5 +195,84 @@ describe('isCompatibleVersion', () => {
   test('rejects different versions', () => {
     expect(isCompatibleVersion('999')).toBe(false);
     expect(isCompatibleVersion('')).toBe(false);
+  });
+});
+
+describe('portFromEnv (BROWSER_LINK_WS_PORT / BROWSER_LINK_IPC_PORT)', () => {
+  test('a valid integer in range overrides the default, with no warning', () => {
+    const warn = vi.fn();
+    expect(
+      portFromEnv('BROWSER_LINK_WS_PORT', 17529, { BROWSER_LINK_WS_PORT: '27529' }, warn),
+    ).toBe(27529);
+    expect(
+      portFromEnv('BROWSER_LINK_IPC_PORT', 17530, { BROWSER_LINK_IPC_PORT: '1024' }, warn),
+    ).toBe(1024);
+    expect(
+      portFromEnv('BROWSER_LINK_IPC_PORT', 17530, { BROWSER_LINK_IPC_PORT: '65535' }, warn),
+    ).toBe(65535);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each(['abc', ' ', '1023', '65536', '0', '-1', '27529.5', '1e4', '0x6b71', '27529abc'])(
+    'an invalid value %j falls back to the default with exactly one warning line',
+    (value) => {
+      const warn = vi.fn();
+      expect(
+        portFromEnv('BROWSER_LINK_WS_PORT', 17529, { BROWSER_LINK_WS_PORT: value }, warn),
+      ).toBe(17529);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).not.toContain('\n');
+      expect(line).toContain('BROWSER_LINK_WS_PORT');
+      expect(line).toContain('17529');
+    },
+  );
+
+  test('unset or empty keeps the default, with no warning', () => {
+    const warn = vi.fn();
+    expect(portFromEnv('BROWSER_LINK_WS_PORT', 17529, {}, warn)).toBe(17529);
+    expect(portFromEnv('BROWSER_LINK_WS_PORT', 17529, { BROWSER_LINK_WS_PORT: '' }, warn)).toBe(
+      17529,
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('BRIDGE_PORT / IPC_PORT resolved from the environment at load', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  test('env set: both constants resolve to the overrides', async () => {
+    vi.stubEnv('BROWSER_LINK_WS_PORT', '27529');
+    vi.stubEnv('BROWSER_LINK_IPC_PORT', '27530');
+    vi.resetModules();
+    const mod = await import('./protocol.js');
+    expect(mod.BRIDGE_PORT).toBe(27529);
+    expect(mod.IPC_PORT).toBe(27530);
+  });
+
+  test('invalid value: default and one warning line (console.warn, stderr)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('BROWSER_LINK_WS_PORT', 'not-a-port');
+    vi.stubEnv('BROWSER_LINK_IPC_PORT', undefined);
+    vi.resetModules();
+    const mod = await import('./protocol.js');
+    expect(mod.BRIDGE_PORT).toBe(17529);
+    expect(mod.IPC_PORT).toBe(17530);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('unset: the defaults 17529 / 17530', async () => {
+    vi.stubEnv('BROWSER_LINK_WS_PORT', undefined);
+    vi.stubEnv('BROWSER_LINK_IPC_PORT', undefined);
+    vi.resetModules();
+    const mod = await import('./protocol.js');
+    expect(mod.BRIDGE_PORT).toBe(17529);
+    expect(mod.IPC_PORT).toBe(17530);
+    expect(DEFAULT_BRIDGE_PORT).toBe(17529);
+    expect(DEFAULT_IPC_PORT).toBe(17530);
   });
 });

@@ -80,7 +80,9 @@ tab", not for unattended consumer automation.
   network, network_body, claim/release/my_tabs, events, activity, reset, and `manual`, which needs no tab) and 6
   persistent-map tools, so the agent learns your apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.22.2 and Chrome / Chromium / Edge / Brave
-  / Vivaldi. No accounts, no telemetry. The only request the server makes
+  / Vivaldi on Chromium ≥ 118 (from 118 an active debugger session keeps the
+  extension's service worker alive; the manifest declares it). No accounts, no
+  telemetry. The only request the server makes
   by itself is the npm registry update check described under
   [Where your data lives](#where-your-data-lives).
 - 🚫 **What it does NOT do** — touch tabs you have not pressed Connect on,
@@ -2152,6 +2154,13 @@ or need to inspect the DB out-of-the-way. The same directory holds
 `config.json` (UX preferences, per-tool permissions, and the CLI-side
 idle-disconnect TTL) and `multi-agent-token` (rotated at every primary
 startup).
+
+For running a second, isolated instance (e.g. the e2e harness), set
+`BROWSER_LINK_WS_PORT` (WebSocket bridge, default `17529`) and
+`BROWSER_LINK_IPC_PORT` (multi-agent IPC and election, default `17530`) to an
+integer from 1024 to 65535; any other value is ignored with one warning on
+stderr. The published extension always dials `17529`, so a second instance
+only reaches an extension whose bridge URL was changed to match.
 
 The [activity trail](#activity-trail) is a **separate** SQLite file in the
 same directory, `activity.db`. Separate on purpose: the map is small and

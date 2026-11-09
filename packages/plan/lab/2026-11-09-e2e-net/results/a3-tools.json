@@ -1,0 +1,183 @@
+{
+  "question": "Each tool through MCP stdio -> server -> WS bridge -> the BUILT extension in headless Chrome",
+  "runs": [
+    "probe",
+    "run1",
+    "run2",
+    "run3"
+  ],
+  "browser": "Chrome/156.0.8078.81",
+  "tools": {
+    "browser.list_tabs": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 33,
+        "median": 39,
+        "max": 69,
+        "mean": 44,
+        "stdev": 14
+      },
+      "checks": [
+        "lab tab listed"
+      ],
+      "errors": []
+    },
+    "browser.snapshot": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 5,
+        "median": 5,
+        "max": 6,
+        "mean": 5,
+        "stdev": 0
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.find": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 3,
+        "median": 4,
+        "max": 4,
+        "mean": 4,
+        "stdev": 0
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.type": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 165,
+        "median": 168,
+        "max": 170,
+        "mean": 168,
+        "stdev": 2
+      },
+      "checks": [],
+      "errors": []
+    },
+    "browser.click": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 160,
+        "median": 163,
+        "max": 172,
+        "mean": 164,
+        "stdev": 5
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.wait_for": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 223,
+        "median": 227,
+        "max": 227,
+        "mean": 226,
+        "stdev": 2
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.press": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 159,
+        "median": 166,
+        "max": 169,
+        "mean": 164,
+        "stdev": 4
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.evaluate": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 3,
+        "median": 4,
+        "max": 7,
+        "mean": 5,
+        "stdev": 2
+      },
+      "checks": [],
+      "errors": []
+    },
+    "browser.wrap_up": {
+      "ok": 8,
+      "fail": 0,
+      "latency_ms": {
+        "n": 8,
+        "min": 1,
+        "median": 3,
+        "max": 3,
+        "mean": 2,
+        "stdev": 1
+      },
+      "checks": [],
+      "errors": []
+    },
+    "browser.read": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 2,
+        "median": 3,
+        "max": 3,
+        "mean": 3,
+        "stdev": 1
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    },
+    "browser.flow": {
+      "ok": 4,
+      "fail": 0,
+      "latency_ms": {
+        "n": 4,
+        "min": 659,
+        "median": 680,
+        "max": 686,
+        "mean": 675,
+        "stdev": 10
+      },
+      "checks": [
+        "passed"
+      ],
+      "errors": []
+    }
+  },
+  "note": "browser.evaluate and the two browser.wrap_up calls are setup for browser.read (a reader must be kept before read runs it). list_tabs latency includes polling until the tab appears."
+}

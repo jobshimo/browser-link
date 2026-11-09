@@ -8,7 +8,7 @@ import {
   MAX_IDLE_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
 } from './config.js';
-import { BRIDGE_PORT } from './bridge/protocol.js';
+import { BRIDGE_PORT, DEFAULT_BRIDGE_PORT } from './bridge/protocol.js';
 import { WS_PORT } from './bridge/ws-bridge.js';
 
 /*
@@ -147,7 +147,9 @@ describe('config idle-ttl clamp drift guard: packages/extension/src/idle-policy.
  * the extension (`background.ts`, compiled by plain tsc with no bundler)
  * each keep a copy because neither can import the workspace package at
  * runtime. All three must agree, or the extension dials a port nobody
- * listens on.
+ * listens on. The server's copy is DEFAULT_BRIDGE_PORT; BRIDGE_PORT is that
+ * default unless BROWSER_LINK_WS_PORT overrides it (isolated second instance,
+ * e.g. the e2e harness, which patches its own extension copy to match).
  */
 describe('BRIDGE_PORT drift guard', () => {
   const SHARED_INDEX = join(here, '..', '..', 'shared', 'src', 'index.ts');
@@ -160,8 +162,8 @@ describe('BRIDGE_PORT drift guard', () => {
   }
 
   test('the server, shared and extension copies are equal, and the WS bridge binds it', () => {
-    expect(portIn(SHARED_INDEX)).toBe(BRIDGE_PORT);
-    expect(portIn(EXT_BACKGROUND)).toBe(BRIDGE_PORT);
+    expect(portIn(SHARED_INDEX)).toBe(DEFAULT_BRIDGE_PORT);
+    expect(portIn(EXT_BACKGROUND)).toBe(DEFAULT_BRIDGE_PORT);
     expect(WS_PORT).toBe(BRIDGE_PORT);
   });
 
@@ -170,7 +172,8 @@ describe('BRIDGE_PORT drift guard', () => {
   });
 
   test('the port is still 17529 (no runtime change)', () => {
-    expect(BRIDGE_PORT).toBe(17529);
+    expect(DEFAULT_BRIDGE_PORT).toBe(17529);
+    if (!process.env.BROWSER_LINK_WS_PORT) expect(BRIDGE_PORT).toBe(17529);
   });
 });
 

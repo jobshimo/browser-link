@@ -1,0 +1,179 @@
+{
+  "label": "run1",
+  "ports": {
+    "ws": 27529,
+    "ipc": 27530,
+    "cdp": 29230
+  },
+  "phases": {
+    "sw_ready": 1062,
+    "mcp_initialized": 3739,
+    "bridge_listening": 3743,
+    "connect_answered": 4571,
+    "tab_listed": 4610,
+    "calls_done": 6008
+  },
+  "calls": [
+    {
+      "tool": "browser.list_tabs",
+      "ok": true,
+      "ms": 39,
+      "check": "lab tab listed"
+    },
+    {
+      "tool": "browser.snapshot",
+      "ok": true,
+      "ms": 5,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.find",
+      "ok": true,
+      "ms": 4,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.type",
+      "ok": true,
+      "ms": 165
+    },
+    {
+      "tool": "browser.click",
+      "ok": true,
+      "ms": 163,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.wait_for",
+      "ok": true,
+      "ms": 227,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.press",
+      "ok": true,
+      "ms": 160,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.evaluate",
+      "ok": true,
+      "ms": 4
+    },
+    {
+      "tool": "browser.wrap_up",
+      "ok": true,
+      "ms": 3
+    },
+    {
+      "tool": "browser.wrap_up",
+      "ok": true,
+      "ms": 2
+    },
+    {
+      "tool": "browser.read",
+      "ok": true,
+      "ms": 3,
+      "check": "passed"
+    },
+    {
+      "tool": "browser.flow",
+      "ok": true,
+      "ms": 659,
+      "check": "passed"
+    }
+  ],
+  "errors": [],
+  "browser": "Chrome/156.0.8078.81",
+  "server_version": {
+    "name": "browser-link",
+    "version": "0.0.1"
+  },
+  "bridge_version": {
+    "name": "@jobshimo/browser-link",
+    "version": "0.46.0",
+    "pid": 41560,
+    "startedAt": "2026-11-09T21:13:09.091Z",
+    "installedVersion": "0.46.0",
+    "repairing": false
+  },
+  "connect_message": {
+    "action": "connect",
+    "tabId": "<chrome tab id (number)>"
+  },
+  "connect_ms": 683,
+  "connect_response": {
+    "ok": true,
+    "serverTabId": "tab_1"
+  },
+  "listed_tab_shape": [
+    "tab_id",
+    "url",
+    "title",
+    "extension_version",
+    "claimed_by",
+    "claimed_by_me"
+  ],
+  "wrap_up_step1": {
+    "step": 1,
+    "apps": [
+      {
+        "origin": "http://127.0.0.1:60950",
+        "app_key": "127-0-0-1-60950",
+        "build": null,
+        "readers": [
+          {
+            "id": 1,
+            "expression": "document.querySelector('#count').textContent",
+            "kind": "reader",
+            "flags": [],
+            "ok_n": 1,
+            "fail_n": 0,
+            "result_bytes_avg": 10,
+            "name": "item-count-text"
+          }
+        ],
+        "flows_run": [],
+        "selectors": [
+          {
+            "action": "press",
+            "target": "#name",
+            "url_pattern": "/",
+            "ok_n": 1,
+            "fail_n": 0,
+            "last_reason": null
+          },
+          {
+            "action": "wait_for",
+            "target": "#done",
+            "url_pattern": "/",
+            "ok_n": 1,
+            "fail_n": 0,
+            "last_reason": null
+          }
+        ],
+        "friction": {},
+        "pitfall_candidates": [],
+        "feedback_candidates": []
+      }
+    ],
+    "pending_wrap_up": 1
+  },
+  "chrome_clean_exit": true,
+  "teardown_ms": 2180,
+  "total_ms": 8187,
+  "cleanup": {
+    "profile_removed": true,
+    "ext_copy_removed": true,
+    "data_dir_removed": true,
+    "home_dir_removed": true
+  },
+  "instruction_refresh_logged": false,
+  "server_stderr_tail": [
+    "[browser-link] WebSocket listening on ws://127.0.0.1:27529",
+    "[browser-link ipc] IPC server listening on 127.0.0.1:27530",
+    "[browser-link] MCP server ready on stdio (role=primary, multi-agent=on)",
+    "[browser-link] Tab registered: tab_1 -> http://127.0.0.1:60950/"
+  ],
+  "all_ok": true
+}

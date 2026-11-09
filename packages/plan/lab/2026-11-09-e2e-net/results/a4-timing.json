@@ -1,0 +1,115 @@
+{
+  "question": "Wall time of start Chrome + start server + connect + tool calls, 3 runs",
+  "runs": [
+    {
+      "label": "run1",
+      "all_ok": true,
+      "total_ms": 8187,
+      "teardown_ms": 2180,
+      "phases_ms_from_start": {
+        "sw_ready": 1062,
+        "mcp_initialized": 3739,
+        "bridge_listening": 3743,
+        "connect_answered": 4571,
+        "tab_listed": 4610,
+        "calls_done": 6008
+      }
+    },
+    {
+      "label": "run2",
+      "all_ok": true,
+      "total_ms": 5347,
+      "teardown_ms": 2176,
+      "phases_ms_from_start": {
+        "sw_ready": 358,
+        "mcp_initialized": 922,
+        "bridge_listening": 926,
+        "connect_answered": 1692,
+        "tab_listed": 1725,
+        "calls_done": 3171
+      }
+    },
+    {
+      "label": "run3",
+      "all_ok": true,
+      "total_ms": 4986,
+      "teardown_ms": 2169,
+      "phases_ms_from_start": {
+        "sw_ready": 365,
+        "mcp_initialized": 739,
+        "bridge_listening": 742,
+        "connect_answered": 1370,
+        "tab_listed": 1407,
+        "calls_done": 2817
+      }
+    }
+  ],
+  "total_ms": {
+    "n": 3,
+    "min": 4986,
+    "median": 5347,
+    "max": 8187,
+    "mean": 6173,
+    "stdev": 1431
+  },
+  "to_calls_done_ms": {
+    "n": 3,
+    "min": 2817,
+    "median": 3171,
+    "max": 6008,
+    "mean": 3999,
+    "stdev": 1428
+  },
+  "phase_stats_ms": {
+    "sw_ready": {
+      "n": 3,
+      "min": 358,
+      "median": 365,
+      "max": 1062,
+      "mean": 595,
+      "stdev": 330
+    },
+    "mcp_initialized": {
+      "n": 3,
+      "min": 739,
+      "median": 922,
+      "max": 3739,
+      "mean": 1800,
+      "stdev": 1373
+    },
+    "bridge_listening": {
+      "n": 3,
+      "min": 742,
+      "median": 926,
+      "max": 3743,
+      "mean": 1804,
+      "stdev": 1373
+    },
+    "connect_answered": {
+      "n": 3,
+      "min": 1370,
+      "median": 1692,
+      "max": 4571,
+      "mean": 2544,
+      "stdev": 1439
+    },
+    "tab_listed": {
+      "n": 3,
+      "min": 1407,
+      "median": 1725,
+      "max": 4610,
+      "mean": 2581,
+      "stdev": 1441
+    },
+    "calls_done": {
+      "n": 3,
+      "min": 2817,
+      "median": 3171,
+      "max": 6008,
+      "mean": 3999,
+      "stdev": 1428
+    }
+  },
+  "failures": 0,
+  "probe_run_excluded": "the probe run is not timed: it is the first run, and it wrote the owner HOME instruction files (see README)"
+}
