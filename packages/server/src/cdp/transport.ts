@@ -31,11 +31,8 @@ import {
   buildStateJs,
   buildTypeResolveJs,
   buildWaitForSelectorJs,
-  type ClickResolveOpts,
   type FindKey,
-  type FindOpts,
   type SnapshotOpts,
-  type TypeResolveOpts,
   type WaitForSelectorCondition,
 } from './inpage/builders.js';
 import {
@@ -58,7 +55,7 @@ import {
 import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
-import { buildKeyEventSequence, modifiersToBitmask, resolveKey } from './keymap.js';
+import { buildKeyEventSequence, MODIFIER_BITS, modifiersToBitmask, resolveKey } from './keymap.js';
 import {
   cancelDetachedFlow,
   detachedFlowForTab,
@@ -482,7 +479,7 @@ async function settleWithChanges(
   return mergeSettleChanges(settleResult, changes) ?? undefined;
 }
 
-async function dispatchKeyEventSequence(
+async function dispatchKeyEvent(
   client: CdpClient,
   def: ReturnType<typeof resolveKey>,
   modifiers: number,
@@ -527,20 +524,22 @@ async function performFind(
   params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
+    const { text, ref } = params;
     if (params.key !== undefined) {
       const value = await evaluateInTab<FindStepResult>(client, buildFindJs({ key: params.key }));
       return { ok: true, result: value };
     }
-    if (params.ref !== undefined) {
-      const ref = params.ref;
+    if (ref !== undefined) {
       const found = await evaluateInTab<FindStepResult>(client, buildFindJs({ ref }));
       const refError = found.matched ? null : refFailureMessage(found, ref);
       if (refError) return { ok: false, error: refError };
       return { ok: true, result: found };
     }
-    if (!params.text) return { ok: false, error: 'find: text required' };
-    const opts: FindOpts = { text: params.text, role: params.role, exact: params.exact === true };
-    const value = await evaluateInTab<FindStepResult>(client, buildFindJs(opts));
+    if (!text) return { ok: false, error: 'find: text required' };
+    const value = await evaluateInTab<FindStepResult>(
+      client,
+      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+    );
     return { ok: true, result: value };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -567,10 +566,9 @@ async function performClick(
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    const resolveOpts: ClickResolveOpts = ref !== undefined ? { ref, force } : { selector, force };
     const resolved = await evaluateInTab<ClickResolveResult>(
       client,
-      buildClickResolveJs(resolveOpts),
+      buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
     if (!resolved.ok) {
       const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
@@ -651,8 +649,10 @@ async function performType(
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
     let reresolved = false;
     if (ref !== undefined) {
-      const opts: TypeResolveOpts = { ref, clear };
-      const resolved = await evaluateInTab<TypeResolveResult>(client, buildTypeResolveJs(opts));
+      const resolved = await evaluateInTab<TypeResolveResult>(
+        client,
+        buildTypeResolveJs({ ref, clear }),
+      );
       if (!resolved.ok) {
         return {
           ok: false,
@@ -661,8 +661,10 @@ async function performType(
       }
       reresolved = resolved.reresolved === true;
     } else if (selector !== undefined) {
-      const opts: TypeResolveOpts = { selector, clear };
-      const resolved = await evaluateInTab<TypeResolveResult>(client, buildTypeResolveJs(opts));
+      const resolved = await evaluateInTab<TypeResolveResult>(
+        client,
+        buildTypeResolveJs({ selector, clear }),
+      );
       if (!resolved.ok) {
         if (resolved.reason === 'invalid-selector') {
           return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
@@ -707,7 +709,8 @@ async function performPress(
     const def = resolveKey(key);
     if (!def) return { ok: false, error: `press: unrecognized key "${key}"` };
     const modifierNames = params.modifiers ?? [];
-    const modifiers = modifiersToBitmask(modifierNames) | (def.needsShift ? 8 : 0);
+    const modifiers =
+      modifiersToBitmask(modifierNames) | (def.needsShift ? MODIFIER_BITS.Shift : 0);
     const settle = resolveSettleParams({
       settle_ms: params.settle_ms,
       settle_timeout_ms: params.settle_timeout_ms,
@@ -733,7 +736,7 @@ async function performPress(
     }
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
-    await dispatchKeyEventSequence(client, def, modifiers);
+    await dispatchKeyEvent(client, def, modifiers);
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
@@ -816,8 +819,8 @@ async function performWaitFor(
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
-          const value = await evaluateInTab(client, expr);
-          return Boolean(value);
+          const result = await evaluateInTab(client, expr);
+          return Boolean(result);
         } catch {
           return false;
         }
@@ -829,12 +832,12 @@ async function performWaitFor(
       );
       check = async (): Promise<boolean> => {
         try {
-          const value = await evaluateInTab(client, expr);
-          if (typeof value === 'object' && value !== null) {
+          const result = await evaluateInTab(client, expr);
+          if (typeof result === 'object' && result !== null) {
             refProbe.unavailable = true;
             return true;
           }
-          return value === true;
+          return result === true;
         } catch {
           return false;
         }
@@ -843,8 +846,8 @@ async function performWaitFor(
       const wrapped = `Boolean(${waitExpression})`;
       check = async (): Promise<boolean> => {
         try {
-          const value = await evaluateInTab(client, wrapped);
-          return Boolean(value);
+          const result = await evaluateInTab(client, wrapped);
+          return Boolean(result);
         } catch {
           return false;
         }

@@ -6,6 +6,8 @@ export { NOTICE, type NoticeText } from './notice.js';
  * `config.drift.test.ts` fails when a copy drifts. */
 export const BRIDGE_PORT = 17529;
 
+// <wire-protocol> verbatim in packages/server/src/messages.ts — guarded by
+// packages/server/src/config.drift.test.ts. Edit here, then copy the section.
 export type TabId = string;
 
 export interface TabRegisterPayload {
@@ -380,6 +382,7 @@ export type ServerToExtension =
   | BridgeRepairResultMessage
   | AdminStateMessage
   | AdminActionResultMessage;
+// </wire-protocol>
 
 export interface PingResult {
   title: string;

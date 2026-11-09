@@ -1,21 +1,27 @@
 /**
  * Wire-protocol types between the MCP server and the Chrome extension.
  *
- * Kept in-tree (instead of the @browser-link/shared workspace package) so the
- * server publishes to npm without an unresolvable workspace dependency.
- * The extension still uses the workspace copy in packages/shared.
+ * Copied from packages/shared/src/index.ts (the canonical definition the
+ * extension imports) — guarded by config.drift.test.ts, which fails when the
+ * section between the two marker lines differs by one byte. Kept in-tree so
+ * the server publishes to npm without an unresolvable workspace dependency.
+ * Edit the shared original, then copy the whole section here.
  */
 
+// <wire-protocol> verbatim in packages/server/src/messages.ts — guarded by
+// packages/server/src/config.drift.test.ts. Edit here, then copy the section.
 export type TabId = string;
 
 export interface TabRegisterPayload {
   url: string;
   title: string;
   /**
-   * Optional. The browser-link tab_id this Chrome tab last had, as
-   * remembered by the extension across primary swaps. The primary honours
-   * it if free; otherwise it assigns a new id and emits a `tab-renamed`
-   * event the agent can pick up via the `browser.events` tool.
+   * Optional. The browser-link tab_id this Chrome tab had on its last
+   * registration with a primary, remembered via chrome.storage.session.
+   * Set on reconnect (e.g. after a primary swap) so the primary can
+   * reuse the same id when free. When the id is taken the primary
+   * assigns a new one and emits a `tab-renamed` event the agent can
+   * pick up via the `browser.events` MCP tool.
    */
   previousTabId?: TabId;
   /**
@@ -30,21 +36,21 @@ export interface TabRegisterPayload {
 export interface TabRegisteredPayload {
   tabId: TabId;
   /**
-   * Version of the MCP server that just handed out this tabId. The extension
-   * stores it on its `TabState` so the popup can compare it against
-   * `chrome.runtime.getManifest().version` and warn the user when the two
-   * sides have drifted — typically after `npm install -g @jobshimo/browser-link`
-   * but before re-loading the Chrome extension. Optional only so older
-   * extensions that don't know about the field can still parse the message.
+   * Version of the MCP server that just handed out this tabId. Compared
+   * against `chrome.runtime.getManifest().version` so the popup can warn
+   * the user when the two sides have drifted after an `npm install -g`
+   * without re-loading the Chrome extension.
    */
   serverVersion?: string;
   /**
-   * Version installed on disk right now (re-read on every register). When it
-   * differs from `serverVersion`, the running server is outdated and the
-   * popup offers "Repair connection". Absent from servers older than 0.41.0.
+   * Version of the browser-link package installed on disk right now, re-read
+   * by the server on every registration. Differs from `serverVersion` when
+   * the package was updated while this server kept running old code. Absent
+   * from servers older than 0.41.0.
    */
   installedVersion?: string;
-  /** PID of the server process that handed out this tabId (0.41.0+). */
+  /** Process id of the server that registered this tab. Absent from servers
+   * older than 0.41.0. */
   serverPid?: number;
 }
 
@@ -71,8 +77,7 @@ export type ToolResponseMessage =
 
 /**
  * Ask the extension to stop a running `browser.flow` by its `flow_id` (the
- * opaque id `tools/browser-dispatch.ts` mints per flow call and returns in
- * the flow result).
+ * opaque id the server mints per flow call and returns in the flow result).
  *
  * NOT correlated to a `tool.request` id on purpose: the flow being
  * cancelled is still parked in its own `tool.request`, and this frame has
@@ -94,7 +99,7 @@ export type ToolResponseMessage =
  * gets comes from the `flow_status` call the dispatcher makes straight
  * after — which is also how it reports the up-to-one-step gap honestly
  * (`cancelling: true`) instead of claiming a stop it cannot have observed
- * yet. Emitted by `bridge/ws-bridge.ts`'s `sendToolCancel`.
+ * yet.
  */
 export interface ToolCancelMessage {
   kind: 'tool.cancel';
@@ -105,47 +110,34 @@ export interface ToolCancelMessage {
 }
 
 /**
- * Out-of-band notification from the extension to the server's BridgeEventLog.
- * Used for things the agent needs to learn about but that aren't tool responses:
- * native dialogs opening/closing, new tabs spawned by a connected tab, etc.
- *
- * `tabId` (when present) is the server-assigned browser-link id, NOT the
- * Chrome tab id. The extension reads it from its own TabState (set after
- * `tab.register` -> `tab.registered`).
- */
-export interface BridgeEventMessage {
-  kind: 'bridge.event';
-  eventKind: string;
-  tabId?: TabId;
-  data: Record<string, unknown>;
-}
-
-/**
  * Server-pushed settings. Two independent settings share this one message
- * kind — the idle-disconnect TTL (`browser-link config get/set idle-ttl`)
- * and the opt-in flow-recording toggle (`config get/set flow-recording`) —
- * each also editable from the extension's own popup, so both need a
+ * kind — the idle-disconnect TTL and the opt-in flow-recording toggle —
+ * each editable from the extension's own popup too, so both need a
  * precedence rule for "who wins" when they disagree:
  *
  * `updatedAt` / `flowRecordingUpdatedAt` is the epoch-ms timestamp of when
- * THAT value was written on the server side. The extension compares it
+ * THAT value was written on the server side (via `browser-link config set
+ * idle-ttl` / `config set flow-recording`). The extension compares it
  * against the timestamp it stamped on its own last LOCAL write (from the
- * popup) and only applies the incoming value when it is newer — see the
- * extension's `idle-policy.ts` (`shouldAcceptIncomingSettings`, reused by
- * `flow-recording-policy.ts` for the second setting) and the README's
- * "Idle disconnect" section for the full precedence writeup. Comparing raw
- * wall-clock timestamps across processes is safe here specifically because
- * the server and the browser always run on the same machine (loopback-only
- * bridge) and therefore share one clock — this would NOT be a safe pattern
- * for a distributed, multi-host system.
+ * popup) and only applies the incoming value when it is newer — see
+ * `idle-policy.ts`'s `shouldAcceptIncomingSettings`, reused by
+ * `flow-recording-policy.ts` for the second setting. Comparing raw
+ * wall-clock timestamps across processes is safe here specifically
+ * because the server and the browser always run on the same machine
+ * (loopback-only bridge) and therefore share one clock — this would NOT
+ * be a safe pattern for a distributed, multi-host system.
  *
- * Every field is optional — a single message may carry only the idle-TTL
- * pair, only the flow-recording pair, or both; the extension applies each
- * independently.
+ * Every field is optional because a single `settings.update` message may
+ * carry only the idle-TTL pair, only the flow-recording pair, or both —
+ * the extension applies each pair independently (see `background.ts`'s
+ * `settings.update` case). Omitted entirely by whichever side has never
+ * touched that particular setting via the CLI.
  */
 export interface SettingsUpdatePayload {
   idleTtlMinutes?: number;
   updatedAt?: number;
+  /** Opt-in flow-recording toggle — see `browser-link config get/set
+   * flow-recording` and the popup's "Enable flow recording" control. */
   flowRecordingEnabled?: boolean;
   flowRecordingUpdatedAt?: number;
 }
@@ -156,14 +148,32 @@ export interface SettingsUpdateMessage {
 }
 
 /**
- * A flow recorded by demonstration in the extension (see the extension's
- * `background.ts`'s `saveRecording` and `recording.ts`), submitted for
- * validation + persistence into the map's `flows` table. `origin` is
- * untrusted free text — canonicalized here the same way every other
- * `origin` the server receives is (`map/origin.ts`), NOT trusted as
- * already-canonical just because it came from the extension rather than an
- * agent. `steps` is validated with the exact same `validateFlowSteps`
- * rules `browser.flow` and `browser.map.save`'s `flows` array enforce.
+ * Out-of-band notification from the extension to the server's BridgeEventLog.
+ * Used for native dialog open/close, tab-created by window.open, etc.
+ * `tabId` is the server-assigned browser-link id (set after tab.registered).
+ */
+export interface BridgeEventMessage {
+  kind: 'bridge.event';
+  eventKind: string;
+  tabId?: TabId;
+  data: Record<string, unknown>;
+}
+
+/**
+ * A flow recorded by demonstration (see `background.ts`'s `saveRecording`
+ * and `inpage/recorder.ts` / `recording.ts` for how it is captured),
+ * submitted to the server for validation + persistence into the map's
+ * `flows` table. `tab_id` is the browser-link tab id (post-`tab.registered`).
+ * `origin` is the tab's origin AT THE TIME OF SAVING — the extension, not
+ * the server, is the source of truth for it here because a recording can
+ * span a navigation (see `recording.ts`'s navigation-hint step), and the
+ * server's own `TabSession.url` is only ever the value from `tab.register`
+ * and does not track subsequent navigations. The server still
+ * canonicalizes it the same way every other `origin` it receives is
+ * canonicalized (see `map/origin.ts`) — it is untrusted free text, not a
+ * client-asserted fact. `steps` follows the EXACT `browser.flow` step
+ * grammar and is rejected with the same `validateFlowSteps` rules
+ * `browser.flow` itself enforces.
  */
 export interface FlowRecordedPayload {
   tab_id: TabId;
@@ -178,15 +188,18 @@ export interface FlowRecordedMessage {
   payload: FlowRecordedPayload;
 }
 
-/** Server's reply to `flow.recorded`. No correlation id — see the
- * identical note on the extension's copy of this type in
- * `@browser-link/shared`. */
+/** Server's reply to `flow.recorded` — validation/persistence result. No
+ * correlation id: the popup disables Save while a request is in flight, so
+ * at most one is ever outstanding per tab (same single-slot pattern as the
+ * IPC bridge's `settings.push`/`settings.push-ack`). */
 export type FlowRecordedResultMessage =
   | { kind: 'flow.recorded.result'; ok: true; name: string }
   | { kind: 'flow.recorded.result'; ok: false; error: string };
 
-/** Filter for one page of the activity trail. Snake_case on the wire, mapped
- * to the server's camelCase `ActivityQuery` at the bridge boundary. */
+/** Filter for one page of the activity trail. Field-for-field the server's
+ * `ActivityQuery`, kept as a structural duplicate for the same reason the rest
+ * of this file duplicates the server's `messages.ts`: neither package may
+ * depend on the other's build. */
 export interface ActivityQueryPayload {
   since_id?: number;
   before_id?: number;
@@ -198,10 +211,15 @@ export interface ActivityQueryPayload {
   limit?: number;
 }
 
-/** The Activity window asking for a page of the trail. Correlated by
- * `request_id` because the window tails on a timer while the user may also be
- * paging: a late reply to a superseded query must be discardable rather than
- * rendered over a newer page. */
+/**
+ * The Activity window asking the server for a page of the trail.
+ *
+ * Carries a `request_id`, unlike `flow.recorded`. That message can get away
+ * without one because the popup disables Save while a request is in flight, so
+ * at most one is ever outstanding. This one cannot: the window issues an
+ * initial load and then tails on a timer, and a late reply to a superseded
+ * query must be discardable rather than rendered over a newer page.
+ */
 export interface ActivityQueryMessage {
   kind: 'activity.query';
   request_id: string;
@@ -211,6 +229,9 @@ export interface ActivityQueryMessage {
   query?: ActivityQueryPayload;
 }
 
+/** Server's reply. `records` stays `unknown[]` on the wire for the same reason
+ * `flow.recorded`'s `steps` does — the shape is owned by the server and
+ * validated there, not re-declared in two packages that could drift. */
 export type ActivityResultMessage =
   | {
       kind: 'activity.result';
@@ -261,25 +282,26 @@ export type ActivityPurgeResultMessage =
   | { kind: 'activity.purge.result'; request_id: string; ok: false; error: string };
 
 /**
- * Popup "Repair connection": ask the running server to restart itself on
- * the installed code. The server answers with `bridge.repair.result` first,
- * then spawns the installed CLI detached, terminates every extension socket
- * uncleanly (so the extension auto-reconnects) and exits.
+ * The popup's "Repair connection" button asking the primary to restart itself
+ * on the installed code. Understood by servers from 0.41.0; the extension
+ * checks `serverVersion` before sending it.
  */
 export interface BridgeRepairMessage {
   kind: 'bridge.repair';
   request_id: string;
 }
 
+/** Server's reply to `bridge.repair`. On `ok: true` the server spawns the
+ * installed CLI, drops every extension socket uncleanly and exits, so the
+ * extension's auto-reconnect takes over. */
 export type BridgeRepairResultMessage =
   | { kind: 'bridge.repair.result'; request_id: string; ok: true; action: 'restarting' }
   | { kind: 'bridge.repair.result'; request_id: string; ok: false; error: string };
 
 /**
- * Admin panel (0.42.0): the server describes its administration state and
- * actions as data, already localised, so the popup renders the same
- * sections, options and labels as the console without a copy of its own.
- * The same text lives in `packages/shared/src/index.ts`; keep both identical.
+ * Administration over the existing socket: the server describes its state and
+ * actions as data (already localised), the popup renders it generically.
+ * Identical text lives in `packages/server/src/messages.ts`.
  */
 export type AdminItemKind = 'readout' | 'toggle' | 'select' | 'button' | 'link';
 export interface AdminOption {
@@ -362,3 +384,4 @@ export type ServerToExtension =
   | BridgeRepairResultMessage
   | AdminStateMessage
   | AdminActionResultMessage;
+// </wire-protocol>

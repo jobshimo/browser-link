@@ -173,3 +173,48 @@ describe('BRIDGE_PORT drift guard', () => {
     expect(BRIDGE_PORT).toBe(17529);
   });
 });
+
+/*
+ * DRIFT GUARD for the wire protocol. `packages/shared/src/index.ts` is the
+ * canonical definition (the extension imports it); `messages.ts` is the
+ * server's verbatim copy, kept because the published server cannot depend
+ * on the private workspace package. The protocol section is delimited by
+ * the same two marker lines in both files and must be byte-identical
+ * between them (line endings normalised). Only the copy's header above the
+ * opening marker may differ.
+ */
+describe('wire protocol drift guard: packages/shared/src/index.ts', () => {
+  const SHARED_INDEX = join(here, '..', '..', 'shared', 'src', 'index.ts');
+  const SERVER_MESSAGES = join(here, 'messages.ts');
+  const BEGIN = '// <wire-protocol> verbatim in packages/server/src/messages.ts';
+  const END = '// </wire-protocol>';
+
+  function protocolSection(file: string): string {
+    const text = read(file);
+    const start = text.indexOf(BEGIN);
+    const end = text.indexOf(END);
+    if (start < 0 || end < 0 || end < start) {
+      throw new Error(`could not find the wire-protocol markers in ${file}`);
+    }
+    return text.slice(start, end + END.length);
+  }
+
+  test('the server copy of the protocol section is byte-identical to shared', () => {
+    const shared = protocolSection(SHARED_INDEX).split('\n');
+    const server = protocolSection(SERVER_MESSAGES).split('\n');
+    const firstDiff = shared.findIndex((line, i) => line !== server[i]);
+    const at = firstDiff >= 0 ? firstDiff : shared.length < server.length ? shared.length : -1;
+    expect(
+      at,
+      at < 0
+        ? 'identical'
+        : `first differing line ${at + 1} of the section:\n  shared: ${shared[at]}\n  server: ${server[at]}`,
+    ).toBe(-1);
+  });
+
+  test('the server copy carries the guard header', () => {
+    const header = read(SERVER_MESSAGES).split(BEGIN)[0];
+    expect(header).toContain('Copied from packages/shared/src/index.ts');
+    expect(header).toContain('config.drift.test.ts');
+  });
+});
