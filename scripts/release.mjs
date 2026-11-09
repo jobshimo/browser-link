@@ -18,18 +18,20 @@
  *   4. Pushes the branch.
  *   5. Opens a PR against main with the CHANGELOG entry in the body.
  *
- * What it explicitly does NOT do:
+ * Bumping by hand is equally valid: `.github/workflows/version-gate.yml`
+ * only requires the five versioned files to agree and to be strictly
+ * greater than the version on main.
+ *
+ * What it explicitly does NOT do (all automated after the PR merges):
  *   - Push to main. Releases always go through a PR — that respects branch
  *     protection now and forever, with zero bypass tricks.
- *   - Create the git tag. The `.github/workflows/release-finalize.yml`
- *     workflow does that after the PR merges and CI passes on main — it
- *     reads the version straight out of `packages/server/package.json`,
- *     so the trigger is the *file*, not the commit message.
- *   - Create the GitHub Release. Same — handled by the finalize workflow.
- *   - Publish to npm. That stays a deliberate manual step
- *     (`cd packages/server && pnpm publish`). The tarball uploaded to
- *     registry.npmjs.org is identical regardless of the package manager;
- *     consumers can still install with `npm i -g @jobshimo/browser-link`.
+ *   - Tag, release or publish. Merging to main runs `.github/workflows/ci.yml`;
+ *     after the CI matrix passes, its `release` job reads the version from
+ *     `packages/server/package.json` (the trigger is the *file*, not the
+ *     commit message), smoke-tests the npm tarball
+ *     (`scripts/smoke-tarball.mjs`), creates the tag and the GitHub Release
+ *     from the CHANGELOG section, and publishes to npm with OIDC
+ *     provenance. Nothing is manual after the merge.
  *
  * Preconditions checked before any write:
  *   - working tree is clean
@@ -54,6 +56,7 @@ import {
   readJson,
   writeJson,
 } from './lib/versions.mjs';
+import { buildReleasePrBody, releaseDoneInstructions } from './lib/release-text.mjs';
 
 const CHANGELOG_PATH = 'packages/server/CHANGELOG.md';
 const CHANGELOG_REPO_URL = 'https://github.com/jobshimo/browser-link';
@@ -328,23 +331,7 @@ function main() {
   run('git', ['push', '-u', 'origin', branch], { inheritStdout: true });
 
   step('Open release PR');
-  const prBody = [
-    `Cut release \`v${nextRaw}\`.`,
-    '',
-    'Merging this PR triggers `.github/workflows/release-finalize.yml`, which:',
-    `- Creates and pushes the tag \`v${nextRaw}\`.`,
-    `- Creates the corresponding GitHub Release with the notes below.`,
-    '',
-    'npm publish remains manual:',
-    '```bash',
-    'cd packages/server',
-    'pnpm publish',
-    '```',
-    '',
-    '---',
-    '',
-    entry,
-  ].join('\n');
+  const prBody = buildReleasePrBody({ version: nextRaw, changelogEntry: entry });
   run(
     'gh',
     [
@@ -363,9 +350,7 @@ function main() {
   );
 
   step('Done');
-  info(`Release PR opened for v${nextRaw}.`);
-  info('Review the diff, then merge via GitHub UI to trigger the tag/release.');
-  info('After the GH Release lands, run `cd packages/server && pnpm publish` to push to npm.');
+  for (const line of releaseDoneInstructions(nextRaw)) info(line);
 }
 
 main();

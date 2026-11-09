@@ -6,10 +6,11 @@ name: Version Gate
 #   - That version must be strictly greater than the version on origin/main.
 #
 # In other words: every merge into main is a release. There is no path to
-# main that doesn't bump the version. This is the contract `release-finalize`
-# leans on — if this gate passes, the version in `packages/server/package.json`
-# at HEAD~ (after the merge lands) is guaranteed to be a fresh number, so
-# the finalize workflow can read it and tag/release deterministically.
+# main that doesn't bump the version. This is the contract the `release` job
+# in ci.yml leans on — if this gate passes, the version in
+# `packages/server/package.json` after the merge lands is guaranteed to be a
+# fresh number, so that job can smoke-test the tarball, tag, create the
+# GitHub Release and publish to npm deterministically.
 #
 # Make this check required in branch protection on `main`.
 

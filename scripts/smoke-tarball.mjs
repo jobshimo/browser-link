@@ -36,7 +36,7 @@ const check = (condition, message) => {
 };
 
 /** Quote one argument for the shell spawnSync uses on this platform. */
-const quote = (arg) => (isWindows ? `"${arg}"` : `'${arg.replace(/'/g, `'\''`)}'`);
+const quote = (arg) => (isWindows ? `"${arg}"` : `'${arg.replace(/'/g, `'\\''`)}'`);
 
 /**
  * Run a command through the shell (Windows needs it to resolve `.cmd`

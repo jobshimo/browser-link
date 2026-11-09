@@ -25,10 +25,9 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/coverage/**',
       'pnpm-lock.yaml',
-      // Build/release scripts are plain JS and not part of the TS project.
-      // Leave them out of the type-aware run; if we want to lint them
-      // later, a separate non-type-aware block can pick them up.
-      'scripts/**',
+      // Package build scripts are plain JS outside the TS projects. The
+      // root scripts/ (release tooling) is linted by the plain-JS block at
+      // the end of this file.
       'packages/server/scripts/**',
       'packages/extension/scripts/**',
       'packages/extension/copy-assets.mjs',
@@ -168,6 +167,28 @@ export default tseslint.config(
     files: ['packages/extension/src/**/*.test.{ts,tsx}'],
     languageOptions: {
       globals: { ...globals.browser },
+    },
+  },
+
+  // Release tooling: plain Node ES modules, syntax-level lint only (they
+  // are not part of any TS project, so no type-aware rules).
+  {
+    files: ['scripts/**/*.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
     },
   },
 );
