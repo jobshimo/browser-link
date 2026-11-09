@@ -9,13 +9,54 @@
  * This module is pure data + helpers; no I/O.
  */
 
-/** The WS bridge port the extension connects to. Server copy of
+/** Default WS bridge port the extension connects to. Server copy of
  * `@browser-link/shared`'s BRIDGE_PORT (the published server cannot depend
  * on the private workspace package); `config.drift.test.ts` keeps them equal. */
-export const BRIDGE_PORT = 17529;
+export const DEFAULT_BRIDGE_PORT = 17529;
+
+/** Default IPC / election port between primary and proxy instances. */
+export const DEFAULT_IPC_PORT = 17530;
+
+/** Minimal env shape so the resolver stays testable without touching `process.env`. */
+export type PortEnv = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Resolve a port from an environment variable: a decimal integer in
+ * 1024–65535 overrides `fallback`; unset or empty keeps it; anything else
+ * keeps it and logs one warning line (stderr, so the MCP stdout stays clean).
+ * Exists to run a second, isolated instance (the e2e harness) next to the
+ * user's own; the extension is not affected and still dials the default.
+ */
+export function portFromEnv(
+  name: string,
+  fallback: number,
+  env: PortEnv | undefined,
+  warn: (line: string) => void = (line) => {
+    console.warn(line);
+  },
+): number {
+  const raw = env?.[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (/^\d+$/.test(raw)) {
+    const port = Number(raw);
+    if (port >= 1024 && port <= 65535) return port;
+  }
+  warn(
+    `browser-link: ignoring ${name}=${JSON.stringify(raw)} (expected an integer 1024-65535); using ${String(fallback)}`,
+  );
+  return fallback;
+}
+
+// Guarded: this module is pure data and may be loaded outside Node.
+const PROCESS_ENV: PortEnv | undefined = typeof process !== 'undefined' ? process.env : undefined;
+
+/** The WS bridge port: `BROWSER_LINK_WS_PORT` when valid, else 17529. */
+export const BRIDGE_PORT = portFromEnv('BROWSER_LINK_WS_PORT', DEFAULT_BRIDGE_PORT, PROCESS_ENV);
 
 export const IPC_HOST = '127.0.0.1';
-export const IPC_PORT = 17530;
+/** The IPC / election port: `BROWSER_LINK_IPC_PORT` when valid, else 17530. */
+export const IPC_PORT = portFromEnv('BROWSER_LINK_IPC_PORT', DEFAULT_IPC_PORT, PROCESS_ENV);
+
 export const IPC_PROTOCOL_VERSION = '1';
 
 /** Pings cadence. If a side doesn't reply within IPC_PONG_TIMEOUT_MS,

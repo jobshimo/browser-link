@@ -2153,6 +2153,13 @@ or need to inspect the DB out-of-the-way. The same directory holds
 idle-disconnect TTL) and `multi-agent-token` (rotated at every primary
 startup).
 
+For running a second, isolated instance (e.g. the e2e harness), set
+`BROWSER_LINK_WS_PORT` (WebSocket bridge, default `17529`) and
+`BROWSER_LINK_IPC_PORT` (multi-agent IPC and election, default `17530`) to an
+integer from 1024 to 65535; any other value is ignored with one warning on
+stderr. The published extension always dials `17529`, so a second instance
+only reaches an extension whose bridge URL was changed to match.
+
 The [activity trail](#activity-trail) is a **separate** SQLite file in the
 same directory, `activity.db`. Separate on purpose: the map is small and
 precious — losing it means relearning every selector — while the trail is
