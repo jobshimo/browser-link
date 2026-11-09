@@ -27,6 +27,12 @@ importers:
         specifier: ^8.72.1
         version: 8.72.1(eslint@10.14.0)(typescript@6.0.3)
 
+  packages/e2e:
+    devDependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 1.32.2
+        version: 1.32.2(zod@4.6.7)
+
   packages/extension:
     dependencies:
       '@browser-link/shared':

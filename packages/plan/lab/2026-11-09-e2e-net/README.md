@@ -1,5 +1,7 @@
 # Lab 2026-11-09 — e2e net: the real extension, headless, driven over MCP
 
+> Superseded by [`packages/e2e/`](../../../e2e/) (`pnpm test:e2e`), which reuses this lab's shape. The lab page moved to `packages/e2e/pages/index.html`, so `e2e-run.mjs` here no longer runs as is; the server now takes its ports from `BROWSER_LINK_WS_PORT` / `BROWSER_LINK_IPC_PORT`, which replaces `port-preload.mjs`.
+
 Phase A of [`odd/tasks/e2e-net.md`](../../../../odd/tasks/e2e-net.md). Everything here ran on Windows 11 with the owner's Google Chrome 156.0.8078.81 in `--headless=new`, Node 24.16.0, and the built `packages/extension/dist` and `packages/server/dist` of `main` at 277400c (0.46.0). Every number below comes from a file in `results/`; every Chrome/runner claim cites a URL fetched on 2026-11-09 or a run.
 
 | Script | Question | Result file | Answer |

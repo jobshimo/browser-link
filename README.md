@@ -80,7 +80,9 @@ tab", not for unattended consumer automation.
   network, network_body, claim/release/my_tabs, events, activity, reset, and `manual`, which needs no tab) and 6
   persistent-map tools, so the agent learns your apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.22.2 and Chrome / Chromium / Edge / Brave
-  / Vivaldi. No accounts, no telemetry. The only request the server makes
+  / Vivaldi on Chromium ≥ 118 (from 118 an active debugger session keeps the
+  extension's service worker alive; the manifest declares it). No accounts, no
+  telemetry. The only request the server makes
   by itself is the npm registry update check described under
   [Where your data lives](#where-your-data-lives).
 - 🚫 **What it does NOT do** — touch tabs you have not pressed Connect on,
