@@ -1,4 +1,4 @@
-import { useApp, useInput } from 'ink';
+import { useApp } from 'ink';
 import { useState } from 'react';
 import {
   AboutView,
@@ -79,11 +79,8 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
     noticeAcknowledged ? firstRunScreen : { kind: 'notice' },
   );
 
-  // Global Ctrl+C kill. Ink already handles SIGINT but we explicitly exit so
-  // any in-flight cleanup runs through the React lifecycle.
-  useInput((_input, key) => {
-    if (key.ctrl && _input === 'c') exit();
-  });
+  // Ctrl+C exits through Ink itself: start.ts renders with exitOnCtrlC, which
+  // consumes the keystroke before any useInput handler could see it.
 
   const swapLang = () => {
     setLanguage((l) => (l === 'en' ? 'es' : 'en'));

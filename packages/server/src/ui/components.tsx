@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { INSTALLERS } from '../installers/index.js';
 import { COLORS, GLYPHS } from './tokens.js';
 import { StatusBar, type ClientState, type StatusBarItem } from './primitives/index.js';
@@ -70,8 +70,27 @@ function FooterText({ text }: { text: string }) {
  * shape. Held inside this module so the rest of the UI doesn't reach
  * into INSTALLERS just to render the header. */
 function LiveStatusBar() {
-  const items: StatusBarItem[] = INSTALLERS.map((inst) => {
-    const d = inst.detect();
+  // Read the client configs once per mount: every screen renders its own
+  // Frame, so navigation (the console's refresh signal) remounts this and
+  // re-reads, while keystrokes that re-render the same screen do not touch
+  // disk.
+  const [items] = useState(readStatusItems);
+  return <StatusBar items={items} />;
+}
+
+/** Wording for a client whose config exists but cannot be read or parsed. */
+const UNREADABLE_CLIENT_LABEL = 'unknown (config unreadable)';
+
+function readStatusItems(): StatusBarItem[] {
+  return INSTALLERS.map((inst) => {
+    let d: ReturnType<typeof inst.detect>;
+    try {
+      d = inst.detect();
+    } catch {
+      // A malformed or unreadable client config must never crash the
+      // console; the header says so and every screen keeps working.
+      return { name: inst.displayName, state: 'not detected', label: UNREADABLE_CLIENT_LABEL };
+    }
     let state: ClientState;
     let label: string;
     if (!d.installed) {
@@ -86,7 +105,6 @@ function LiveStatusBar() {
     }
     return { name: inst.displayName, state, label };
   });
-  return <StatusBar items={items} />;
 }
 
 interface MenuItem<V extends string> {
