@@ -6,6 +6,7 @@ import { CheckRow, FooterKeys, SectionHead } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
 import { loadConfig, saveConfig } from '../../config.js';
 import type { CommonProps } from './types.js';
+import { BRIDGE_PORT } from '../../bridge/protocol.js';
 
 /* Multi-agent toggle screen. v0.9.0 layout (screens2.jsx → ScreenMultiAgent):
  *   - "Multi-agent mode" heading with a PRIMARY inverted badge next to it
@@ -40,7 +41,7 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
     title: 'Multi-agent — let multiple MCP clients share one browser-link',
     multiHeader: 'Multi-agent mode',
     multiBody: [
-      'browser-link normally binds 127.0.0.1:17529 from the first MCP',
+      `browser-link normally binds 127.0.0.1:${BRIDGE_PORT} from the first MCP`,
       'client that starts it. Other clients (Claude + Copilot + OpenCode at',
       'the same time) crash with "port in use".',
       '',
@@ -74,7 +75,7 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
     title: 'Multi-agente — varios clientes MCP comparten el mismo puente',
     multiHeader: 'Modo multi-agente',
     multiBody: [
-      'browser-link normalmente bindea 127.0.0.1:17529 desde el primer',
+      `browser-link normalmente bindea 127.0.0.1:${BRIDGE_PORT} desde el primer`,
       'cliente MCP que lo arranca. Otros clientes (Claude + Copilot +',
       'OpenCode al mismo tiempo) caen con "port in use".',
       '',

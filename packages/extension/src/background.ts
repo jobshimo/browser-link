@@ -139,7 +139,11 @@ import {
 } from './repair-policy.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
-const WS_URL = 'ws://127.0.0.1:17529';
+/** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
+ * by plain tsc, so a runtime import of the workspace package would not
+ * resolve in Chrome. The server's `config.drift.test.ts` keeps it equal. */
+const BRIDGE_PORT = 17529;
+const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
 const CDP_VERSION = '1.3';
 const CONSOLE_BUFFER_MAX = 200;
 const NETWORK_BUFFER_MAX = 200;

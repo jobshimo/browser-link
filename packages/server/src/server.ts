@@ -23,7 +23,13 @@ import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
 import { findPidOnPort, imageNameOf, isNodeImage } from './commands/free-port.js';
-import { probeVersion, retryBind, runElection, stepDownProcess } from './lifecycle/election.js';
+import {
+  probeVersion,
+  retryBind,
+  runElection,
+  shutdownOnSignal,
+  stepDownProcess,
+} from './lifecycle/election.js';
 import { readProcessStartTime } from './lifecycle/processes.js';
 import { createRepairController } from './lifecycle/repair.js';
 import { INSTALLED_CLI_PATH, readInstalledCodeMtime } from './lifecycle/version-endpoint.js';
@@ -70,7 +76,7 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
 
 /**
  * Entry point used by the MCP client over stdio. Decides whether THIS
- * process becomes the primary (binds 17529, runs the WS bridge + MCP
+ * process becomes the primary (binds BRIDGE_PORT, runs the WS bridge + MCP
  * server + optional IPC server) or — when multi-agent mode is enabled
  * and another primary is already running — becomes a thin proxy that
  * forwards MCP stdio frames to the primary over IPC.
@@ -80,7 +86,7 @@ export async function runServer(): Promise<void> {
   // connected Chrome tabs keep talking to the WS bridge until the user
   // explicitly disconnects them from the extension popup, or the WS
   // hits its inactivity TTL on the client side. If a zombie ever holds
-  // 17529 after a crash, `runPrimary` falls back to proxy mode (when
+  // BRIDGE_PORT after a crash, `runPrimary` falls back to proxy mode (when
   // multi-agent is on) or surfaces a clean EADDRINUSE error pointing
   // the user at `browser-link stop`.
   const cfg = loadConfig();
@@ -459,10 +465,7 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // notifications or setting custom request handlers", which is exactly
   // what we need: one dispatcher for tools/list and tools/call instead
   // of per-tool callbacks.
-  const mcpServer = new McpServer(
-    { name: 'browser-link', version: '0.0.1' },
-    { capabilities: { tools: {} }, instructions: serverInstructions },
-  );
+  const mcpServer = createMcpServer(serverInstructions);
 
   // The SDK's request-handler return types include task/streaming variants we
   // never produce. Cast keeps the shared dispatch module SDK-agnostic.
@@ -506,17 +509,26 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
-      if (ipcServer) {
-        // Best-effort: tell connected proxies we're going down so they can
-        // trigger auto-reelect (phase 4) and not just hit a dead socket.
-        ipcServer.stop().catch(() => {
-          /* shutting down; ignore */
-        });
-      }
-      closeDb();
-      process.exit(0);
+      // Tell connected proxies we're going down (primary-closing) so they can
+      // trigger auto-reelect instead of hitting a dead socket, and wait for
+      // that close, bounded, before exiting.
+      const ipc = ipcServer;
+      void shutdownOnSignal({
+        stopIpc: ipc ? () => ipc.stop() : null,
+        closeDb,
+        exit: (code) => process.exit(code),
+      });
     });
   }
+}
+
+/** The primary's MCP server. `serverInfo.version` is the running VERSION,
+ * the same value the IPC bridge and the WS bridge report. */
+export function createMcpServer(instructions: string): McpServer {
+  return new McpServer(
+    { name: 'browser-link', version: VERSION },
+    { capabilities: { tools: {} }, instructions },
+  );
 }
 
 /** Connect to the running primary as a proxy and pipe MCP stdio through.

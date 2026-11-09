@@ -26,23 +26,89 @@ export interface PeerProcess {
  * we return null. The auth path must never identify the server as its own
  * peer — that would short-circuit the allowlist check.
  */
-export async function lookupPeerProcess(host: string, port: number): Promise<PeerProcess | null> {
-  const os = platform();
-  let result: PeerProcess | null;
+export async function lookupPeerProcess(
+  host: string,
+  port: number,
+  deps: PeerLookupDeps = {},
+): Promise<PeerProcess | null> {
+  const result = await lookupPeerProcessDetailed(host, port, deps);
+  return result.ok ? result.peer : null;
+}
+
+/**
+ * Why a peer lookup produced no owner, for the handshake-refusal log line:
+ * - `timeout`: a lookup command exceeded LOOKUP_TIMEOUT_MS.
+ * - `command-missing`: lsof / netstat / tasklist is not installed or not
+ *   on PATH (shell exit 127, ENOENT, or cmd.exe "is not recognized").
+ * - `command-failed:<exit>`: the command ran and exited non-zero (lsof
+ *   exits 1 when nothing matches; PowerShell blocked by policy lands here).
+ * - `parse-miss`: the command succeeded but no single owner of the local
+ *   endpoint could be read from its output.
+ * - `self`: the owner is this very process (never accepted as a peer).
+ * - `unsupported-platform`: no lookup exists for this OS.
+ */
+export type PeerLookupCause =
+  | 'timeout'
+  | 'command-missing'
+  | `command-failed:${string}`
+  | 'parse-miss'
+  | 'self'
+  | 'unsupported-platform';
+
+export type PeerLookupResult =
+  { ok: true; peer: PeerProcess } | { ok: false; cause: PeerLookupCause };
+
+/** Injection seams for tests; production uses the real exec and OS. */
+export interface PeerLookupDeps {
+  exec?: (cmd: string, options: { timeout: number }) => Promise<{ stdout: string }>;
+  platform?: NodeJS.Platform;
+}
+
+/** Thrown internally so a parse miss travels the same path as an exec error. */
+class LookupFailure extends Error {
+  constructor(readonly reason: PeerLookupCause) {
+    super(reason);
+  }
+}
+
+/** Map a child_process.exec rejection to a lookup cause. */
+export function classifyLookupError(err: unknown): PeerLookupCause {
+  if (err instanceof LookupFailure) return err.reason;
+  const e = (err ?? {}) as { killed?: boolean; signal?: unknown; code?: unknown; stderr?: unknown };
+  if (e.killed === true && e.signal != null) return 'timeout';
+  const stderr = typeof e.stderr === 'string' ? e.stderr : '';
+  if (e.code === 'ENOENT' || e.code === 127 || /is not recognized/i.test(stderr)) {
+    return 'command-missing';
+  }
+  if (typeof e.code === 'number') return `command-failed:${e.code}`;
+  return 'command-failed:unknown';
+}
+
+/** Same lookup as `lookupPeerProcess`, but a failure carries its cause. */
+export async function lookupPeerProcessDetailed(
+  host: string,
+  port: number,
+  deps: PeerLookupDeps = {},
+): Promise<PeerLookupResult> {
+  const os = deps.platform ?? platform();
+  const exec = deps.exec ?? execAsync;
+  let result: PeerProcess;
   try {
     if (os === 'darwin' || os === 'linux') {
-      result = await lookupUnix(host, port);
+      result = await lookupUnix(exec, host, port);
     } else if (os === 'win32') {
-      result = await lookupWindows(host, port);
+      result = await lookupWindows(exec, host, port);
     } else {
-      return null;
+      return { ok: false, cause: 'unsupported-platform' };
     }
-  } catch {
-    return null;
+  } catch (err) {
+    return { ok: false, cause: classifyLookupError(err) };
   }
-  if (result && result.pid === process.pid) return null;
-  return result;
+  if (result.pid === process.pid) return { ok: false, cause: 'self' };
+  return { ok: true, peer: result };
 }
+
+type Exec = NonNullable<PeerLookupDeps['exec']>;
 
 /**
  * macOS / Linux path: `lsof` is the broadest tool available.
@@ -58,10 +124,12 @@ export async function lookupPeerProcess(host: string, port: number): Promise<Pee
  * The Windows path (`parseNetstatForLocal`) applies the same local-endpoint
  * filter; keep these two branches in sync.
  */
-async function lookupUnix(host: string, port: number): Promise<PeerProcess | null> {
+async function lookupUnix(exec: Exec, host: string, port: number): Promise<PeerProcess> {
   const cmd = `lsof -nP -F pcn -iTCP@${host}:${port} -sTCP:ESTABLISHED`;
-  const { stdout } = await execAsync(cmd, { timeout: LOOKUP_TIMEOUT_MS });
-  return parseLsofOutput(stdout, host, port);
+  const { stdout } = await exec(cmd, { timeout: LOOKUP_TIMEOUT_MS });
+  const peer = parseLsofOutput(stdout, host, port);
+  if (!peer) throw new LookupFailure('parse-miss');
+  return peer;
 }
 
 /**
@@ -132,15 +200,15 @@ export function decodeLsofString(s: string): string {
  * Like the UNIX path, this filters by LOCAL endpoint match — see
  * `parseNetstatForLocal`. Keep the two branches in sync.
  */
-async function lookupWindows(host: string, port: number): Promise<PeerProcess | null> {
-  const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', {
+async function lookupWindows(exec: Exec, host: string, port: number): Promise<PeerProcess> {
+  const { stdout: netstatOut } = await exec('netstat -ano -p TCP', {
     timeout: LOOKUP_TIMEOUT_MS,
   });
   const pid = parseNetstatForLocal(netstatOut, host, port);
-  if (pid === null) return null;
+  if (pid === null) throw new LookupFailure('parse-miss');
 
-  const binaryName = await imageNameForPid(pid);
-  return binaryName ? { pid, binaryName } : null;
+  const binaryName = await imageNameForPid(exec, pid);
+  return { pid, binaryName };
 }
 
 /**
@@ -157,9 +225,9 @@ async function lookupWindows(host: string, port: number): Promise<PeerProcess | 
  * `Get-Process` reports `ProcessName` without the `.exe` suffix, so
  * `parseGetProcessName` re-adds it to match the win32 allowlist.
  */
-async function imageNameForPid(pid: number): Promise<string | null> {
+async function imageNameForPid(exec: Exec, pid: number): Promise<string> {
   try {
-    const { stdout } = await execAsync(
+    const { stdout } = await exec(
       `powershell -NoProfile -NonInteractive -Command "(Get-Process -Id ${pid}).ProcessName"`,
       { timeout: LOOKUP_TIMEOUT_MS },
     );
@@ -169,14 +237,13 @@ async function imageNameForPid(pid: number): Promise<string | null> {
     // PowerShell missing, disabled by policy, or timed out — fall back.
   }
 
-  try {
-    const { stdout } = await execAsync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
-      timeout: LOOKUP_TIMEOUT_MS,
-    });
-    return parseTasklistImage(stdout);
-  } catch {
-    return null;
-  }
+  // The fallback's failure is the one reported: it is the last thing tried.
+  const { stdout } = await exec(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+    timeout: LOOKUP_TIMEOUT_MS,
+  });
+  const name = parseTasklistImage(stdout);
+  if (!name) throw new LookupFailure('parse-miss');
+  return name;
 }
 
 export function parseNetstatForLocal(out: string, host: string, port: number): number | null {

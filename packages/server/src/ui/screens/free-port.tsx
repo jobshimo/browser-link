@@ -6,8 +6,9 @@ import { FooterKeys, InlineSpinner, MenuRow, SectionHead } from '../primitives/i
 import type { Language } from '../../commands/welcome.js';
 import { runFreePort, type FreePortResult } from '../../commands/free-port.js';
 import type { CommonProps } from './types.js';
+import { BRIDGE_PORT } from '../../bridge/protocol.js';
 
-/* Free port 17529. v0.9.0 phases (screens2.jsx → ScreenFreePort):
+/* Free port BRIDGE_PORT. v0.9.0 phases (screens2.jsx → ScreenFreePort):
  *   - confirm: shows the port description + safety note + MenuRow yes/no.
  *   - running: inline spinner + "Stopping…" line.
  *   - done: success row showing the result (ok=green / guarded=warn).
@@ -33,17 +34,17 @@ interface FreePortI18n {
 
 const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
   en: {
-    title: 'Free port 17529',
+    title: `Free port ${BRIDGE_PORT}`,
     intro: [
       'If an MCP client (Claude / OpenCode / Copilot) was closed without',
       'shutting down browser-link cleanly, the next client crashes with',
       '"port already in use". This screen finds the process holding',
-      '127.0.0.1:17529 and stops it, then every other browser-link',
+      `127.0.0.1:${BRIDGE_PORT} and stops it, then every other browser-link`,
       'server still running (an old version included).',
     ].join('\n'),
     safety:
       'Safety: only processes whose image starts with "node" are killed. Anything else is left alone with an explanation.',
-    confirmPrompt: 'Stop the process holding port 17529?',
+    confirmPrompt: `Stop the process holding port ${BRIDGE_PORT}?`,
     confirmYes: 'Yes — kill it',
     confirmNo: 'No — back to menu',
     running: 'Stopping…',
@@ -53,17 +54,17 @@ const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
     footerDone: 'back to menu',
   },
   es: {
-    title: 'Liberar puerto 17529',
+    title: `Liberar puerto ${BRIDGE_PORT}`,
     intro: [
       'Si un cliente MCP (Claude / OpenCode / Copilot) cerró sin bajar',
       'browser-link de forma limpia, el próximo cliente crashea con',
       '"port already in use". Esta pantalla busca el proceso que tiene',
-      '127.0.0.1:17529 y lo para, y después todos los demás procesos de browser-link',
+      `127.0.0.1:${BRIDGE_PORT} y lo para, y después todos los demás procesos de browser-link`,
       'que sigan corriendo (incluida una versión vieja).',
     ].join('\n'),
     safety:
       'Seguridad: sólo se matan procesos cuyo nombre empieza con "node". Cualquier otro se deja vivo con una explicación.',
-    confirmPrompt: '¿Parar el proceso que tiene el puerto 17529?',
+    confirmPrompt: `¿Parar el proceso que tiene el puerto ${BRIDGE_PORT}?`,
     confirmYes: 'Sí — matalo',
     confirmNo: 'No — volver al menú',
     running: 'Parando…',

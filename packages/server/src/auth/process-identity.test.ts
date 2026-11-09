@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   decodeLsofString,
+  lookupPeerProcess,
+  lookupPeerProcessDetailed,
+  type PeerLookupDeps,
   parseGetProcessName,
   parseLsofOutput,
   parseNetstatForLocal,
@@ -162,5 +165,110 @@ describe('parseGetProcessName', () => {
 
   test('returns null when the process was not found (empty output)', () => {
     expect(parseGetProcessName('')).toBeNull();
+  });
+});
+
+describe('lookupPeerProcessDetailed: a failed lookup names its cause', () => {
+  const NETSTAT = [
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    127.0.0.1:54321        127.0.0.1:17529        ESTABLISHED     1234',
+    '  TCP    127.0.0.1:17529        127.0.0.1:54321        ESTABLISHED     9999',
+  ].join('\r\n');
+  const LSOF = ['p3532', 'cchrome', 'n127.0.0.1:64836->127.0.0.1:17529', ''].join('\n');
+
+  type Exec = NonNullable<PeerLookupDeps['exec']>;
+  /** Fake exec: answers by the command's first word, throwing Error values. */
+  function fakeExec(answers: Record<string, string | Error>): Exec {
+    return (cmd: string) => {
+      const answer = answers[cmd.split(' ')[0] ?? ''];
+      if (answer === undefined) return Promise.reject(new Error(`unexpected command ${cmd}`));
+      return answer instanceof Error ? Promise.reject(answer) : Promise.resolve({ stdout: answer });
+    };
+  }
+  /** The shapes child_process.exec rejects with. */
+  const timedOut = () =>
+    Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM', code: null });
+  const exitWith = (code: number, stderr = '') =>
+    Object.assign(new Error('Command failed'), { killed: false, signal: null, code, stderr });
+
+  test('a successful lookup is unchanged (unix lsof)', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
+      platform: 'linux',
+      exec: fakeExec({ lsof: LSOF }),
+    });
+    expect(res).toEqual({ ok: true, peer: { pid: 3532, binaryName: 'chrome' } });
+  });
+
+  test('a successful lookup is unchanged (windows netstat + Get-Process)', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
+      platform: 'win32',
+      exec: fakeExec({ netstat: NETSTAT, powershell: 'chrome\r\n' }),
+    });
+    expect(res).toEqual({ ok: true, peer: { pid: 1234, binaryName: 'chrome.exe' } });
+  });
+
+  test('timeout', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
+      platform: 'linux',
+      exec: fakeExec({ lsof: timedOut() }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'timeout' });
+  });
+
+  test('command-missing (unix shell exit 127)', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
+      platform: 'linux',
+      exec: fakeExec({ lsof: exitWith(127, 'sh: 1: lsof: not found') }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'command-missing' });
+  });
+
+  test('command-missing (cmd.exe "is not recognized")', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
+      platform: 'win32',
+      exec: fakeExec({
+        netstat: exitWith(1, "'netstat' is not recognized as an internal or external command"),
+      }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'command-missing' });
+  });
+
+  test('command-failed:<exit>', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
+      platform: 'linux',
+      exec: fakeExec({ lsof: exitWith(2) }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'command-failed:2' });
+  });
+
+  test('parse-miss (no row for the local endpoint)', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 11111, {
+      platform: 'win32',
+      exec: fakeExec({ netstat: NETSTAT }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'parse-miss' });
+  });
+
+  test('windows: PowerShell blocked and tasklist timing out reports the fallback cause', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
+      platform: 'win32',
+      exec: fakeExec({ netstat: NETSTAT, powershell: exitWith(1), tasklist: timedOut() }),
+    });
+    expect(res).toEqual({ ok: false, cause: 'timeout' });
+  });
+
+  test('lookupPeerProcess keeps its PeerProcess | null contract', async () => {
+    expect(
+      await lookupPeerProcess('127.0.0.1', 64836, {
+        platform: 'linux',
+        exec: fakeExec({ lsof: LSOF }),
+      }),
+    ).toEqual({ pid: 3532, binaryName: 'chrome' });
+    expect(
+      await lookupPeerProcess('127.0.0.1', 64836, {
+        platform: 'linux',
+        exec: fakeExec({ lsof: timedOut() }),
+      }),
+    ).toBeNull();
   });
 });

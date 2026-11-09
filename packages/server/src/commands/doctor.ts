@@ -8,7 +8,7 @@ import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
 import type { Language } from './welcome.js';
 import { loadConfig } from '../config.js';
-import { IPC_HOST, IPC_PORT } from '../bridge/protocol.js';
+import { IPC_HOST, IPC_PORT, BRIDGE_PORT } from '../bridge/protocol.js';
 import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
 import { probeVersion, type VersionProbe } from '../lifecycle/election.js';
 import {
@@ -20,7 +20,7 @@ import { readInstalledVersion } from '../version.js';
 import { compareSemver } from '../utils/semver.js';
 
 const WS_HOST = '127.0.0.1';
-const WS_PORT = 17529;
+const WS_PORT = BRIDGE_PORT;
 
 interface PortStatus {
   listening: boolean;

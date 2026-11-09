@@ -12,7 +12,7 @@ import {
 /**
  * Version-aware primary election.
  *
- * Without this, the primary is simply whoever bound 127.0.0.1:17529 first,
+ * Without this, the primary is simply whoever bound 127.0.0.1:BRIDGE_PORT first,
  * so an old server kept serving after an update until somebody killed it.
  * When a starting process finds the port taken it probes the running
  * primary's `GET /version` (see `version-endpoint.ts`) and decides:
@@ -254,6 +254,38 @@ export async function retryBind<T>(
 /** Unix grace period between SIGTERM and SIGKILL. */
 export const STEP_DOWN_GRACE_MS = 3000;
 const STEP_DOWN_POLL_MS = 100;
+
+/** How long a SIGTERM/SIGINT'd primary waits for its IPC server to close.
+ * Kept below STEP_DOWN_GRACE_MS so a stepped-down primary finishes on its
+ * own before the SIGKILL that follows the grace period. */
+export const SHUTDOWN_IPC_DEADLINE_MS = 2000;
+
+/**
+ * The primary's SIGTERM/SIGINT path: let the IPC server tell its proxies
+ * `primary-closing` and close (bounded by SHUTDOWN_IPC_DEADLINE_MS), then
+ * close the DB and exit 0. A failed or slow close never blocks the exit.
+ * Windows step-down is a `taskkill /F`, which no handler sees; nothing here
+ * changes that path.
+ */
+export async function shutdownOnSignal(deps: {
+  stopIpc: (() => Promise<void>) | null;
+  closeDb: () => void;
+  exit: (code: number) => void;
+}): Promise<void> {
+  if (deps.stopIpc) {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SHUTDOWN_IPC_DEADLINE_MS);
+    });
+    const closed = deps.stopIpc().catch(() => {
+      /* shutting down; a failed close must not block the exit */
+    });
+    await Promise.race([closed, deadline]);
+    clearTimeout(timer);
+  }
+  deps.closeDb();
+  deps.exit(0);
+}
 
 function isAliveReal(pid: number): boolean {
   try {

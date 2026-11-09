@@ -1,5 +1,6 @@
 import type { Language } from './welcome.js';
 import { NOTICE } from '../notice.js';
+import { BRIDGE_PORT } from '../bridge/protocol.js';
 
 export interface AboutI18n {
   title: string;
@@ -39,7 +40,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     ].join('\n'),
     howTitle: 'How does it work?',
     how: [
-      'The Node binary listens on 127.0.0.1:17529 (loopback only — never on',
+      `The Node binary listens on 127.0.0.1:${BRIDGE_PORT} (loopback only — never on`,
       'a public interface). Each tab where you press "Connect this tab"',
       'opens its own WebSocket to that port and registers a tab_id. From',
       'that moment on, the agent can call tools targeting that tab_id, and',
@@ -156,7 +157,7 @@ export const I18N_ABOUT: Record<Language, AboutI18n> = {
     ].join('\n'),
     howTitle: '¿Cómo funciona?',
     how: [
-      'El binario de Node escucha en 127.0.0.1:17529 (solo loopback — nunca',
+      `El binario de Node escucha en 127.0.0.1:${BRIDGE_PORT} (solo loopback — nunca`,
       'en una interfaz pública). Cada pestaña donde pulsás el botón',
       '"Connect this tab" abre su propio WebSocket contra ese puerto y se',
       'registra con un tab_id. Desde ahí, el agente puede llamar',

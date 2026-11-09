@@ -23,7 +23,7 @@ import {
   stats as activityStats,
 } from '../activity/queries.js';
 import { isAllowedBrowser } from '../auth/allowlist.js';
-import { lookupPeerProcess } from '../auth/process-identity.js';
+import { lookupPeerProcessDetailed } from '../auth/process-identity.js';
 import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
@@ -31,9 +31,10 @@ import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
 import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
+import { BRIDGE_PORT } from './protocol.js';
 
 export const WS_HOST = '127.0.0.1';
-export const WS_PORT = 17529;
+export const WS_PORT = BRIDGE_PORT;
 
 export interface TabSession {
   tabId: string;
@@ -262,15 +263,16 @@ export function startWsBridge(
           cb(false, 403, 'Cannot identify peer');
           return;
         }
-        lookupPeerProcess(remoteAddress, remotePort)
-          .then((peer) => {
-            if (!peer) {
+        lookupPeerProcessDetailed(remoteAddress, remotePort)
+          .then((lookup) => {
+            if (!lookup.ok) {
               log(
-                `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process.`,
+                `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process (cause: ${lookup.cause}).`,
               );
               cb(false, 403, 'Peer process unknown');
               return;
             }
+            const peer = lookup.peer;
             if (!isAllowedBrowser(peer.binaryName)) {
               log(
                 `Rejected WS handshake from PID ${peer.pid} (${peer.binaryName}): not a Chromium-based browser.`,

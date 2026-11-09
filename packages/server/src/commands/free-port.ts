@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { platform } from 'node:os';
 import type { Language } from './welcome.js';
-import { IPC_PORT } from '../bridge/protocol.js';
+import { IPC_PORT, BRIDGE_PORT } from '../bridge/protocol.js';
 import { listBridgeProcesses, shortCommand, type ProcessEntry } from '../lifecycle/processes.js';
 
 const WS_HOST = '127.0.0.1';
-const WS_PORT = 17529;
+const WS_PORT = BRIDGE_PORT;
 
 export interface FreePortResult {
   /** True when the port was free (nothing to do) OR the owning process was killed. */
@@ -17,7 +17,7 @@ export interface FreePortResult {
   /** Human-readable message in the requested language. */
   message: string;
   /** Since 0.41.0: every browser-link process this run tried to stop (the
-   * 17529 owner, the 17530 owner and every other live bridge), in kill
+   * BRIDGE_PORT owner, the 17530 owner and every other live bridge), in kill
    * order. Absent when there was none, so the "already free" result keeps
    * its exact previous shape. */
   processes?: StoppedProcess[];
@@ -42,7 +42,7 @@ export function findPidOnPort(port: number): number | null {
   try {
     if (platform() === 'win32') {
       // netstat -ano -p TCP produces lines like:
-      //   "  TCP    127.0.0.1:17529    0.0.0.0:0    LISTENING    13212"
+      //   "  TCP    127.0.0.1:BRIDGE_PORT    0.0.0.0:0    LISTENING    13212"
       const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -206,7 +206,7 @@ export function runFreePort(
   }
 
   // Everything else: the IPC owner (node only, same safety rule) and every
-  // other bridge, each once, never the 17529 owner a second time.
+  // other bridge, each once, never the BRIDGE_PORT owner a second time.
   const seen = new Set<number>(primary.pid !== null ? [primary.pid] : []);
   const others: { pid: number; command: string }[] = [];
   const ipcPid = findPidOnPort(IPC_PORT);
@@ -239,7 +239,7 @@ export function runFreePort(
   };
 }
 
-/** The original 17529 rule, unchanged: only a node owner is killed. */
+/** The original BRIDGE_PORT rule, unchanged: only a node owner is killed. */
 function stopPortOwner(
   t: FreePortI18n,
 ): Omit<FreePortResult, 'processes'> & { attempted: boolean } {

@@ -112,7 +112,7 @@ interface FlowsStatusResult {
 // 'connecting' is a transient client-side state while a connect/disconnect
 // round-trip is in flight; 'portCollision' is reserved for a future
 // background message that distinguishes "server unreachable, just retry"
-// from "another browser-link is already holding 127.0.0.1:17529". The
+// from "another browser-link is already holding 127.0.0.1:BRIDGE_PORT". The
 // CSS already styles both — keeping the type ready avoids a refactor
 // when the message surface grows.
 type CardState = 'idle' | 'connecting' | 'connected' | 'error' | 'portCollision';

@@ -1,5 +1,11 @@
 export { NOTICE, type NoticeText } from './notice.js';
 
+/** The loopback port of the server's WS bridge (127.0.0.1). The server
+ * (`bridge/protocol.ts`) and the extension (`background.ts`) keep copies
+ * because neither can import this package at runtime; the server's
+ * `config.drift.test.ts` fails when a copy drifts. */
+export const BRIDGE_PORT = 17529;
+
 export type TabId = string;
 
 export interface TabRegisterPayload {
