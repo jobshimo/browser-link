@@ -200,7 +200,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         topic: {
           type: 'string',
           description:
-            'A topic name: downloads, canvas, screenshot, flows, map, token-efficiency, multi-agent, cdp-direct. Mutually exclusive with tool.',
+            'A topic name: downloads, canvas, screenshot, flows, map, token-efficiency, multi-agent, cdp-direct, results. Mutually exclusive with tool.',
         },
       },
       additionalProperties: false,
