@@ -219,7 +219,8 @@ export class IpcServer {
     // raw message, so peer-influenced text cannot reach the log.
     socket.on('error', (err) => {
       const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
-      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${code}`);
+      const safe = /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unknown';
+      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${JSON.stringify(safe)}`);
     });
     const remoteAddr = normaliseLoopback(socket.remoteAddress ?? '');
     const remotePort = socket.remotePort;

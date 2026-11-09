@@ -208,7 +208,7 @@ describe('IpcServer resilience during the peer lookup', () => {
       expect(uncaught).toEqual([]);
       const logged = errSpy.mock.calls.map((c) => String(c[0]));
       expect(
-        logged.some((l) => l.startsWith('[browser-link ipc] Proxy socket error: ECONNRESET')),
+        logged.some((l) => l.startsWith('[browser-link ipc] Proxy socket error: "ECONNRESET"')),
       ).toBe(true);
       expect(logged.every((l) => !/[\r\n]/.test(l))).toBe(true);
 
