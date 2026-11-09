@@ -4065,6 +4065,29 @@ describe('handleBrowserTool — outcome learner and trail evidence (map-learning
     );
   });
 
+  test('an evaluate refused for a bad `as` never reaches the learner, but stays on the trail', async () => {
+    const recordActivity = vi.fn();
+    const recordOutcome = vi.fn();
+    const call = vi.fn(async () => 1);
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: call,
+      recordActivity,
+      recordOutcome,
+    });
+    await expect(
+      handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: '1', as: 'getTotal' },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/rule 4/);
+    expect(call).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(recordActivity).toHaveBeenCalledTimes(1);
+  });
+
   test('the learner runs even when activity recording is off (no recordActivity)', async () => {
     const recordOutcome = vi.fn();
     const deps = makeDeps({

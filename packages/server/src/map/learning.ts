@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { loadConfig } from '../config.js';
 import { getDb } from './db.js';
 import { resolveLearnerApp } from './queries.js';
-import { countsAsStructural } from './confidence.js';
+import { incrementsStructural, type PreviousFailure } from './confidence.js';
 import { durableTarget, pathPattern, type TargetKind } from './keys.js';
 import { recordReaderFromDispatch } from './readers.js';
 
@@ -180,10 +180,20 @@ export function recordOutcome(db: Database.Database, input: RecordOutcomeInput):
   const ok = input.outcome.ok;
   const reason = input.outcome.ok ? null : input.outcome.reason;
   const build = input.build ?? null;
-  // A failure that counts toward `failing` (see confidence.ts) on this build.
-  const structural = !ok && countsAsStructural(reason);
 
   db.transaction(() => {
+    const previous =
+      reason === 'expect-failed'
+        ? ((db
+            .prepare(
+              `SELECT last_reason, last_fail_build FROM selector_outcomes
+                WHERE app_id = ? AND url_pattern = ? AND target = ? AND target_kind = ? AND action = ?`,
+            )
+            .get(app.id, input.pathname, input.target, input.target_kind, input.action) as
+            PreviousFailure | undefined) ?? null)
+        : null;
+    // A failure that counts toward `failing` (see confidence.ts) on this build.
+    const structural = !ok && incrementsStructural(reason, previous, build);
     db.prepare(
       `INSERT INTO selector_outcomes
          (app_id, url_pattern, target, target_kind, action, ok_n, fail_n, last_reason, last_ok_at, last_fail_at,

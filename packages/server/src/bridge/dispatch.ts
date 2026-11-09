@@ -105,13 +105,13 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
   try {
     if (isMapTool(name)) {
       return finish(
-        toolResponse(withPendingWrapUp(recordedMapTool(name, args, caller, deps), caller)),
+        toolResponse(withPendingWrapUp(name, recordedMapTool(name, args, caller, deps), caller)),
       );
     }
     if (isBrowserTool(name)) {
       const raw = await handleBrowserTool(name, args, deps.browserTools, caller);
       if (isPendingWork(name, args, raw)) notePendingWork(caller.agent_id);
-      const result = withPendingWrapUp(raw, caller);
+      const result = withPendingWrapUp(name, raw, caller);
       if (name === 'browser.screenshot') return finish(imageToolResponse(result));
       // list_tabs explains itself in a second block; the first stays the
       // bare array every client already parses. An empty list gets the
@@ -170,10 +170,16 @@ function isPendingWork(name: string, args: unknown, result: unknown): boolean {
   return typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === true;
 }
 
+/** Tools whose result is the page's own value: a key the page returns must
+ * never be confused with (or overwritten by) tool metadata. */
+const PAGE_VALUE_TOOLS: ReadonlySet<string> = new Set(['browser.evaluate', 'browser.read']);
+
 /** Add `pending_wrap_up: n` to an object result while the session has work
- * waiting for `browser.wrap_up` (S9). Raw values and arrays are returned
- * untouched; with nothing pending the result is unchanged. */
-function withPendingWrapUp(result: unknown, caller: AgentCaller): unknown {
+ * waiting for `browser.wrap_up` (S9). Raw values, arrays and the page values
+ * of `PAGE_VALUE_TOOLS` are returned untouched; with nothing pending the
+ * result is unchanged. */
+function withPendingWrapUp(name: string, result: unknown, caller: AgentCaller): unknown {
+  if (PAGE_VALUE_TOOLS.has(name)) return result;
   const pending = peekSession(caller.agent_id)?.pendingWrapUp ?? 0;
   if (pending <= 0) return result;
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;

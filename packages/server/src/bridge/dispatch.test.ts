@@ -647,6 +647,26 @@ describe('handleToolCall — knowledge-loop session (S9, S13)', () => {
     expect(peekSession(TEST_CALLER.agent_id)?.pendingWrapUp).toBe(0);
   });
 
+  test('evaluate and read results are the page value and never carry pending_wrap_up', async () => {
+    notePendingWork(TEST_CALLER.agent_id);
+    const page = { pending_wrap_up: 'page data', total: 3 };
+    for (const name of ['browser.evaluate', 'browser.read']) {
+      vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ...page });
+      const res = await handleToolCall(
+        { name, arguments: { tab_id: 't1', expression: 'x', name: 'n' }, caller: TEST_CALLER },
+        deps(),
+      );
+      expect(JSON.parse(texts(res)[0])).toEqual(page);
+    }
+    vi.mocked(handleBrowserTool).mockResolvedValueOnce({ ok: true });
+    const click = await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: 't1' }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect(JSON.parse(texts(click)[0])).toMatchObject({ ok: true });
+    expect(JSON.parse(texts(click)[0]).pending_wrap_up).toBeGreaterThan(0);
+  });
+
   test('map tool object results carry pending_wrap_up too', async () => {
     notePendingWork(TEST_CALLER.agent_id);
     vi.mocked(handleMapTool).mockReturnValue({ apps: [] });

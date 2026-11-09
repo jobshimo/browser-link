@@ -54,11 +54,39 @@ export interface ConfidenceRow extends Evidence {
   struct_fail_build?: string | null;
 }
 
-/** True when a failure reason counts toward `failing`: every structural
- * reason, and `expect-failed` (the threshold supplies the repetition). */
+/** True when a failure reason is of a kind that can count toward
+ * `failing`: every structural reason, and `expect-failed`. Whether one
+ * particular failure increments the counter is `incrementsStructural`. */
 export function countsAsStructural(reason: string | null): boolean {
   if (reason === null) return false;
   return reason === 'expect-failed' || (STRUCTURAL_REASONS as readonly string[]).includes(reason);
+}
+
+/** What the row said before the failure being recorded. */
+export interface PreviousFailure {
+  last_reason: string | null;
+  last_fail_build: string | null;
+}
+
+/**
+ * True when a failure with `reason` on `build` increments `struct_fail_n`.
+ * A structural reason always does. `expect-failed` does only when it
+ * repeats: the row's `last_reason` was already `expect-failed` on the same
+ * build (null builds compare equal, as the counter's `IS` does). An unmet
+ * expectation alone may be a slow page, not a broken selector, so a single
+ * one never moves an item toward `failing`.
+ */
+export function incrementsStructural(
+  reason: string | null,
+  previous: PreviousFailure | null,
+  build: string | null,
+): boolean {
+  if (reason !== 'expect-failed') return countsAsStructural(reason);
+  return (
+    previous !== null &&
+    previous.last_reason === 'expect-failed' &&
+    previous.last_fail_build === build
+  );
 }
 
 /** Confidence of one row on `currentBuild` (null when the tab's build is

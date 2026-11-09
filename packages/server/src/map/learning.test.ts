@@ -519,10 +519,29 @@ describe('learnFromDispatch — knowledge-loop keys and stamps', () => {
     expect(stamps()).toMatchObject({ last_fail_build: 'b1', struct_fail_n: 0 });
   });
 
-  test('expect-failed counts toward the per-build structural counter', () => {
+  test('a single expect-failed never counts as structural', () => {
     fail('expectation not met: url_changed', 'b1');
+    expect(stamps()).toMatchObject({ last_fail_build: 'b1', struct_fail_n: 0 });
+  });
+
+  test('expect-failed counts toward the per-build counter only from its second occurrence', () => {
+    fail('expectation not met: url_changed', 'b1');
+    fail('expectation not met: url_changed', 'b1');
+    expect(stamps()).toMatchObject({ struct_fail_n: 1, struct_fail_build: 'b1' });
     fail('expectation not met: url_changed', 'b1');
     expect(stamps()).toMatchObject({ struct_fail_n: 2, struct_fail_build: 'b1' });
+  });
+
+  test('one not-found plus one expect-failed on the same build is not failing', () => {
+    fail('Element not found: #pay', 'b1');
+    fail('expectation not met: url_changed', 'b1');
+    expect(stamps()).toMatchObject({ struct_fail_n: 1, struct_fail_build: 'b1' });
+  });
+
+  test('an expect-failed repeated after another build does not count on the new build', () => {
+    fail('expectation not met: url_changed', 'b1');
+    fail('expectation not met: url_changed', 'b2');
+    expect(stamps()).toMatchObject({ last_fail_build: 'b2', struct_fail_n: 0 });
   });
 
   test('browser.evaluate goes to the JS registry, gated by the learning switch', () => {

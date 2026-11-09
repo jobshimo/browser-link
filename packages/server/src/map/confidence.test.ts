@@ -4,6 +4,7 @@ import {
   STRUCTURAL_REASONS,
   confidenceOf,
   countsAsStructural,
+  incrementsStructural,
   type ConfidenceRow,
 } from './confidence.js';
 
@@ -38,6 +39,36 @@ describe('failure reason classes', () => {
     ['unknown', false],
   ])('countsAsStructural(%s) = %s', (reason, expected) => {
     expect(countsAsStructural(reason)).toBe(expected);
+  });
+});
+
+describe('incrementsStructural', () => {
+  const prev = (last_reason: string | null, last_fail_build: string | null) => ({
+    last_reason,
+    last_fail_build,
+  });
+
+  test.each<[string, string, ReturnType<typeof prev> | null, string | null, boolean]>([
+    ['structural reason always', 'not-found', null, 'b1', true],
+    ['situational reason never', 'timeout', prev('timeout', 'b1'), 'b1', false],
+    ['a first expect-failed', 'expect-failed', null, 'b1', false],
+    ['expect-failed after another reason', 'expect-failed', prev('not-found', 'b1'), 'b1', false],
+    [
+      'expect-failed after one on another build',
+      'expect-failed',
+      prev('expect-failed', 'b0'),
+      'b1',
+      false,
+    ],
+    [
+      'expect-failed repeated on the same build',
+      'expect-failed',
+      prev('expect-failed', 'b1'),
+      'b1',
+      true,
+    ],
+  ])('%s', (_label, reason, previous, build, expected) => {
+    expect(incrementsStructural(reason, previous, build)).toBe(expected);
   });
 });
 

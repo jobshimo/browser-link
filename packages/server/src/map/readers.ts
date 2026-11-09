@@ -225,6 +225,26 @@ export function dataLiterals(expression: string, typedValuesList: readonly strin
   return [...new Set(stringLiterals(expression).filter((lit) => isLiteralData(lit, typedList)))];
 }
 
+/** The string literals of a template that still look like data once its
+ * `<PLACEHOLDER>` tokens are taken out: each literal is split at its
+ * placeholders and every trimmed fixed piece goes through the same data test
+ * as `dataLiterals` (a space, `@`, six digits in a row, or a typed value).
+ * Curation rule 2 rejects a template for which this is not empty, so a
+ * partial template ('Pedido 4821377 de <EMAIL>') or one that introduces new
+ * data ('jane@doe.com <NAME>') is never kept. */
+export function templateDataLiterals(
+  template: string,
+  typedValuesList: readonly string[],
+): string[] {
+  const typedList = usableTyped(typedValuesList);
+  return stringLiterals(template).filter((lit) =>
+    lit
+      .split(/<[A-Z][A-Z0-9_]*>/)
+      .map((piece) => piece.trim())
+      .some((piece) => piece !== '' && isLiteralData(piece, typedList)),
+  );
+}
+
 /** The code of `expression` with every string literal blanked: two
  * expressions with the same skeleton differ only inside string literals. */
 export function codeSkeleton(expression: string): string {

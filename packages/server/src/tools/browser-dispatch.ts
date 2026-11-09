@@ -1592,6 +1592,12 @@ async function rememberFlowRun(
   }
 }
 
+/** A call refused by argument validation before anything ran on the page.
+ * It stays on the trail (the agent did ask), but the map learner never sees
+ * it: nothing was tried, so there is no outcome to count against the
+ * expression or selector. */
+class RefusedBeforeRun extends Error {}
+
 /** `browser.evaluate`'s optional `as`: refused before the call runs when it
  * breaks rule 4 (names) or rule 7 (typed values). */
 async function requireValidAsName(args: unknown): Promise<void> {
@@ -1599,7 +1605,7 @@ async function requireValidAsName(args: unknown): Promise<void> {
   if (as === undefined) return;
   const { readerNameProblem } = await import('../map/readers.js');
   const problem = readerNameProblem(as);
-  if (problem) throw new Error(`browser.evaluate: as ${problem} (curation rule 4)`);
+  if (problem) throw new RefusedBeforeRun(`browser.evaluate: as ${problem} (curation rule 4)`);
 }
 
 /** `browser.wrap_up`: step 1 without a body, step 2 with one (see
@@ -2882,7 +2888,7 @@ function observe(
     tab = undefined;
   }
   if (deps.recordActivity) writeTrail(deps, name, args, caller, durationMs, settled, tab);
-  if (deps.recordOutcome) {
+  if (deps.recordOutcome && !(settled.error instanceof RefusedBeforeRun)) {
     try {
       deps.recordOutcome({
         tool: name,

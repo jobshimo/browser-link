@@ -167,6 +167,36 @@ describe('validateCuration — the eight rules', () => {
     expect(plan.keepReaders[0].template).toBe('find("<NAME>")');
   });
 
+  test('R2: a template that keeps part of a data literal is rejected', () => {
+    const r = reader({
+      expression: "q('Pedido 4821377 de ana.perez@mail.com').id",
+      flags: ['literal_data'],
+    });
+    const plan = keepOne(r, { name: 'order-row', template: "q('Pedido 4821377 de <EMAIL>').id" });
+    expect(plan.rejected[0]).toMatchObject({ rule: 2 });
+  });
+
+  test('R2: a template that introduces new data is rejected', () => {
+    const r = reader({ expression: `q('a[title="Jane Doe"]').id`, flags: ['literal_data'] });
+    const template = `q('a[title="jane@doe.com <NAME>"]').id`;
+    expect(keepOne(r, { name: 'author-link', template }).rejected[0]).toMatchObject({ rule: 2 });
+  });
+
+  test('R2: a template whose literals keep only placeholders and plain words is accepted', () => {
+    const r = reader({
+      expression: "q('Pedido 4821377 de ana.perez@mail.com').id",
+      flags: ['literal_data'],
+    });
+    const plan = keepOne(r, { name: 'order-row', template: "q('Pedido <ID> de <EMAIL>').id" });
+    expect(plan.rejected).toEqual([]);
+  });
+
+  test('R2: a template with no data literal and a placeholder is accepted', () => {
+    const r = reader({ expression: "q('.row').id" });
+    const plan = keepOne(r, { name: 'row-id', template: "q('<SELECTOR>').id" });
+    expect(plan.rejected).toEqual([]);
+  });
+
   test('R3: secret_shape flag, secret-looking code and mutations are rejected', () => {
     expect(keepOne(reader({ flags: ['secret_shape'] }), { name: 'a-b' }).rejected[0].rule).toBe(3);
     expect(

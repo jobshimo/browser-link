@@ -13,6 +13,7 @@ import {
   readerNameProblem,
   setReaderStatus,
   setReaderTemplate,
+  templateDataLiterals,
   type ReaderFlag,
   type ReaderKind,
   type ReaderRow,
@@ -354,6 +355,12 @@ function readerProblem(
     }
     if (analyzeExpression(template, []).kind !== 'reader') {
       return { rule: 3, reason: 'the template is a mutation' };
+    }
+    if (templateDataLiterals(template, ctx.typedValues).length > 0) {
+      return {
+        rule: 2,
+        reason: 'a template literal still holds data outside its <PLACEHOLDER> tokens',
+      };
     }
   }
   if (r.flags.includes('literal_data')) {
