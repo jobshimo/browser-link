@@ -210,6 +210,7 @@ browser-link config get                    # list every known setting
 browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it)
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
+browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
 browser-link cdp revoke                    # revoke the current cdp-direct grant
@@ -972,6 +973,57 @@ knows whether the saved knowledge is fresh, stale, or known-broken.
 When a selector that used to work suddenly fails, the agent marks it
 via `record_use({ ok: false })` and stops trusting it until it relearns.
 
+### What the map learns by itself (v0.43.0)
+
+The layers above are written by the agent. The map also **learns from use**,
+with no bookkeeping by the agent: every `browser.click`, `browser.type`,
+`browser.press`, `browser.find` and `browser.wait_for` that addressed a
+**durable target** adds one ok or one failure to that target's counters, in a
+separate `selector_outcomes` table, per app and route.
+
+- **The target** is the CSS selector string, or the semantic `key` of a
+  `browser.find({ key })`. A call that used only a `ref` learns nothing (a
+  ref dies with its document), and neither does a `find` by text.
+- **Ok** means proven effect: the call carried an `expect` (so it was met),
+  a `find`/`wait_for` matched, or `settle.mutation_count > 0`. A quiet call
+  with none of those proves nothing and is not counted.
+- **A failure** keeps one reason from a fixed list: `retargeted`, `ref-stale`,
+  `expect-failed`, `not-found`, `multiple-matches`, `unmatched` (a
+  `wait_for` that never matched), `timeout`, `unsettled`
+  (`settle.settled: false`), `hit-mismatch` (`hit_element` is not the target).
+- **Same app as the agent's saves**: the learner resolves the app from the
+  tab's origin and title exactly as `browser.map.save` does.
+- **Bounded**: at most 200 learned targets per app; past that, the least used
+  one is evicted.
+
+What it learned comes back in two places, failures first and then the most
+used:
+
+- `browser.map.recall` returns `learned` (up to 50 items: `target`,
+  `target_kind`, `action`, `ok_n`, `fail_n`, `last_reason`, `url_pattern`,
+  `last_ok_at`, `last_fail_at`) right after `entries`. An app with nothing
+  learned returns exactly what it returned before.
+- The `list_tabs` `map` hint carries up to 3 of them in `inline.learned`,
+  inside the same 2 KB inline budget and without counting toward its 5-item
+  limit. When no inline map fits, the hint still says `learned_failures: n`,
+  so the agent knows to look before it clicks.
+
+**Privacy: targets only, never values.** What a `browser.type` typed, what a
+`browser.evaluate` ran, which key a `browser.press` sent: none of it is ever
+read by the learner. Only selectors and semantic keys are stored, in the same
+private, per-machine map file as everything else.
+
+It is **on by default** and independent of the activity trail. To stop it:
+
+```bash
+browser-link config get map-learning        # on (default) | off
+browser-link config set map-learning off    # applies to the next action, no restart
+browser-link config set map-learning on
+```
+
+Turning it off stops new learning; what was already learned stays in the map
+until you `browser-link map forget` the app.
+
 ### The loop, in plain English
 
 ```
@@ -1019,6 +1071,16 @@ CREATE TABLE insights (
   key, description, symptom,     -- symptom: pitfalls only, optional
   created_at, updated_at
   -- UNIQUE(app_id, kind, key)
+);
+
+CREATE TABLE selector_outcomes (  -- v0.43.0, written by the learner only
+  id, app_id, url_pattern,
+  target,                        -- CSS selector, or a find semantic key as JSON
+  target_kind TEXT,              -- 'selector' | 'key'
+  action,                        -- click | type | press | find | wait_for
+  ok_n, fail_n, last_reason,     -- last_reason: fixed failure enum
+  last_ok_at, last_fail_at
+  -- UNIQUE(app_id, url_pattern, target, target_kind, action)
 );
 ```
 
@@ -1290,6 +1352,27 @@ browser-link activity stats                          # rows, size, oldest, newes
 browser-link activity clear --to 2026-07-31          # counts first, asks for --yes
 browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
 ```
+
+### Friction report (v0.43.0)
+
+The trail also answers "what went wrong in this session" in one call, without
+reading it row by row. Each row now keeps the evidence that used to vanish
+when a call resolved `ok`: a `flag` (`retargeted`, `ref-stale`,
+`expect-failed`, `timeout`, `unmatched`, `not-found`, `multiple-matches`,
+`flow-timeout`, `download-timeout`, `unsettled`, `hit-mismatch`) and the
+agent session that ran it.
+
+- **Agents** call `browser.activity({ summary: true })`, optionally with
+  `since` (ISO timestamp), `since_id` or `agent_id`. It returns
+  `{ summary: { records, errors, by_flag, by_tool_errors, evaluate_calls,
+timeouts, top_failing_targets, sessions } }`: the top 10 failing selectors
+  with their tool and last flag, and one line per agent session. Without
+  `summary`, `browser.activity` returns the same rows as before.
+- **You** run `browser-link activity report [--since <duration|iso>]
+[--agent <id>]` for the same report as a table.
+
+Like the map's learner, the report works on targets and counts; it never
+needs the typed text or evaluate expressions that payload recording keeps.
 
 ### Reading it outside the browser
 

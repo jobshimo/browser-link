@@ -77,7 +77,7 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Muestra todas las configuraciones conocidas (idle-ttl, flow-recording).
+  browser-link config get       Muestra todas las configuraciones conocidas (idle-ttl, flow-recording, map-learning…).
   browser-link config get idle-ttl
                                 Muestra el TTL de auto-desconexión por inactividad configurado.
   browser-link config set idle-ttl <minutos|never>
@@ -92,6 +92,10 @@ Uso:
                                 Habilita/deshabilita la grabación de flows (opt-in, apagado por
                                 defecto). El mismo valor es editable desde el popup de la
                                 extensión — gana la última escritura (ver README).
+  browser-link config set map-learning <on|off>
+                                Habilita/deshabilita el aprendizaje automático del mapa (encendido
+                                por defecto): el servidor cuenta qué selectores funcionaron o
+                                fallaron por app, solo el selector, nunca valores (ver README).
   browser-link config set downloads.dir <ruta-absoluta|default>
                                 Directorio donde browser.download guarda los archivos (por
                                 defecto <directorio de datos>/downloads). Los agentes pueden
@@ -146,6 +150,10 @@ Uso:
   browser-link activity         Últimas acciones que los agentes ejecutaron en el
                                 navegador, más recientes primero. Filtros: --tab,
                                 --agent, --tool, --flow, --failed, --limit.
+  browser-link activity report [--since 7d|<fecha ISO>] [--agent <id de sesión>]
+                                Informe de fricción: errores, señales (timeouts,
+                                esperas sin coincidencia, clics desviados…),
+                                objetivos que más fallan y un resumen por sesión.
   browser-link activity export [--out <archivo>] [--format json|ndjson|csv] [--redact]
                                 Vuelca el rastro a un fichero para archivarlo o
                                 pasárselo a otro agente. --redact quita los payloads,
@@ -201,7 +209,7 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Show every known config setting (idle-ttl, flow-recording).
+  browser-link config get       Show every known config setting (idle-ttl, flow-recording, map-learning…).
   browser-link config get idle-ttl
                                 Show the configured idle-disconnect TTL.
   browser-link config set idle-ttl <minutes|never>
@@ -216,6 +224,10 @@ Usage:
                                 Enable/disable flow recording (opt-in, off by default). The same
                                 setting is editable from the extension's popup — last write wins
                                 (see README).
+  browser-link config set map-learning <on|off>
+                                Enable/disable automatic map learning (on by default): the server
+                                counts which selectors worked or failed per app, the selector only,
+                                never values (see README).
   browser-link config set downloads.dir <absolute-path|default>
                                 Directory browser.download writes files into (default
                                 <data dir>/downloads). Agents can name a file, never pick the
@@ -264,6 +276,10 @@ Usage:
   browser-link activity         Recent actions agents ran in the browser, newest
                                 first. Filters: --tab, --agent, --tool, --flow,
                                 --failed, --limit.
+  browser-link activity report [--since 7d|<ISO date>] [--agent <session id>]
+                                Friction report: errors, flags (timeouts, unmatched
+                                waits, retargeted clicks…), the most failing targets
+                                and a per-session summary.
   browser-link activity export [--out <file>] [--format json|ndjson|csv] [--redact]
                                 Dump the trail to a file to archive it or hand it to
                                 another agent. --redact strips payloads, titles and

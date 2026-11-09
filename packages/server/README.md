@@ -115,6 +115,22 @@ browser-link map export --out map.json      # back up the map as JSON
 browser-link map import map.json            # restore it (merge by default, --replace to overwrite)
 ```
 
+### The map learns by itself
+
+Every click, type, press, find and wait_for an agent runs on a CSS selector
+or a `browser.find` semantic key adds an ok or a failure (with a fixed reason
+such as `not-found` or `retargeted`) to that target's counters, per app and
+route. Agents see it as `learned` in `browser.map.recall` and in the
+`list_tabs` map hint, failures first. **Targets only, never values**: typed
+text, evaluate expressions and pressed keys are never read. At most 200
+learned targets per app. On by default; `browser-link config set
+map-learning off` stops it without a restart.
+
+For what went wrong in a session, agents call `browser.activity({ summary:
+true })` and you run `browser-link activity report [--since <duration|iso>]
+[--agent <id>]`: errors and flagged calls by flag, by tool, the top failing
+selectors and one line per agent session.
+
 > **Privacy note.** An export can contain UI structure and flow steps an
 > agent saved — selectors, page notes, multi-step recipes. Review a file
 > before sharing it. The map is designed so agents never write real domain

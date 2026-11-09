@@ -336,3 +336,38 @@ describe('noticeAcknowledged', () => {
     expect(rawFile()).toEqual({ skipWelcome: true, noticeAcknowledged: true });
   });
 });
+
+describe('mapLearningEnabled', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-learning-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('is absent on a fresh install (the learner treats absent as on)', () => {
+    expect(loadConfig().mapLearningEnabled).toBeUndefined();
+  });
+
+  test('an explicit false is persisted and read back', () => {
+    saveConfig({ mapLearningEnabled: false });
+    expect(loadConfig().mapLearningEnabled).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
+    ).toEqual({ mapLearningEnabled: false });
+  });
+
+  test('clearing it removes the key from disk', () => {
+    saveConfig({ mapLearningEnabled: false, skipWelcome: true });
+    saveConfig({ mapLearningEnabled: undefined });
+    expect(
+      JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
+    ).toEqual({ skipWelcome: true });
+  });
+});

@@ -143,6 +143,16 @@ export interface BrowserLinkConfig {
    */
   activityRecordPayloads?: boolean;
   /**
+   * Map learning. Default ON: only an explicit `false` disables it. When on,
+   * every click/type/press/find/wait_for that addressed a durable target (a
+   * CSS selector or a `browser.find` semantic key) adds an ok/fail count to
+   * the persistent map (see `map/learning.ts`). It stores targets only,
+   * never typed text, expressions or values. Read on every call, so
+   * `browser-link config set map-learning <on|off>` applies without a
+   * restart. Independent of `activityEnabled`.
+   */
+  mapLearningEnabled?: boolean;
+  /**
    * Absolute directory `browser.download` writes files into. Undefined means
    * the default, `<dataDir>/downloads` (see `downloads.ts`'s
    * `resolveDownloadsDir`, which also ignores a relative or malformed value).

@@ -49,12 +49,15 @@ import {
 import type { MapHint } from '../map/queries.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ActivityInput } from '../activity/types.js';
-import { buildRow } from '../activity/extract.js';
+import { buildActivityRow } from '../activity/extract.js';
 import {
   listAgents as listActivityAgents,
   query as queryActivity,
   redact as redactActivity,
 } from '../activity/queries.js';
+import { getActivityDb } from '../activity/db.js';
+import { summarizeActivity } from '../activity/summary.js';
+import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
@@ -224,6 +227,15 @@ export interface BrowserToolDeps {
    * wires `recordActivity` without wiring this gets the full trail it clearly
    * asked for rather than a silently gutted one. */
   recordActivityPayloads?: boolean;
+  /** Optional map learner (see `map/learning.ts`'s `learnFromDispatch`).
+   * Called once per dispatched tool, after the call settles, with the tool,
+   * its args, the resolved result or the thrown error, and the tab's URL and
+   * title. Independent of `recordActivity`: it runs even when the trail is
+   * off. The learner reads its own `map-learning` switch per call.
+   *
+   * Same contract as `recordActivity`: never awaited, and a throw is caught
+   * and logged here so learning can never fail or delay a tool. */
+  recordOutcome?(ctx: DispatchOutcomeContext): void;
   /** Writes a `browser.download` file into the human-configured downloads
    * directory and returns the absolute path written (never overwriting —
    * see `downloads.ts`'s `writeDownloadFile`). The agent supplies only a
@@ -1376,6 +1388,9 @@ function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: Pub
  */
 function handleActivity(args: unknown): unknown {
   const {
+    summary,
+    since,
+    agent_id,
     since_id,
     tab_id,
     agent,
@@ -1385,6 +1400,9 @@ function handleActivity(args: unknown): unknown {
     limit,
     include_payloads = true,
   } = (args ?? {}) as {
+    summary?: boolean;
+    since?: string;
+    agent_id?: string;
     since_id?: number;
     tab_id?: string;
     agent?: string;
@@ -1394,6 +1412,17 @@ function handleActivity(args: unknown): unknown {
     limit?: number;
     include_payloads?: boolean;
   };
+  // The friction report (S4): aggregated with GROUP BY in activity/summary.ts.
+  // Takes only the window filters; the records mode below is untouched.
+  if (summary === true) {
+    return {
+      summary: summarizeActivity(getActivityDb(), {
+        ...(typeof since_id === 'number' ? { sinceId: since_id } : {}),
+        ...(typeof since === 'string' ? { since } : {}),
+        ...(typeof agent_id === 'string' ? { agentId: agent_id } : {}),
+      }),
+    };
+  }
   const page = queryActivity({
     ...(typeof since_id === 'number' ? { sinceId: since_id } : {}),
     ...(typeof tab_id === 'string' ? { tabId: tab_id } : {}),
@@ -2337,17 +2366,62 @@ export async function handleBrowserTool(
 ): Promise<unknown> {
   // No sink wired (unit tests, builds without a data dir) — straight through,
   // zero overhead, no timing call.
-  if (!deps.recordActivity) return dispatchBrowserTool(name, args, deps, caller);
+  if (!deps.recordActivity && !deps.recordOutcome) {
+    return dispatchBrowserTool(name, args, deps, caller);
+  }
 
   const startedAt = Date.now();
   try {
     const result = await dispatchBrowserTool(name, args, deps, caller);
-    writeTrail(deps, name, args, caller, Date.now() - startedAt, undefined);
+    observe(deps, name, args, caller, Date.now() - startedAt, { result, error: undefined });
     return result;
   } catch (error) {
-    writeTrail(deps, name, args, caller, Date.now() - startedAt, error);
+    observe(deps, name, args, caller, Date.now() - startedAt, { result: undefined, error });
     throw error;
   }
+}
+
+/** Hand one settled call to both observers: the trail and the map learner.
+ * The tab is resolved once, AFTER the call, so a `navigate` row shows where
+ * it landed. */
+function observe(
+  deps: BrowserToolDeps,
+  name: string,
+  args: unknown,
+  caller: AgentCaller,
+  durationMs: number,
+  settled: { result: unknown; error: unknown },
+): void {
+  let tab: TabSnapshot | undefined;
+  try {
+    const tabId = extractTabIdArg(args);
+    tab = tabId === null ? undefined : deps.listTabs().find((t) => t.tab_id === tabId);
+  } catch {
+    tab = undefined;
+  }
+  if (deps.recordActivity) writeTrail(deps, name, args, caller, durationMs, settled, tab);
+  if (deps.recordOutcome) {
+    try {
+      deps.recordOutcome({
+        tool: name,
+        args,
+        result: settled.result,
+        error: settled.error,
+        url: tab?.url ?? null,
+        title: tab?.title ?? null,
+      });
+    } catch (err) {
+      // Learning must never break the call it learns from.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[browser-link] map learning failed for ${name}: ${message}`);
+    }
+  }
+}
+
+function extractTabIdArg(args: unknown): string | null {
+  if (typeof args !== 'object' || args === null) return null;
+  const value = (args as { tab_id?: unknown }).tab_id;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /** Assemble the row, resolve the tab's URL/title from the live tab table, and
@@ -2358,28 +2432,25 @@ function writeTrail(
   args: unknown,
   caller: AgentCaller,
   durationMs: number,
-  error: unknown,
+  { result, error }: { result: unknown; error: unknown },
+  tab: TabSnapshot | undefined,
 ): void {
   try {
-    const row = buildRow({
+    const row = buildActivityRow(args, {
       tool: name,
-      args,
       caller,
       durationMs,
       // `undefined` is the success signal buildRow expects; a caught `undefined`
       // throw (legal in JS, vanishingly rare) would otherwise read as success.
-      ...(error === undefined ? {} : { error: error ?? new Error('unknown error') }),
+      ...(error === undefined ? { result } : { error: error ?? new Error('unknown error') }),
+      agentId: caller.agent_id,
       recordPayloads: deps.recordActivityPayloads !== false,
     });
     // The tab's URL and title are the two columns that make a row readable a
-    // week later, and only the dispatcher can see the tab table. Resolved
-    // AFTER the call so a `navigate` row shows where it landed.
-    if (row.tabId !== null) {
-      const tab = deps.listTabs().find((t) => t.tab_id === row.tabId);
-      if (tab) {
-        row.url = tab.url;
-        row.title = tab.title;
-      }
+    // week later, and only the dispatcher can see the tab table.
+    if (row.tabId !== null && tab && tab.tab_id === row.tabId) {
+      row.url = tab.url;
+      row.title = tab.title;
     }
     deps.recordActivity?.(row);
   } catch {

@@ -1478,13 +1478,28 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.activity',
     description:
-      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. Reading the trail is itself recorded.',
+      'Read the persistent activity trail: every browser tool that any agent dispatched, oldest kept for 50k rows, stored on disk in the user\'s data dir and surviving both browser and server restarts. Each row carries when it ran, which agent ran it (self-declared claim label, e.g. "claude-code" / "opencode", plus pid), the tool, the tab and page URL, the CSS selector it targeted, the payload (typed text, evaluate expression, navigate URL), the outcome and the duration. DISTINCT from browser.events, which is a 200-entry in-memory ring of bridge LIFECYCLE events (tab connected, dialog opened) that dies with the process — this is what agents actually DID. Use it to review your own work before reporting it, to see what a different agent did to a tab you just claimed, or to reconstruct a run that went wrong. Returns { records, latest_id, total, agents } — pass latest_id back as since_id to page through new entries. With `summary: true` it returns the friction report instead: { summary: { records, errors, by_flag, by_tool_errors, evaluate_calls, timeouts, top_failing_targets, sessions } }, narrowed by since_id, since and agent_id. Reading the trail is itself recorded.',
     inputSchema: {
       type: 'object',
       properties: {
         since_id: {
           type: 'number',
           description: 'Only return rows with id > since_id. Omit for the most recent slice.',
+        },
+        summary: {
+          type: 'boolean',
+          description:
+            'Return the friction report instead of rows: counts of records and errors, failures by flag (retargeted, ref-stale, expect-failed, timeout, unmatched, not-found, multiple-matches, flow-timeout, download-timeout, unsettled, hit-mismatch), errors by tool, evaluate calls, timeouts, the top 10 failing selectors and one line per agent session. Honours since_id, since and agent_id only.',
+        },
+        since: {
+          type: 'string',
+          description:
+            'Summary mode only: rows at or after this ISO timestamp (e.g. "2026-11-09T10:00:00Z").',
+        },
+        agent_id: {
+          type: 'string',
+          description:
+            'Summary mode only: rows of one agent session (the IPC session id listed in summary.sessions).',
         },
         tab_id: { type: 'string', description: 'Only actions against this tab.' },
         agent: {
@@ -1518,12 +1533,14 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Before reporting what you did — check the trail rather than your memory of it.',
         'After claiming a tab another agent was using, to see what state it left the page in.',
         'When a long flow half-worked: filter outcome:"error" to find the exact failing step.',
+        'At the end of a session: `summary: true` (with since or since_id) to see what failed and how before reporting.',
       ],
       gotchas: [
         'This is NOT browser.events. Events are bridge lifecycle and in-memory; this is dispatched actions and on-disk.',
         'Pass latest_id back as since_id to page efficiently instead of re-reading the whole trail.',
         'Recording can be turned off by the user (`activity.enabled`), in which case this returns an empty trail rather than an error — an empty result does not prove nothing happened.',
         'The trail is local. It is never uploaded, and `browser-link activity export --redact` is what the user runs before sharing it.',
+        'The summary counts flagged calls that resolved "ok" too (a find with matched:false, a flow that stopped on timeout, an unsettled click): a low error count does not mean nothing failed.',
       ],
     },
   },

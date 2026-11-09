@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { closeActivityDb } from '../activity/db.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -3990,5 +3994,137 @@ describe('outdatedServerHint (S3b)', () => {
     expect(await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)).toEqual([
       { tab_id: 'tab_1', url: 'http://x', title: 't', claimed_by: null, claimed_by_me: false },
     ]);
+  });
+});
+
+describe('handleBrowserTool — outcome learner and trail evidence (map-learning)', () => {
+  const TAB = { tab_id: 'tab_1', url: 'https://app.example.com/settings?id=1', title: 'App' };
+
+  test('recordOutcome and recordActivity both receive the resolved result', async () => {
+    const recordActivity = vi.fn();
+    const recordOutcome = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: vi.fn(async () => ({ matched: false, reason: 'timeout' })),
+      recordActivity,
+      recordOutcome,
+    });
+    const args = { tab_id: 'tab_1', selector: '.toast', timeout_ms: 10 };
+    const result = await handleBrowserTool('browser.wait_for', args, deps, TEST_CALLER);
+    expect(result).toEqual({ matched: false, reason: 'timeout' });
+    expect(recordOutcome).toHaveBeenCalledWith({
+      tool: 'browser.wait_for',
+      args,
+      result: { matched: false, reason: 'timeout' },
+      error: undefined,
+      url: TAB.url,
+      title: TAB.title,
+    });
+    // The trail row is built with the result and the caller's session id
+    // (buildActivityRow classifies `matched: false` as `unmatched`).
+    expect(recordActivity).toHaveBeenCalledTimes(1);
+    expect(recordActivity.mock.calls[0]![0]).toMatchObject({
+      tool: 'browser.wait_for',
+      outcome: 'ok',
+      flag: 'unmatched',
+      agentId: TEST_CALLER.agent_id,
+    });
+  });
+
+  test('a thrown call reaches the learner with its error', async () => {
+    const recordOutcome = vi.fn();
+    const error = new Error('Element not found: #save');
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: vi.fn(async () => {
+        throw error;
+      }),
+      recordOutcome,
+    });
+    await expect(
+      handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#save' }, deps, TEST_CALLER),
+    ).rejects.toThrow('Element not found');
+    expect(recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: 'browser.click', error, result: undefined }),
+    );
+  });
+
+  test('the learner runs even when activity recording is off (no recordActivity)', async () => {
+    const recordOutcome = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      recordOutcome,
+    });
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#a' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(recordOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  test('a throwing learner never fails the tool, on success or on error', async () => {
+    const recordOutcome = vi.fn(() => {
+      throw new Error('map DB locked');
+    });
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const ok = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      recordOutcome,
+    });
+    await expect(
+      handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#a' }, ok, TEST_CALLER),
+    ).resolves.toEqual({ ok: true });
+    const failing = makeDeps({
+      listTabs: vi.fn(() => [TAB]),
+      callBrowserTool: vi.fn(async () => {
+        throw new Error('Element not found: #a');
+      }),
+      recordOutcome,
+    });
+    await expect(
+      handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#a' }, failing, TEST_CALLER),
+    ).rejects.toThrow('Element not found: #a');
+    warn.mockRestore();
+  });
+});
+
+describe('browser.activity — records mode and summary mode', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-activity-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    closeActivityDb();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('records mode is unchanged: { records, latest_id, total, agents }', async () => {
+    const result = (await handleBrowserTool(
+      'browser.activity',
+      {},
+      makeDeps(),
+      TEST_CALLER,
+    )) as Record<string, unknown>;
+    expect(Object.keys(result)).toEqual(['records', 'latest_id', 'total', 'agents']);
+    expect(result.records).toEqual([]);
+  });
+
+  test('summary: true returns the friction report instead of records', async () => {
+    const result = (await handleBrowserTool(
+      'browser.activity',
+      { summary: true },
+      makeDeps(),
+      TEST_CALLER,
+    )) as Record<string, unknown>;
+    expect(Object.keys(result)).toEqual(['summary']);
+    expect(result.summary).toMatchObject({ records: 0, errors: 0 });
   });
 });
