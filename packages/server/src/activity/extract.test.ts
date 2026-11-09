@@ -8,6 +8,7 @@ import {
   extractPayload,
   extractSelector,
   extractTabId,
+  serializedBytes,
   transportFor,
 } from './extract.js';
 import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
@@ -409,5 +410,32 @@ describe('buildActivityRow', () => {
       durationMs: 5,
       flowId: null,
     });
+  });
+});
+
+describe('resultBytes (0.45.0)', () => {
+  const meta = { tool: 'browser.evaluate', caller, durationMs: 1, recordPayloads: true };
+
+  test('is the UTF-8 size of the JSON-serialised result', () => {
+    const result = { title: 'Café', rows: [1, 2, 3] };
+    const row = buildActivityRow({ tab_id: 'tab_1' }, { ...meta, result });
+    expect(row.resultBytes).toBe(Buffer.byteLength(JSON.stringify(result), 'utf8'));
+    // A multi-byte character counts its bytes, not one.
+    expect(serializedBytes('é')).toBe(4);
+  });
+
+  test('a call that returned nothing weighs 0', () => {
+    expect(buildActivityRow({}, meta).resultBytes).toBe(0);
+  });
+
+  test('a thrown call has no result size', () => {
+    expect(buildActivityRow({}, { ...meta, error: new Error('boom') }).resultBytes).toBeNull();
+  });
+
+  test('an unserialisable result is null, never a throw', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(buildActivityRow({}, { ...meta, result: cyclic }).resultBytes).toBeNull();
+    expect(serializedBytes(10n)).toBeNull();
   });
 });

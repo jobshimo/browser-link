@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -451,5 +451,104 @@ describe('learnFromDispatch — press with a keyboard key', () => {
     });
     expect(rows()).toHaveLength(0);
     expect(listApps()).toHaveLength(0);
+  });
+});
+
+describe('learnFromDispatch — knowledge-loop keys and stamps', () => {
+  const ctx = {
+    tool: 'browser.click',
+    args: { tab_id: 't1', selector: '#pay', expect: { url_changed: true } },
+    result: { ok: true },
+    error: undefined,
+    url: `${ORIGIN}/facturas/48213`,
+    title: null,
+    build: 'b1',
+    viewSig: 'v1',
+  };
+  const fail = (reason: string, build: string): void => {
+    learnFromDispatch({
+      ...ctx,
+      build,
+      args: { tab_id: 't1', selector: '#pay' },
+      result: undefined,
+      error: new Error(reason),
+    });
+  };
+  const stamps = (): Record<string, unknown> =>
+    getDb()
+      .prepare(
+        'SELECT url_pattern, view_sig, last_ok_build, last_fail_build, struct_fail_n, struct_fail_build FROM selector_outcomes',
+      )
+      .get() as Record<string, unknown>;
+
+  test('records the path pattern, not the raw pathname', () => {
+    learnFromDispatch(ctx);
+    learnFromDispatch({ ...ctx, url: `${ORIGIN}/facturas/99/` });
+    expect(rows()).toEqual([expect.objectContaining({ url_pattern: '/facturas/:id', ok_n: 2 })]);
+  });
+
+  test('stamps the view signature and the build of the last success', () => {
+    learnFromDispatch(ctx);
+    expect(stamps()).toEqual({
+      url_pattern: '/facturas/:id',
+      view_sig: 'v1',
+      last_ok_build: 'b1',
+      last_fail_build: null,
+      struct_fail_n: 0,
+      struct_fail_build: null,
+    });
+  });
+
+  test('structural failures count per build and reset when the build changes or it works', () => {
+    fail('Element not found: #pay', 'b1');
+    fail('Element not found: #pay', 'b1');
+    expect(stamps()).toMatchObject({
+      last_fail_build: 'b1',
+      struct_fail_n: 2,
+      struct_fail_build: 'b1',
+    });
+    fail('Element not found: #pay', 'b2');
+    expect(stamps()).toMatchObject({ struct_fail_n: 1, struct_fail_build: 'b2' });
+    learnFromDispatch({ ...ctx, build: 'b2' });
+    expect(stamps()).toMatchObject({ last_ok_build: 'b2', struct_fail_n: 0 });
+  });
+
+  test('situational failures stamp the build but never count as structural', () => {
+    fail("Tool 'browser.click' timed out after 15000ms", 'b1');
+    fail("Tool 'browser.click' timed out after 15000ms", 'b1');
+    expect(stamps()).toMatchObject({ last_fail_build: 'b1', struct_fail_n: 0 });
+  });
+
+  test('expect-failed counts toward the per-build structural counter', () => {
+    fail('expectation not met: url_changed', 'b1');
+    fail('expectation not met: url_changed', 'b1');
+    expect(stamps()).toMatchObject({ struct_fail_n: 2, struct_fail_build: 'b1' });
+  });
+
+  test('browser.evaluate goes to the JS registry, gated by the learning switch', () => {
+    const evaluate = {
+      ...ctx,
+      tool: 'browser.evaluate',
+      args: { tab_id: 't1', expression: 'document.title' },
+      result: { ok: true, value: 'x' },
+    };
+    learnFromDispatch(evaluate);
+    const readers = (): number =>
+      (getDb().prepare('SELECT COUNT(*) AS n FROM js_readers').get() as { n: number }).n;
+    expect(readers()).toBe(1);
+    expect(rows()).toHaveLength(0);
+    saveConfig({ mapLearningEnabled: false });
+    learnFromDispatch({ ...evaluate, args: { tab_id: 't1', expression: 'location.href' } });
+    expect(readers()).toBe(1);
+  });
+
+  test('a throwing write is logged, never thrown', () => {
+    getDb().exec('DROP TABLE selector_outcomes');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => learnFromDispatch(ctx)).not.toThrow();
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining('map learning failed for browser.click'),
+    );
+    spy.mockRestore();
   });
 });

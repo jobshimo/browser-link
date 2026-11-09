@@ -490,28 +490,28 @@ describe('page observer: snapshot store', () => {
     expect(g.getSnapshot('s2')).toBeNull();
   });
 });
-describe('page observer: version 3 install rule', () => {
-  test('OBSERVER_VERSION is 3', () => {
-    expect(OBSERVER_VERSION).toBe(3);
+describe('page observer: version 4 install rule', () => {
+  test('OBSERVER_VERSION is 4', () => {
+    expect(OBSERVER_VERSION).toBe(4);
   });
 
-  test('an installed version 2 instance is torn down and replaced by version 3', () => {
+  test('an installed version 3 instance is torn down and replaced by version 4', () => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
-      version: 2,
+      version: 3,
       doc_id: 'old-doc',
       coverage: 'full',
       teardown,
     };
     const result = evalExpr(buildObserverInstallJs());
     expect(teardown).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ ok: true, installed: true, version: 3 });
+    expect(result).toMatchObject({ ok: true, installed: true, version: 4 });
     expect(instance().doc_id).not.toBe('old-doc');
     expect(typeof instance().refFor).toBe('function');
     expect(typeof instance().resolveRefDetailed).toBe('function');
   });
 
-  test.each([3, 4])('an installed version %i instance is left alone', (version) => {
+  test.each([4, 5])('an installed version %i instance is left alone', (version) => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
       version,
@@ -531,12 +531,12 @@ describe('page observer: version 3 install rule', () => {
     expect(pushed.filter((m) => m.type === 'doc_start')).toHaveLength(0);
   });
 
-  test('doc_start keeps its exact payload shape with version 3', () => {
+  test('doc_start keeps its exact payload shape with version 4', () => {
     evalExpr(buildObserverInstallJs());
     const starts = pushed.filter((m) => m.type === 'doc_start');
     expect(starts).toHaveLength(1);
     expect(Object.keys(starts[0]).sort()).toEqual(['coverage', 'doc_id', 'type', 'url', 'version']);
-    expect(starts[0]).toMatchObject({ version: 3, coverage: 'full', url: location.href });
+    expect(starts[0]).toMatchObject({ version: 4, coverage: 'full', url: location.href });
   });
 
   test('mark and changes keep their exact result shapes alongside refs', () => {
@@ -956,5 +956,140 @@ describe('page observer: semantic builders', () => {
     expect(js).not.toContain(String.fromCharCode(0x2029));
     expect(js).not.toContain('</script>');
     expect(evalExpr(js)).toEqual({ ok: false, reason: 'observer-unavailable' });
+  });
+});
+
+describe('page observer: doc_info (build fingerprint and view signature)', () => {
+  interface DocInfo {
+    type: 'doc_info';
+    doc_id: string;
+    url: string;
+    build: string;
+    view_sig: string;
+    title: string;
+  }
+  const docInfos = (): DocInfo[] =>
+    (pushed as unknown as { type: string }[]).filter((m): m is DocInfo => m.type === 'doc_info');
+
+  afterEach(() => {
+    document.head.innerHTML = '';
+    document.title = '';
+  });
+
+  function page(head: string, body: string): void {
+    document.head.innerHTML = head;
+    document.body.innerHTML = body;
+  }
+
+  function installAndRead(): DocInfo {
+    pushed = [];
+    evalExpr(buildObserverInstallJs());
+    const infos = docInfos();
+    expect(infos).toHaveLength(1);
+    const info = infos[0]!;
+    evalExpr(buildObserverTeardownJs());
+    return info;
+  }
+
+  test('a loaded document pushes one doc_info right after doc_start', () => {
+    page('<script src="/app.3f9a.js"></script>', '<h1>Invoices</h1><main></main>');
+    document.title = 'Invoices - My App';
+    evalExpr(buildObserverInstallJs());
+    expect(pushed.map((m) => m.type)).toEqual(['doc_start', 'doc_info']);
+    const info = docInfos()[0]!;
+    expect(Object.keys(info).sort()).toEqual([
+      'build',
+      'doc_id',
+      'title',
+      'type',
+      'url',
+      'view_sig',
+    ]);
+    expect(info).toMatchObject({ url: location.href, title: 'Invoices - My App' });
+    expect(info.doc_id).toBe(pushed[0]!.doc_id);
+    expect(info.build).toMatch(/^[0-9a-f]{8}$/);
+    expect(info.view_sig).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  test('a document still loading waits for the load event', () => {
+    const state = vi.spyOn(document, 'readyState', 'get').mockReturnValue('loading');
+    evalExpr(buildObserverInstallJs());
+    expect(docInfos()).toHaveLength(0);
+    state.mockRestore();
+    window.dispatchEvent(new Event('load'));
+    expect(docInfos()).toHaveLength(1);
+  });
+
+  test('the build is stable, ignores query strings and order, and keeps hashed file names', () => {
+    page(
+      '<link rel="stylesheet" href="/main.css?v=1"><script src="/app.3f9a.js?t=1"></script>',
+      '',
+    );
+    const first = installAndRead().build;
+    expect(installAndRead().build).toBe(first);
+    page(
+      '<script src="/app.3f9a.js?t=999#x"></script><link rel="stylesheet" href="/main.css?v=2">',
+      '',
+    );
+    expect(installAndRead().build).toBe(first);
+    page('<link rel="stylesheet" href="/main.css"><script src="/app.77c1.js"></script>', '');
+    expect(installAndRead().build).not.toBe(first);
+  });
+
+  test('inline scripts and non-stylesheet links do not change the build', () => {
+    page('<script src="/a.js"></script>', '');
+    const first = installAndRead().build;
+    page(
+      '<script src="/a.js"></script><script>var x = 1;</script><link rel="icon" href="/f.ico">',
+      '',
+    );
+    expect(installAndRead().build).toBe(first);
+  });
+
+  test('the view signature follows headings (trimmed, lowercased) and landmarks', () => {
+    page('', '<h1>  Invoices </h1><main></main>');
+    const first = installAndRead().view_sig;
+    page('', '<h1>INVOICES</h1><main></main><p>text is ignored</p>');
+    expect(installAndRead().view_sig).toBe(first);
+    page('', '<h1>Invoice 42</h1><main></main>');
+    expect(installAndRead().view_sig).not.toBe(first);
+    page('', '<h1>Invoices</h1><main></main><nav></nav>');
+    expect(installAndRead().view_sig).not.toBe(first);
+    page('', '<h1>Invoices</h1><div role="main"></div>');
+    expect(installAndRead().view_sig).toBe(first);
+  });
+
+  test('only the first 12 headings count', () => {
+    const heads = Array.from({ length: 12 }, (_, i) => `<h2>h${i}</h2>`).join('');
+    page('', heads);
+    const first = installAndRead().view_sig;
+    page('', heads + '<h3>thirteenth</h3>');
+    expect(installAndRead().view_sig).toBe(first);
+  });
+
+  test('SPA navigations push one doc_info 300 ms after the last nav', () => {
+    vi.useFakeTimers();
+    evalExpr(buildObserverInstallJs());
+    pushed = [];
+    history.pushState({}, '', '/a');
+    vi.advanceTimersByTime(200);
+    history.pushState({}, '', '/b');
+    vi.advanceTimersByTime(299);
+    expect(docInfos()).toHaveLength(0);
+    document.body.innerHTML = '<h1>Page B</h1>';
+    vi.advanceTimersByTime(1);
+    expect(docInfos()).toHaveLength(1);
+    expect(docInfos()[0]!.url).toBe(location.href);
+    expect(location.pathname).toBe('/b');
+  });
+
+  test('teardown cancels a pending doc_info', () => {
+    vi.useFakeTimers();
+    evalExpr(buildObserverInstallJs());
+    pushed = [];
+    history.pushState({}, '', '/c');
+    evalExpr(buildObserverTeardownJs());
+    vi.advanceTimersByTime(1000);
+    expect(docInfos()).toHaveLength(0);
   });
 });

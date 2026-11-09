@@ -29,7 +29,7 @@ import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
 import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
-import { saveFlow } from '../map/queries.js';
+import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 
 export const WS_HOST = '127.0.0.1';
@@ -43,6 +43,11 @@ export interface TabSession {
   /** The extension's version as sent in `tab.register`; absent when the
    * extension predates the field. */
   extensionVersion?: string;
+  /** Build fingerprint of the top document, from the observer's last
+   * `tab-doc-info`; absent until one arrives (older extensions never send it). */
+  build?: string;
+  /** View signature of the top document, from the same report. */
+  viewSig?: string;
 }
 
 export interface PendingRequest {
@@ -336,6 +341,19 @@ export function startWsBridge(
         }
 
         if (msg.kind === 'bridge.event') {
+          // `tab-doc-info` (knowledge-loop S1) updates the session and the
+          // map's build history; it is page identity, not an agent-facing
+          // event, so it never enters the event log (and needs no slot in
+          // the extension-pushable allowlist below).
+          if (msg.eventKind === 'tab-doc-info') {
+            const outcome = applyTabDocInfo(tabs, ws, assignedTabId, msg.tabId, msg.data);
+            if (!outcome.ok) {
+              log(`Ignoring tab-doc-info for ${String(msg.tabId)}: ${outcome.reason}`);
+              return;
+            }
+            recordDocInfoBuild(outcome.url, outcome.build);
+            return;
+          }
           // Closed allowlist — the extension can only push the kinds tied to
           // popup awareness (dialogs / new tabs). Lifecycle kinds (primary-elected,
           // tab-registered, etc.) stay server-owned so they can't be spoofed
@@ -826,6 +844,65 @@ export function applyTabNavigated(
   session.url = url;
   if (typeof title === 'string' && title.length > 0) session.title = title;
   return { ok: true, url: session.url, title: session.title };
+}
+
+/** A page identity hash as `tab-doc-info` carries it (the observer sends 8
+ * lowercase hex digits; anything that is not short lowercase hex is refused,
+ * since the values are echoed to the agent by `list_tabs`). */
+const DOC_IDENTITY_HASH = /^[0-9a-f]{1,64}$/;
+
+/**
+ * Apply a `tab-doc-info` report to the tab's session: the top document's
+ * build fingerprint and view signature, which `list_tabs` shows and the map
+ * learner keys outcomes on. Accepted only for the tab THIS connection
+ * registered and still owns (same defence as `tab-navigated`), with a
+ * non-empty string `url` and hash-shaped `build`/`view_sig`.
+ */
+export function applyTabDocInfo(
+  tabs: Map<string, TabSession>,
+  ws: WebSocket,
+  assignedTabId: string | null,
+  tabId: unknown,
+  data: unknown,
+): { ok: true; url: string; build: string; viewSig: string } | { ok: false; reason: string } {
+  const session = assignedTabId ? tabs.get(assignedTabId) : undefined;
+  if (!session || tabId !== assignedTabId || session.ws !== ws) {
+    return { ok: false, reason: 'tab_id does not match this connection' };
+  }
+  const payload = (typeof data === 'object' && data !== null ? data : {}) as Record<
+    string,
+    unknown
+  >;
+  const { url, build, view_sig } = payload;
+  if (
+    typeof url !== 'string' ||
+    url.length === 0 ||
+    typeof build !== 'string' ||
+    !DOC_IDENTITY_HASH.test(build) ||
+    typeof view_sig !== 'string' ||
+    !DOC_IDENTITY_HASH.test(view_sig)
+  ) {
+    return { ok: false, reason: 'malformed tab-doc-info payload' };
+  }
+  session.build = build;
+  session.viewSig = view_sig;
+  return { ok: true, url, build, viewSig: view_sig };
+}
+
+/**
+ * Remember the build a page reported in the map (`app_builds`, see
+ * map/queries.ts `recordAppBuild`). Honours the `map-learning` switch, read
+ * per call; never throws, so a map DB problem never breaks the bridge.
+ */
+export function recordDocInfoBuild(url: string, build: string): void {
+  try {
+    const origin = new URL(url).origin;
+    if (origin === 'null') return;
+    if (loadConfig().mapLearningEnabled === false) return;
+    recordAppBuild(origin, build);
+  } catch (err) {
+    log(`map build record failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Longest `extensionVersion` stored from a register payload; anything

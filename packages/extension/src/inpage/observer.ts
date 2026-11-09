@@ -23,7 +23,7 @@
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */
-export const OBSERVER_VERSION = 3;
+export const OBSERVER_VERSION = 4;
 
 /** Name of the `Runtime.addBinding` function the observer pushes messages through. */
 export const OBSERVER_BINDING = '__blPageObserverPush';
@@ -312,9 +312,96 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     }
   }
 
+  // doc_info (knowledge-loop S1): the build fingerprint (hash of the sorted
+  // script and stylesheet URLs, query strings and fragments removed; hashed
+  // file names are kept, they are the signal) and the view signature (hash
+  // of the first h1-h3 texts and the landmark roles present) of the top
+  // document, pushed once it is loaded and again after SPA navigations.
+  const DOC_INFO_DEBOUNCE_MS = 300;
+  const VIEW_HEADINGS_MAX = 12;
+  const LANDMARKS = [
+    ['main', 'main,[role="main"]'],
+    ['nav', 'nav,[role="navigation"]'],
+    ['banner', 'body>header,[role="banner"]'],
+    ['contentinfo', 'body>footer,[role="contentinfo"]'],
+    ['complementary', 'aside,[role="complementary"]'],
+    ['search', 'search,[role="search"]'],
+    ['form', 'form,[role="form"]'],
+    ['dialog', 'dialog[open],[role="dialog"],[role="alertdialog"]'],
+  ];
+  let docInfoTimer = null;
+
+  // FNV-1a, 32-bit, as 8 hex digits.
+  function hashText(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+  }
+
+  function withoutQuery(url) {
+    return String(url || '').split('#')[0].split('?')[0];
+  }
+
+  function buildFingerprint() {
+    const urls = [];
+    for (const el of document.querySelectorAll('script[src]')) {
+      if (el.src) urls.push(withoutQuery(el.src));
+    }
+    for (const el of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
+      if (el.href) urls.push(withoutQuery(el.href));
+    }
+    urls.sort();
+    return hashText(urls.join('\\n'));
+  }
+
+  function viewSignature() {
+    const headings = [];
+    for (const el of document.querySelectorAll('h1,h2,h3')) {
+      const text = collapse(el.textContent).toLowerCase();
+      if (text) headings.push(text);
+      if (headings.length >= VIEW_HEADINGS_MAX) break;
+    }
+    const roles = [];
+    for (const landmark of LANDMARKS) {
+      try {
+        if (document.querySelector(landmark[1])) roles.push(landmark[0]);
+      } catch (e) {}
+    }
+    return hashText(headings.join('\\n') + '\\n#' + roles.join(','));
+  }
+
+  function pushDocInfo() {
+    docInfoTimer = null;
+    if (g.dead || isFrame) return;
+    try {
+      push({
+        type: 'doc_info',
+        doc_id: g.doc_id,
+        url: location.href,
+        build: buildFingerprint(),
+        view_sig: viewSignature(),
+        title: String(document.title || ''),
+      });
+    } catch (e) {}
+  }
+
+  function scheduleDocInfo() {
+    if (g.dead) return;
+    if (docInfoTimer !== null) clearTimeout(docInfoTimer);
+    docInfoTimer = setTimeout(pushDocInfo, DOC_INFO_DEBOUNCE_MS);
+  }
+
+  function onLoad() {
+    pushDocInfo();
+  }
+
   function onNav() {
     if (g.dead) return;
     push({ type: 'nav', doc_id: g.doc_id, url: location.href });
+    scheduleDocInfo();
   }
   const hist = window.history;
   const historyPatches = [];
@@ -656,6 +743,9 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     }
     window.removeEventListener('popstate', onNav);
     window.removeEventListener('hashchange', onNav);
+    window.removeEventListener('load', onLoad);
+    if (docInfoTimer !== null) clearTimeout(docInfoTimer);
+    docInfoTimer = null;
     g.baselines.clear();
     refs = new WeakMap();
     refNodes.clear();
@@ -669,6 +759,8 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
 
   Object.defineProperty(window, opts.key, { value: g, configurable: true, writable: true, enumerable: false });
   push({ type: 'doc_start', doc_id: g.doc_id, url: location.href, version: g.version, coverage: g.coverage });
+  if (document.readyState === 'complete') pushDocInfo();
+  else window.addEventListener('load', onLoad, { once: true });
   return { ok: true, installed: true, version: g.version, doc_id: g.doc_id, coverage: g.coverage };
 })()`;
 }

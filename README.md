@@ -1048,8 +1048,10 @@ used:
 
 **Privacy: targets only, never values.** What a `browser.type` typed, what a
 `browser.evaluate` ran, which key a `browser.press` sent: none of it is ever
-read by the learner. Only selectors and semantic keys are stored, in the same
-private, per-machine map file as everything else.
+read by the outcome learner. Only selectors and semantic keys are stored, in
+the same private, per-machine map file as everything else. (Since v0.45.0,
+`browser.evaluate` expressions go to a separate JS registry with its own
+privacy rules.)
 
 It is **on by default** and independent of the activity trail. To stop it:
 
@@ -1061,6 +1063,45 @@ browser-link config set map-learning on
 
 Turning it off stops new learning; what was already learned stays in the map
 until you `browser-link map forget` the app.
+
+### What the map knows (v0.45.0)
+
+What the map learned comes back to the agent at the moment it acts, with
+its evidence, never as a verdict.
+
+- **Keys.** Every learned record is keyed by the canonical origin and the
+  **path pattern**: the URL path with id-like segments (digits, uuids, hex
+  runs of 8+, base64url-ish tokens of 16+) replaced by `:id`, so
+  `/facturas/48213` and `/facturas/7` share `/facturas/:id`. The page
+  observer also reports, once the page has loaded and after each SPA
+  navigation, a **build fingerprint** (a hash of the page's script and
+  stylesheet URLs, query strings removed) and a **view signature** (a hash of
+  its first headings and landmark roles). `list_tabs` shows both per tab as
+  `build` and `view_sig`; the map keeps every build an app was seen running.
+- **Confidence.** Each offered item carries `confidence` and the raw
+  `evidence` (`ok_n`, `fail_n`, `last_reason`, `last_ok_build`,
+  `last_fail_build`, `last_ok_at`): `fresh` (worked on the build the tab
+  runs now), `unverified` (worked before, nothing on this build yet, or the
+  build is unknown) or `failing` (2+ structural failures on this build since
+  it last worked). Structural reasons are `not-found`, `multiple-matches`,
+  `retargeted`, `hit-mismatch`, and `expect-failed` when repeated;
+  situational ones (`timeout`, `unsettled`, `unmatched`, `ref-stale`) are
+  counted but never change confidence. Nothing is deleted for failing.
+- **The start pack.** `list_tabs` (per tab) and `navigate` (where it
+  landed) carry `knowledge` when the map has evidence for that app: saved
+  `pitfalls` and `mechanisms`, kept and named JS `readers`, saved `flows`,
+  and the best learned `selectors` of the current path pattern (or of the
+  whole app when the path has none), ranked pitfalls → fresh → unverified
+  and cut to 2 KB. `failing` targets appear only under `warnings`.
+- **At action time.** `click`, `type`, `press` and `find` on a selector (or
+  a find key) with evidence return
+  `known: { confidence, ok_n, fail_n, last_reason, alternative? }`, where
+  `alternative` is the best fresh target for the same action on that path.
+- **The whole map.** `browser.map.recall({ origin, scope: 'app' })` returns
+  everything for the app: entries, flows, mechanisms, pitfalls, every JS
+  registry row, every learned target with counters, builds and confidence,
+  the build history and `learned_failures`; `scope: 'all'` does the same for
+  every app of the origin. The default (`scope: 'path'`) is unchanged.
 
 ### The loop, in plain English
 

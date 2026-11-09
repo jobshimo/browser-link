@@ -4363,3 +4363,218 @@ describe('browser.download — configurable size cap', () => {
     expect(await fetchExpression()).toContain('download exceeds the 7 MiB cap (7340032 bytes)');
   });
 });
+
+describe('knowledge loop: start pack, action hints and page identity', () => {
+  const TAB = {
+    tab_id: 'tab_1',
+    url: 'https://app.example.com/facturas/48213?x=1',
+    title: 'Invoice',
+  };
+  const KNOWLEDGE = {
+    app_key: 'my-app',
+    path: '/facturas/:id',
+    pitfalls: [
+      { key: 'k', description: 'd', confidence: 'unverified', evidence: { saved_at: 't' } },
+    ],
+  } as const;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  describe('list_tabs', () => {
+    test('without getKnowledge the tab reads exactly as before', async () => {
+      const deps = makeDeps({ listTabs: vi.fn(() => [TAB]) });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([{ ...TAB, claimed_by: null, claimed_by_me: false }]);
+    });
+
+    test('a null start pack adds no field', async () => {
+      const getKnowledge = vi.fn(() => null);
+      const deps = makeDeps({ listTabs: vi.fn(() => [TAB]), getKnowledge });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([{ ...TAB, claimed_by: null, claimed_by_me: false }]);
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/48213',
+        build: null,
+      });
+    });
+
+    test('attaches knowledge per tab, looked up with the tab build, on every call', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c', view_sig: '00aa11bb' }]),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      for (let i = 0; i < 2; i++) {
+        const tabs = (await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER)) as {
+          knowledge?: unknown;
+          build?: string;
+          view_sig?: string;
+        }[];
+        expect(tabs[0]).toMatchObject({
+          build: '3f9a2b1c',
+          view_sig: '00aa11bb',
+          knowledge: KNOWLEDGE,
+        });
+      }
+      expect(getKnowledge).toHaveBeenCalledTimes(2);
+      expect(getKnowledge).toHaveBeenCalledWith(expect.objectContaining({ build: '3f9a2b1c' }));
+    });
+
+    test('a tab without a usable origin is never looked up', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, url: 'about:blank' }]),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      const tabs = await handleBrowserTool('browser.list_tabs', {}, deps, TEST_CALLER);
+      expect(tabs).toEqual([
+        { ...TAB, url: 'about:blank', claimed_by: null, claimed_by_me: false },
+      ]);
+      expect(getKnowledge).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('navigate', () => {
+    const NAV_RESULT = { url: 'https://app.example.com/facturas/7', title: 'Invoice 7' };
+
+    test('without knowledge the result is byte-identical', async () => {
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [TAB]),
+        callBrowserTool: vi.fn(async () => NAV_RESULT),
+        getKnowledge: vi.fn(() => null),
+      });
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: 'tab_1', url: NAV_RESULT.url },
+        deps,
+        TEST_CALLER,
+      );
+      expect(JSON.stringify(out)).toBe(JSON.stringify(NAV_RESULT));
+    });
+
+    test('adds the start pack of where it landed', async () => {
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c' }]),
+        callBrowserTool: vi.fn(async () => NAV_RESULT),
+        getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+      });
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: 'tab_1', url: NAV_RESULT.url },
+        deps,
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ...NAV_RESULT, knowledge: KNOWLEDGE });
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/7',
+        build: '3f9a2b1c',
+      });
+    });
+  });
+
+  describe('action hints', () => {
+    const RESULT = { ok: true, settle: { settled: true, mutation_count: 1 } };
+
+    function depsWith(getActionHint: BrowserToolDeps['getActionHint']): BrowserToolDeps {
+      return makeDeps({
+        listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c' }]),
+        callBrowserTool: vi.fn(async () => RESULT),
+        getActionHint,
+      });
+    }
+
+    test.each([
+      ['browser.click', { selector: '#pay' }, 'click', 'selector', '#pay'],
+      ['browser.type', { selector: '#q', text: 'secret' }, 'type', 'selector', '#q'],
+      ['browser.press', { key: 'Enter', selector: '#q' }, 'press', 'selector', '#q'],
+      [
+        'browser.find',
+        { key: { role: 'button', name: 'Pay', path: [{ tag: 'button', index: 1 }] } },
+        'find',
+        'key',
+        JSON.stringify({ role: 'button', name: 'Pay', path: [{ tag: 'button', index: 1 }] }),
+      ],
+    ])('%s carries known for a target with evidence', async (tool, args, action, kind, target) => {
+      const getActionHint = vi.fn(() => HINT);
+      const out = await handleBrowserTool(
+        tool,
+        { tab_id: 'tab_1', ...args },
+        depsWith(getActionHint as unknown as BrowserToolDeps['getActionHint']),
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ...RESULT, known: HINT });
+      expect(getActionHint).toHaveBeenCalledWith({
+        origin: 'https://app.example.com',
+        pathname: '/facturas/48213',
+        build: '3f9a2b1c',
+        target,
+        target_kind: kind,
+        action,
+      });
+      expect(JSON.stringify(getActionHint.mock.calls)).not.toContain('secret');
+    });
+
+    test('no hint, no field: the click result is byte-identical', async () => {
+      const out = await handleBrowserTool(
+        'browser.click',
+        { tab_id: 'tab_1', selector: '#pay' },
+        depsWith(vi.fn(() => null)),
+        TEST_CALLER,
+      );
+      expect(JSON.stringify(out)).toBe(JSON.stringify(RESULT));
+    });
+
+    test.each([
+      ['browser.click', { ref: 'abcdef:e1' }],
+      ['browser.press', { key: 'Enter' }],
+      ['browser.find', { text: 'Pay' }],
+    ])('%s without a durable target never looks one up', async (tool, args) => {
+      const getActionHint = vi.fn(() => HINT);
+      const out = await handleBrowserTool(
+        tool,
+        { tab_id: 'tab_1', ...args },
+        depsWith(getActionHint as unknown as BrowserToolDeps['getActionHint']),
+        TEST_CALLER,
+      );
+      expect(out).toEqual(RESULT);
+      expect(getActionHint).not.toHaveBeenCalled();
+    });
+
+    test('evaluate never carries known (readers are offered by the start pack)', async () => {
+      const getActionHint = vi.fn(() => HINT);
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [TAB]),
+        callBrowserTool: vi.fn(async () => 'raw value'),
+        getActionHint: getActionHint as unknown as BrowserToolDeps['getActionHint'],
+      });
+      const out = await handleBrowserTool(
+        'browser.evaluate',
+        { tab_id: 'tab_1', expression: 'document.title' },
+        deps,
+        TEST_CALLER,
+      );
+      expect(out).toBe('raw value');
+      expect(getActionHint).not.toHaveBeenCalled();
+    });
+  });
+
+  test('the learner receives the tab build and view signature', async () => {
+    const recordOutcome = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => [{ ...TAB, build: '3f9a2b1c', view_sig: '00aa11bb' }]),
+      callBrowserTool: vi.fn(async () => ({ ok: true })),
+      recordOutcome,
+    });
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'tab_1', selector: '#pay' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ build: '3f9a2b1c', viewSig: '00aa11bb' }),
+    );
+  });
+});

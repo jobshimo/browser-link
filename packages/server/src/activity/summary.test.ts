@@ -108,6 +108,12 @@ describe('summarizeActivity', () => {
           flags: { 'flow-timeout': 1, retargeted: 1, unsettled: 1 },
         },
       ],
+      bytes_total: 0,
+      bytes_by_tool: {},
+      evaluate_share: 0.222,
+      list_tabs_calls: 1,
+      map_recall_calls: 0,
+      readers_run: 0,
     });
   });
 
@@ -121,6 +127,12 @@ describe('summarizeActivity', () => {
       timeouts: 0,
       top_failing_targets: [],
       sessions: [],
+      bytes_total: 0,
+      bytes_by_tool: {},
+      evaluate_share: 0,
+      list_tabs_calls: 0,
+      map_recall_calls: 0,
+      readers_run: 0,
     });
   });
 
@@ -150,5 +162,66 @@ describe('summarizeActivity', () => {
     const db = getActivityDb();
     for (let i = 0; i < 12; i += 1) record(row({ selector: `#t${i}`, flag: 'unsettled' }), db);
     expect(summarizeActivity(db, {}).top_failing_targets).toHaveLength(10);
+  });
+});
+
+describe('summarizeActivity — cost and map usage (0.45.0)', () => {
+  function seedUsage(): void {
+    const db = getActivityDb();
+    record(row({ tool: 'browser.evaluate', selector: null, resultBytes: 500 }), db);
+    record(row({ tool: 'browser.evaluate', selector: null, resultBytes: 300 }), db);
+    record(row({ tool: 'browser.snapshot', selector: null, resultBytes: 4000 }), db);
+    record(row({ tool: 'browser.list_tabs', tabId: null, selector: null, resultBytes: 40 }), db);
+    record(row({ tool: 'browser.map.recall', tabId: null, selector: null, resultBytes: 60 }), db);
+    record(row({ tool: 'browser.read', selector: null, resultBytes: 20 }), db);
+    record(row({ outcome: 'error', error: 'boom', resultBytes: null }), db);
+    // A row from before the column existed: counted, weighs nothing.
+    record(row({ tool: 'browser.click' }), db);
+  }
+
+  test('bytes, shares and map counters over a seeded trail', () => {
+    seedUsage();
+    const s = summarizeActivity(getActivityDb(), {});
+    expect(s).toMatchObject({
+      records: 8,
+      bytes_total: 4920,
+      bytes_by_tool: {
+        'browser.snapshot': 4000,
+        'browser.evaluate': 800,
+        'browser.map.recall': 60,
+        'browser.list_tabs': 40,
+        'browser.read': 20,
+      },
+      evaluate_share: 0.25,
+      list_tabs_calls: 1,
+      map_recall_calls: 1,
+      readers_run: 1,
+    });
+    // Largest first, and tools with no measured result are left out.
+    expect(Object.keys(s.bytes_by_tool)[0]).toBe('browser.snapshot');
+    expect(s.bytes_by_tool).not.toHaveProperty('browser.click');
+  });
+
+  test('bytes_by_tool keeps the 10 heaviest tools', () => {
+    const db = getActivityDb();
+    for (let i = 0; i < 12; i += 1) {
+      record(row({ tool: `browser.t${String(i).padStart(2, '0')}`, resultBytes: i + 1 }), db);
+    }
+    const byTool = summarizeActivity(db, {}).bytes_by_tool;
+    expect(Object.keys(byTool)).toHaveLength(10);
+    expect(byTool).not.toHaveProperty('browser.t00');
+    expect(byTool['browser.t11']).toBe(12);
+  });
+
+  test('the filters apply to the new fields too', () => {
+    seedUsage();
+    record(row({ tool: 'browser.map.recall', agentId: 's-9', resultBytes: 7 }));
+    const s = summarizeActivity(getActivityDb(), { agentId: 's-9' });
+    expect(s).toMatchObject({
+      records: 1,
+      bytes_total: 7,
+      map_recall_calls: 1,
+      evaluate_share: 0,
+    });
   });
 });

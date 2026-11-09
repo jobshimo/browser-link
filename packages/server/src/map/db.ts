@@ -152,6 +152,60 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_selector_outcomes_app ON selector_outcomes(app_id);
   `);
 
+  // v0.45.0 (knowledge-loop): what was observed, on which build and screen.
+  // `view_sig` is the screen the target was last used on; `last_ok_build` /
+  // `last_fail_build` the build fingerprints of the last success and failure;
+  // `struct_fail_n` counts failures that count as structural (see
+  // confidence.ts) on `struct_fail_build` since the row last worked, which
+  // is what `failing` is computed from. Added with a guarded ALTER, never a
+  // table rebuild, so every existing row and counter is kept as is.
+  addColumnIfMissing(db, 'selector_outcomes', 'view_sig', 'TEXT');
+  addColumnIfMissing(db, 'selector_outcomes', 'last_ok_build', 'TEXT');
+  addColumnIfMissing(db, 'selector_outcomes', 'last_fail_build', 'TEXT');
+  addColumnIfMissing(db, 'selector_outcomes', 'struct_fail_n', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'selector_outcomes', 'struct_fail_build', 'TEXT');
+
+  // v0.45.0: every build fingerprint an app was seen running (the hash of
+  // its script and stylesheet URLs, computed in the page by the observer),
+  // with when it was first and last seen. Lets confidence tell "worked on
+  // this build" from "worked on an older one".
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_builds (
+      id INTEGER PRIMARY KEY,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      UNIQUE(app_id, fingerprint)
+    );
+  `);
+
+  // v0.45.0: the append-only registry of `browser.evaluate` expressions
+  // (read and written by map/readers.ts). `status` changes only through the
+  // agent's explicit curation; nothing here rewrites an expression.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS js_readers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      hash TEXT NOT NULL,
+      expression TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('reader','mutation')),
+      name TEXT,
+      ok_n INTEGER NOT NULL DEFAULT 0,
+      fail_n INTEGER NOT NULL DEFAULT 0,
+      last_ok_at TEXT,
+      last_fail_at TEXT,
+      last_ok_build TEXT,
+      result_bytes_avg INTEGER,
+      flags TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','kept','dropped')),
+      created_at TEXT NOT NULL,
+      UNIQUE(app_id, hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_js_readers_app ON js_readers(app_id, status);
+  `);
+
   // v0.20.0: normalize apps.origin rows written before the write path
   // canonicalized origins (see origin.ts). Before this release, save
   // stored whatever free text the agent passed ("https://x.com/" with a
@@ -178,6 +232,23 @@ function runMigrations(db: Database.Database): void {
       // UNIQUE(origin, app_key) collision with an already-canonical row.
     }
   }
+}
+
+/**
+ * `ALTER TABLE <table> ADD COLUMN <column> <definition>` only when the
+ * column is not there yet, so every open of the DB runs it safely. Adding a
+ * column is the one schema change SQLite does in place: no row is copied or
+ * rewritten. Table and column names come from this module, never from input.
+ */
+export function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 export function closeDb(): void {

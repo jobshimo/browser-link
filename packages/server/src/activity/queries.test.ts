@@ -114,6 +114,49 @@ describe('record', () => {
   });
 });
 
+describe('record — resultBytes (0.45.0)', () => {
+  test('stores and reads back the result size', () => {
+    const stored = record(row({ resultBytes: 1234 }));
+    expect(stored?.resultBytes).toBe(1234);
+    expect(query().records[0]?.resultBytes).toBe(1234);
+  });
+
+  test('a row without a size reads back null; NaN is null and negatives clamp to 0', () => {
+    record(row());
+    record(row({ resultBytes: Number.NaN }));
+    record(row({ resultBytes: -5.4 }));
+    // Newest first.
+    expect(query().records.map((r) => r.resultBytes)).toEqual([0, null, null]);
+  });
+
+  test('records mode is unchanged apart from the new field', () => {
+    record(row({ payload: 'x', flag: 'unsettled', agentId: 's-1', resultBytes: 9 }));
+    const [stored] = query().records;
+    expect(Object.keys(stored ?? {}).sort()).toEqual(
+      [
+        'id',
+        'at',
+        'tool',
+        'tabId',
+        'transport',
+        'url',
+        'title',
+        'agent',
+        'agentPid',
+        'selector',
+        'payload',
+        'outcome',
+        'error',
+        'durationMs',
+        'flowId',
+        'flag',
+        'agentId',
+        'resultBytes',
+      ].sort(),
+    );
+  });
+});
+
 describe('truncate', () => {
   test('leaves short values untouched and marks long ones', () => {
     expect(truncate('short')).toBe('short');

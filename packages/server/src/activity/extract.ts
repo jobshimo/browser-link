@@ -114,7 +114,7 @@ export interface BuildRowInput {
    * with its shape intact, minus the free text. */
   recordPayloads: boolean;
   /** The resolved tool response, when the call did not throw. Read only to
-   * classify `flag`; never stored. */
+   * classify `flag` and to measure `resultBytes`; never stored. */
   result?: unknown;
   /** IPC session uuid of the caller; `'primary'` when absent. */
   agentId?: string | null;
@@ -263,7 +263,23 @@ export function buildRow({
     flowId: extractFlowId(args),
     flag: classifyFlag(tool, args, result, error),
     agentId: agentId ?? 'primary',
+    resultBytes: error === undefined ? serializedBytes(result) : null,
   };
+}
+
+/**
+ * Size in bytes of `value` serialised as JSON (UTF-8): what a result costs on
+ * the wire before the MCP envelope. `undefined` (a tool that returned
+ * nothing) is 0; a value JSON cannot serialise (a cycle, a BigInt) is null,
+ * because a guessed size would be worse than none. Never throws.
+ */
+export function serializedBytes(value: unknown): number | null {
+  try {
+    const text = JSON.stringify(value) as string | undefined;
+    return text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
+  } catch {
+    return null;
+  }
 }
 
 /** `buildRow` with the arguments split out — the signature the dispatcher's

@@ -55,9 +55,18 @@ const I18N = {
     reportTargetsHeader: ['TARGET', 'TOOL', 'COUNT', 'LAST FLAG'],
     reportSessions: 'Sessions',
     reportSessionsHeader: ['SESSION', 'AGENT', 'ACTIONS', 'ERRORS', 'FLAGS'],
+    reportUsage: 'Cost and map usage',
+    reportUsageLabels: {
+      bytes: 'result bytes',
+      evaluateShare: 'evaluate share',
+      listTabs: 'list_tabs calls',
+      mapRecall: 'map.recall calls',
+      readers: 'readers run',
+    },
+    reportBytesByTool: 'Result bytes by tool',
     usage: [
       'browser-link activity [filters]            Recent actions (newest first)',
-      'browser-link activity report [options]     Friction report: what failed, per session',
+      'browser-link activity report [options]     Friction report: what failed, per session, and what results cost',
       'browser-link activity export [options]     Write the trail to a file',
       'browser-link activity stats                How big the trail is right now',
       'browser-link activity clear [options]      Delete trail entries',
@@ -118,9 +127,18 @@ const I18N = {
     reportTargetsHeader: ['OBJETIVO', 'HERRAMIENTA', 'VECES', 'ÚLTIMA SEÑAL'],
     reportSessions: 'Sesiones',
     reportSessionsHeader: ['SESIÓN', 'AGENTE', 'ACCIONES', 'ERRORES', 'SEÑALES'],
+    reportUsage: 'Coste y uso del mapa',
+    reportUsageLabels: {
+      bytes: 'bytes de resultados',
+      evaluateShare: 'cuota de evaluate',
+      listTabs: 'llamadas a list_tabs',
+      mapRecall: 'llamadas a map.recall',
+      readers: 'lectores ejecutados',
+    },
+    reportBytesByTool: 'Bytes de resultados por herramienta',
     usage: [
       'browser-link activity [filtros]            Acciones recientes (más nuevas primero)',
-      'browser-link activity report [opciones]    Informe de fricción: qué falló, por sesión',
+      'browser-link activity report [opciones]    Informe de fricción: qué falló, por sesión, y cuánto ocuparon los resultados',
       'browser-link activity export [opciones]    Escribe el rastro en un fichero',
       'browser-link activity stats                Cuánto ocupa el rastro ahora mismo',
       'browser-link activity clear [opciones]     Borra entradas del rastro',
@@ -456,6 +474,28 @@ function runReport(argv: string[], language: Language): string {
         ].join('  ')}`,
     ),
   );
+
+  // Cost and map usage: what the results weighed and how much the map and
+  // the readers were used, so one release can be compared with the next.
+  const u = t.reportUsageLabels;
+  const usageLine = (label: string, value: string): string => `  ${pad(label, 22)}  ${value}`;
+  lines.push(
+    '',
+    t.reportUsage,
+    usageLine(u.bytes, formatBytes(s.bytes_total)),
+    usageLine(u.evaluateShare, `${Math.round(s.evaluate_share * 100)}%`),
+    usageLine(u.listTabs, String(s.list_tabs_calls)),
+    usageLine(u.mapRecall, String(s.map_recall_calls)),
+    usageLine(u.readers, String(s.readers_run)),
+  );
+  const byTool = Object.entries(s.bytes_by_tool);
+  if (byTool.length > 0) {
+    lines.push(
+      '',
+      t.reportBytesByTool,
+      ...byTool.map(([tool, n]) => `  ${pad(tool, 22)}  ${formatBytes(n)}`),
+    );
+  }
   return lines.join('\n');
 }
 

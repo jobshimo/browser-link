@@ -55,9 +55,27 @@ export interface ActivitySummary {
   top_failing_targets: FailingTarget[];
   /** Most recently active first. */
   sessions: SessionSummary[];
+  /** Sum of `result_bytes` over the rows (rows recorded before the column
+   * existed count 0): what the results cost, compared release to release. */
+  bytes_total: number;
+  /** `result_bytes` per tool, largest first, at most `MAX_BYTES_BY_TOOL`. */
+  bytes_by_tool: Record<string, number>;
+  /** Share of the rows that are `browser.evaluate` calls, 0–1 (3 decimals);
+   * 0 for an empty range. */
+  evaluate_share: number;
+  /** `browser.list_tabs` calls: where the map is offered. The report cannot
+   * see result contents, so this counts the calls, not the hints. */
+  list_tabs_calls: number;
+  /** `browser.map.recall` calls. */
+  map_recall_calls: number;
+  /** `browser.read` calls (kept readers run by name). */
+  readers_run: number;
 }
 
 export const MAX_FAILING_TARGETS = 10;
+
+/** Upper bound on `bytes_by_tool` entries. */
+export const MAX_BYTES_BY_TOOL = 10;
 
 /** Upper bound on sessions listed. A report is read by a person or an agent's
  * context window; a long-lived data dir can hold thousands of sessions. */
@@ -108,7 +126,11 @@ export function summarizeActivity(
       `SELECT COUNT(*) AS records,
               COALESCE(SUM(outcome = 'error'), 0) AS errors,
               COALESCE(SUM(tool = 'browser.evaluate'), 0) AS evaluate_calls,
-              COALESCE(SUM(flag IN (${TIMEOUT_FLAGS.map(() => '?').join(', ')})), 0) AS timeouts
+              COALESCE(SUM(flag IN (${TIMEOUT_FLAGS.map(() => '?').join(', ')})), 0) AS timeouts,
+              COALESCE(SUM(result_bytes), 0) AS bytes_total,
+              COALESCE(SUM(tool = 'browser.list_tabs'), 0) AS list_tabs_calls,
+              COALESCE(SUM(tool = 'browser.map.recall'), 0) AS map_recall_calls,
+              COALESCE(SUM(tool = 'browser.read'), 0) AS readers_run
        FROM activity ${where(clauses)}`,
     )
     .get(...TIMEOUT_FLAGS, ...params) as {
@@ -116,7 +138,18 @@ export function summarizeActivity(
     errors: number;
     evaluate_calls: number;
     timeouts: number;
+    bytes_total: number;
+    list_tabs_calls: number;
+    map_recall_calls: number;
+    readers_run: number;
   };
+
+  const bytesByTool = db
+    .prepare(
+      `SELECT tool, SUM(result_bytes) AS n FROM activity ${where(clauses, 'result_bytes IS NOT NULL')}
+       GROUP BY tool ORDER BY n DESC, tool ASC LIMIT ?`,
+    )
+    .all(...params, MAX_BYTES_BY_TOOL) as { tool: string; n: number }[];
 
   const byFlag = db
     .prepare(
@@ -190,5 +223,12 @@ export function summarizeActivity(
       errors: s.errors,
       flags: flagCounts(sessionFlags.filter((f) => f.agent_id === s.agent_id)),
     })),
+    bytes_total: totals.bytes_total,
+    bytes_by_tool: Object.fromEntries(bytesByTool.map((r) => [r.tool, r.n])),
+    evaluate_share:
+      totals.records === 0 ? 0 : Math.round((totals.evaluate_calls / totals.records) * 1000) / 1000,
+    list_tabs_calls: totals.list_tabs_calls,
+    map_recall_calls: totals.map_recall_calls,
+    readers_run: totals.readers_run,
   };
 }

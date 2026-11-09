@@ -446,8 +446,24 @@ export interface PageObserverNav {
   url: string;
 }
 
+/** Pushed by the top document once it is loaded and again 300 ms after the
+ * last SPA navigation (knowledge-loop S1). `build` is a hash of the sorted
+ * script and stylesheet URLs with query strings removed; `view_sig` a hash
+ * of the first h1-h3 texts and the landmark roles present. */
+export interface PageObserverDocInfo {
+  type: 'doc_info';
+  doc_id: string;
+  url: string;
+  build: string;
+  view_sig: string;
+  title: string;
+}
+
+/** The messages about the document itself, as opposed to mutation summaries. */
+export type PageObserverDocMessage = PageObserverDocStart | PageObserverNav | PageObserverDocInfo;
+
 /** Every message the page observer pushes through its binding (JSON). */
-export type PageObserverMessage = PageObserverSummary | PageObserverDocStart | PageObserverNav;
+export type PageObserverMessage = PageObserverSummary | PageObserverDocMessage;
 
 /** What an action caused, aggregated from the page observer's summaries
  * since the action mark; attached to settle results. `targets` sums the

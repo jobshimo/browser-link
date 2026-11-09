@@ -25,6 +25,8 @@ import {
 } from '../tools/responses.js';
 import { buildEmptyTabsHint } from '../tools/empty-tabs-hint.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
+import { buildActivityRow } from '../activity/extract.js';
+import { rememberTypedValue, rememberTypedValuesFromFlow } from '../map/readers.js';
 
 export interface DispatchDeps {
   browserTools: BrowserToolDeps;
@@ -75,8 +77,16 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
         `Re-enable it via the setup UI (Permissions) or \`browser-link tools enable ${name}\`.`,
     );
   }
+  // The JS registry refuses to store an evaluate expression that contains
+  // something the agent typed. It can only know what was typed if it is told
+  // here, before the call runs. In memory only; never written anywhere.
+  if (name === 'browser.type' && typeof args === 'object' && args !== null) {
+    rememberTypedValue((args as { text?: unknown }).text);
+  } else if (name === 'browser.flow') {
+    rememberTypedValuesFromFlow(args);
+  }
   try {
-    if (isMapTool(name)) return toolResponse(handleMapTool(name, args));
+    if (isMapTool(name)) return toolResponse(recordedMapTool(name, args, caller, deps));
     if (isBrowserTool(name)) {
       const result = await handleBrowserTool(name, args, deps.browserTools, caller);
       if (name === 'browser.screenshot') return imageToolResponse(result);
@@ -99,5 +109,49 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
     return toolError(`Unknown tool: ${name}`);
   } catch (err) {
     return toolError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * Run a map tool and leave a trail row for it, like every browser tool.
+ *
+ * Map tools are answered here, not by `handleBrowserTool`, so they never
+ * passed through its recording wrapper and the trail could not say how often
+ * the map was read or written. Same contract as that wrapper: the result is
+ * returned and the error rethrown untouched, and recording can never break
+ * the call (a row that fails to build is a row not written).
+ */
+function recordedMapTool(
+  name: string,
+  args: unknown,
+  caller: AgentCaller,
+  deps: DispatchDeps,
+): unknown {
+  const tools = deps.browserTools;
+  if (!tools.recordActivity) return handleMapTool(name, args);
+  const startedAt = Date.now();
+  const write = (settled: { result: unknown } | { error: unknown }): void => {
+    try {
+      tools.recordActivity?.(
+        buildActivityRow(args, {
+          tool: name,
+          caller,
+          durationMs: Date.now() - startedAt,
+          ...settled,
+          agentId: caller.agent_id,
+          recordPayloads: tools.recordActivityPayloads !== false,
+        }),
+      );
+    } catch {
+      // Observation must never break the observed.
+    }
+  };
+  try {
+    const result = handleMapTool(name, args);
+    write({ result });
+    return result;
+  } catch (error) {
+    write({ error: error ?? new Error('unknown error') });
+    throw error;
   }
 }

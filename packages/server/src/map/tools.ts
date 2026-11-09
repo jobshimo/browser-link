@@ -13,6 +13,7 @@ import {
   type FlowRow,
   type InsightKind,
   type InsightRow,
+  type RecallScope,
 } from './queries.js';
 import { semanticKeyProblem, validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { ToolDefinition } from '../tools/types.js';
@@ -21,11 +22,17 @@ export const MAP_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.map.recall',
     description:
-      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response sections, in order: `pitfalls` (what does NOT work — read these first), `mechanisms` (how the app behaves underneath), `entries`, `learned` (present only when the map learned something from use: up to 50 `{ target, target_kind, action, ok_n, fail_n, last_reason, url_pattern, last_ok_at, last_fail_at }` recorded automatically from click/type/press/find/wait_for outcomes, rows that ever failed first, then the most used; `target` is a CSS selector or a `browser.find` semantic key as JSON, never a typed value), `flows`. `flows` are named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow. A selector entry whose payload carries `semantic_key` (`{ role, name, path }`) AND whose stored selector is a structural `:nth-of-type(` fallback is returned with `prefer: "semantic_key"` (computed at recall, never stored): target it with browser.find({ key: payload.semantic_key }) rather than the brittle selector.',
+      'Recall what is already known about a browser app/route from the local map DB. Call this first when you arrive at a tab so you can reuse known selectors, flows and gotchas instead of rediscovering them. Pass origin (scheme://host:port). Optionally pass app_key to disambiguate when multiple apps share an origin, and url to filter entries down to a specific pathname. Response sections, in order: `pitfalls` (what does NOT work — read these first), `mechanisms` (how the app behaves underneath), `entries`, `learned` (present only when the map learned something from use: up to 50 `{ target, target_kind, action, ok_n, fail_n, last_reason, url_pattern, last_ok_at, last_fail_at }` recorded automatically from click/type/press/find/wait_for outcomes, rows that ever failed first, then the most used; `target` is a CSS selector or a `browser.find` semantic key as JSON, never a typed value), `flows`. `flows` are named browser.flow-replayable recipes saved for the app (`{ name, description, steps, use_count }`, not filtered by url) — adapt any placeholder text in `steps` (e.g. `type text "<QUERY>"`) to the real value before replaying with browser.flow. A selector entry whose payload carries `semantic_key` (`{ role, name, path }`) AND whose stored selector is a structural `:nth-of-type(` fallback is returned with `prefer: "semantic_key"` (computed at recall, never stored): target it with browser.find({ key: payload.semantic_key }) rather than the brittle selector. Optional `scope`: `"path"` (default, exactly the response above), `"app"` (the WHOLE map of the app, unfiltered and uncapped: `scope`, `app`, `current_build` (the most recently seen build fingerprint of the app), `pitfalls`, `mechanisms`, every `entries` row, `flows`, `readers` (every recorded browser.evaluate expression of any status with `kind`, `flags`, counters and `confidence`), `outcomes` (every learned target with counters, builds, view signature and `confidence`: fresh | unverified | failing against `current_build`), `builds` (fingerprints with first/last seen) and `learned_failures`), or `"all"` (`{ scope, apps: [<the app scope result per app of the origin>] }`). Use "app"/"all" only when you need the whole map; the start pack on list_tabs/navigate (`knowledge`) already carries the best of it.',
     inputSchema: {
       type: 'object',
       properties: {
         origin: { type: 'string', description: 'scheme://host:port of the tab.' },
+        scope: {
+          type: 'string',
+          enum: ['path', 'app', 'all'],
+          description:
+            'Optional. "path" (default): the route view. "app": the whole map of the app. "all": the whole map of every app of the origin.',
+        },
         app_key: {
           type: 'string',
           description:
@@ -267,6 +274,13 @@ interface RecallArgs {
   origin: string;
   app_key?: string;
   url?: string;
+  scope?: unknown;
+}
+
+const RECALL_SCOPES: readonly RecallScope[] = ['path', 'app', 'all'];
+
+function isRecallScope(value: unknown): value is RecallScope {
+  return typeof value === 'string' && (RECALL_SCOPES as readonly string[]).includes(value);
 }
 
 interface SaveFlowArg {
@@ -414,7 +428,14 @@ export function handleMapTool(name: string, args: unknown): unknown {
   switch (name) {
     case 'browser.map.recall': {
       const a = args as RecallArgs;
-      return recall({ origin: a.origin, app_key: a.app_key ?? null, url: a.url ?? null });
+      const base = { origin: a.origin, app_key: a.app_key ?? null, url: a.url ?? null };
+      if (a.scope === undefined) return recall(base);
+      // Checked here too: the IPC/proxy path reaches handleMapTool without
+      // schema validation, and an unknown scope must not read as 'path'.
+      if (!isRecallScope(a.scope)) {
+        throw new Error("browser.map.recall: scope must be one of 'path' | 'app' | 'all'");
+      }
+      return recall({ ...base, scope: a.scope });
     }
     case 'browser.map.save': {
       const a = args as SaveArgs;

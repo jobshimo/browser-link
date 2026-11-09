@@ -49,6 +49,7 @@ interface ActivityRow {
   flow_id: string | null;
   flag: string | null;
   agent_id: string | null;
+  result_bytes: number | null;
 }
 
 function toRecord(row: ActivityRow): ActivityRecord {
@@ -70,6 +71,7 @@ function toRecord(row: ActivityRow): ActivityRecord {
     flowId: row.flow_id,
     flag: isActivityFlag(row.flag) ? row.flag : null,
     agentId: row.agent_id,
+    resultBytes: row.result_bytes,
   };
 }
 
@@ -89,13 +91,17 @@ export function record(input: ActivityInput, db?: Database.Database): ActivityRe
     // unknown value is stored as null rather than as free text.
     const flag = isActivityFlag(input.flag) ? input.flag : null;
     const agentId = truncate(input.agentId ?? null, 200);
+    const resultBytes =
+      typeof input.resultBytes === 'number' && Number.isFinite(input.resultBytes)
+        ? Math.max(0, Math.round(input.resultBytes))
+        : null;
     const result = handle
       .prepare(
         `INSERT INTO activity
            (at, tool, tab_id, transport, url, title, agent, agent_pid,
             selector, payload, outcome, error, duration_ms, flow_id,
-            flag, agent_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            flag, agent_id, result_bytes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         at,
@@ -114,9 +120,10 @@ export function record(input: ActivityInput, db?: Database.Database): ActivityRe
         input.flowId,
         flag,
         agentId,
+        resultBytes,
       );
     pruneIfDue(handle);
-    return { ...input, flag, agentId, id: Number(result.lastInsertRowid), at };
+    return { ...input, flag, agentId, resultBytes, id: Number(result.lastInsertRowid), at };
   } catch {
     return null;
   }

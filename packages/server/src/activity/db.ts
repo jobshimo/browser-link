@@ -81,6 +81,7 @@ function runMigrations(db: Database.Database): void {
   for (const [column, ddl] of [
     ['flag', 'ALTER TABLE activity ADD COLUMN flag TEXT'],
     ['agent_id', 'ALTER TABLE activity ADD COLUMN agent_id TEXT'],
+    ['result_bytes', 'ALTER TABLE activity ADD COLUMN result_bytes INTEGER'],
   ] as const) {
     if (!present.has(column)) db.exec(ddl);
   }

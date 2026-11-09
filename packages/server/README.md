@@ -145,6 +145,19 @@ text, evaluate expressions and pressed keys are never read. At most 200
 learned targets per app. On by default; `browser-link config set
 map-learning off` stops it without a restart.
 
+### What the map knows
+
+Every learned record is keyed by origin and **path pattern** (`/facturas/48213`
+→ `/facturas/:id`), stamped with the page's **build fingerprint** and **view
+signature**, which `list_tabs` shows per tab as `build` and `view_sig`. Each
+item the map offers carries `confidence` (`fresh` on this build, `unverified`,
+or `failing` after 2+ structural failures on this build) plus its raw
+evidence. `list_tabs` and `navigate` carry a ranked **start pack**,
+`knowledge` (≤ 2 KB: pitfalls, mechanisms, kept readers, flows, best
+selectors; failing ones only as `warnings`); `click`/`type`/`press`/`find`
+carry `known` for a target with evidence; `browser.map.recall` with
+`scope: "app"` or `"all"` returns the whole map.
+
 For what went wrong in a session, agents call `browser.activity({ summary:
 true })` and you run `browser-link activity report [--since <duration|iso>]
 [--agent <id>]`: errors and flagged calls by flag, by tool, the top failing

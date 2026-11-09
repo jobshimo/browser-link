@@ -22,6 +22,8 @@ import {
 } from '../tools/browser-dispatch.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 import { BridgeEventLog } from './events.js';
+import { clearTypedValues, typedValues } from '../map/readers.js';
+import type { ActivityInput } from '../activity/types.js';
 
 const TEST_CALLER: AgentCaller = {
   agent_id: 'test',
@@ -353,5 +355,142 @@ describe('handleToolCall — outdated-server hint on list_tabs (0.41.0)', () => 
     const res = await handleToolCall(call, makeDeps());
     expect(res.content).toHaveLength(2);
     expect((res.content[1] as { text: string }).text).toBe(`hint: ${OUTDATED}`);
+  });
+});
+
+describe('handleToolCall — map tools are recorded in the trail (0.45.0)', () => {
+  function recordingDeps(recordActivity = vi.fn<(row: ActivityInput) => void>()): {
+    deps: DispatchDeps;
+    recordActivity: typeof recordActivity;
+  } {
+    const deps = makeDeps({
+      browserTools: {
+        listTabs: vi.fn(() => []),
+        callBrowserTool: vi.fn(async () => undefined),
+        recordActivity,
+      } as BrowserToolDeps,
+    });
+    return { deps, recordActivity };
+  }
+
+  test('a successful map call leaves one ok row with its result size, response unchanged', async () => {
+    vi.mocked(handleMapTool).mockReturnValue({ entries: [] });
+    const { deps, recordActivity } = recordingDeps();
+    const out = await handleToolCall(
+      { name: 'browser.map.recall', arguments: { origin: 'https://x' }, caller: TEST_CALLER },
+      deps,
+    );
+    expect(out).toEqual({
+      content: [{ type: 'text', text: JSON.stringify({ entries: [] }, null, 2) }],
+    });
+    expect(recordActivity).toHaveBeenCalledOnce();
+    expect(recordActivity.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'browser.map.recall',
+      outcome: 'ok',
+      error: null,
+      agentId: 'test',
+      agent: 'vitest',
+      resultBytes: Buffer.byteLength(JSON.stringify({ entries: [] })),
+    });
+  });
+
+  test('a throwing map call leaves an error row and still answers with a toolError', async () => {
+    vi.mocked(handleMapTool).mockImplementation(() => {
+      throw new Error('sync boom');
+    });
+    const { deps, recordActivity } = recordingDeps();
+    const out = await handleToolCall(
+      { name: 'browser.map.save', arguments: {}, caller: TEST_CALLER },
+      deps,
+    );
+    expect(out.isError).toBe(true);
+    expect(recordActivity.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'browser.map.save',
+      outcome: 'error',
+      error: 'sync boom',
+      resultBytes: null,
+    });
+  });
+
+  test('a throwing sink cannot break the map call', async () => {
+    vi.mocked(handleMapTool).mockReturnValue({ ok: true });
+    const { deps } = recordingDeps(
+      vi.fn(() => {
+        throw new Error('disk on fire');
+      }),
+    );
+    const out = await handleToolCall(
+      { name: 'browser.map.apps', arguments: {}, caller: TEST_CALLER },
+      deps,
+    );
+    expect(out.isError).toBeUndefined();
+  });
+
+  test('with no sink wired a map call records nothing and answers as before', async () => {
+    vi.mocked(handleMapTool).mockReturnValue({ entries: [] });
+    const out = await handleToolCall(
+      { name: 'browser.map.recall', arguments: {}, caller: TEST_CALLER },
+      makeDeps(),
+    );
+    expect(JSON.parse(out.content[0]?.text as string)).toEqual({ entries: [] });
+  });
+
+  test('the list_tabs hint still works with a sink wired', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue([]);
+    const log = new BridgeEventLog();
+    log.add('tab-registered', { tabId: 'tab_1', url: 'https://a.test/x' });
+    log.add('tab-disconnected', { tabId: 'tab_1' });
+    const res = await handleToolCall(
+      { name: 'browser.list_tabs', arguments: {}, caller: TEST_CALLER },
+      makeDeps({
+        browserTools: {
+          listTabs: vi.fn(() => []),
+          callBrowserTool: vi.fn(async () => undefined),
+          recentEvents: (o) => log.recent(o),
+          recordActivity: vi.fn(),
+        } as BrowserToolDeps,
+      }),
+    );
+    expect(res.content).toHaveLength(2);
+    expect((res.content[0] as { text: string }).text).toBe('[]');
+  });
+});
+
+describe('handleToolCall — typed values are remembered for the JS registry', () => {
+  afterEach(() => clearTypedValues());
+
+  test('browser.type text and flow type steps are remembered before dispatch', async () => {
+    clearTypedValues();
+    vi.mocked(handleBrowserTool).mockImplementation(async () => {
+      // Remembered BEFORE the call runs, so an evaluate racing it is covered.
+      expect(typedValues()).toContain('hunter22');
+      return { ok: true };
+    });
+    await handleToolCall(
+      {
+        name: 'browser.type',
+        arguments: { tab_id: 't1', selector: '#pw', text: 'hunter22' },
+        caller: TEST_CALLER,
+      },
+      makeDeps(),
+    );
+    await handleToolCall(
+      {
+        name: 'browser.flow',
+        arguments: { tab_id: 't1', steps: [{ type: { text: 'shrek' } }] },
+        caller: TEST_CALLER,
+      },
+      makeDeps(),
+    ).catch(() => undefined);
+    expect(typedValues()).toEqual(['hunter22', 'shrek']);
+  });
+
+  test('a disabled browser.type remembers nothing', async () => {
+    clearTypedValues();
+    await handleToolCall(
+      { name: 'browser.type', arguments: { text: 'secret-ish' }, caller: TEST_CALLER },
+      makeDeps({ disabledTools: ['browser.type'] }),
+    );
+    expect(typedValues()).toEqual([]);
   });
 });

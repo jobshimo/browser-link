@@ -47,7 +47,14 @@ import {
   type DownloadResult,
   type FetchDownloadOutcome,
 } from '../downloads.js';
-import type { MapHint } from '../map/queries.js';
+import type {
+  ActionHint,
+  ActionHintInput,
+  Knowledge,
+  KnowledgeInput,
+  MapHint,
+} from '../map/queries.js';
+import { durableTarget, splitUrl } from '../map/keys.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ActivityInput } from '../activity/types.js';
 import { buildActivityRow } from '../activity/extract.js';
@@ -85,6 +92,12 @@ export interface TabSnapshot {
   /** The extension's version as sent at `tab.register`. Absent on cdp
    * tabs and on tabs of an extension that predates the field. */
   extension_version?: string;
+  /** Build fingerprint of the top document (the observer's `doc_info`).
+   * Absent until the page reported one, on cdp tabs and with older
+   * extensions. */
+  build?: string;
+  /** View signature of the top document, from the same report. */
+  view_sig?: string;
 }
 
 /** Public view of a TabClaim — what other agents and the user are allowed to see.
@@ -112,6 +125,10 @@ export interface EnrichedTabSnapshot extends TabSnapshot {
   /** Present (always `true`) only when `extension_version` is a plain
    * MAJOR.MINOR.PATCH lower than the server's version. */
   extension_outdated?: true;
+  /** The start pack (see `map/queries.ts`'s `getKnowledge`): what the map
+   * knows for this tab's app and path, ranked, with confidence and evidence.
+   * Omitted when the map has nothing with evidence. */
+  knowledge?: Knowledge;
 }
 
 /** True when an extension tab's reported version is a plain semver lower
@@ -179,6 +196,16 @@ export interface BrowserToolDeps {
    * without the map DB wired up just omits the field on every tab, same
    * degrade-gracefully pattern as `tabClaims`. */
   getMapHints?(origins: string[]): Map<string, MapHint>;
+  /** Optional start-pack lookup (see `map/queries.ts`'s `getKnowledge`):
+   * backs the `knowledge` field of `list_tabs` (per tab) and of
+   * `navigate` (where it landed). Must not throw; null means "nothing with
+   * evidence" and adds no field. Absent in tests and builds without the map. */
+  getKnowledge?(input: KnowledgeInput): Knowledge | null;
+  /** Optional action-time hint lookup (see `map/queries.ts`'s
+   * `getActionHint`): backs the `known` field click/type/press/find carry
+   * when their selector (or find key) has evidence on this app. Must not
+   * throw; null adds no field. */
+  getActionHint?(input: ActionHintInput): ActionHint | null;
   /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
    * merges its result into `listTabs()`'s. Internally gated on
    * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
@@ -1310,14 +1337,65 @@ async function handleListTabs(
     const claim = deps.tabClaims?.getClaim(t.tab_id) ?? null;
     const origin = originOf(t.url);
     const hint = origin ? (hintsByOrigin.get(origin) ?? null) : null;
+    const knowledge = knowledgeFor(deps, t.url, t.build);
     return {
       ...t,
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
       ...(hint ? { map: hint } : {}),
       ...(isExtensionOutdated(t) ? { extension_outdated: true as const } : {}),
+      ...(knowledge ? { knowledge } : {}),
     } satisfies EnrichedTabSnapshot;
   });
+}
+
+/** The start pack for a URL, or null (no lookup wired, no usable origin,
+ * nothing with evidence). */
+function knowledgeFor(
+  deps: BrowserToolDeps,
+  url: string | undefined,
+  build: string | undefined,
+): Knowledge | null {
+  if (!deps.getKnowledge) return null;
+  const at = splitUrl(url);
+  if (!at) return null;
+  return deps.getKnowledge({ origin: at.origin, pathname: at.pathname, build: build ?? null });
+}
+
+/** The tab a call addressed, from the live tab table. */
+function findTab(deps: BrowserToolDeps, tabId: string): TabSnapshot | undefined {
+  return deps.listTabs().find((t) => t.tab_id === tabId);
+}
+
+/**
+ * Add `known` (knowledge-loop S6) to a click/type/press/find result when
+ * the call named a durable target (a selector, or a find key) that has
+ * evidence on this app. Looked up after the call settles and before the
+ * learner records it, so it reports the evidence the call was made with.
+ * Only the target string reaches the lookup, never typed text or values.
+ */
+function withKnown(
+  deps: BrowserToolDeps,
+  tool: string,
+  action: string,
+  args: unknown,
+  result: unknown,
+): unknown {
+  if (!deps.getActionHint) return result;
+  const target = durableTarget(tool, args);
+  if (!target) return result;
+  const tab = findTab(deps, requireTabId(args));
+  const at = splitUrl(tab?.url);
+  if (!at) return result;
+  const known = deps.getActionHint({
+    origin: at.origin,
+    pathname: at.pathname,
+    build: tab?.build ?? null,
+    target: target.target,
+    target_kind: target.target_kind,
+    action,
+  });
+  return known ? withExtras(result, { known }) : result;
 }
 
 function handleClaimTab(args: unknown, deps: BrowserToolDeps, caller: AgentCaller): unknown {
@@ -1712,14 +1790,26 @@ async function dispatchBrowserTool(
       return routeToolCall('ping', requireTabId(args), {}, deps);
     case 'browser.navigate': {
       const { url, wait_for_load = true } = args as { url: string; wait_for_load?: boolean };
-      return runAction(
+      const tabId = requireTabId(args);
+      const result = await runAction(
         'navigate',
-        requireTabId(args),
+        tabId,
         { url, wait_for_load },
         deps,
         caller,
         NAVIGATE_TIMEOUT_MS,
       );
+      if (!deps.getKnowledge) return result;
+      // The start pack of where it landed: the result's final URL when it
+      // has one, else the tab's (re-read after the navigation).
+      const tab = findTab(deps, tabId);
+      const landed = (result as { url?: unknown } | null)?.url;
+      const knowledge = knowledgeFor(
+        deps,
+        typeof landed === 'string' && landed.length > 0 ? landed : tab?.url,
+        tab?.build,
+      );
+      return knowledge ? withExtras(result, { knowledge }) : result;
     }
     case 'browser.snapshot': {
       const { within_selector, only_interactive, exclude, max_interactive, since } = (args ??
@@ -1769,7 +1859,13 @@ async function dispatchBrowserTool(
       if (key !== undefined) {
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
-        return routeToolCall('find', requireTabId(args), { key: key as SemanticKey }, deps);
+        const found = await routeToolCall(
+          'find',
+          requireTabId(args),
+          { key: key as SemanticKey },
+          deps,
+        );
+        return withKnown(deps, 'browser.find', 'find', args, found);
       }
       if (ref !== undefined) {
         // With a ref, find describes that element (see buildFindJs).
@@ -1919,7 +2015,7 @@ async function dispatchBrowserTool(
       }
       requireValidRef('browser.click', ref);
       requireValidExpect('browser.click', expectArg);
-      return runAction(
+      const clicked = await runAction(
         'click',
         requireTabId(args),
         { selector, ...refArg(ref), force, settle_ms, settle_timeout_ms, expect: expectArg },
@@ -1927,6 +2023,7 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      return withKnown(deps, 'browser.click', 'click', args, clicked);
     }
     case 'browser.type': {
       const {
@@ -1951,7 +2048,7 @@ async function dispatchBrowserTool(
       }
       requireValidRef('browser.type', ref);
       requireValidExpect('browser.type', expectArg);
-      return runAction(
+      const typed = await runAction(
         'type',
         requireTabId(args),
         { selector, ...refArg(ref), text, clear, settle_ms, settle_timeout_ms, expect: expectArg },
@@ -1959,6 +2056,7 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      return withKnown(deps, 'browser.type', 'type', args, typed);
     }
     case 'browser.press': {
       const {
@@ -1998,7 +2096,7 @@ async function dispatchBrowserTool(
         throw new Error('browser.press accepts at most one of selector or ref');
       }
       requireValidExpect('browser.press', expectArg);
-      return runAction(
+      const pressed = await runAction(
         'press',
         requireTabId(args),
         {
@@ -2014,6 +2112,8 @@ async function dispatchBrowserTool(
         caller,
         actionTimeoutWithSettle(settle_timeout_ms, expectArg),
       );
+      // `key` here is the keyboard key, never a target: only `selector` counts.
+      return withKnown(deps, 'browser.press', 'press', args, pressed);
     }
     case 'browser.drag': {
       const {
@@ -2459,6 +2559,8 @@ function observe(
         error: settled.error,
         url: tab?.url ?? null,
         title: tab?.title ?? null,
+        ...(tab?.build !== undefined ? { build: tab.build } : {}),
+        ...(tab?.view_sig !== undefined ? { viewSig: tab.view_sig } : {}),
       });
     } catch (err) {
       // Learning must never break the call it learns from.

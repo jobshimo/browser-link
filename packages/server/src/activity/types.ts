@@ -129,6 +129,11 @@ export interface ActivityRecord {
    * apart, which is what the per-session report groups by. Null for rows
    * recorded before the column existed. */
   agentId?: string | null;
+  /** Size of the serialised result in bytes (see `serializedBytes`): 0 for a
+   * call that returned nothing, null for a call that threw and for every row
+   * recorded before the column existed. What a call cost the agent's context,
+   * compared release to release by the report. */
+  resultBytes?: number | null;
 }
 
 /** What the recorder is handed. `id` and `at` are assigned on write — a
