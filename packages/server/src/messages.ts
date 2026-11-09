@@ -18,6 +18,13 @@ export interface TabRegisterPayload {
    * event the agent can pick up via the `browser.events` tool.
    */
   previousTabId?: TabId;
+  /**
+   * Optional. The extension's own version (`chrome.runtime.getManifest().version`),
+   * so the server can tell the agent when the extension is older than the
+   * server (`extension_outdated` on `browser.list_tabs`). Absent from
+   * extensions older than 0.39.0.
+   */
+  extensionVersion?: string;
 }
 
 export interface TabRegisteredPayload {

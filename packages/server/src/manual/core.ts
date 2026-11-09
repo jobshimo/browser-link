@@ -45,6 +45,7 @@ const CORE_LINES: readonly string[] = [
   '- `reresolved: true`: the node was replaced and re-found → fine.',
   '- `ref-stale` → take a fresh `snapshot`/`find`; never retry the same ref.',
   '- `wait_for` returning `matched: false` is not an error → decide.',
+  '- `extension_outdated: true` on `list_tabs` → extension older than server, fields may be missing: ask the user to update or reload the extension.',
   '',
   '### Habits',
   '',

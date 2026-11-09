@@ -8,6 +8,7 @@ import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-instructions.js';
 import { loadConfig } from './config.js';
+import { VERSION } from './version.js';
 import { resolveDownloadsDir, writeDownloadFile } from './downloads.js';
 import { getDataDir } from './map/paths.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dispatch.js';
@@ -53,6 +54,7 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
       tab_id: t.tabId,
       url: t.url,
       title: t.title,
+      ...(t.extensionVersion !== undefined ? { extension_version: t.extensionVersion } : {}),
     }));
 }
 
@@ -278,18 +280,30 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
     );
   }
 
-  // Surface outdated agent-instructions blocks on boot so the user sees the
-  // cartel without having to remember to run `browser-link instructions`. We
-  // only inspect — never write — so existing installs are not mutated. Best
-  // effort: a per-installer failure (filesystem permissions, EBADF) is logged
-  // and skipped, never aborts the server start.
-  // The same detection feeds the instructions the agent receives: when a
-  // block is outdated or missing, the connect-time text starts with a
-  // one-line notice (never a write — the CLI stays the only writer).
+  // Keep the agent-instructions blocks current on boot: every client whose
+  // block exists but is older than this server (`installed-outdated`) is
+  // refreshed in place through its installer — the same atomic, home-guarded
+  // write `browser-link instructions install` does — unless the user set
+  // `instructionsAutoRefresh: false`. A client without a block, or with a
+  // corrupt file, is never touched. Best effort: a per-installer failure is
+  // logged and reported to the agent, never aborts the server start.
+  // The outcome feeds the instructions the agent receives: when a block was
+  // refreshed or is still outdated, the connect-time text starts with a
+  // one-line notice.
   let serverInstructions = SERVER_INSTRUCTIONS;
   try {
-    const start = buildStartInstructions();
+    const start = buildStartInstructions(undefined, {
+      autoRefresh: cfg.instructionsAutoRefresh !== false,
+    });
     serverInstructions = start.text;
+    for (const r of start.refreshed) {
+      log(
+        `Agent instructions refreshed for ${r.displayName} (now v${VERSION}); restart the client to load it.`,
+      );
+    }
+    for (const f of start.failed) {
+      log(`Agent instructions refresh FAILED for ${f.displayName}: ${f.message}`);
+    }
     const outdated = start.statuses.filter((s) => s.state.kind === 'installed-outdated');
     if (outdated.length > 0) {
       const names = outdated.map((s) => s.displayName).join(', ');

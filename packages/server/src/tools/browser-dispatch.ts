@@ -26,6 +26,8 @@ function handleReset(
  */
 
 import { randomUUID } from 'node:crypto';
+import { compareSemver } from '../utils/semver.js';
+import { VERSION } from '../version.js';
 import { requireTabId } from './responses.js';
 import type {
   BridgeEvent,
@@ -76,6 +78,9 @@ export interface TabSnapshot {
    * `cdp:`) — omitted entirely for extension tabs so their wire shape stays
    * byte-equivalent to every release before this feature existed. */
   transport?: 'cdp';
+  /** The extension's version as sent at `tab.register`. Absent on cdp
+   * tabs and on tabs of an extension that predates the field. */
+  extension_version?: string;
 }
 
 /** Public view of a TabClaim — what other agents and the user are allowed to see.
@@ -100,6 +105,18 @@ export interface EnrichedTabSnapshot extends TabSnapshot {
    * a key) when the map knows nothing, keeping the common "map is empty"
    * case exactly as lean as before this field existed. */
   map?: MapHint;
+  /** Present (always `true`) only when `extension_version` is a plain
+   * MAJOR.MINOR.PATCH lower than the server's version. */
+  extension_outdated?: true;
+}
+
+/** True when an extension tab's reported version is a plain semver lower
+ * than this server's. Missing or malformed versions are never "outdated":
+ * there is nothing reliable to compare. */
+function isExtensionOutdated(t: TabSnapshot): boolean {
+  if (t.transport === 'cdp' || t.extension_version === undefined) return false;
+  if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return false;
+  return compareSemver(t.extension_version, VERSION) < 0;
 }
 
 export interface BrowserToolDeps {
@@ -1266,6 +1283,7 @@ async function handleListTabs(
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
       ...(hint ? { map: hint } : {}),
+      ...(isExtensionOutdated(t) ? { extension_outdated: true as const } : {}),
     } satisfies EnrichedTabSnapshot;
   });
 }

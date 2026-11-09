@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.0](https://github.com/jobshimo/browser-link/compare/v0.38.0...v0.39.0) (2026-11-09)
+
+### Features
+
+- **instructions:** the server refreshes your installed agent-instructions block when it is older than the running server, at its first start after an update, through the same atomic, home-guarded write the `browser-link instructions install` command uses. Only a block that already exists is rewritten; a client without a block, or with a corrupt file, is never touched. The connect-time instructions then open with "was updated to vX for <clients>: restart the client to load it"; a failed refresh keeps the outdated notice with its reason. `instructionsAutoRefresh: false` in the config file turns it off.
+- **list_tabs:** the extension sends its version when a tab registers; `browser.list_tabs` returns `extension_version` and `extension_outdated: true` when the extension is older than the server, and the agent's instructions say what to do (results may lack fields; ask the user to update or reload the extension). Extensions older than this release send no version and get no field.
+- **cli:** `browser-link` loads only the module of the command you run, enables Node's compile cache and prints `version` before reading the config. Every command, flag and message is unchanged (byte-identical output against the previous build). Measured on the maintainer's machine: `node dist/cli.js version` 115 ms → 74 ms. The remaining delay you may see on Windows comes from npm's `.cmd` launcher, not from browser-link.
+
 ## [0.38.0](https://github.com/jobshimo/browser-link/compare/v0.37.0...v0.38.0) (2026-11-09)
 
 ### Features

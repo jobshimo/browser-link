@@ -36,6 +36,16 @@ export interface BrowserLinkConfig {
    */
   autoReelect?: boolean;
   /**
+   * Refresh the installed agent-instructions block at server start. Default
+   * ON. When true (default), the primary rewrites, in place, every client's
+   * block that exists but is older than the server (`installed-outdated`),
+   * through the same installer `browser-link instructions install` uses, and
+   * tells the agent to restart its client. A client without a block, or with
+   * a corrupt file, is never touched. Set explicitly to false in config.json
+   * to keep the block as it is (the agent then sees the outdated notice).
+   */
+  instructionsAutoRefresh?: boolean;
+  /**
    * CLI-side mirror of the extension's idle-disconnect TTL (see
    * `packages/extension/src/idle-policy.ts`), in minutes. `0` means
    * "never". Set via `browser-link config set idle-ttl <minutes|never>`.
@@ -231,6 +241,7 @@ export function clampIdleTtlMinutes(value: number): number {
 const DEFAULT_MULTI_AGENT = true;
 const DEFAULT_AUTO_REELECT = true;
 const DEFAULT_CDP_DIRECT_ENABLED = false;
+const DEFAULT_INSTRUCTIONS_AUTO_REFRESH = true;
 
 function configFile(): string {
   return join(getDataDir(), 'config.json');
@@ -245,6 +256,9 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // ambiguity for the consumer.
   const autoReelect = multiAgent ? (cfg.autoReelect ?? DEFAULT_AUTO_REELECT) : false;
   const cdpDirectEnabled = cfg.cdpDirectEnabled ?? DEFAULT_CDP_DIRECT_ENABLED;
+  // Only an explicit boolean false turns the refresh off; anything else in a
+  // hand-edited file reads as the default.
+  const instructionsAutoRefresh = cfg.instructionsAutoRefresh !== false;
   // sanitizeCdpPort (not `?? DEFAULT`) so cfg.cdpDirectPort is ALWAYS a valid
   // integer by construction — an untrusted config.json string that would
   // otherwise reach a discovery URL is neutralized here, at the read
@@ -274,6 +288,7 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
     cdpDirectPort,
     cdpDirectGrantTtlMinutes,
     idleTtlMinutes,
+    instructionsAutoRefresh,
   };
 }
 
@@ -320,6 +335,10 @@ function normaliseForWrite(cfg: BrowserLinkConfig): BrowserLinkConfig {
   if (next.cdpDirectGrantTtlMinutes === DEFAULT_GRANT_TTL_MINUTES) {
     const { cdpDirectGrantTtlMinutes: _omit7, ...rest7 } = next;
     next = rest7;
+  }
+  if (next.instructionsAutoRefresh === DEFAULT_INSTRUCTIONS_AUTO_REFRESH) {
+    const { instructionsAutoRefresh: _omit8, ...rest8 } = next;
+    next = rest8;
   }
   return next;
 }

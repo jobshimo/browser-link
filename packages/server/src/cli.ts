@@ -1,31 +1,41 @@
 #!/usr/bin/env node
-import { formatDoctor, runDoctor } from './commands/doctor.js';
-import { installAll, installFor } from './commands/install.js';
-import { uninstallAll, uninstallFor } from './commands/uninstall.js';
-import { printExtensionInstructions } from './commands/extension.js';
-import { printAbout } from './commands/about.js';
-import { checkUpdates, formatUpdate } from './commands/updates.js';
-import { runToolsCommand } from './commands/tools.js';
-import { runMultiAgentCommand } from './commands/multi-agent.js';
-import { runFreePort } from './commands/free-port.js';
-import { runConfigCommand } from './commands/config.js';
-import { runCdpCommand } from './commands/cdp.js';
-import { runMapCommand } from './commands/map.js';
-import { runActivityCommand } from './commands/activity.js';
-import {
-  formatStatus as formatInstructionsStatus,
-  installInstructionsAll,
-  installInstructionsFor,
-  statusAll as instructionsStatusAll,
-  statusFor as instructionsStatusFor,
-  uninstallInstructionsAll,
-  uninstallInstructionsFor,
-  type InstructionsReport,
-} from './commands/instructions.js';
-import { loadConfig } from './config.js';
+import { realpathSync } from 'node:fs';
+import { enableCompileCache } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { VERSION } from './version.js';
+import type { InstructionsReport } from './commands/instructions.js';
 import type { ClientId } from './installers/index.js';
 import type { Language } from './commands/welcome.js';
+
+// Only the real entry point enables Node's on-disk compile cache, before any
+// command module loads, so later runs reuse the compiled code. Importing this
+// module (tests) must not change the importing process.
+const isEntryPoint = isMainModule();
+if (isEntryPoint && typeof enableCompileCache === 'function') enableCompileCache();
+
+// Command modules are imported lazily inside each `dispatch` case: a run
+// loads only the module its command needs, so `version` or `help` never pay
+// for better-sqlite3, the MCP SDK or the IPC client.
+
+// True when Node was started with this file as its entry script, through any
+// symlink or shim (`node_modules/.bin`) and with or without the `.js`
+// extension (`node dist/cli`). The native realpath canonicalises the case of
+// Windows paths, so `node c:\...\cli.js` still matches.
+function isMainModule(): boolean {
+  const entry = process.argv.at(1);
+  if (entry === undefined) return false;
+  const self = canonicalPath(fileURLToPath(import.meta.url));
+  if (self === null) return false;
+  return [entry, `${entry}.js`].some((candidate) => canonicalPath(candidate) === self);
+}
+
+function canonicalPath(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
 
 interface CliI18n {
   help: string;
@@ -329,7 +339,7 @@ function parseClient(argv: string[], language: Language): ClientId | null {
   throw new Error(CLI_I18N[language].unknownClient(val));
 }
 
-async function dispatch(argv: string[]): Promise<void> {
+export async function dispatch(argv: string[]): Promise<void> {
   // `argv.at(0)` returns `string | undefined`, which is what we want
   // here — at runtime the array really can be empty (bare invocation
   // of the CLI). Destructuring `const [cmd] = argv` would have typed
@@ -337,6 +347,16 @@ async function dispatch(argv: string[]): Promise<void> {
   // off) and forced an eslint-disable on the `case undefined` branch.
   const cmd = argv.at(0);
   const rest = argv.slice(1);
+
+  // The version is language-independent: print it before the config is read.
+  if (cmd === 'version' || cmd === '-v' || cmd === '--version') {
+    console.log(VERSION);
+    return;
+  }
+
+  // Every other command reads the config first, as it always has (help and
+  // the unknown-command error are localised; a corrupt config warns once).
+  const { loadConfig } = await import('./config.js');
   const cfg = loadConfig();
   const language: Language = cfg.language ?? 'en';
   const t = CLI_I18N[language];
@@ -356,6 +376,7 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'install': {
       const client = parseClient(rest, language);
+      const { installAll, installFor } = await import('./commands/install.js');
       const reports = client ? [installFor(client)] : installAll();
       for (const r of reports) {
         const prefix = r.installedClient ? '✓' : '·';
@@ -368,24 +389,29 @@ async function dispatch(argv: string[]): Promise<void> {
     }
     case 'uninstall': {
       const client = parseClient(rest, language);
+      const { uninstallAll, uninstallFor } = await import('./commands/uninstall.js');
       const reports = client ? [uninstallFor(client)] : uninstallAll();
       for (const r of reports) console.log(`· ${r.displayName}: ${r.message}`);
       return;
     }
     case 'extension': {
+      const { printExtensionInstructions } = await import('./commands/extension.js');
       printExtensionInstructions(language);
       return;
     }
     case 'doctor': {
+      const { formatDoctor, runDoctor } = await import('./commands/doctor.js');
       const report = await runDoctor();
       console.log(formatDoctor(report, language));
       return;
     }
     case 'about': {
+      const { printAbout } = await import('./commands/about.js');
       printAbout(language);
       return;
     }
     case 'updates': {
+      const { checkUpdates, formatUpdate } = await import('./commands/updates.js');
       const info = await checkUpdates();
       console.log(formatUpdate(info, language));
       // Non-zero exit when we could not reach the registry, so scripts can detect it.
@@ -393,28 +419,34 @@ async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     case 'tools': {
+      const { runToolsCommand } = await import('./commands/tools.js');
       console.log(runToolsCommand(rest, language));
       console.log('');
       console.log(t.toolsRestart);
       return;
     }
     case 'multi-agent': {
+      const { runMultiAgentCommand } = await import('./commands/multi-agent.js');
       console.log(runMultiAgentCommand(rest, language));
       return;
     }
     case 'config': {
+      const { runConfigCommand } = await import('./commands/config.js');
       console.log(await runConfigCommand(rest, language));
       return;
     }
     case 'cdp': {
+      const { runCdpCommand } = await import('./commands/cdp.js');
       console.log(await runCdpCommand(rest, language));
       return;
     }
     case 'map': {
+      const { runMapCommand } = await import('./commands/map.js');
       console.log(runMapCommand(rest, language));
       return;
     }
     case 'activity': {
+      const { runActivityCommand } = await import('./commands/activity.js');
       console.log(runActivityCommand(rest, language));
       return;
     }
@@ -422,15 +454,18 @@ async function dispatch(argv: string[]): Promise<void> {
       // `rest.at(0)` correctly types the missing-arg case as `undefined`
       // (vs. `rest[0]: string` under the project's loose index access).
       const action = rest.at(0);
+      const instructions = await import('./commands/instructions.js');
       if (action === undefined || action === 'status') {
         const client = parseClient(rest, language);
-        const reports = client ? [instructionsStatusFor(client)] : instructionsStatusAll();
-        console.log(formatInstructionsStatus(reports, language));
+        const reports = client ? [instructions.statusFor(client)] : instructions.statusAll();
+        console.log(instructions.formatStatus(reports, language));
         return;
       }
       if (action === 'install') {
         const client = parseClient(rest, language);
-        const reports = client ? [installInstructionsFor(client)] : installInstructionsAll();
+        const reports = client
+          ? [instructions.installInstructionsFor(client)]
+          : instructions.installInstructionsAll();
         printInstructionsReports(reports);
         console.log('');
         console.log(t.instructionsInstallNext);
@@ -438,7 +473,9 @@ async function dispatch(argv: string[]): Promise<void> {
       }
       if (action === 'uninstall') {
         const client = parseClient(rest, language);
-        const reports = client ? [uninstallInstructionsFor(client)] : uninstallInstructionsAll();
+        const reports = client
+          ? [instructions.uninstallInstructionsFor(client)]
+          : instructions.uninstallInstructionsAll();
         printInstructionsReports(reports);
         console.log('');
         console.log(t.instructionsUninstallDone);
@@ -449,15 +486,10 @@ async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     case 'stop': {
+      const { runFreePort } = await import('./commands/free-port.js');
       const result = runFreePort(language);
       console.log(result.message);
       if (!result.ok) process.exit(2);
-      return;
-    }
-    case 'version':
-    case '-v':
-    case '--version': {
-      console.log(VERSION);
       return;
     }
     default: {
@@ -469,18 +501,20 @@ async function dispatch(argv: string[]): Promise<void> {
   }
 }
 
-const argv = process.argv.slice(2);
+if (isEntryPoint) {
+  const argv = process.argv.slice(2);
 
-// No args + both stdin and stdout are TTYs → human in a terminal: mount the
-// Ink-based UI (welcome on first run, then the setup menu).
-// Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
-if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
-  const { startUI } = await import('./ui/start.js');
-  await startUI();
-  process.exit(0);
+  // No args + both stdin and stdout are TTYs → human in a terminal: mount the
+  // Ink-based UI (welcome on first run, then the setup menu).
+  // Otherwise (no TTY anywhere, or output piped) → start the MCP server over stdio.
+  if (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
+    const { startUI } = await import('./ui/start.js');
+    await startUI();
+    process.exit(0);
+  }
+
+  dispatch(argv).catch((err: unknown) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 }
-
-dispatch(argv).catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
