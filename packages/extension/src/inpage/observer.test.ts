@@ -854,6 +854,35 @@ describe('page observer: semantic re-resolution', () => {
     });
   });
 
+  test('a node replaced inside a same-origin iframe is re-resolved', () => {
+    document.body.innerHTML = '<iframe id="frame"></iframe>';
+    const frameDoc = (document.getElementById('frame') as HTMLIFrameElement).contentDocument!;
+    frameDoc.body.innerHTML = '<div class="bar"><button>Save</button></div>';
+    evalExpr(buildObserverInstallJs());
+    const old = frameDoc.querySelector('button')!;
+    const ref = instance().refFor(old)!;
+    frameDoc.body.innerHTML = '<div class="bar"><button>Save</button></div>';
+    const fresh = frameDoc.querySelector('button')!;
+    expect(fresh).not.toBe(old);
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: true });
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: false });
+  });
+
+  test('main-document re-resolution is unchanged when an iframe holds a same-named element', () => {
+    document.body.innerHTML =
+      '<div class="bar"><span><button>Save</button></span></div><iframe id="frame"></iframe>';
+    const frameDoc = (document.getElementById('frame') as HTMLIFrameElement).contentDocument!;
+    frameDoc.body.innerHTML = '<div class="bar"><button>Save</button></div>';
+    evalExpr(buildObserverInstallJs());
+    const bar = document.querySelector('.bar')!;
+    const ref = instance().refFor(bar.querySelector('button')!)!;
+    bar.innerHTML = '<span><button>Save</button></span>';
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: bar.querySelector('button'),
+      reresolved: true,
+    });
+  });
+
   test('resolveRefDetailed never throws and is null for unknown refs and after teardown', () => {
     document.body.innerHTML = '<button id="go">Go</button>';
     evalExpr(buildObserverInstallJs());

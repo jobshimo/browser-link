@@ -160,6 +160,14 @@ export interface BrowserLinkConfig {
    * <path|default>` — the agent can name a file, never choose where it lands.
    */
   downloadsDir?: string;
+  /**
+   * Per-file size cap of `browser.download`, in MiB. Undefined means the
+   * default, 25 MiB (`DEFAULT_DOWNLOADS_MAX_MB`). Only the human sets this,
+   * via `browser-link config set downloads.max-mb <1..64|default>`; the
+   * server reads it on every download through `sanitizeDownloadsMaxMb`, so
+   * a hand-edited value outside [1, 64] reads as the default.
+   */
+  downloadsMaxMb?: number;
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
@@ -180,6 +188,30 @@ export const MAX_CDP_DIRECT_PORT = 65535;
 export const MIN_GRANT_TTL_MINUTES = 1;
 export const MAX_GRANT_TTL_MINUTES = 1440;
 export const DEFAULT_GRANT_TTL_MINUTES = 60;
+
+/** `browser.download` per-file cap bounds, in MiB. The default matches
+ * `downloads.ts`'s `MAX_DOWNLOAD_BYTES`; the maximum is a hard ceiling no
+ * configured value can pass: the file crosses the extension socket
+ * base64-encoded in one message, and 64 MiB (about 85 MiB of base64) stays
+ * under the 100 MiB message limit of the `ws` library. */
+export const DEFAULT_DOWNLOADS_MAX_MB = 25;
+export const MIN_DOWNLOADS_MAX_MB = 1;
+export const MAX_DOWNLOADS_MAX_MB = 64;
+
+/** Read-side sanitizer for `downloadsMaxMb` (config.json is untrusted): a
+ * whole number of MiB in [1, 64] passes, anything else (a string, a
+ * fraction, out of range, absent) is the 25 MiB default. */
+export function sanitizeDownloadsMaxMb(raw: unknown): number {
+  if (
+    typeof raw === 'number' &&
+    Number.isInteger(raw) &&
+    raw >= MIN_DOWNLOADS_MAX_MB &&
+    raw <= MAX_DOWNLOADS_MAX_MB
+  ) {
+    return raw;
+  }
+  return DEFAULT_DOWNLOADS_MAX_MB;
+}
 
 /** Defensive safety net for a `cdp-direct.grant-ttl` value THE USER NEVER
  * TYPED (a corrupted config.json, a hand-edited file) — mirrors

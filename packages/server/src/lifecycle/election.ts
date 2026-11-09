@@ -1,7 +1,13 @@
 import { request } from 'node:http';
 import { platform } from 'node:os';
 import { compareSemver } from '../utils/semver.js';
-import { defaultExecFile, type ExecFileLike } from './processes.js';
+import {
+  defaultExecFile,
+  listProcesses as listProcessesReal,
+  selfAndAncestors,
+  type ExecFileLike,
+  type ProcessEntry,
+} from './processes.js';
 
 /**
  * Version-aware primary election.
@@ -15,7 +21,11 @@ import { defaultExecFile, type ExecFileLike } from './processes.js';
  *   (b) remote answers HTTP but has no `/version` (a primary older than
  *       0.41.0) and its process started before the installed code was last
  *       written: it is necessarily running stale code       → take over;
- *   (c) anything else (same or newer version, unknown start
+ *   (c) same version and `repairing: true` (the primary is handing
+ *       the port over to a successor it spawned, i.e. this process)
+ *                                                           → await the
+ *       hand-off: keep retrying the bind, never step it down;
+ *   (d) anything else (same or newer version, unknown start
  *       time, nothing answering HTTP)                       → defer.
  *
  * Deferring is the existing behaviour: proxy mode with multi-agent on, the
@@ -34,6 +44,9 @@ export interface VersionInfo {
   pid: number;
   startedAt: string;
   installedVersion: string | null;
+  /** Since 0.44.0: a popup repair is handing the port over. Absent on older
+   * primaries. */
+  repairing?: boolean;
 }
 
 export type VersionProbe =
@@ -44,7 +57,7 @@ export type VersionProbe =
   /** Nothing answered HTTP (refused, timeout, not an HTTP server). */
   | { kind: 'unreachable' };
 
-export type ElectionDecision = 'take-over' | 'defer';
+export type ElectionDecision = 'take-over' | 'await-handoff' | 'defer';
 
 export interface ElectionOutcome {
   decision: ElectionDecision;
@@ -61,7 +74,7 @@ export interface DecideInput {
   installedCodeMtime: number | null;
 }
 
-/** The pure decision table (a)/(b)/(c) above. */
+/** The pure decision table (a)–(d) above. */
 export function decideElection(input: DecideInput): ElectionOutcome {
   const { probe } = input;
   if (probe.kind === 'version') {
@@ -71,6 +84,13 @@ export function decideElection(input: DecideInput): ElectionOutcome {
         decision: 'take-over',
         pid: probe.info.pid,
         reason: `running primary ${remote} is older than ${input.local}`,
+      };
+    }
+    if (probe.info.repairing === true && compareSemver(remote, input.local) === 0) {
+      return {
+        decision: 'await-handoff',
+        pid: probe.info.pid,
+        reason: `running primary ${remote} is handing the port over (repair)`,
       };
     }
     return {
@@ -156,7 +176,8 @@ function isVersionInfo(v: unknown): v is VersionInfo {
     Number.isInteger(o.pid) &&
     o.pid > 0 &&
     typeof o.startedAt === 'string' &&
-    (o.installedVersion === null || typeof o.installedVersion === 'string')
+    (o.installedVersion === null || typeof o.installedVersion === 'string') &&
+    (o.repairing === undefined || typeof o.repairing === 'boolean')
   );
 }
 
@@ -246,7 +267,9 @@ function isAliveReal(pid: number): boolean {
 
 /**
  * Stop a process: Windows `taskkill /PID n /F`; Unix `SIGTERM`, wait up to
- * 3 s for it to exit, then `SIGKILL`. Throws when the kill itself fails.
+ * 3 s for it to exit, then `SIGKILL`. Throws when the kill itself fails, and
+ * before killing anything when `pid` is this process or one of its
+ * ancestors (the shell or MCP client that launched it).
  */
 export async function stepDownProcess(
   pid: number,
@@ -257,9 +280,23 @@ export async function stepDownProcess(
     isAlive?: (pid: number) => boolean;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
+    selfPid?: number;
+    listProcesses?: () => ProcessEntry[];
   } = {},
 ): Promise<void> {
   const os = deps.os ?? platform();
+  const selfPid = deps.selfPid ?? process.pid;
+  // The direct checks need no process scan; the ancestor chain does.
+  if (
+    pid === selfPid ||
+    (deps.selfPid === undefined && pid === process.ppid) ||
+    selfAndAncestors(
+      (deps.listProcesses ?? (() => listProcessesReal(os, deps.execFile ?? defaultExecFile)))(),
+      selfPid,
+    ).has(pid)
+  ) {
+    throw new Error(`refusing to step down PID ${pid}: it is this process or one of its ancestors`);
+  }
   if (os === 'win32') {
     (deps.execFile ?? defaultExecFile)('taskkill', ['/PID', String(pid), '/F'], {
       timeout: 5000,

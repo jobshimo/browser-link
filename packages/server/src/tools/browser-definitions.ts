@@ -577,6 +577,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         tab_id: { type: 'string' },
         url_filter: { type: 'string', description: 'Optional substring to filter request URLs.' },
+        headers: {
+          type: 'boolean',
+          description:
+            'Include request_headers and response_headers in each entry. Default true. Pass false to drop them and save tokens when status, url and timing are enough.',
+        },
       },
       required: ['tab_id'],
       additionalProperties: false,
@@ -590,6 +595,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         'Rolling buffer of 200 entries — pair with url_filter to narrow the result.',
         'Use browser.network_body with the request_id to fetch a specific response body.',
+        'Headers are usually most of each entry: pass headers: false when you only need status, url, mime and timing.',
       ],
     },
   },
@@ -859,7 +865,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'The file is fetched a second time, in the page, from the download\'s URL. A download produced by a one-shot POST form or a single-use token cannot be re-fetched — that comes back as state "interrupted" with the HTTP error.',
         'Selector mode captures the FIRST download Chrome starts while it waits whose referrer is not another origin — chrome.downloads gives no tab id, so a download from another tab on the same origin (or one with no referrer) can still be taken. Avoid starting other downloads in parallel; only one browser.download can wait at a time.',
         'A blob: URL the page revoked right after the click cannot be fetched any more — the result says so.',
-        `Size cap: ${MAX_DOWNLOAD_BYTES / (1024 * 1024)} MiB per file. Bigger files come back as "interrupted" with the cap named in error.`,
+        `Size cap: ${MAX_DOWNLOAD_BYTES / (1024 * 1024)} MiB per file by default; only the human can change it (1-64 MiB) with "browser-link config set downloads.max-mb". 64 MiB is the ceiling because the file crosses the extension socket base64-encoded in one message. Bigger files come back as "interrupted" with the active cap named in error.`,
         'cdp: tabs support url mode only — selector mode needs the extension.',
       ],
       example:

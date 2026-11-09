@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
-import { enableCompileCache } from 'node:module';
+// Namespace import, never a named one: Node versions without
+// `enableCompileCache` would fail a named import at link time, before any
+// guard could run.
+import * as nodeModule from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from './version.js';
 import type { InstructionsReport } from './commands/instructions.js';
@@ -10,8 +13,17 @@ import type { Language } from './commands/welcome.js';
 // Only the real entry point enables Node's on-disk compile cache, before any
 // command module loads, so later runs reuse the compiled code. Importing this
 // module (tests) must not change the importing process.
-const isEntryPoint = isMainModule();
-if (isEntryPoint && typeof enableCompileCache === 'function') enableCompileCache();
+const isEntryPoint = isEntryScript(process.argv.at(1), fileURLToPath(import.meta.url));
+if (isEntryPoint) enableCompileCacheIfAvailable(nodeModule);
+
+/** Enable Node's compile cache when this Node has it. Returns whether it was
+ * called. Exported for tests. */
+export function enableCompileCacheIfAvailable(mod: { enableCompileCache?: unknown }): boolean {
+  const enable = mod.enableCompileCache;
+  if (typeof enable !== 'function') return false;
+  (enable as () => unknown).call(mod);
+  return true;
+}
 
 // Command modules are imported lazily inside each `dispatch` case: a run
 // loads only the module its command needs, so `version` or `help` never pay
@@ -21,10 +33,11 @@ if (isEntryPoint && typeof enableCompileCache === 'function') enableCompileCache
 // symlink or shim (`node_modules/.bin`) and with or without the `.js`
 // extension (`node dist/cli`). The native realpath canonicalises the case of
 // Windows paths, so `node c:\...\cli.js` still matches.
-function isMainModule(): boolean {
-  const entry = process.argv.at(1);
+// Exported for tests: `entry` is `process.argv[1]`, `selfPath` this module's
+// own file path.
+export function isEntryScript(entry: string | undefined, selfPath: string): boolean {
   if (entry === undefined) return false;
-  const self = canonicalPath(fileURLToPath(import.meta.url));
+  const self = canonicalPath(selfPath);
   if (self === null) return false;
   return [entry, `${entry}.js`].some((candidate) => canonicalPath(candidate) === self);
 }
@@ -100,6 +113,11 @@ Uso:
                                 Directorio donde browser.download guarda los archivos (por
                                 defecto <directorio de datos>/downloads). Los agentes pueden
                                 nombrar el archivo, nunca elegir el directorio.
+  browser-link config set downloads.max-mb <1..64|default>
+                                Tamaño máximo por archivo para browser.download (por defecto
+                                25 MiB). El techo es 64 MiB porque el archivo cruza el socket de
+                                la extensión en base64 dentro de un solo mensaje. Se aplica en
+                                la siguiente descarga, sin reiniciar.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Muestra la configuración de cdp-direct (ver "browser-link cdp"
                                 más abajo).
@@ -175,6 +193,7 @@ Uso:
                                 una línea por proceso.
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
+                                Es inmediato: no lee la configuración.
   browser-link help             Este mensaje.
 
 Variables de entorno:
@@ -232,6 +251,11 @@ Usage:
                                 Directory browser.download writes files into (default
                                 <data dir>/downloads). Agents can name a file, never pick the
                                 directory.
+  browser-link config set downloads.max-mb <1..64|default>
+                                Per-file size cap for browser.download (default 25 MiB). The
+                                ceiling is 64 MiB because the file crosses the extension socket
+                                base64-encoded in one message. Applies to the next download, no
+                                restart needed.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Show cdp-direct's configuration (see "browser-link cdp" below).
   browser-link config set cdp-direct.enabled <true|false>
@@ -303,6 +327,7 @@ Usage:
                                 line per process.
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
+                                Instant: does not load the config.
   browser-link help             This message.
 
 Environment:

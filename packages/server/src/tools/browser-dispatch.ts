@@ -35,11 +35,12 @@ import type {
   BridgeEventListener,
   SubscribeOptions,
 } from '../bridge/events.js';
+import { loadConfig } from '../config.js';
 import {
   DOWNLOAD_BRIDGE_SLACK_MS,
-  MAX_DOWNLOAD_BYTES,
   buildFetchDownloadJs,
   clampDownloadTimeoutMs,
+  downloadMaxBytes,
   pickFilename,
   shapeDownloadResult,
   validateRequestedFilename,
@@ -1626,7 +1627,9 @@ async function runDownload(
       expression: buildFetchDownloadJs({
         url: sourceUrl,
         timeoutMs: remainingMs,
-        maxBytes: MAX_DOWNLOAD_BYTES,
+        // Read per call: `config set downloads.max-mb` applies to the next
+        // download without a restart.
+        maxBytes: downloadMaxBytes(loadConfig()),
       }),
     },
     deps,
@@ -1635,6 +1638,26 @@ async function runDownload(
   )) as FetchDownloadOutcome;
   const withMime = outcome.mime ? outcome : { ...outcome, mime: capturedMime };
   return shapeDownloadResult(withMime, sources, save);
+}
+
+/**
+ * `browser.network({ headers: false })`: drop `request_headers` and
+ * `response_headers` from every entry. Done here, not in the extension, so
+ * the option works with every extension version and the request the tab
+ * receives stays exactly what it was. Anything that is not an array of
+ * objects passes through untouched.
+ */
+function withoutNetworkHeaders(entries: unknown): unknown {
+  if (!Array.isArray(entries)) return entries;
+  return entries.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const {
+      request_headers: _request,
+      response_headers: _response,
+      ...rest
+    } = entry as Record<string, unknown>;
+    return rest;
+  });
 }
 
 function urlScheme(url: string): string {
@@ -1864,8 +1887,12 @@ async function dispatchBrowserTool(
       return routeToolCall('console', requireTabId(args), { level }, deps);
     }
     case 'browser.network': {
-      const { url_filter } = (args ?? {}) as { url_filter?: string };
-      return routeToolCall('network', requireTabId(args), { url_filter }, deps);
+      const { url_filter, headers } = (args ?? {}) as { url_filter?: string; headers?: unknown };
+      if (headers !== undefined && typeof headers !== 'boolean') {
+        throw new Error('browser.network: headers must be a boolean');
+      }
+      const entries = await routeToolCall('network', requireTabId(args), { url_filter }, deps);
+      return headers === false ? withoutNetworkHeaders(entries) : entries;
     }
     case 'browser.network_body': {
       const { request_id } = args as { request_id: string };

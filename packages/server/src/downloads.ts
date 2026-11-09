@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
+import { sanitizeDownloadsMaxMb } from './config.js';
 
 /**
  * `browser.download` support: everything the tool needs that is NOT talking
@@ -27,10 +28,31 @@ import { extname, isAbsolute, join } from 'node:path';
 
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 export const MAX_DOWNLOAD_TIMEOUT_MS = 120_000;
-/** Hard cap on one download's size. The bytes travel base64-encoded inside a
- * CDP `Runtime.evaluate` result and then a bridge frame, so this also bounds
- * the memory both hops can be asked to hold. */
+/** Default cap on one download's size. The bytes travel base64-encoded inside
+ * a CDP `Runtime.evaluate` result and then a bridge frame, so the cap also
+ * bounds the memory both hops can be asked to hold. The human can change it
+ * with `config set downloads.max-mb` (see `downloadMaxBytes`). */
 export const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+const BYTES_PER_MIB = 1024 * 1024;
+
+/** The per-file cap, in bytes, `browser.download` applies for this config:
+ * `downloadsMaxMb` when it is a whole number in [1, 64], else the 25 MiB
+ * default (`MAX_DOWNLOAD_BYTES`). */
+export function downloadMaxBytes(cfg: { downloadsMaxMb?: unknown }): number {
+  return sanitizeDownloadsMaxMb(cfg.downloadsMaxMb) * BYTES_PER_MIB;
+}
+
+/** The text the in-page fetch reports when a body passes the cap. */
+function capExceededMessage(maxBytes: number): string {
+  if (maxBytes > 0 && maxBytes % BYTES_PER_MIB === 0) {
+    return (
+      `download exceeds the ${maxBytes / BYTES_PER_MIB} MiB cap (${maxBytes} bytes);` +
+      ' the human can change it with: browser-link config set downloads.max-mb <1..64>'
+    );
+  }
+  return `download exceeds the ${maxBytes} bytes cap`;
+}
 /** Extra bridge timeout on top of each hop's own budget (selector mode has
  * two hops: capture, then fetch), for the round trip only — the capture and
  * the in-page fetch enforce their budgets themselves and always answer, so
@@ -228,10 +250,12 @@ export function buildFetchDownloadJs(opts: {
   const url = JSON.stringify(opts.url);
   const timeoutMs = Math.floor(opts.timeoutMs);
   const maxBytes = Math.floor(opts.maxBytes);
+  const capError = JSON.stringify(capExceededMessage(maxBytes));
   return `(async () => {
   const url = ${url};
   const timeoutMs = ${timeoutMs};
   const maxBytes = ${maxBytes};
+  const capError = ${capError};
   const ctrl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
@@ -255,7 +279,7 @@ export function buildFetchDownloadJs(opts: {
         out.bytes += step.value.byteLength;
         if (out.bytes > maxBytes) {
           ctrl.abort();
-          out.error = 'download exceeds the ' + maxBytes + ' bytes cap';
+          out.error = capError;
           return out;
         }
         chunks.push(step.value);

@@ -2,12 +2,14 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   findBridgeProcesses,
   listBridgeProcesses,
+  listBridgeProcessesAsync,
   matchBrowserLinkCommand,
   parseProcessTime,
   parseUnixProcessList,
   parseWindowsProcessList,
   readProcessStartTime,
   shortCommand,
+  type ExecFileAsyncLike,
   type ExecFileLike,
   type ProcessEntry,
 } from './processes.js';
@@ -212,6 +214,43 @@ describe('listBridgeProcesses', () => {
       throw new Error('powershell not found');
     };
     expect(listBridgeProcesses({ os: 'win32', exec, selfPid: 1 })).toEqual([]);
+  });
+});
+
+describe('listBridgeProcessesAsync', () => {
+  test('Windows: the same single Get-CimInstance call, without blocking the event loop', async () => {
+    const exec = vi.fn<ExecFileAsyncLike>(async () =>
+      JSON.stringify([
+        {
+          ProcessId: 51044,
+          ParentProcessId: 33464,
+          CreationDate: '/Date(1794190664124)/',
+          CommandLine: `${NODE_WIN} ${CLI_WIN}`,
+        },
+      ]),
+    );
+    const found = await listBridgeProcessesAsync({ os: 'win32', exec, selfPid: 1 });
+    expect(found.map((p) => p.pid)).toEqual([51044]);
+    expect(exec).toHaveBeenCalledTimes(1);
+    const [file, args] = exec.mock.calls[0];
+    expect(file).toBe('powershell');
+    expect(args.join(' ')).toContain('Get-CimInstance Win32_Process');
+  });
+
+  test('Unix: the same ps arguments as the synchronous listing', async () => {
+    const exec = vi.fn<ExecFileAsyncLike>(
+      async () => '40296   900 Mon Nov  9 02:17:44 2026 node /usr/local/bin/browser-link\n',
+    );
+    const found = await listBridgeProcessesAsync({ os: 'linux', exec, selfPid: 1 });
+    expect(found.map((p) => p.pid)).toEqual([40296]);
+    expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,lstart=,command='], {
+      timeout: expect.any(Number),
+    });
+  });
+
+  test('a rejected listing degrades to []', async () => {
+    const exec: ExecFileAsyncLike = () => Promise.reject(new Error('powershell not found'));
+    await expect(listBridgeProcessesAsync({ os: 'win32', exec, selfPid: 1 })).resolves.toEqual([]);
   });
 });
 

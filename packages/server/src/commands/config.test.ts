@@ -456,3 +456,66 @@ describe('config get/set map-learning', () => {
     );
   });
 });
+
+describe('config get/set downloads.max-mb', () => {
+  test('"get downloads.max-mb" shows the 25 MiB default', async () => {
+    expect(await runConfigCommand(['get', 'downloads.max-mb'])).toBe(
+      '  downloads.max-mb   25 MiB (default)',
+    );
+    expect(listConfig()).toContain('  downloads.max-mb   25 MiB (default)');
+  });
+
+  test('"set downloads.max-mb <n>" persists it and get shows it', async () => {
+    expect(await runConfigCommand(['set', 'downloads.max-mb', '50'])).toBe(
+      'downloads.max-mb set to 50 MiB. Applies to the next browser.download, no restart needed.',
+    );
+    expect(loadConfig().downloadsMaxMb).toBe(50);
+    expect(await runConfigCommand(['get', 'downloads.max-mb'])).toBe('  downloads.max-mb   50 MiB');
+  });
+
+  test('"set downloads.max-mb default" removes the key', async () => {
+    await runConfigCommand(['set', 'downloads.max-mb', '50']);
+    expect(await runConfigCommand(['set', 'downloads.max-mb', 'default'])).toBe(
+      'downloads.max-mb set to 25 MiB (default). Applies to the next browser.download, no restart needed.',
+    );
+    expect(loadConfig().downloadsMaxMb).toBeUndefined();
+  });
+
+  test('an out-of-range whole number is clamped to [1, 64] with a note', async () => {
+    expect(await runConfigCommand(['set', 'downloads.max-mb', '9000'])).toBe(
+      'downloads.max-mb set to 64 MiB (clamped from 9000 to 64). Applies to the next browser.download, no restart needed. 64 MiB is the ceiling: the file crosses the extension socket base64-encoded in one message.',
+    );
+    expect(loadConfig().downloadsMaxMb).toBe(64);
+    await runConfigCommand(['set', 'downloads.max-mb', '0']);
+    expect(loadConfig().downloadsMaxMb).toBe(1);
+  });
+
+  test('a non-integer value is refused and nothing is written; a missing value is a usage error', async () => {
+    for (const raw of ['abc', '2.5', '']) {
+      await expect(runConfigCommand(['set', 'downloads.max-mb', raw])).rejects.toThrow(
+        `Invalid downloads.max-mb value: "${raw}". Use a whole number of MiB (1-64) or "default".`,
+      );
+    }
+    await expect(runConfigCommand(['set', 'downloads.max-mb'])).rejects.toThrow(/Usage/);
+    expect(loadConfig().downloadsMaxMb).toBeUndefined();
+  });
+
+  test('the key is listed in usage and unknown-key errors', async () => {
+    await expect(runConfigCommand(['get', 'bogus'])).rejects.toThrow(/downloads\.max-mb/);
+    await expect(runConfigCommand(['set', 'downloads.max-mb'])).rejects.toThrow(
+      /config set downloads\.max-mb <1..64|default>|default>/,
+    );
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['get', 'downloads.max-mb'], 'es')).toBe(
+      '  downloads.max-mb   25 MiB (por defecto)',
+    );
+    expect(await runConfigCommand(['set', 'downloads.max-mb', '50'], 'es')).toBe(
+      'downloads.max-mb configurado a 50 MiB. Se aplica en la próxima browser.download, sin reiniciar.',
+    );
+    await expect(runConfigCommand(['set', 'downloads.max-mb', 'x'], 'es')).rejects.toThrow(
+      'Valor de downloads.max-mb inválido: "x". Usá un número entero de MiB (1-64) o "default".',
+    );
+  });
+});

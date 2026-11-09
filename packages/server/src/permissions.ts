@@ -44,6 +44,12 @@ export const TOOL_CATALOGUE: readonly ToolMeta[] = [
     summary: 'Read the bridge lifecycle event log (recovery + audit)',
   },
   {
+    name: 'browser.activity',
+    family: 'bridge',
+    category: 'read',
+    summary: 'Read the persistent trail of what agents did, or its friction summary',
+  },
+  {
     name: 'browser.ping',
     family: 'bridge',
     category: 'read',

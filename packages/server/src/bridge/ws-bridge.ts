@@ -110,6 +110,9 @@ export interface WsBridgeOptions {
   /** Starts the popup "Repair connection" restart (see lifecycle/repair.ts).
    * Absent → `bridge.repair` is answered with `ok: false`. */
   onRepair?: () => boolean;
+  /** Whether a repair hand-off is in progress (`/version` `repairing`).
+   * Absent → always false. */
+  isRepairing?: () => boolean;
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
@@ -184,7 +187,7 @@ export function startWsBridge(
   const { host, port, version } = resolveBridgeOptions(options);
   return new Promise((resolve, reject) => {
     const httpServer = createServer((req, res) => {
-      handleBridgeHttpRequest(req, res, version);
+      handleBridgeHttpRequest(req, res, version, options.isRepairing);
     });
     const wss = new WebSocketServer({
       server: httpServer,
@@ -396,33 +399,32 @@ export function startWsBridge(
           return;
         }
 
-        if (msg.kind === 'admin.describe' || msg.kind === 'admin.action') {
-          // Same boundary as activity.query below: not tab-scoped, any
-          // authenticated extension connection may ask. The action side is a
-          // closed allowlist with a confirm step for every disk write
-          // (admin/actions.ts), so the socket can only reach the writes the
-          // console already offers. Async (doctor, update check): the reply
-          // goes out only while the socket is still open.
-          void handleAdminMessage(msg, options.admin).then((reply) => {
-            if (ws.readyState === WebSocket.OPEN) send(ws, reply);
+        // Untabbed request/response frames, through the same router the tests
+        // exercise (`routeRequestMessage`), so the tested path is the live one.
+        //
+        // `activity.query`: read-only and deliberately NOT scoped to
+        // `assignedTabId`, unlike `flow.recorded` above. The Activity window's
+        // whole job is showing what happened across every tab and every agent,
+        // and it reaches the bridge through whichever tab's socket happens to be
+        // open. A per-connection scope here would silently hide most of the
+        // trail. The connection is already authenticated (browser allowlist +
+        // peer process identity at handshake), and the trail never leaves the
+        // machine, so "any authenticated extension connection may read the
+        // local trail" is the intended boundary.
+        //
+        // `admin.describe` / `admin.action`: same boundary. The action side is
+        // a closed allowlist with a confirm step for every disk write
+        // (admin/actions.ts), so the socket can only reach the writes the
+        // console already offers. Async (doctor, update check): the reply goes
+        // out only while the socket is still open.
+        const reply = routeRequestMessage(msg, options.admin);
+        if (reply instanceof Promise) {
+          void reply.then((r) => {
+            if (ws.readyState === WebSocket.OPEN) send(ws, r);
           });
           return;
         }
-
-        if (msg.kind === 'activity.query') {
-          // Read-only and deliberately NOT scoped to `assignedTabId`, unlike
-          // `flow.recorded` above. The Activity window's whole job is showing
-          // what happened across every tab and every agent, and it reaches the
-          // bridge through whichever tab's socket happens to be open. A
-          // per-connection scope here would silently hide most of the trail.
-          //
-          // The connection is already authenticated (browser allowlist + peer
-          // process identity at handshake), and the trail never leaves the
-          // machine, so "any authenticated extension connection may read the
-          // local trail" is the intended boundary.
-          send(ws, handleActivityQueryMessage(msg));
-          return;
-        }
+        if (reply !== null) send(ws, reply);
       });
 
       ws.on('close', (code: number) => {
@@ -830,10 +832,16 @@ export function applyTabNavigated(
  * longer is not a version and is dropped. */
 const MAX_EXTENSION_VERSION_LENGTH = 64;
 
+/** The characters a version string is made of (semver core, pre-release and
+ * build parts). The value is echoed to the agent in `list_tabs`, so free
+ * text (spaces, line breaks, markup) is never stored. */
+const EXTENSION_VERSION_SHAPE = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/;
+
 /**
  * The session stored for a freshly registered tab. `extensionVersion` is
- * kept only when it is a non-empty string of sane length, so an older
- * extension (no field) or a malformed value leaves the session without it.
+ * kept only when it is a non-empty, version-shaped string of sane length, so
+ * an older extension (no field) or a malformed value leaves the session
+ * without it.
  */
 export function buildTabSession(
   tabId: string,
@@ -845,7 +853,8 @@ export function buildTabSession(
   if (
     typeof version === 'string' &&
     version.length > 0 &&
-    version.length <= MAX_EXTENSION_VERSION_LENGTH
+    version.length <= MAX_EXTENSION_VERSION_LENGTH &&
+    EXTENSION_VERSION_SHAPE.test(version)
   ) {
     session.extensionVersion = version;
   }

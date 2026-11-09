@@ -1,14 +1,18 @@
 import {
+  DEFAULT_DOWNLOADS_MAX_MB,
   MAX_CDP_DIRECT_PORT,
+  MAX_DOWNLOADS_MAX_MB,
   MAX_GRANT_TTL_MINUTES,
   MAX_IDLE_TTL_MINUTES,
   MIN_CDP_DIRECT_PORT,
+  MIN_DOWNLOADS_MAX_MB,
   MIN_GRANT_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
   clampCdpDirectPort,
   clampGrantTtlMinutes,
   clampIdleTtlMinutes,
   loadConfig,
+  sanitizeDownloadsMaxMb,
   saveConfig,
 } from '../config.js';
 import { isAbsolute } from 'node:path';
@@ -86,6 +90,11 @@ export interface ConfigI18n {
   downloadsDirDefaultNote: string;
   invalidDownloadsDirValue: (raw: string) => string;
   downloadsDirSetSaved: (dir: string) => string;
+  downloadsMaxMbLabel: string;
+  downloadsMaxMbValue: (mb: number) => string;
+  invalidDownloadsMaxMbValue: (raw: string) => string;
+  downloadsMaxMbSetSaved: (label: string) => string;
+  downloadsMaxMbCeilingNote: string;
   mapLearningLabel: string;
   mapLearningOn: string;
   mapLearningOff: string;
@@ -115,9 +124,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set map-learning <on|off>',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off>',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, map-learning.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
     unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'enabled',
@@ -150,6 +159,13 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
       `Invalid downloads.dir value: "${raw}". Use an absolute path, or "default" for <data dir>/downloads.`,
     downloadsDirSetSaved: (dir) =>
       `downloads.dir set to ${dir}. browser.download writes files there.`,
+    downloadsMaxMbLabel: 'downloads.max-mb',
+    downloadsMaxMbValue: (mb) => `${mb} MiB`,
+    invalidDownloadsMaxMbValue: (raw) =>
+      `Invalid downloads.max-mb value: "${raw}". Use a whole number of MiB (${MIN_DOWNLOADS_MAX_MB}-${MAX_DOWNLOADS_MAX_MB}) or "default".`,
+    downloadsMaxMbSetSaved: (label) =>
+      `downloads.max-mb set to ${label}. Applies to the next browser.download, no restart needed.`,
+    downloadsMaxMbCeilingNote: ` ${MAX_DOWNLOADS_MAX_MB} MiB is the ceiling: the file crosses the extension socket base64-encoded in one message.`,
     mapLearningLabel: 'map-learning',
     mapLearningOn: 'on (default)',
     mapLearningOff: 'off',
@@ -176,9 +192,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set map-learning <on|off>',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off>',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, map-learning.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
     unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'habilitado',
@@ -212,6 +228,13 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
       `Valor de downloads.dir inválido: "${raw}". Usá una ruta absoluta, o "default" para <directorio de datos>/downloads.`,
     downloadsDirSetSaved: (dir) =>
       `downloads.dir configurado a ${dir}. browser.download guarda los archivos ahí.`,
+    downloadsMaxMbLabel: 'downloads.max-mb',
+    downloadsMaxMbValue: (mb) => `${mb} MiB`,
+    invalidDownloadsMaxMbValue: (raw) =>
+      `Valor de downloads.max-mb inválido: "${raw}". Usá un número entero de MiB (${MIN_DOWNLOADS_MAX_MB}-${MAX_DOWNLOADS_MAX_MB}) o "default".`,
+    downloadsMaxMbSetSaved: (label) =>
+      `downloads.max-mb configurado a ${label}. Se aplica en la próxima browser.download, sin reiniciar.`,
+    downloadsMaxMbCeilingNote: ` ${MAX_DOWNLOADS_MAX_MB} MiB es el máximo: el archivo cruza el socket de la extensión codificado en base64 en un solo mensaje.`,
     mapLearningLabel: 'map-learning',
     mapLearningOn: 'activado (por defecto)',
     mapLearningOff: 'desactivado',
@@ -291,6 +314,7 @@ export function listConfig(language: Language = 'en'): string {
     getCdpDirectPortLine(language),
     getCdpDirectGrantTtlLine(language),
     getDownloadsDirLine(language),
+    getDownloadsMaxMbLine(language),
     getMapLearningLine(language),
   ].join('\n');
 }
@@ -557,6 +581,42 @@ export function setDownloadsDir(rawValue: string, language: Language = 'en'): st
   return t.downloadsDirSetSaved(value);
 }
 
+/** One formatted line describing `browser.download`'s per-file size cap. */
+export function getDownloadsMaxMbLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const mb = sanitizeDownloadsMaxMb(cfg.downloadsMaxMb);
+  const note = cfg.downloadsMaxMb === undefined ? t.downloadsDirDefaultNote : '';
+  return `  ${t.downloadsMaxMbLabel}   ${t.downloadsMaxMbValue(mb)}${note}`;
+}
+
+/**
+ * `config set downloads.max-mb <1..64|default>`. Same "tell the user,
+ * don't guess" rule as `parseIdleTtlArg`: a value that is not a whole
+ * number is refused, an out-of-range one is clamped to [1, 64] with a note
+ * (64 MiB is a hard ceiling, see MAX_DOWNLOADS_MAX_MB). `default` removes the key (25 MiB). No live
+ * push: the server reads config.json on every download.
+ */
+export function setDownloadsMaxMb(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = rawValue.trim();
+  if (value.toLowerCase() === 'default') {
+    saveConfig({ downloadsMaxMb: undefined });
+    return t.downloadsMaxMbSetSaved(
+      t.downloadsMaxMbValue(DEFAULT_DOWNLOADS_MAX_MB) + t.downloadsDirDefaultNote,
+    );
+  }
+  const parsed = Number(value);
+  if (value.length === 0 || !Number.isInteger(parsed)) {
+    throw new Error(t.invalidDownloadsMaxMbValue(rawValue));
+  }
+  const mb = Math.min(Math.max(parsed, MIN_DOWNLOADS_MAX_MB), MAX_DOWNLOADS_MAX_MB);
+  const note = mb === parsed ? '' : t.clampedNote(parsed, mb);
+  saveConfig({ downloadsMaxMb: mb });
+  const ceiling = parsed > MAX_DOWNLOADS_MAX_MB ? t.downloadsMaxMbCeilingNote : '';
+  return t.downloadsMaxMbSetSaved(t.downloadsMaxMbValue(mb) + note) + ceiling;
+}
+
 /** One formatted line describing the `mapLearningEnabled` state. Only an
  * explicit `false` is off, same rule the learner applies. */
 export function getMapLearningLine(language: Language = 'en'): string {
@@ -596,6 +656,7 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'flow-recording') return getFlowRecordingLine(language);
     if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
     if (key === 'downloads.dir') return getDownloadsDirLine(language);
+    if (key === 'downloads.max-mb') return getDownloadsMaxMbLine(language);
     if (key === 'map-learning') return getMapLearningLine(language);
     throw new Error(t.unknownKey(key));
   }
@@ -612,6 +673,10 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'downloads.dir') {
       if (value === undefined) throw new Error(t.usage);
       return setDownloadsDir(value, language);
+    }
+    if (key === 'downloads.max-mb') {
+      if (value === undefined) throw new Error(t.usage);
+      return setDownloadsMaxMb(value, language);
     }
     if (key === 'map-learning') {
       if (value === undefined) throw new Error(t.usage);

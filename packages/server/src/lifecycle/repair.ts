@@ -22,7 +22,7 @@ export interface RepairDeps {
     command: string,
     args: string[],
     options: { detached: true; stdio: 'ignore'; windowsHide: true },
-  ) => { unref(): void };
+  ) => RepairChild;
   terminateSockets: () => void;
   stopIpc: () => Promise<void>;
   exit: (code: number) => void;
@@ -31,12 +31,28 @@ export interface RepairDeps {
   log?: (msg: string) => void;
 }
 
+/** The slice of Node's `ChildProcess` the repair uses. A spawn can fail
+ * asynchronously (`error` after `spawn()` returned, e.g. EACCES); `spawn`
+ * is emitted once the child really started. */
+export interface RepairChild {
+  unref(): void;
+  on(event: 'spawn' | 'error', listener: (err?: Error) => void): unknown;
+}
+
 /** Time given to the `bridge.repair.result` frame before sockets die. */
 export const REPAIR_FLUSH_DELAY_MS = 150;
+
+/** Longest wait for the child's `spawn`/`error` event. Node emits one of
+ * them within a tick or two; past this the child is assumed started. */
+export const REPAIR_SPAWN_CONFIRM_MS = 2000;
 
 export interface RepairController {
   /** Start the restart (once). Returns whether it is (now) in progress. */
   start(): boolean;
+  /** True from `start()` until the process exits, or until a failed spawn
+   * gave up. `/version` reports it as `repairing` so the successor waits for
+   * the port instead of deferring to a same-version primary. */
+  readonly inProgress: boolean;
   /** Settles when the current restart attempt finished (tests). */
   readonly done: Promise<void>;
 }
@@ -45,25 +61,53 @@ export function createRepairController(deps: RepairDeps): RepairController {
   let inProgress = false;
   let done: Promise<void> = Promise.resolve();
 
+  const giveUp = (err: unknown): void => {
+    // Without a successor, exiting would leave no server at all: keep
+    // serving and let the user fall back to `browser-link stop`.
+    inProgress = false;
+    deps.log?.(
+      `Repair: could not start the installed server (${err instanceof Error ? err.message : String(err)}); still serving.`,
+    );
+  };
+
   const run = async (): Promise<void> => {
     await deps.delay(REPAIR_FLUSH_DELAY_MS);
+    let child: RepairChild;
     try {
-      deps
-        .spawn(deps.execPath, [deps.cliPath], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-        })
-        .unref();
+      child = deps.spawn(deps.execPath, [deps.cliPath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
     } catch (err) {
-      // Without a successor, exiting would leave no server at all: keep
-      // serving and let the user fall back to `browser-link stop`.
-      inProgress = false;
-      deps.log?.(
-        `Repair: could not start the installed server (${err instanceof Error ? err.message : String(err)}); still serving.`,
-      );
+      giveUp(err);
       return;
     }
+    // Wait for the child to really start before handing anything over: an
+    // asynchronous spawn failure arrives as an `error` event, which would
+    // also crash this process if nobody listened. The listener stays
+    // attached for the rest of the process's life for the same reason.
+    const started = await new Promise<true | Error>((resolve) => {
+      const timer = setTimeout(() => {
+        resolve(true);
+      }, REPAIR_SPAWN_CONFIRM_MS);
+      timer.unref();
+      child.on('spawn', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        const error = err ?? new Error('spawn failed');
+        deps.log?.(`Repair: installed server error: ${error.message}`);
+        resolve(error);
+      });
+    });
+    if (started !== true) {
+      giveUp(started);
+      return;
+    }
+    child.unref();
     deps.log?.('Repair: installed server started; handing over the port.');
     deps.terminateSockets();
     try {
@@ -83,6 +127,9 @@ export function createRepairController(deps: RepairDeps): RepairController {
     },
     get done() {
       return done;
+    },
+    get inProgress() {
+      return inProgress;
     },
   };
 }

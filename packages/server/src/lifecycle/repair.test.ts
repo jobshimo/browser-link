@@ -6,6 +6,32 @@ import type { ServerToExtension } from '../messages.js';
  * terminate every extension socket, stop IPC and exit 0, in that order.
  * Everything is injected: nothing is spawned, terminated or exited here. */
 
+/** A child process stand-in that emits `spawn` (started) or `error`
+ * (async spawn failure) on the next tick, like Node's ChildProcess. */
+function fakeChild(
+  outcome: 'spawn' | Error,
+  order: string[] = [],
+): ReturnType<RepairDeps['spawn']> & { emitError: (err: Error) => void } {
+  const listeners: Record<string, ((err?: Error) => void)[]> = { spawn: [], error: [] };
+  setTimeout(() => {
+    if (outcome === 'spawn') for (const l of listeners.spawn) l();
+    else for (const l of listeners.error) l(outcome);
+  }, 0);
+  return {
+    unref: () => {
+      order.push('unref');
+    },
+    on(event: 'spawn' | 'error', listener: (err?: Error) => void) {
+      listeners[event].push(listener);
+      return this;
+    },
+    emitError(err: Error) {
+      if (listeners.error.length === 0) throw err;
+      for (const l of listeners.error) l(err);
+    },
+  };
+}
+
 function fakeDeps(): { deps: RepairDeps; order: string[] } {
   const order: string[] = [];
   const deps: RepairDeps = {
@@ -17,11 +43,7 @@ function fakeDeps(): { deps: RepairDeps; order: string[] } {
     }),
     spawn: vi.fn(() => {
       order.push('spawn');
-      return {
-        unref: () => {
-          order.push('unref');
-        },
-      };
+      return fakeChild('spawn', order);
     }),
     terminateSockets: vi.fn(() => {
       order.push('terminate');
@@ -120,5 +142,44 @@ describe('createRepairController', () => {
     repair.start();
     await repair.done;
     expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('createRepairController: asynchronous spawn failure (A1)', () => {
+  test('an error emitted after spawn() returned keeps this server running and is logged', async () => {
+    const { deps } = fakeDeps();
+    const log = vi.fn();
+    deps.log = log;
+    deps.spawn = () => fakeChild(new Error('spawn EACCES'));
+    const repair = createRepairController(deps);
+    repair.start();
+    expect(repair.inProgress).toBe(true);
+    await repair.done;
+    expect(deps.terminateSockets).not.toHaveBeenCalled();
+    expect(deps.stopIpc).not.toHaveBeenCalled();
+    expect(deps.exit).not.toHaveBeenCalled();
+    expect(repair.inProgress).toBe(false);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/spawn EACCES.*still serving/));
+  });
+
+  test('a late error after the hand-off started never throws (a listener stays attached)', async () => {
+    const { deps } = fakeDeps();
+    const child = fakeChild('spawn');
+    deps.spawn = () => child;
+    const repair = createRepairController(deps);
+    repair.start();
+    await repair.done;
+    expect(() => child.emitError(new Error('late'))).not.toThrow();
+  });
+
+  test('inProgress is true from start until the process exits', async () => {
+    const { deps } = fakeDeps();
+    const seen: boolean[] = [];
+    const repair = createRepairController(deps);
+    deps.terminateSockets = () => seen.push(repair.inProgress);
+    expect(repair.inProgress).toBe(false);
+    repair.start();
+    await repair.done;
+    expect(seen).toEqual([true]);
   });
 });
