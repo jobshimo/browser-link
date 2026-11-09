@@ -39,6 +39,7 @@ export function buildVersionInfo(
   pid: number = process.pid,
   startedAt: number = PROCESS_STARTED_AT,
   installed: () => string | null = readInstalledVersion,
+  repairing = false,
 ): VersionInfo {
   return {
     name: PACKAGE_NAME,
@@ -46,19 +47,39 @@ export function buildVersionInfo(
     pid,
     startedAt: new Date(startedAt).toISOString(),
     installedVersion: installed(),
+    repairing,
   };
 }
 
-/** The bridge's plain-HTTP handler: `/version` or 404. */
+/** `127.0.0.1`, `localhost` or `[::1]`, each with an optional port. */
+const LOOPBACK_HOST = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
+
+/** Whether a request's `Host` header names this machine's loopback. A web
+ * page reaching the port through DNS rebinding carries its own host name,
+ * so it never reads the pid and versions. */
+export function isLoopbackHost(host: string | undefined): boolean {
+  return host !== undefined && LOOPBACK_HOST.test(host);
+}
+
+/** The bridge's plain-HTTP handler: `/version` (loopback `Host` only, else
+ * 403) or 404. `isRepairing` reports a repair hand-off in progress. */
 export function handleBridgeHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   version: string,
+  isRepairing: () => boolean = () => false,
 ): void {
   const path = (req.url ?? '').split('?')[0];
   if (req.method === 'GET' && path === '/version') {
+    if (!isLoopbackHost(req.headers.host)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(buildVersionInfo(version)));
+    res.end(
+      JSON.stringify(buildVersionInfo(version, undefined, undefined, undefined, isRepairing())),
+    );
     return;
   }
   res.writeHead(404, { 'content-type': 'text/plain' });

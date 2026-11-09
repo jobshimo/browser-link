@@ -42,6 +42,11 @@ export function refreshOutdatedBlocks(input: {
     const installer = installers.find((i) => i.id === s.id);
     if (installer === undefined) return s;
     try {
+      // Re-read right before writing: the status may be stale (read at
+      // connect time). Only a block that is still ours and still outdated
+      // is rewritten; a block the user removed is never re-added.
+      const current = installer.detect().state;
+      if (current.kind !== 'installed-outdated') return { ...s, state: current };
       installer.install();
       const after: ClientInstructionsStatus = { ...s, state: installer.detect().state };
       refreshed.push(after);

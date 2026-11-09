@@ -8,11 +8,12 @@ import { TOPICS, TOPIC_NAMES, renderTopic } from './topics.js';
 import { detectInstructionsStatus, formatClientStatus, instructionsNotice } from './status.js';
 import { refreshNotice, refreshOutdatedBlocks } from './refresh.js';
 import {
-  claudeInstructionsInstaller,
+  type ClientId,
   type InstructionsInstaller,
   type InstructionsState,
 } from '../agent-instructions/index.js';
 import { END_MARKER, beginMarker } from '../agent-instructions/content.js';
+import { detectAt, installAt } from '../agent-instructions/file-ops.js';
 import { VERSION as SERVER_VERSION } from '../version.js';
 
 /**
@@ -423,28 +424,40 @@ describe('instructions block refreshed at primary start', () => {
     );
   });
 
-  describe('against a temp HOME with the real installer', () => {
+  describe('against a temp home with the real file operations', () => {
     let home: string;
-    let saved: string | undefined;
-    const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+
+    /** The production installer shape over the real `detectAt`/`installAt`,
+     * rooted at an injected home instead of the process environment. The
+     * temp dir is not under the real home, so the home guard is lifted here
+     * exactly as an explicit client override (`COPILOT_HOME`) lifts it. */
+    function installerAt(id: ClientId, displayName: string, file: string): InstructionsInstaller {
+      return {
+        id,
+        displayName,
+        filePath: () => file,
+        detect: () => detectAt(file),
+        install: () => installAt(file, displayName, { allowOutsideHome: true }),
+        uninstall: () => '',
+      };
+    }
+
+    const claudeFile = () => join(home, '.claude', 'CLAUDE.md');
+    const claudeInstaller = () => installerAt('claude', 'Claude Code', claudeFile());
 
     beforeEach(() => {
       home = mkdtempSync(join(tmpdir(), 'browser-link-refresh-'));
-      saved = process.env[homeVar];
-      process.env[homeVar] = home;
+      mkdirSync(join(home, '.claude'), { recursive: true });
     });
 
     afterEach(() => {
-      if (saved === undefined) delete process.env[homeVar];
-      else process.env[homeVar] = saved;
       rmSync(home, { recursive: true, force: true });
     });
 
     test('an outdated block is refreshed in place, keeping the rest of the file', () => {
-      const file = join(home, '.claude', 'CLAUDE.md');
-      mkdirSync(join(home, '.claude'), { recursive: true });
+      const file = claudeFile();
       writeFileSync(file, `# Mine\n\n${beginMarker('0.0.1')}\nold body\n${END_MARKER}\n\nTail.\n`);
-      const installers = [claudeInstructionsInstaller];
+      const installers = [claudeInstaller()];
       const result = refreshOutdatedBlocks({
         statuses: detectInstructionsStatus(installers),
         installers,
@@ -460,9 +473,8 @@ describe('instructions block refreshed at primary start', () => {
     });
 
     test('a file without a block and a corrupt file are left byte-identical', () => {
-      const file = join(home, '.claude', 'CLAUDE.md');
-      mkdirSync(join(home, '.claude'), { recursive: true });
-      const installers = [claudeInstructionsInstaller];
+      const file = claudeFile();
+      const installers = [claudeInstaller()];
       for (const body of [
         '# Mine, no block\n',
         `${beginMarker('0.0.1')}\na\n${END_MARKER}\n${beginMarker('0.0.1')}\nb\n${END_MARKER}\n`,
@@ -475,6 +487,48 @@ describe('instructions block refreshed at primary start', () => {
         });
         expect(readFileSync(file, 'utf8')).toBe(body);
       }
+    });
+
+    test('a block removed after the status was read is not re-added', () => {
+      const file = claudeFile();
+      const installers = [claudeInstaller()];
+      const statuses = detectInstructionsStatus(installers);
+      expect(statuses[0]!.state.kind).toBe('no-file');
+      writeFileSync(file, `${beginMarker('0.0.1')}\nold\n${END_MARKER}\n`);
+      const stale = detectInstructionsStatus(installers);
+      expect(stale[0]!.state.kind).toBe('installed-outdated');
+      writeFileSync(file, '# Mine, block removed\n');
+      const result = refreshOutdatedBlocks({ statuses: stale, installers, enabled: true });
+      expect(readFileSync(file, 'utf8')).toBe('# Mine, block removed\n');
+      expect(result.refreshed).toEqual([]);
+      expect(result.statuses[0]!.state.kind).toBe('not-installed');
+    });
+
+    test('a block that stopped being ours is skipped and left byte-identical; the next client is still refreshed', () => {
+      // The status said installed-outdated, but by write time the file holds
+      // two blocks (the user pasted one): the re-read sees it corrupt, nothing is
+      // rewritten, and the following client is refreshed as usual.
+      const file = claudeFile();
+      const corrupt = `${beginMarker('0.0.1')}\na\n${END_MARKER}\n${beginMarker('0.0.1')}\nb\n${END_MARKER}\n`;
+      writeFileSync(file, corrupt);
+      const otherFile = join(home, '.config', 'opencode', 'AGENTS.md');
+      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+      writeFileSync(otherFile, `${beginMarker('0.0.1')}\nold\n${END_MARKER}\n`);
+      const installers = [claudeInstaller(), installerAt('opencode', 'OpenCode', otherFile)];
+      const outdated = { kind: 'installed-outdated', version: '0.0.1' } as const;
+      const result = refreshOutdatedBlocks({
+        statuses: installers.map((i) => ({
+          id: i.id,
+          displayName: i.displayName,
+          state: outdated,
+        })),
+        installers,
+        enabled: true,
+      });
+      expect(readFileSync(file, 'utf8')).toBe(corrupt);
+      expect(result.statuses.map((x) => x.state.kind)).toEqual(['corrupt', 'installed']);
+      expect(result.refreshed.map((r) => r.id)).toEqual(['opencode']);
+      expect(readFileSync(otherFile, 'utf8')).toContain(beginMarker());
     });
   });
 });

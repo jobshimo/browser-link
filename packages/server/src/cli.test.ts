@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -355,5 +356,75 @@ describe('cli dispatch: every command reaches its handler and loads only its mod
     h.spies.checkUpdates.mockResolvedValueOnce({ latest: '', error: 'offline' });
     const dispatch = await loadDispatch();
     await expect(dispatch(['updates'])).rejects.toEqual(new ExitCalled(2));
+  });
+});
+
+describe('cli: version help text (S2f)', () => {
+  it('says in both languages that version does not load the config', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['help']);
+    expect(logs[0]).toContain('does not load the config');
+    h.language.value = 'es';
+    logs = [];
+    await dispatch(['help']);
+    expect(logs[0]).toContain('no lee la configuración');
+  });
+});
+
+describe('cli: compile cache guard (S2c)', () => {
+  it('imports without throwing when node:module has no enableCompileCache (older Node)', async () => {
+    vi.doMock('node:module', () => ({ enableCompileCache: undefined }));
+    const mod = await import('./cli.js');
+    expect(typeof mod.dispatch).toBe('function');
+    vi.doUnmock('node:module');
+  });
+
+  it('calls enableCompileCache only when it is a function', async () => {
+    const { enableCompileCacheIfAvailable } = await import('./cli.js');
+    expect(enableCompileCacheIfAvailable({})).toBe(false);
+    expect(enableCompileCacheIfAvailable({ enableCompileCache: 'nope' })).toBe(false);
+    const enable = vi.fn();
+    expect(enableCompileCacheIfAvailable({ enableCompileCache: enable })).toBe(true);
+    expect(enable).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('cli: entry-point heuristic (S2d)', () => {
+  let dir: string;
+  let self: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'browser-link-entry-'));
+    self = join(dir, 'cli.js');
+    writeFileSync(self, '');
+    writeFileSync(join(dir, 'other.js'), '');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the real entry script matches', async () => {
+    const { isEntryScript } = await import('./cli.js');
+    expect(isEntryScript(self, self)).toBe(true);
+  });
+
+  it('an entry given without the .js extension matches through the fallback', async () => {
+    const { isEntryScript } = await import('./cli.js');
+    expect(isEntryScript(join(dir, 'cli'), self)).toBe(true);
+  });
+
+  it('a different entry (the module merely imported) does not match', async () => {
+    const { isEntryScript } = await import('./cli.js');
+    expect(isEntryScript(join(dir, 'other.js'), self)).toBe(false);
+    expect(isEntryScript(join(dir, 'missing.js'), self)).toBe(false);
+    expect(isEntryScript(undefined, self)).toBe(false);
+  });
+
+  it('importing the CLI under a test runner is not the entry point', async () => {
+    const mod = await import('./cli.js');
+    expect(
+      mod.isEntryScript(process.argv.at(1), fileURLToPath(new URL('./cli.ts', import.meta.url))),
+    ).toBe(false);
   });
 });

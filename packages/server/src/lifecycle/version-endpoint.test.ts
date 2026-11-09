@@ -30,9 +30,13 @@ function get(
   port: number,
   path: string,
   method = 'GET',
+  hostHeader?: string,
 ): Promise<{ status: number; type: string | undefined; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, path, method }, (res) => {
+    // '' sends no Host header at all.
+    const headers = hostHeader ? { host: hostHeader } : {};
+    const setHost = hostHeader !== '';
+    const req = request({ host: '127.0.0.1', port, path, method, headers, setHost }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c: string) => (body += c));
@@ -55,21 +59,68 @@ async function bridgePort(version?: string): Promise<number> {
 }
 
 describe('GET /version', () => {
-  test('200 application/json { name, version, pid, startedAt, installedVersion }', async () => {
+  test('200 application/json { name, version, pid, startedAt, installedVersion, repairing }', async () => {
     const port = await bridgePort('0.40.0');
     const res = await get(port, '/version');
     expect(res.status).toBe(200);
     expect(res.type).toMatch(/^application\/json/);
     const body = JSON.parse(res.body) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(
-      ['installedVersion', 'name', 'pid', 'startedAt', 'version'].sort(),
+      ['installedVersion', 'name', 'pid', 'repairing', 'startedAt', 'version'].sort(),
     );
     expect(body).toMatchObject({
       name: '@jobshimo/browser-link',
       version: '0.40.0',
       pid: process.pid,
       installedVersion: readInstalledVersion(),
+      repairing: false,
     });
+  });
+
+  test('repairing is true while the primary is handing over to its successor (A1)', async () => {
+    let repairing = false;
+    const wss = await startWsBridge(new Map(), new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '0.40.0',
+      isRepairing: () => repairing,
+    });
+    bridges.push(wss);
+    const port = (wss.address() as AddressInfo).port;
+    expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ repairing: false });
+    repairing = true;
+    expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ repairing: true });
+  });
+
+  test('answers only a loopback Host header; any other Host is 403 (A5)', async () => {
+    const port = await bridgePort('0.40.0');
+    const loopback = [
+      '127.0.0.1',
+      `127.0.0.1:${port}`,
+      'localhost',
+      `localhost:${port}`,
+      '[::1]',
+      `[::1]:${port}`,
+      'LOCALHOST',
+    ];
+    for (const host of loopback) {
+      expect((await get(port, '/version', 'GET', host)).status).toBe(200);
+    }
+    const foreign = [
+      'evil.example',
+      `evil.example:${port}`,
+      '127.0.0.1.evil.example',
+      'localhost.evil.example:80',
+      'localhost:80:80',
+    ];
+    for (const host of foreign) {
+      const res = await get(port, '/version', 'GET', host);
+      expect(res.status).toBe(403);
+      expect(res.body).not.toContain('"pid"');
+    }
+    // No Host header at all: Node itself answers 400 (HTTP/1.1 requires one).
+    const bare = await get(port, '/version', 'GET', '');
+    expect(bare.status).not.toBe(200);
+    expect(bare.body).not.toContain('"pid"');
   });
 
   test('defaults to the running VERSION when no version option is given', async () => {
@@ -95,7 +146,9 @@ describe('buildVersionInfo', () => {
       pid: 42,
       startedAt: '1970-01-01T00:00:00.000Z',
       installedVersion: '1.2.4',
+      repairing: false,
     });
+    expect(buildVersionInfo('1.2.3', 42, 0, () => '1.2.4', true).repairing).toBe(true);
   });
 });
 

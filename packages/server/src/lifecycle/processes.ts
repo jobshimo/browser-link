@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { platform } from 'node:os';
 
 /**
@@ -24,6 +24,15 @@ export type ExecFileLike = (
   options: { timeout: number },
 ) => string;
 
+/** Asynchronous `ExecFileLike`: same argv and timeout, stdout resolved. Used
+ * where the listing runs alongside other probes (`doctor`), so the slow WMI
+ * scan does not block the event loop. */
+export type ExecFileAsyncLike = (
+  file: string,
+  args: readonly string[],
+  options: { timeout: number },
+) => Promise<string>;
+
 /** One row of the OS process table. `startedAt` is epoch milliseconds, or
  * `null` when the OS did not report a usable start time. */
 export interface ProcessEntry {
@@ -44,6 +53,24 @@ export const defaultExecFile: ExecFileLike = (file, args, options) =>
     timeout: options.timeout,
     // `ps` prints lstart in the C locale only when told so.
     env: { ...process.env, LC_ALL: 'C' },
+  });
+
+export const defaultExecFileAsync: ExecFileAsyncLike = (file, args, options) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      file,
+      [...args],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: options.timeout,
+        env: { ...process.env, LC_ALL: 'C' },
+      },
+      (err, stdout) => {
+        if (err) reject(new Error(err.message));
+        else resolve(stdout);
+      },
+    );
   });
 
 /**
@@ -130,19 +157,40 @@ function powershell(script: string): [string, string[]] {
   return ['powershell', ['-NoProfile', '-NonInteractive', '-Command', script]];
 }
 
+/** The OS command that lists the whole process table, and its parser. */
+function processListCommand(os: NodeJS.Platform): {
+  file: string;
+  args: string[];
+  parse: (stdout: string) => ProcessEntry[];
+} {
+  if (os === 'win32') {
+    const [file, args] = powershell(WINDOWS_LIST_SCRIPT);
+    return { file, args, parse: parseWindowsProcessList };
+  }
+  return { file: 'ps', args: ['-axo', 'pid=,ppid=,lstart=,command='], parse: parseUnixProcessList };
+}
+
 /** The whole process table, or `[]` when it cannot be read. */
 export function listProcesses(
   os: NodeJS.Platform = platform(),
   exec: ExecFileLike = defaultExecFile,
 ): ProcessEntry[] {
   try {
-    if (os === 'win32') {
-      const [file, args] = powershell(WINDOWS_LIST_SCRIPT);
-      return parseWindowsProcessList(exec(file, args, { timeout: LIST_TIMEOUT_MS }));
-    }
-    return parseUnixProcessList(
-      exec('ps', ['-axo', 'pid=,ppid=,lstart=,command='], { timeout: LIST_TIMEOUT_MS }),
-    );
+    const { file, args, parse } = processListCommand(os);
+    return parse(exec(file, args, { timeout: LIST_TIMEOUT_MS }));
+  } catch {
+    return [];
+  }
+}
+
+/** `listProcesses` without blocking the event loop. Never rejects. */
+export async function listProcessesAsync(
+  os: NodeJS.Platform = platform(),
+  exec: ExecFileAsyncLike = defaultExecFileAsync,
+): Promise<ProcessEntry[]> {
+  try {
+    const { file, args, parse } = processListCommand(os);
+    return parse(await exec(file, args, { timeout: LIST_TIMEOUT_MS }));
   } catch {
     return [];
   }
@@ -253,7 +301,7 @@ function isBridgeSubcommand(subcommand: string | null): boolean {
 }
 
 /** `selfPid` and every ancestor reachable through `ppid` in `list`. */
-function selfAndAncestors(list: readonly ProcessEntry[], selfPid: number): Set<number> {
+export function selfAndAncestors(list: readonly ProcessEntry[], selfPid: number): Set<number> {
   const byPid = new Map(list.map((p) => [p.pid, p]));
   const out = new Set<number>();
   let pid: number | undefined = selfPid;
@@ -282,6 +330,17 @@ export function listBridgeProcesses(
   opts: { os?: NodeJS.Platform; exec?: ExecFileLike; selfPid?: number } = {},
 ): ProcessEntry[] {
   return findBridgeProcesses(listProcesses(opts.os, opts.exec), opts.selfPid ?? process.pid);
+}
+
+/** `listBridgeProcesses` without blocking the event loop, so `doctor` runs
+ * it concurrently with its other probes. Never rejects. */
+export async function listBridgeProcessesAsync(
+  opts: { os?: NodeJS.Platform; exec?: ExecFileAsyncLike; selfPid?: number } = {},
+): Promise<ProcessEntry[]> {
+  return findBridgeProcesses(
+    await listProcessesAsync(opts.os, opts.exec),
+    opts.selfPid ?? process.pid,
+  );
 }
 
 /** Short, display-only form: runtime name, `browser-link`, then arguments. */

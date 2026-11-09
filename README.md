@@ -202,7 +202,7 @@ browser-link instructions                  # status of the trigger block per cli
 browser-link instructions install          # insert/refresh the block in every detected client
 browser-link instructions uninstall --client claude
 browser-link extension                     # show extension assets path + steps
-browser-link doctor                        # diagnose current setup (running vs installed version, live processes)
+browser-link doctor                        # diagnose current setup (running vs installed version, live processes); every probe runs in parallel
 browser-link tools                         # show which MCP tools are enabled
 browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
@@ -227,6 +227,33 @@ browser-link updates                       # check the npm registry for a newer 
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
 ```
+
+`browser-link version` prints the version and returns at once: it does not
+load the config, so a corrupt config never warns there.
+
+`doctor` starts its slow checks together (both port probes, the running
+server's `/version`, the Chrome debugger-flag scan and the live-process
+scan), so a run lasts about as long as the slowest process scan instead of
+their sum.
+
+#### Windows: skip the npm shim for faster CLI calls
+
+Each `browser-link …` call from PowerShell or cmd goes through npm's
+`browser-link.cmd` / `browser-link.ps1` shim, which starts its own shell
+before Node: that shim costs 0.7–3.7 s per call on Windows, not
+browser-link. Call the installed CLI directly instead. Find the global
+`node_modules` folder with `npm root -g` and add a function to your
+PowerShell profile (`notepad $PROFILE`):
+
+```powershell
+# npm root -g printed e.g. C:\Users\you\AppData\Roaming\npm\node_modules
+function browser-link { node "C:\Users\you\AppData\Roaming\npm\node_modules\@jobshimo\browser-link\dist\cli.js" @args }
+```
+
+In cmd, the same with a macro:
+`doskey browser-link=node "<npm root -g>\@jobshimo\browser-link\dist\cli.js" $*`.
+The function only changes your terminal: the MCP server your client starts
+pays the shim once per session, not once per call.
 
 ## How it works
 
@@ -321,8 +348,8 @@ state of your own setup instead of guessing.
 
 The MCP server registers two families of tools — 31 bridge tools that
 drive the connected tab, read the activity trail or read the manual, and 6
-persistent-map tools (2 read, 4 write): 37 in all. 36 are individually
-toggle-able (`browser.activity` is not) — see
+persistent-map tools (2 read, 4 write): 37 in all. All 37 are individually
+toggle-able (`browser.activity` since 0.44.0) — see
 [Per-tool permissions](#per-tool-permissions).
 
 **Browser bridge — read-only** (no claim required, observation only):
@@ -387,6 +414,13 @@ two exceptions are footnoted):
 iframes, nested arbitrarily.
 
 ### Behavior worth knowing before you rely on it
+
+- `browser.network` takes `headers: false` to leave out request and response
+  headers from every entry (usually most of the payload) when status, URL and
+  timing are enough. The default (`true`) is unchanged.
+- A `ref` whose node was replaced is re-found by its semantic key inside
+  same-origin iframes as well, the same places `browser.find({ key })`
+  searches.
 
 | Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1262,6 +1296,14 @@ Timeouts and failures still report what is known (URL, MIME type, bytes
 received so far). `browser.events` gets `download-started` and
 `download-finished` entries.
 
+`browser.download` refuses files over 25 MiB by default. Change the cap with
+`browser-link config set downloads.max-mb <1..64>` (`default` restores
+25 MiB); `browser-link config get downloads.max-mb` shows it. 64 MiB is the
+ceiling because the file crosses the extension socket base64-encoded in one
+message. The change applies to the next download without a restart, and a
+file over the cap comes back as `interrupted` with the active cap named in
+`error`.
+
 ```bash
 browser-link config get downloads.dir                   # default: <data dir>/downloads
 browser-link config set downloads.dir /home/me/agent-dl # absolute paths only
@@ -1523,8 +1565,9 @@ server then never writes those files and only shows the outdated notice.
 
 `browser-link` exposes **37 MCP tools** — 31 bridge tools that drive the
 connected Chrome tab, read the activity trail or read the manual, and 6 to
-read/write the persistent UI map (2 read, 4 write). **36 are individually
-toggle-able** (every tool except `browser.activity`), so you can narrow the surface per machine:
+read/write the persistent UI map (2 read, 4 write). **All 37 are individually
+toggle-able** (`browser.activity` joined the list in 0.44.0; the `readonly`
+preset keeps it on), so you can narrow the surface per machine:
 
 - **In the menu** → `Permissions`. Toggle individual tools with **Space**
   or apply a preset with **Enter** (`all` / `readonly` / `no-eval` /
@@ -1613,13 +1656,20 @@ a server that is already running keeps the code it started with. Since
   finds `127.0.0.1:17529` taken, it retries the bind briefly (a hand-off
   may be in progress), then asks the running primary
   `GET http://127.0.0.1:17529/version` (`{ name, version, pid, startedAt,
-installedVersion }`). If the primary is older, it is stopped (Unix
+installedVersion, repairing }`; answered only when the `Host` header is
+  `127.0.0.1`, `localhost` or `[::1]`, with or without a port, else
+  `403`, so a web page reaching the port under its own host name never
+  reads it). If the primary is older, it is stopped (Unix
   `SIGTERM`, then `SIGKILL` after 3 s; Windows `taskkill /F`) and the new
   process binds in its place. A primary from before 0.41.0 has no
   `/version`: it is replaced when its process started before the installed
   `dist/cli.js` was last written, because then it is necessarily running
   stale code. Same or newer version: nothing changes (proxy in multi-agent
-  mode, the usual "port in use" error otherwise). The connected tabs
+  mode, the usual "port in use" error otherwise), except a same-version
+  primary that reports `repairing: true`: it is handing the port over to
+  this very process, so the bind is retried for up to 5 s instead. A
+  step-down never targets the starting process itself or one of its
+  ancestors (the shell or MCP client that launched it). The connected tabs
   reconnect by themselves.
 - **`browser-link stop` stops every live server**, not only the one
   holding port 17529: the IPC port owner and every process whose command
@@ -1640,7 +1690,9 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   0.41.0 cannot repair itself, so the popup tells you to run
   `browser-link stop` and restart your agent. A repair also ends the MCP
   server process of the client that started it; the client starts a new
-  one.
+  one. The server hands over only once the new process has really
+  started: if starting it fails, even asynchronously, the failure is
+  logged and the running server keeps serving.
 
 ### Idle-disconnect TTL
 

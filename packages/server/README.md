@@ -51,6 +51,25 @@ npm install -g @jobshimo/browser-link
 
 This puts the `browser-link` binary on your PATH on macOS, Linux and Windows.
 
+### Windows: skip the npm shim for faster CLI calls
+
+Each `browser-link …` call from PowerShell or cmd goes through npm's
+`browser-link.cmd` / `browser-link.ps1` shim, which starts its own shell
+before Node: that shim costs 0.7–3.7 s per call on Windows, not
+browser-link. Call the installed CLI directly instead. Find the global
+`node_modules` folder with `npm root -g` and add a function to your
+PowerShell profile (`notepad $PROFILE`):
+
+```powershell
+# npm root -g printed e.g. C:\Users\you\AppData\Roaming\npm\node_modules
+function browser-link { node "C:\Users\you\AppData\Roaming\npm\node_modules\@jobshimo\browser-link\dist\cli.js" @args }
+```
+
+In cmd, the same with a macro:
+`doskey browser-link=node "<npm root -g>\@jobshimo\browser-link\dist\cli.js" $*`.
+The function only changes your terminal: the MCP server your client starts
+pays the shim once per session, not once per call.
+
 ## Quick start
 
 The fastest path is the interactive UI — a full-screen [Ink](https://github.com/vadimdemedes/ink)-based app with a pinned header, live status of every MCP client, and sub-screens that swap in place:
@@ -72,7 +91,7 @@ Or drive it directly:
 browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
 browser-link extension                     # show the Chrome extension assets path + steps
-browser-link doctor                        # diagnose current setup (running vs installed version, live processes)
+browser-link doctor                        # diagnose current setup (running vs installed version, live processes); every probe runs in parallel
 browser-link stop                          # stop every live browser-link server, one line per process
 browser-link tools                         # show which of the 31 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
@@ -150,7 +169,12 @@ selectors and one line per agent session.
   displaces an older primary (it reads `GET /version` on the bridge port),
   `browser-link stop` stops every live server, `doctor` and `list_tabs`
   show "running X / installed Y", and the extension popup has a "Repair
-  connection" button. See
+  connection" button. `/version` answers only a loopback `Host` header
+  (`127.0.0.1`, `localhost`, `[::1]`; anything else gets `403`) and
+  reports `repairing` during a repair, so the successor waits up to 5 s for
+  the port instead of deferring; a failed restart keeps the old server
+  serving, and a step-down never targets the starting process or its
+  ancestors. See
   [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
 - **Admin panel**: the console's status view and the extension popup's
   Admin section render the same server-built sections and labels (English

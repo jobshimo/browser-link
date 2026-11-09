@@ -113,7 +113,8 @@ export async function runServer(): Promise<void> {
  * now. Retry the bind briefly before asking who holds the port. */
 const HANDOFF_ATTEMPTS = 5;
 const HANDOFF_DELAY_MS = 100;
-/** After a take-over step-down: 200 ms × up to 25. */
+/** After a take-over step-down, or while a repairing primary hands the port
+ * over (`await-handoff`): 200 ms × up to 25 (5 s). */
 const TAKEOVER_ATTEMPTS = 25;
 const TAKEOVER_DELAY_MS = 200;
 
@@ -146,18 +147,22 @@ async function electPrimary(bind: () => Promise<void>): Promise<boolean> {
     },
   });
   log(`Primary election: ${outcome.decision} (${outcome.reason}).`);
-  if (outcome.decision !== 'take-over') return false;
+  if (outcome.decision === 'defer') return false;
   try {
     await retryBind(bind, {
       attempts: TAKEOVER_ATTEMPTS,
       delayMs: TAKEOVER_DELAY_MS,
       isRetryable: isAddrInUse,
     });
-    log(`Took over from PID ${outcome.pid ?? '?'} (running ${VERSION}).`);
+    log(
+      outcome.decision === 'take-over'
+        ? `Took over from PID ${outcome.pid ?? '?'} (running ${VERSION}).`
+        : `Repair hand-off from PID ${outcome.pid ?? '?'} complete (running ${VERSION}).`,
+    );
     return true;
   } catch (err) {
     if (!isAddrInUse(err)) throw err;
-    log('Take-over: the port did not free up in time; deferring.');
+    log(`${outcome.decision}: the port did not free up in time; deferring.`);
     return false;
   }
 }
@@ -196,6 +201,7 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
   // so the caller can decide between proxy mode and a clear error.
   const wss = await startWsBridge(tabs, pendingRequests, events, {
     onRepair: () => repair.start(),
+    isRepairing: () => repair.inProgress,
     // Admin panel (popup): describe/act on this primary's settings through
     // the same helpers the console uses. Doctor runs only on its button.
     admin: createPrimaryAdminHandlers({

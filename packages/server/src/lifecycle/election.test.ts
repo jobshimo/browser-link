@@ -288,3 +288,99 @@ describe('stepDownProcess', () => {
     expect(clock).toBeGreaterThanOrEqual(3000);
   });
 });
+
+describe('stepDownProcess never stops itself or an ancestor (A3)', () => {
+  const list = [
+    { pid: 10, ppid: 1, startedAt: null, command: 'shell' },
+    { pid: 20, ppid: 10, startedAt: null, command: 'client' },
+    { pid: 30, ppid: 20, startedAt: null, command: 'node cli.js' },
+    { pid: 40, ppid: 1, startedAt: null, command: 'node cli.js' },
+  ];
+
+  test.each([30, 20, 10])('refuses PID %i (self or ancestor) and kills nothing', async (pid) => {
+    const execFile = vi.fn(() => '');
+    const kill = vi.fn();
+    await expect(
+      stepDownProcess(pid, {
+        os: 'win32',
+        execFile,
+        kill,
+        selfPid: 30,
+        listProcesses: () => list,
+      }),
+    ).rejects.toThrow(/this process or one of its ancestors/);
+    expect(execFile).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  test('an unrelated PID is still stepped down', async () => {
+    const execFile = vi.fn(() => '');
+    await stepDownProcess(40, { os: 'win32', execFile, selfPid: 30, listProcesses: () => list });
+    expect(execFile).toHaveBeenCalledWith('taskkill', ['/PID', '40', '/F'], {
+      timeout: expect.any(Number),
+    });
+  });
+
+  test('defaults to the real process.pid', async () => {
+    const execFile = vi.fn(() => '');
+    await expect(
+      stepDownProcess(process.pid, { os: 'win32', execFile, listProcesses: () => [] }),
+    ).rejects.toThrow(/this process/);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('a primary in the middle of a repair hand-off (A1)', () => {
+  const sameVersionRepairing: VersionProbe = {
+    kind: 'version',
+    info: {
+      name: '@jobshimo/browser-link',
+      version: '0.41.0',
+      pid: 77,
+      startedAt: '2026-11-09T00:00:00.000Z',
+      installedVersion: '0.41.0',
+      repairing: true,
+    },
+  };
+  const base = { ownerPid: null, ownerStartedAt: null, installedCodeMtime: null };
+
+  test('same version and repairing: await the hand-off instead of defer', () => {
+    const outcome = decideElection({ ...base, local: '0.41.0', probe: sameVersionRepairing });
+    expect(outcome).toMatchObject({ decision: 'await-handoff', pid: 77 });
+  });
+
+  test('runElection never steps a repairing primary down', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({
+        localVersion: '0.41.0',
+        probe: () => Promise.resolve(sameVersionRepairing),
+        stepDown,
+      }),
+    );
+    expect(outcome.decision).toBe('await-handoff');
+    expect(stepDown).not.toHaveBeenCalled();
+  });
+
+  test('a newer repairing primary is still deferred to; a same-version idle one too', () => {
+    expect(decideElection({ ...base, local: '0.40.0', probe: sameVersionRepairing }).decision).toBe(
+      'defer',
+    );
+    const idle: VersionProbe = {
+      kind: 'version',
+      info: { ...sameVersionRepairing.info, repairing: false },
+    };
+    expect(decideElection({ ...base, local: '0.41.0', probe: idle }).decision).toBe('defer');
+  });
+
+  test('probeVersion reads repairing from a live bridge', async () => {
+    const wss = await startWsBridge(new Map(), new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '0.41.0',
+      isRepairing: () => true,
+    });
+    running.push(wss);
+    const probe = await probeVersion((wss.address() as AddressInfo).port);
+    expect(probe.kind === 'version' && probe.info.repairing).toBe(true);
+  });
+});

@@ -1,5 +1,12 @@
+import { createServer, type AddressInfo } from 'node:net';
 import { describe, expect, test } from 'vitest';
-import { buildServerStatus, formatDoctor, type DoctorReport } from './doctor.js';
+import {
+  buildServerStatus,
+  checkPort,
+  formatDoctor,
+  runDoctor,
+  type DoctorReport,
+} from './doctor.js';
 
 /**
  * Doctor format-layer tests. v0.8.3 escalates outdated agent-instructions
@@ -221,5 +228,86 @@ describe('buildServerStatus', () => {
       installed: '0.41.0',
       outdated: false,
     });
+  });
+});
+
+describe('runDoctor — concurrency (S1)', () => {
+  test('starts both port probes, the version probe and both process scans before awaiting any', async () => {
+    const log: string[] = [];
+    const releases: (() => void)[] = [];
+    function deferred<T>(name: string, value: T): () => Promise<T> {
+      return () => {
+        log.push(`start:${name}`);
+        return new Promise<T>((resolve) => {
+          releases.push(() => {
+            log.push(`end:${name}`);
+            resolve(value);
+          });
+        });
+      };
+    }
+    const pending = runDoctor({
+      checkPort: (host, port) =>
+        deferred(`port:${port}`, { listening: false, detail: 'no MCP server running' })(),
+      detectSilentDebugger: deferred('silent', { detected: false }),
+      probeVersion: deferred('version', { kind: 'unreachable' } as const),
+      listBridgeProcesses: deferred('processes', [
+        { pid: 7, ppid: 1, startedAt: 0, command: 'node /usr/local/bin/browser-link' },
+      ]),
+      readInstalledVersion: () => '0.43.0',
+      collectLocal: () => ({
+        multiAgent: { enabled: false, autoReelect: false },
+        clients: [],
+        extension: { path: null },
+        map: { dbPath: '/tmp/map.db', exists: false, sizeBytes: 0, apps: 0 },
+        security: { allowedBrowsers: [] },
+      }),
+    });
+    await Promise.resolve();
+    expect(log).toEqual([
+      'start:port:17529',
+      'start:port:17530',
+      'start:silent',
+      'start:version',
+      'start:processes',
+    ]);
+    for (const release of releases) release();
+    const report = await pending;
+    expect(report.ws).toEqual({
+      listening: false,
+      detail: 'no MCP server running',
+      host: '127.0.0.1',
+      port: 17529,
+    });
+    expect(report.ipc.port).toBe(17530);
+    expect(report.silentDebugger).toEqual({ detected: false });
+    expect(report.server).toEqual({ running: null, installed: '0.43.0', outdated: false });
+    expect(report.processes).toEqual([
+      { pid: 7, startedAt: '1970-01-01T00:00:00.000Z', command: 'node browser-link' },
+    ]);
+    expect(report.map.dbPath).toBe('/tmp/map.db');
+  });
+});
+
+describe('checkPort — a stalled event loop is not a closed port (S1)', () => {
+  test('a connect that completed during a synchronous stall still counts as listening', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const pending = checkPort('127.0.0.1', port, 50);
+      // The concurrent doctor does synchronous work (process spawns, local
+      // file reads) while the probe is in flight: block past the timeout.
+      const until = Date.now() + 250;
+      while (Date.now() < until) {
+        /* busy */
+      }
+      expect(await pending).toEqual({
+        listening: true,
+        detail: `something is listening on 127.0.0.1:${port}`,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

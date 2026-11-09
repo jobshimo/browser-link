@@ -2,7 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { INSTALLERS } from '../installers/index.js';
 import { getAllowedBrowsers } from '../auth/allowlist.js';
-import { detectSilentDebuggerFlag } from '../auth/silent-debugger.js';
+import { detectSilentDebuggerFlag, type SilentDebuggerDetection } from '../auth/silent-debugger.js';
 import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
@@ -11,7 +11,11 @@ import { loadConfig } from '../config.js';
 import { IPC_HOST, IPC_PORT } from '../bridge/protocol.js';
 import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
 import { probeVersion, type VersionProbe } from '../lifecycle/election.js';
-import { listBridgeProcesses, shortCommand, type ProcessEntry } from '../lifecycle/processes.js';
+import {
+  listBridgeProcessesAsync,
+  shortCommand,
+  type ProcessEntry,
+} from '../lifecycle/processes.js';
 import { readInstalledVersion } from '../version.js';
 import { compareSemver } from '../utils/semver.js';
 
@@ -23,7 +27,7 @@ interface PortStatus {
   detail: string;
 }
 
-function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortStatus> {
+export function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortStatus> {
   return new Promise((resolve) => {
     const socket = createConnection({ host, port });
     const settle = (listening: boolean, detail: string) => {
@@ -31,8 +35,15 @@ function checkPort(host: string, port: number, timeoutMs = 500): Promise<PortSta
       socket.destroy();
       resolve({ listening, detail });
     };
+    // The doctor runs this alongside process spawns and synchronous file
+    // reads, which can stall the event loop past the timeout. After a stall
+    // the timers phase runs before the I/O poll phase, so a connect that
+    // already completed would lose the race: decide on the next check phase
+    // (setImmediate), after pending I/O callbacks have run.
     const timer = setTimeout(() => {
-      settle(false, `no response within ${timeoutMs}ms`);
+      setImmediate(() => {
+        settle(false, `no response within ${timeoutMs}ms`);
+      });
     }, timeoutMs);
     socket.once('connect', () => {
       clearTimeout(timer);
@@ -114,19 +125,10 @@ function toDoctorProcess(p: ProcessEntry): DoctorProcess {
   };
 }
 
-export async function runDoctor(): Promise<DoctorReport> {
-  // Independent probes — run them concurrently rather than serially so a
-  // slow process-listing scan (silentDebugger) does not add its full
-  // latency on top of the port checks.
-  const [ws, ipc, silentDebugger, versionProbe] = await Promise.all([
-    checkPort(WS_HOST, WS_PORT),
-    checkPort(IPC_HOST, IPC_PORT),
-    detectSilentDebuggerFlag(),
-    probeVersion(WS_PORT),
-  ]);
-  const server = buildServerStatus(versionProbe, readInstalledVersion());
-  const processes = listBridgeProcesses().map(toDoctorProcess);
+/** The part of the report read from local files: synchronous and cheap. */
+type DoctorLocal = Pick<DoctorReport, 'multiAgent' | 'clients' | 'extension' | 'map' | 'security'>;
 
+function collectLocal(): DoctorLocal {
   const clients = INSTALLERS.map((i) => {
     const d = i.detect();
     const instructions = getInstructionsInstaller(i.id).detect();
@@ -151,18 +153,56 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
   const cfg = loadConfig();
-
   return {
-    ws: { ...ws, host: WS_HOST, port: WS_PORT },
-    ipc: { ...ipc, host: IPC_HOST, port: IPC_PORT },
     multiAgent: { enabled: cfg.multiAgent === true, autoReelect: cfg.autoReelect === true },
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
     security: { allowedBrowsers: getAllowedBrowsers() },
+  };
+}
+
+/** Injectable probes, so tests pin the concurrency without touching the OS. */
+export interface DoctorDeps {
+  checkPort: (host: string, port: number) => Promise<PortStatus>;
+  detectSilentDebugger: () => Promise<SilentDebuggerDetection>;
+  probeVersion: (port: number) => Promise<VersionProbe>;
+  listBridgeProcesses: () => Promise<ProcessEntry[]>;
+  readInstalledVersion: () => string | null;
+  collectLocal: () => DoctorLocal;
+}
+
+const DEFAULT_DEPS: DoctorDeps = {
+  checkPort: (host, port) => checkPort(host, port),
+  detectSilentDebugger: () => detectSilentDebuggerFlag(),
+  probeVersion: (port) => probeVersion(port),
+  listBridgeProcesses: () => listBridgeProcessesAsync(),
+  readInstalledVersion,
+  collectLocal,
+};
+
+export async function runDoctor(overrides: Partial<DoctorDeps> = {}): Promise<DoctorReport> {
+  const deps: DoctorDeps = { ...DEFAULT_DEPS, ...overrides };
+  // Every slow probe is independent: start them all before awaiting any, so
+  // the run lasts as long as the slowest one (the WMI/ps process scans),
+  // not their sum. The local file reads run while they are in flight.
+  const pending = Promise.all([
+    deps.checkPort(WS_HOST, WS_PORT),
+    deps.checkPort(IPC_HOST, IPC_PORT),
+    deps.detectSilentDebugger(),
+    deps.probeVersion(WS_PORT),
+    deps.listBridgeProcesses(),
+  ]);
+  const local = deps.collectLocal();
+  const [ws, ipc, silentDebugger, versionProbe, bridgeProcesses] = await pending;
+
+  return {
+    ws: { ...ws, host: WS_HOST, port: WS_PORT },
+    ipc: { ...ipc, host: IPC_HOST, port: IPC_PORT },
+    ...local,
     silentDebugger,
-    server,
-    processes,
+    server: buildServerStatus(versionProbe, deps.readInstalledVersion()),
+    processes: bridgeProcesses.map(toDoctorProcess),
   };
 }
 
