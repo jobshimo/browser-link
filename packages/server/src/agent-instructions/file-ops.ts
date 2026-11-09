@@ -25,6 +25,8 @@ import type { InstructionsDetect } from './types.js';
  * override (e.g. Copilot CLI's `COPILOT_HOME`). */
 export interface FileOpOptions {
   allowOutsideHome?: boolean;
+  /** `installAt` only: keep the core rules in the block after the trigger. */
+  withCore?: boolean;
 }
 
 /**
@@ -82,7 +84,7 @@ function assertUnderHome(filePath: string): void {
 
 /** Throw SymlinkRefusedError if `filePath` is a symlink. existsSync follows
  * symlinks, so callers must use this lstat-based check separately. */
-function guardSymlink(filePath: string): void {
+function guardSymlink(filePath: string, options: FileOpOptions = {}): void {
   let st;
   try {
     st = lstatSync(filePath);
@@ -100,7 +102,11 @@ function guardSymlink(filePath: string): void {
   } catch {
     resolved = rawTarget;
   }
-  throw new SymlinkRefusedError(filePath, resolved, block());
+  throw new SymlinkRefusedError(
+    filePath,
+    resolved,
+    block(VERSION, '\n', { withCore: options.withCore }),
+  );
 }
 
 export function detectAt(filePath: string): InstructionsDetect {
@@ -121,8 +127,8 @@ export function detectAt(filePath: string): InstructionsDetect {
     filePath,
     state:
       cmp < 0
-        ? { kind: 'installed-outdated', version: installedVersion }
-        : { kind: 'installed', version: installedVersion },
+        ? { kind: 'installed-outdated', version: installedVersion, mode: span.mode }
+        : { kind: 'installed', version: installedVersion, mode: span.mode },
   };
 }
 
@@ -136,13 +142,14 @@ export function installAt(
   options: FileOpOptions = {},
 ): string {
   if (!options.allowOutsideHome) assertUnderHome(filePath);
-  guardSymlink(filePath);
+  guardSymlink(filePath, options);
+  const blockOpts = { withCore: options.withCore === true };
   if (!existsSync(filePath)) {
     mkdirSync(dirname(filePath), { recursive: true });
     // New file: portable markdown — LF by default. We do NOT pick CRLF on
     // Windows because the content is going into a tool-managed .md file
     // that may be synced to other OSes.
-    atomicWrite(filePath, block());
+    atomicWrite(filePath, block(VERSION, '\n', blockOpts));
     return `Created ${filePath} and inserted the browser-link instructions block for ${displayName}.`;
   }
   const text = readFileSync(filePath, 'utf8');
@@ -150,7 +157,7 @@ export function installAt(
     throw new CorruptBlockError(filePath, 'multiple-begin-markers');
   }
   const eol = detectEol(text);
-  const fresh = block(VERSION, eol);
+  const fresh = block(VERSION, eol, blockOpts);
   const span = findBlockSpan(text);
   if (!span) {
     // Append. Ensure a blank line separator from prior content, matching

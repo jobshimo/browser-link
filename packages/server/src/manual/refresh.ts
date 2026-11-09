@@ -5,7 +5,8 @@
  * path `browser-link instructions install` uses (`installAt`: atomic,
  * home-guarded, refuses a corrupt file). The prior install is the opt-in: a
  * client without a block (`not-installed`, `no-file`) or with a `corrupt`
- * file is never touched.
+ * file is never touched. The block keeps the mode it was installed with:
+ * trigger only, or trigger + core (`--with-core`).
  *
  * Pure apart from the installers it is handed, so tests drive it with stubs.
  */
@@ -47,7 +48,7 @@ export function refreshOutdatedBlocks(input: {
       // is rewritten; a block the user removed is never re-added.
       const current = installer.detect().state;
       if (current.kind !== 'installed-outdated') return { ...s, state: current };
-      installer.install();
+      installer.install({ withCore: current.mode === 'core' });
       const after: ClientInstructionsStatus = { ...s, state: installer.detect().state };
       refreshed.push(after);
       return after;

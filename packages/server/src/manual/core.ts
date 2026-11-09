@@ -1,70 +1,43 @@
 /**
- * The hand-written core of the agent manual: the part every agent must see
- * before its first browser call. It is rendered first in the MCP
- * `initialize.instructions` (hosts truncate that text; Claude Code cut it at
- * ~4,090 characters) and first in the installed instructions block, so it is
- * pinned at 3,800 characters by `manual.test.ts`.
+ * The hand-written core of the agent manual: the rules an agent needs at the
+ * moment it uses the browser. It reaches the agent three ways: as the second
+ * text block of the first browser tool call of a session, first in the MCP
+ * `initialize.instructions` (hosts truncate that text), and in the installed
+ * block only when the owner chose `browser-link instructions install
+ * --with-core`. Pinned at 2,000 characters by `manual.test.ts`.
  *
- * Rule for editing: every line must change what the agent does next. Depth
- * lives in the per-tool `doc` blocks and in `topics.ts`, reachable through
- * `browser.manual`.
+ * Rule for editing: a line stays only when it changes what the agent does
+ * next, and it names the failure it prevents. Depth lives in the per-tool
+ * `doc` blocks and in `topics.ts`, reachable through `browser.manual`.
  *
- * The bilingual phrases in the trigger list are DATA (what users actually
- * type), not instructions; tests pin them verbatim.
+ * The eight curation rules mirror, number for number, what the server
+ * enforces on `browser.wrap_up`; keep both in step.
  */
 
 import { TOPIC_NAMES } from './topics.js';
 
+/** First line of the core; tests and the start-time notice anchor on it. */
+export const CORE_HEADING = '## browser-link rules';
+
 const CORE_LINES: readonly string[] = [
-  '## browser-link — reflex protocol (ALWAYS ACTIVE)',
-  '',
-  '`browser.*` tools see only the Chrome tabs the user connected through the companion extension. Never reason about page state you have not seen.',
-  '',
-  '### TRIGGER LIST — call before responding when ANY apply',
-  '',
-  'User mentions any of these (English or Spanish):',
-  '- "the button doesn\'t work" / "no anda el botón" / "no funciona X"',
-  '- "broken layout" / "está roto" / "se ve mal" / "looks wrong"',
-  '- "check if X works" / "fíjate si anda X" / "¿anda X?" / "does X work?"',
-  '- "the page" / "la página" / "la web" / "the site"',
-  '- "open this in the browser" / "abrí esto en el navegador" / "navegá a"',
-  '- a UI element, web app name, URL, browser tab, layout, dialog, form',
-  '→ call `browser.list_tabs` FIRST. A tab with a `map` field: read its `inline` map when present, otherwise call `browser.map.recall` BEFORE `browser.snapshot`.',
-  '',
-  '- Before suggesting a UI code change or a click, `browser.snapshot` and verify the element exists.',
-  '- "Tab not connected" → `browser.events` for the renamed tab_id, then retry.',
-  '- SELF-CHECK after each user message: is this about something visible in a browser? Did I run `browser.list_tabs`?',
-  '',
-  '### Success is not proof',
-  '',
-  'An `ok` result can still mean the action missed. Check these fields:',
-  '- `hit_element` on `click` (and flow click steps) appears when a `pointer-events: none` target passes the click on, or on `force: true`; it names the real receiver: if it is not your target or inside it, the click missed → do not proceed; `find` the element that receives clicks by its text.',
-  '- `retargeted` error on `click`: the click would land on an ancestor of your target (clipped or covered by its own container) → scroll or expand the container, or `find` the element that receives clicks; `force: true` clicks there anyway.',
-  '- `settle.settled: false` or `mutation_count: 0`: quiet is not effect → `expect` or `wait_for` the effect you need.',
-  '- `since_status` on `snapshot`: you received a full snapshot → keep its new `snapshot_id`.',
-  '- `reresolved: true`: the node was replaced and re-found → fine.',
-  '- `ref-stale` → take a fresh `snapshot`/`find`; never retry the same ref.',
-  '- `wait_for` returning `matched: false` is not an error → decide.',
-  '- `extension_outdated: true` on `list_tabs` → extension older than server, fields may be missing: ask the user to update or reload the extension.',
-  '',
-  '### Habits',
-  '',
-  '- One full `snapshot` per view, then `snapshot({ since: snapshot_id })` for every later look.',
-  '- Act on the `ref` from the last `snapshot`/`find`, not a selector copied earlier; never inject attributes with `evaluate` to build selectors.',
-  '- Locate with `find` by text (`role` optional). `evaluate` only reads, never clicks or types: synthetic events are `isTrusted: false`, apps ignore them, and nothing records what happened.',
-  '- Downloads only through `browser.download` (`url` or `selector`), never a click on a download control.',
-  '- Pass `expect` to `click`/`type`/`press` when the effect matters.',
-  '',
-  '### Shared tabs and cdp-direct',
-  '',
-  '- Several agents can share the bridge: `browser.claim_tab` before a multi-step flow, `browser.release_tab` after.',
-  '- On a claim conflict do not spin-retry: use another tab or ask the user.',
-  '- `cdp:` tabs (`transport: "cdp"`) lack drag, console, network, network_body, canvas_screenshot, dialog_respond, set_permission, wait_for_tab and download by selector.',
-  '- "cdp-direct is disabled" / "requires an active grant" → relay `browser-link config set cdp-direct.enabled true` or `browser-link cdp allow` to the user; there is no workaround.',
-  '',
-  '### Depth on demand',
-  '',
-  `\`browser.manual()\` lists tools and topics; \`browser.manual({ tool: "browser.click" })\` gives one tool's full doc; \`browser.manual({ topic })\` gives one topic: ${TOPIC_NAMES.join(', ')}.`,
+  CORE_HEADING,
+  'Use `browser.*` when the request involves a web page: a URL, site, tab, form, dialog, layout or UI element, or "X doesn\'t work" / "no anda X" in a web app. Answering without looking gets the page wrong.',
+  "- Call `browser.list_tabs` first and read each tab's `knowledge` (pitfalls, readers, flows, selectors with `confidence`); skipping it repeats mistakes already recorded.",
+  '- `ok` is not proof: a `hit_element` that is not your target means the click missed; `settle.settled: false` or `mutation_count: 0` means quiet, not effect. Pass `expect` when the effect matters, or you build on an action that did nothing.',
+  '- Act on the `ref` from your last `snapshot`/`find`; a remembered selector or an old ref hits the wrong element.',
+  '- Before writing JS, try `browser.find`, `browser.read({ name })` and `browser.flow({ name })`: `evaluate` costs tokens and teaches the map nothing.',
+  '- Downloads only through `browser.download`; a click can open a Save dialog no tool can close.',
+  '- Before you answer the user after using the browser, call `browser.wrap_up`, then again with your decisions. `pending_wrap_up: n` on a result means n items wait for it; skipping it loses what this session learned.',
+  'Curation (the server rejects a violation, naming the rule):',
+  '1. Only what worked enters knowledge; failures stay as evidence.',
+  "2. Keep a reader only if it is reusable without this task's data; data literals become `<PLACEHOLDER>` templates.",
+  '3. Never credentials, tokens, cookies, storage or personal data, even as structure; mutations are never readers.',
+  '4. Names say what is returned: kebab-case, ≤ 40 chars, no verbs.',
+  '5. One-offs are dropped by default.',
+  '6. A pitfall is a server-generated candidate you confirm, never free text.',
+  '7. Nothing about the user, only how the app works.',
+  '8. In doubt, drop.',
+  `Depth: \`browser.manual()\` (index), \`browser.manual({ tool })\`, \`browser.manual({ topic })\`: ${TOPIC_NAMES.join(', ')}.`,
 ];
 
 export interface CoreOptions {

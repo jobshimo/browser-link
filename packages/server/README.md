@@ -96,6 +96,8 @@ browser-link stop                          # stop every live browser-link server
 browser-link tools                         # show which of the 31 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link map                           # list apps the persistent UI map knows about
+browser-link instructions install          # write the short browser-link trigger into each client's global .md
+browser-link feedback                      # what agents reported about browser-link itself
 browser-link about                         # overview — what this is, how it works, every tool
 browser-link help                          # list every subcommand
 ```
@@ -168,6 +170,42 @@ selectors and one line per agent session.
 > before sharing it. The map is designed so agents never write real domain
 > data into it (IDs, names, dates — placeholders like `<QUERY>` stand in
 > instead), but an export is only as clean as what was actually saved.
+
+## Agent instructions — a trigger, the rules just in time
+
+`browser-link instructions install` writes a short **trigger** (under 600
+characters) between marker comments in each client's global instructions
+file (`~/.claude/CLAUDE.md`, `~/.config/opencode/AGENTS.md`,
+`~/.copilot/AGENTS.md`): what browser-link is, when to use it, and that the
+first browser tool call returns the rules. Sessions that never touch a
+browser pay only for those few lines.
+
+The **rules** (the core, under 2,000 characters) come back as a second text
+block of the first browser tool call of each agent session, and lead the MCP
+connect-time instructions. They keep only what changes a decision, each
+with the failure it prevents: `list_tabs` first and read `knowledge`, an
+`ok` is not proof, act on the last `ref`, try `find`/`read`/`flow({ name })`
+before writing JS, downloads only through `browser.download`, call
+`browser.wrap_up` before answering the user (a result's `pending_wrap_up: n`
+counts what waits for it), and the eight curation rules the server enforces.
+Everything else is one `browser.manual({ topic })` away.
+
+`browser-link instructions install --with-core` keeps the rules in the
+installed block too (trigger + core, about 2,700 characters). The block
+records its mode in a marker comment, the start-time refresh of an outdated
+block keeps that mode, and `browser-link instructions` shows it per client.
+Running `install` without the flag goes back to the trigger only.
+
+### `browser-link feedback`
+
+When a tool returns something an agent did not expect, the agent records it
+(`browser.feedback`, or the `feedback` field of `browser.wrap_up`). Agents
+never open issues. `browser-link feedback [--limit <n>]` lists the entries,
+newest first; `browser-link feedback issue <id>` prints a GitHub issue draft
+(tool, observed, expected, origin, app build, date; secret-shaped text
+redacted, no agent id) and creates it on `jobshimo/browser-link` with
+`gh issue create` only after you type `y` in the console. Without a terminal
+it prints the draft and creates nothing.
 
 ## Also inside
 

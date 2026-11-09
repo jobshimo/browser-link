@@ -1,12 +1,15 @@
 /**
- * Renderers for the agent manual. One source, three outputs:
+ * Renderers for the agent manual. One source, four outputs:
  *
+ *  - `renderTrigger` — the short block `browser-link instructions install`
+ *    writes into each client's instructions file: what browser-link is and
+ *    when to use it. It is read every session, so it stays under 600
+ *    characters; the rules arrive with the first browser tool call.
+ *  - `renderInstallBody` — that block's body: the trigger, plus the core
+ *    when the owner chose `--with-core`.
  *  - `renderServerInstructions` — the MCP `initialize.instructions` text:
  *    the core first (hosts truncate this text, so what comes first is what
  *    arrives), then one section per tool rendered from its `doc` block.
- *  - `renderInstallBody` — the body of the block `browser-link instructions
- *    install` writes into each client's instructions file: the core, then
- *    the topics an agent needs every session.
  *  - `renderTopic` (in `topics.ts`) — one topic on demand.
  */
 
@@ -14,11 +17,18 @@ import { BROWSER_TOOL_DEFINITIONS } from '../tools/browser-definitions.js';
 import { MAP_TOOL_DEFINITIONS } from '../map/tools.js';
 import type { ToolDefinition } from '../tools/types.js';
 import { renderCore, type CoreOptions } from './core.js';
-import { renderTopic, type TopicName } from './topics.js';
 
-/** Topics embedded in the installed block, in order. The block is read in
- * full every session, so these are the ones worth that cost. */
-const INSTALL_TOPICS: readonly TopicName[] = ['token-efficiency', 'downloads', 'flows', 'map'];
+const TRIGGER_LINES: readonly string[] = [
+  '## browser-link',
+  'browser-link lets you see and drive the Chrome tabs the user connected through its extension (`browser.*` tools). Use it when the user mentions a web page, site, URL, browser tab, form, dialog, layout or UI element, or says something in a web app does not work ("no anda", "se ve mal", "check if X works"). Never reason about a page you have not seen.',
+  'Your first browser tool call returns the rules; `browser.manual()` has the rest.',
+];
+
+/** The installed trigger: what browser-link is, when to use it, and where
+ * the rules come from. */
+export function renderTrigger(): string {
+  return TRIGGER_LINES.join('\n');
+}
 
 /** Render a single tool's documentation as a markdown section. Skips
  * tools without a `doc` block. */
@@ -49,9 +59,14 @@ export function renderServerInstructions(opts: CoreOptions = {}): string {
   return sections.join('\n');
 }
 
-/** The installed block body as single lines: the core, then the install
- * topics, each separated by one blank line. */
-export function renderInstallBody(): string[] {
-  const text = [renderCore({}), ...INSTALL_TOPICS.map(renderTopic)].join('\n\n');
+export interface InstallBodyOptions {
+  /** Keep the core in the installed block after the trigger. */
+  withCore?: boolean;
+}
+
+/** The installed block body as single lines: the trigger, then (with
+ * `withCore`) one blank line and the core. Never a topic. */
+export function renderInstallBody(opts: InstallBodyOptions = {}): string[] {
+  const text = opts.withCore ? `${renderTrigger()}\n\n${renderCore({})}` : renderTrigger();
   return text.split('\n');
 }

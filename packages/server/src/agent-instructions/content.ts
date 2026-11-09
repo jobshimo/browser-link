@@ -1,5 +1,6 @@
 import { renderInstallBody } from '../manual/render.js';
 import { VERSION } from '../version.js';
+import type { InstallOptions, InstructionsMode } from './types.js';
 
 /**
  * The block we drop into each agent's global instructions markdown file.
@@ -16,6 +17,14 @@ import { VERSION } from '../version.js';
 export const BEGIN_PREFIX = '<!-- browser-link:instructions:begin';
 export const END_MARKER = '<!-- browser-link:instructions:end -->';
 
+/** Marker line inside the block recording what it holds, so the start-time
+ * refresh rewrites a block in the mode it was installed with. */
+export function modeMarker(mode: InstructionsMode): string {
+  return `<!-- browser-link:instructions:mode=${mode} -->`;
+}
+
+const MODE_RE = /<!--\s*browser-link:instructions:mode=(?<mode>trigger|core)\s*-->/;
+
 export function beginMarker(version = VERSION): string {
   return `${BEGIN_PREFIX} v${version} -->`;
 }
@@ -29,11 +38,11 @@ export const BEGIN_RE =
   /<!--\s*browser-link:instructions:begin(?:\s+v(?<version>\d+\.\d+\.\d+))?\s*-->/;
 export const END_RE = /<!--\s*browser-link:instructions:end\s*-->/;
 
-/** Block body: the agent manual core followed by the topics an agent needs
- * every session, rendered by `../manual/render.ts` (one source shared with
- * the MCP connect-time instructions). */
-function body(): string {
-  return renderInstallBody().join('\n');
+/** Block body: the trigger, plus the core with `withCore`, rendered by
+ * `../manual/render.ts` (one source shared with the MCP connect-time
+ * instructions and the first browser tool call). */
+function body(opts: InstallOptions): string {
+  return renderInstallBody({ withCore: opts.withCore === true }).join('\n');
 }
 
 /** Full fenced block to write into the file, including a trailing newline.
@@ -44,12 +53,17 @@ function body(): string {
  * Windows-edited file's dominant line ending. The body() helper composes
  * its own lines with `\n`; we replace them when joining so the produced
  * block is uniformly LF or CRLF — never mixed. */
-export function block(version = VERSION, eol: '\n' | '\r\n' = '\n'): string {
+export function block(
+  version = VERSION,
+  eol: '\n' | '\r\n' = '\n',
+  opts: InstallOptions = {},
+): string {
   const parts = [
     beginMarker(version),
     `<!-- managed-by: browser-link v${version}; do not edit between markers; run \`browser-link instructions install\` to refresh. -->`,
+    modeMarker(opts.withCore === true ? 'core' : 'trigger'),
     '',
-    body(),
+    body(opts),
     '',
     END_MARKER,
     '',
@@ -84,6 +98,8 @@ export interface BlockSpan {
   startIndex: number;
   endIndex: number; // index AFTER the end marker line (newline-inclusive)
   installedVersion: string | null;
+  /** From the mode marker; `trigger` when the block has none. */
+  mode: InstructionsMode;
 }
 
 export function findBlockSpan(text: string): BlockSpan | null {
@@ -97,9 +113,11 @@ export function findBlockSpan(text: string): BlockSpan | null {
   // Consume the trailing newline after the end marker, if any.
   const nextChar = text[endMarkerEndAbsolute];
   const endIndex = nextChar === '\n' ? endMarkerEndAbsolute + 1 : endMarkerEndAbsolute;
+  const inside = text.slice(afterBegin, endMarkerStartAbsolute);
   return {
     startIndex: begin.index,
     endIndex,
     installedVersion: begin.groups?.version ?? null,
+    mode: MODE_RE.exec(inside)?.groups?.mode === 'core' ? 'core' : 'trigger',
   };
 }

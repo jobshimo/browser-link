@@ -89,6 +89,23 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_activity_flag ON activity(flag);
     CREATE INDEX IF NOT EXISTS idx_activity_agent_id ON activity(agent_id);
   `);
+
+  // Agent feedback about the tool itself (`browser.feedback`, `wrap_up`).
+  // Its own table, never pruned with the trail: an entry stays until the
+  // owner turns it into an issue or clears the file. Read by
+  // `browser-link feedback` (see `feedback.ts`).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at TEXT NOT NULL,
+      tool TEXT NOT NULL,
+      observed TEXT NOT NULL,
+      expected TEXT NOT NULL,
+      agent_id TEXT,
+      origin TEXT,
+      build TEXT
+    );
+  `);
 }
 
 /**

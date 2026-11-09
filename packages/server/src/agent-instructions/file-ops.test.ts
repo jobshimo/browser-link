@@ -15,6 +15,8 @@ import { VERSION } from '../version.js';
 import { BEGIN_PREFIX, END_MARKER, beginMarker } from './content.js';
 import { CorruptBlockError, OutsideHomeError, SymlinkRefusedError } from './errors.js';
 import { detectAt, installAt, uninstallAt } from './file-ops.js';
+import { renderCore } from '../manual/core.js';
+import { renderTrigger } from '../manual/render.js';
 
 let dir: string;
 let file: string;
@@ -328,5 +330,32 @@ describe('outside-$HOME guard', () => {
       expect(caught.message).toContain('COPILOT_HOME');
       expect(caught.filePath).toBe(file);
     }
+  });
+});
+
+describe('installAt modes (trigger by default, --with-core keeps the core)', () => {
+  test('a default install writes the trigger only and detects as mode trigger', () => {
+    installAt(file, 'Test Client');
+    const text = readFileSync(file, 'utf8');
+    expect(text).toContain(renderTrigger());
+    expect(text).not.toContain(renderCore({}));
+    expect(detectAt(file).state).toEqual({ kind: 'installed', version: VERSION, mode: 'trigger' });
+  });
+
+  test('withCore writes the trigger and the core and detects as mode core', () => {
+    installAt(file, 'Test Client', { withCore: true });
+    const text = readFileSync(file, 'utf8');
+    expect(text).toContain(`${renderTrigger()}\n\n${renderCore({})}`);
+    expect(detectAt(file).state).toEqual({ kind: 'installed', version: VERSION, mode: 'core' });
+  });
+
+  test('an explicit install without withCore turns a core block back into the trigger', () => {
+    writeFileSync(file, '# Mine\n', 'utf8');
+    installAt(file, 'Test Client', { withCore: true });
+    installAt(file, 'Test Client');
+    const text = readFileSync(file, 'utf8');
+    expect(text.startsWith('# Mine\n')).toBe(true);
+    expect(text).not.toContain(renderCore({}));
+    expect(detectAt(file).state).toEqual({ kind: 'installed', version: VERSION, mode: 'trigger' });
   });
 });
