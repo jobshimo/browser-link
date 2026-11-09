@@ -5,7 +5,7 @@
 > **Supersedes [`v3-bl-1.0-live-model-and-resolver.md`](./v3-bl-1.0-live-model-and-resolver.md).**
 > Written 2026-11-06, after a diagnosis of the current perception code and a six-experiment lab session (`../lab/2026-11-06-live-page-model/`). v3's 1.0 claim (§2) and its critique of v2 are **kept**; v4 settles *where* the live page model runs and *how it is fed*, with numbers instead of a lean, removes the ML resolver from the 1.0 scope, and replaces the single 1.0 bundle with three slices that each ship on their own. §1 records what changed and why.
 
-**Status:** draft, for review by the owner · **Written:** 2026-11-06 · **Origin:** design conversation (owner decision: foundation first, in shippable slices), code diagnosis against `main` at `25082a0`, lab evidence in `../lab/2026-11-06-live-page-model/`.
+**Status:** CURRENT, shipped in 0.35.0–0.37.0 (S1–S3) · **Written:** 2026-11-06 · **Origin:** design conversation (owner decision: foundation first, in shippable slices), code diagnosis against `main` at `25082a0`, lab evidence in `../lab/2026-11-06-live-page-model/`.
 
 ---
 
