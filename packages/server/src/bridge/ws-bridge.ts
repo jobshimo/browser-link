@@ -54,6 +54,55 @@ export interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
+  /** The socket the tool.request went out on: a close of THAT socket fails
+   * the request at once instead of leaving it to time out. */
+  ws?: WebSocket;
+  /** The tool name, for the disconnect error message. */
+  tool?: string;
+}
+
+/**
+ * The one place a pending tool request is settled: clears its timeout,
+ * removes it from the map, then resolves or rejects. Used for the
+ * extension's `tool.response` and for a socket close. Returns false when
+ * the id is unknown (already settled or timed out).
+ */
+export function settlePendingRequest(
+  pendingRequests: Map<string, PendingRequest>,
+  id: string,
+  outcome: { ok: true; result: unknown } | { ok: false; error: string },
+): boolean {
+  const pending = pendingRequests.get(id);
+  if (!pending) return false;
+  clearTimeout(pending.timeout);
+  pendingRequests.delete(id);
+  if (outcome.ok) pending.resolve(outcome.result);
+  else pending.reject(new Error(outcome.error));
+  return true;
+}
+
+/**
+ * Reject every request still waiting on `ws` when that socket closes, so the
+ * caller learns about the disconnect now instead of a misleading "timed out"
+ * 30-90 s later. Requests sent on other sockets are untouched.
+ */
+export function failPendingRequestsOnClose(
+  pendingRequests: Map<string, PendingRequest>,
+  ws: WebSocket,
+  tabId: string,
+  code: number,
+): number {
+  let failed = 0;
+  for (const [id, pending] of [...pendingRequests]) {
+    if (pending.ws !== ws) continue;
+    const tool = pending.tool ?? 'a tool call';
+    settlePendingRequest(pendingRequests, id, {
+      ok: false,
+      error: `tab ${tabId} disconnected (close code ${code}) while ${tool} was in flight`,
+    });
+    failed++;
+  }
+  return failed;
 }
 
 function log(msg: string): void {
@@ -331,12 +380,11 @@ export function startWsBridge(
         }
 
         if (msg.kind === 'tool.response') {
-          const pending = pendingRequests.get(msg.id);
-          if (!pending) return;
-          clearTimeout(pending.timeout);
-          pendingRequests.delete(msg.id);
-          if (msg.ok) pending.resolve(msg.result);
-          else pending.reject(new Error(msg.error));
+          settlePendingRequest(
+            pendingRequests,
+            msg.id,
+            msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error },
+          );
           return;
         }
 
@@ -446,6 +494,7 @@ export function startWsBridge(
       });
 
       ws.on('close', (code: number) => {
+        failPendingRequestsOnClose(pendingRequests, ws, assignedTabId ?? 'unregistered', code);
         if (assignedTabId) {
           tabs.delete(assignedTabId);
           events.add('tab-disconnected', buildTabDisconnectedData(assignedTabId, code));
@@ -1001,7 +1050,7 @@ export function sendToolRequest(
       pendingRequests.delete(id);
       reject(new Error(`Tool '${tool}' timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    pendingRequests.set(id, { resolve, reject, timeout });
+    pendingRequests.set(id, { resolve, reject, timeout, ws: session.ws, tool });
     send(session.ws, { kind: 'tool.request', id, tool, params });
   });
 }

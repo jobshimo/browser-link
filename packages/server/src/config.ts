@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getDataDir } from './map/paths.js';
 import { sanitizeDisabledTools } from './permissions.js';
@@ -426,7 +426,18 @@ export function saveConfig(patch: Partial<BrowserLinkConfig>): BrowserLinkConfig
   // accidentally promote a default into an explicit field on disk.
   const persisted = readPersisted();
   const stripped = normaliseForWrite({ ...persisted, ...patch });
-  writeFileSync(path, JSON.stringify(stripped, null, 2) + '\n', 'utf8');
+  // Write a sibling temp file and rename it over config.json: a reader in
+  // another process (the primary re-reads config on every tool call) sees
+  // either the old file or the new one, never a truncated one that would
+  // parse-fail open and briefly empty the tool deny-list.
+  const tmp = `${path}.${process.pid}-${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(stripped, null, 2) + '\n', 'utf8');
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
   return loadConfig();
 }
 

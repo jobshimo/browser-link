@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from './map/paths.js';
@@ -17,6 +18,18 @@ import {
   sanitizeDownloadsMaxMb,
   saveConfig,
 } from './config.js';
+
+// Pass-through spies on the two write primitives so the atomic-write test
+// can observe which paths saveConfig targets. Every other test sees the
+// real behaviour.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+    renameSync: vi.fn(actual.renameSync),
+  };
+});
 
 describe('clampGrantTtlMinutes', () => {
   test('0 ("never") passes through untouched', () => {
@@ -411,5 +424,53 @@ describe('downloadsMaxMb', () => {
     for (const raw of [0, 65, 501, -1, 2.5, '50', null, undefined, Number.NaN, Infinity]) {
       expect(sanitizeDownloadsMaxMb(raw)).toBe(DEFAULT_DOWNLOADS_MAX_MB);
     }
+  });
+});
+
+describe('saveConfig writes config.json atomically', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-atomic-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+    vi.mocked(fs.writeFileSync).mockClear();
+    vi.mocked(fs.renameSync).mockClear();
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('never writes config.json in place: a sibling temp file is renamed over it', () => {
+    const target = join(dataDir, 'config.json');
+    saveConfig({ skipWelcome: true });
+    saveConfig({ mapLearningEnabled: false });
+
+    const written = vi.mocked(fs.writeFileSync).mock.calls.map((c) => String(c[0]));
+    expect(written).toHaveLength(2);
+    expect(written).not.toContain(target);
+    for (const path of written) {
+      expect(path.startsWith(`${target}.${process.pid}-`)).toBe(true);
+      expect(path.slice(target.length)).toMatch(/^\.\d+-\d+\.tmp$/);
+    }
+    const renames = vi.mocked(fs.renameSync).mock.calls.map((c) => [String(c[0]), String(c[1])]);
+    expect(renames).toEqual(written.map((tmp) => [tmp, target]));
+    // No temp file is left behind after a successful save.
+    expect(readdirSync(dataDir)).toEqual(['config.json']);
+  });
+
+  test('the bytes on disk are unchanged: two-space JSON, normalised, trailing newline', () => {
+    saveConfig({ skipWelcome: true, downloadsMaxMb: 50 });
+    const cfg = saveConfig({ instructionsAutoRefresh: false });
+    expect(readFileSync(join(dataDir, 'config.json'), 'utf8')).toBe(
+      JSON.stringify(
+        { skipWelcome: true, downloadsMaxMb: 50, instructionsAutoRefresh: false },
+        null,
+        2,
+      ) + '\n',
+    );
+    expect(cfg).toEqual(loadConfig());
   });
 });

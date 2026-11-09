@@ -210,6 +210,15 @@ export class IpcServer {
   }
 
   private async handleConnection(socket: Socket): Promise<void> {
+    // Attach the error listener BEFORE the first await: the peer lookup can
+    // take seconds (netstat/tasklist on Windows), and an ECONNRESET on a
+    // socket with no 'error' listener is an uncaught exception that kills
+    // the primary for every agent. Node destroys the socket after 'error',
+    // so the connection is dropped and the accept loop keeps serving.
+    socket.on('error', (err) => {
+      const reason = err.message.replace(/\n|\r/g, ' ');
+      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${reason}`);
+    });
     const remoteAddr = normaliseLoopback(socket.remoteAddress ?? '');
     const remotePort = socket.remotePort;
 
@@ -322,10 +331,6 @@ export class IpcServer {
           console.error(`${IPC_LOG_PREFIX} Proxy disconnected: session=${sessionId}`);
         }
       }
-    });
-    socket.on('error', (err) => {
-      const reason = err.message.replace(/\n|\r/g, ' ');
-      console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${reason}`);
     });
   }
 

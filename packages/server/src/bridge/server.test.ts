@@ -173,6 +173,58 @@ describe('IpcServer handshake', () => {
   });
 });
 
+describe('IpcServer resilience during the peer lookup', () => {
+  test('a client that resets while the peer lookup is pending does not crash the primary', async () => {
+    // The lookup resolves only after the client has sent RST, so the reset
+    // arrives while handleConnection is still awaiting it.
+    let releaseLookup: () => void = () => undefined;
+    let lookupStarted: () => void = () => undefined;
+    const started = new Promise<void>((r) => (lookupStarted = r));
+    let first = true;
+    const slowLookup = (): Promise<PeerProcess> => {
+      if (!first) return TEST_PEER_LOOKUP();
+      first = false;
+      lookupStarted();
+      return new Promise((resolve) => {
+        releaseLookup = () => resolve({ pid: process.pid, binaryName: 'node' });
+      });
+    };
+    const uncaught: Error[] = [];
+    const probe = (err: Error) => uncaught.push(err);
+    process.on('uncaughtException', probe);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      server = new IpcServer(STUB_DEPS, { port: 0, peerLookup: slowLookup });
+      await server.start();
+
+      const s = await dial(server.boundAddress());
+      s.on('error', () => undefined);
+      await started;
+      s.resetAndDestroy();
+      await new Promise((r) => setTimeout(r, 200));
+      releaseLookup();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(uncaught).toEqual([]);
+      const logged = errSpy.mock.calls.map((c) => String(c[0]));
+      expect(logged.some((l) => l.startsWith('[browser-link ipc] Proxy socket error:'))).toBe(true);
+      expect(logged.every((l) => !/[\r\n]/.test(l))).toBe(true);
+
+      // The primary keeps serving: a second, well-behaved client completes
+      // the handshake.
+      const second = await dial(server.boundAddress());
+      second.write(
+        encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+      );
+      const frames = await readNFrames(second, 1);
+      expect(frames[0]?.kind).toBe('hello-ack');
+    } finally {
+      process.off('uncaughtException', probe);
+      errSpy.mockRestore();
+    }
+  });
+});
+
 describe('IpcServer.stop', () => {
   test('broadcasts primary-closing to live sessions', async () => {
     server = await startEphemeral();
