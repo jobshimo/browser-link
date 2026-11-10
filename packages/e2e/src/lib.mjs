@@ -98,8 +98,10 @@ export async function originProbe() {
   return { port: server.address().port, seen, close: () => server.close() };
 }
 
-/** Copy the built extension to a temp dir and point its WS bridge at `wsPort`. */
-export function extensionCopy(wsPort) {
+/** Copy the built extension to a temp dir and point its WS bridge at `wsPort`.
+ * `withoutKey` drops the manifest `key`, so Chrome gives the copy another id
+ * (derived from its path): an extension the bridge must refuse. */
+export function extensionCopy(wsPort, { withoutKey = false } = {}) {
   if (!existsSync(join(EXT_DIST, 'manifest.json'))) {
     throw new Error(`${EXT_DIST} is not built; run pnpm build first`);
   }
@@ -113,10 +115,20 @@ export function extensionCopy(wsPort) {
   );
   if (out === src) throw new Error('"const BRIDGE_PORT = 17529;" not found in background.js');
   writeFileSync(bg, out);
+  if (withoutKey) {
+    const manifestFile = join(dir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    if (typeof manifest.key !== 'string') throw new Error('the built manifest has no key');
+    delete manifest.key;
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+  }
   return dir;
 }
 
-export function launchChrome({ chromePath, port }) {
+/** `loadExtensions`: unpacked dirs passed with `--load-extension`, for a
+ * Chrome without the CDP method `Extensions.loadUnpacked` (it needs a build
+ * that still honours the flag, such as Chrome for Testing). */
+export function launchChrome({ chromePath, port, loadExtensions = [] }) {
   const profile = mkdtempSync(join(tmpdir(), 'bl-e2e-profile-'));
   const args = [
     '--headless=new',
@@ -125,7 +137,11 @@ export function launchChrome({ chromePath, port }) {
     '--no-first-run',
     '--no-default-browser-check',
     '--enable-unsafe-extension-debugging',
+    // No "is debugging this browser" infobar: when a second extension attaches
+    // its debugger (bridge.refused), Chrome would detach it as canceled_by_user.
+    '--silent-debugger-extension-api',
   ];
+  if (loadExtensions.length > 0) args.push(`--load-extension=${loadExtensions.join(',')}`);
   if (process.env.E2E_NO_SANDBOX === '1' || (process.platform === 'linux' && process.env.CI)) {
     args.push('--no-sandbox');
   }
@@ -317,4 +333,22 @@ export async function removeDir(dir) {
     await sleep(250);
   }
   return false;
+}
+
+/** Poll until `count` extension service workers (background.js) are CDP
+ * targets; returns their extension ids. */
+export async function waitExtensionIds(cdp, count, timeoutMs) {
+  const t0 = now();
+  for (;;) {
+    const { targetInfos } = await cdp.send('Target.getTargets');
+    const ids = targetInfos
+      .filter((t) => t.type === 'service_worker')
+      .map((t) => /^chrome-extension:\/\/([a-p]{32})\/background\.js$/.exec(t.url)?.[1])
+      .filter(Boolean);
+    if (ids.length >= count) return [...new Set(ids)];
+    if (now() - t0 > timeoutMs) {
+      throw new Error(`only ${String(ids.length)} of ${String(count)} extension workers started`);
+    }
+    await sleep(100);
+  }
 }

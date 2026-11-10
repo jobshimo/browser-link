@@ -9,6 +9,10 @@
 // patched temp copy of the extension, temp profile, data dir and HOME. The
 // owner's own browser-link on 17529/17530 is never touched (asserted at the end).
 //
+// The bridge enforces the exact extension Origin, so a full pass on a given
+// Chrome proves its service worker announced chrome-extension://<pinned id>;
+// a keyless copy of the same build (another id) is refused (bridge.refused).
+//
 // Env: CHROME_PATH (Chrome/Chromium >= 118), E2E_NO_SANDBOX=1 (Linux CI),
 // E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe).
 // Exit 0 only when every call passes; 1 names the failing tool.
@@ -39,6 +43,7 @@ import {
   sleep,
   stopChrome,
   waitHttp,
+  waitExtensionIds,
   waitServiceWorker,
 } from './lib.mjs';
 
@@ -128,20 +133,26 @@ async function main() {
   temps.push(homeDir);
   const extDir = extensionCopy(wsPort);
   temps.push(extDir);
+  // The same build without the manifest `key`: another id, which the bridge
+  // must refuse (exact Origin, since 1.0.0).
+  const keylessDir = extensionCopy(wsPort, { withoutKey: true });
+  temps.push(keylessDir);
 
-  // 1. Chrome + the extension (branded Chrome ignores --load-extension).
-  state.chrome = launchChrome({ chromePath, port: cdpPort });
-  temps.push(state.chrome.profile);
-  const version = await waitHttp(`http://127.0.0.1:${String(cdpPort)}/json/version`, 20_000);
-  state.cdp = await Cdp.open(version.webSocketDebuggerUrl);
-  const { cdp } = state;
-  const { id: extId } = await cdp.send('Extensions.loadUnpacked', { path: extDir });
-  // The manifest `key` pins the id; the patched temp copy must keep it.
+  // 1. Chrome + the extension.
   const pinnedId = await pinnedExtensionId();
+  const { version, extId, loadedKeylessId, loadMode } = await startChrome(
+    chromePath,
+    cdpPort,
+    extDir,
+    keylessDir,
+    pinnedId,
+  );
+  const { cdp } = state;
+  // The manifest `key` pins the id; the patched temp copy must keep it.
   if (extId !== pinnedId) {
     throw new StepFailure('extension.id', `Chrome assigned ${extId}, the server pins ${pinnedId}`);
   }
-  console.log(`extension.id ok ${extId}`);
+  console.log(`extension.id ok ${extId} (${version.Browser}, loaded with ${loadMode})`);
   const sw = await waitServiceWorker(cdp, extId, 15_000);
 
   // 2. The server, stdio MCP, isolated.
@@ -326,14 +337,92 @@ async function main() {
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
 
-  // 0.52.0 logs a lockout notice for every accepted handshake whose Origin
-  // is not exactly the pinned extension's (a missing Origin included): none
-  // here means the worker's bridge socket announced chrome-extension://<id>.
-  const notice = serverStderr.split('\n').find((l) => l.includes('1.0.0 will refuse'));
-  if (notice !== undefined) throw new StepFailure('bridge.origin', notice);
-  console.log(`bridge.origin ok chrome-extension://${extId} (no lockout notice logged)`);
+  // Since 1.0.0 the bridge accepts only an Origin exactly equal to
+  // chrome-extension://<pinned id> (or a configured id; none here), so the
+  // connected tab and the nine calls above prove that this browser's
+  // service-worker socket announced the pinned Origin.
+  console.log(
+    `bridge.origin ok ${String(version.Browser)} announced chrome-extension://${extId} and the bridge accepted it (exact Origin enforced)`,
+  );
 
   await languageChecks(cdp, extId);
+
+  // A second extension (another id) tries to connect and must be refused.
+  const keylessId =
+    loadedKeylessId ?? (await cdp.send('Extensions.loadUnpacked', { path: keylessDir })).id;
+  await refusedExtension(cdp, swSession, page, keylessId);
+}
+
+/** Chrome with the extension loaded. `Extensions.loadUnpacked` when this
+ * Chrome has it (current stable ignores `--load-extension`); the keyless
+ * copy is then loaded later the same way. Otherwise, chosen by that
+ * capability and not by version, a relaunch with `--load-extension` for both
+ * copies (older Chrome, such as 118, has no such CDP method). */
+async function startChrome(chromePath, cdpPort, extDir, keylessDir, pinnedId) {
+  const open = async (loadExtensions) => {
+    state.chrome = launchChrome({ chromePath, port: cdpPort, loadExtensions });
+    temps.push(state.chrome.profile);
+    const version = await waitHttp(`http://127.0.0.1:${String(cdpPort)}/json/version`, 20_000);
+    state.cdp = await Cdp.open(version.webSocketDebuggerUrl);
+    return version;
+  };
+  let version = await open([]);
+  try {
+    const { id: extId } = await state.cdp.send('Extensions.loadUnpacked', { path: extDir });
+    return { version, extId, loadedKeylessId: undefined, loadMode: 'Extensions.loadUnpacked' };
+  } catch (e) {
+    if (!/wasn't found/.test(String(e?.message))) throw e;
+  }
+  await stopChrome(state.chrome, state.cdp);
+  state.cdp.close();
+  version = await open([extDir, keylessDir]);
+  const ids = await waitExtensionIds(state.cdp, 2, 20_000);
+  const extId = ids.includes(pinnedId) ? pinnedId : ids[0];
+  const loadedKeylessId = ids.find((id) => id !== extId);
+  return { version, extId, loadedKeylessId, loadMode: '--load-extension' };
+}
+/** The refused path through the real browser: the keyless copy (another id)
+ * tries to connect a tab, and the popup-facing result carries the bridge's
+ * refusal code and reason, which the server logged for that origin. */
+async function refusedExtension(cdp, swSession, page, keylessId) {
+  const t = now();
+  const url = `${page}?refused`;
+  const { targetId: refusedTab } = await cdp.send('Target.createTarget', { url });
+  const tabId = await evaluateUntil(
+    cdp,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${JSON.stringify(url)} && t.status === 'complete') || {}).id ?? null)`,
+    swSession,
+    15_000,
+  );
+  const { targetId } = await cdp.send('Target.createTarget', {
+    url: `chrome-extension://${keylessId}/popup.html`,
+  });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  const result = await evaluateUntil(
+    cdp,
+    `chrome.runtime.sendMessage(${JSON.stringify({ action: 'connect', tabId })})`,
+    sessionId,
+    15_000,
+  );
+  await cdp.send('Target.closeTarget', { targetId });
+  // Closed so the tab the nine calls drive is the foreground one again.
+  await cdp.send('Target.closeTarget', { targetId: refusedTab });
+  if (
+    result.ok !== false ||
+    result.code !== 'ws-handshake-refused' ||
+    result.values?.reason !== 'origin-not-allowed'
+  ) {
+    throw new StepFailure('bridge.refused', JSON.stringify(result));
+  }
+  const origin = `chrome-extension://${keylessId}`;
+  const logged = () =>
+    serverStderr.split('\n').find((l) => l.includes(`Rejected WS handshake from origin ${origin}`));
+  const t0 = now();
+  while (!logged() && now() - t0 < 5_000) await sleep(50);
+  if (!logged()) throw new StepFailure('bridge.refused', `no refusal logged for ${origin}`);
+  console.log(
+    `bridge.refused ok ${origin} -> ${result.code} reason=${result.values.reason} ${String(Math.round(now() - t))}`,
+  );
 }
 
 /** The interface language through the real built extension (EN | ES in the
