@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.52.0](https://github.com/jobshimo/browser-link/compare/v0.51.0...v0.52.0) (2026-11-10)
+
+This release pins the extension's id. After updating, reload the extension once in `chrome://extensions`. Chrome treats it as a new extension, so its stored settings (idle timeout, flow recording, language) start fresh. From now on the id is the same on every install and no longer depends on the folder the extension is loaded from.
+
+**1.0.0 will refuse every bridge connection whose Origin is not exactly this extension's id, and connections with no Origin.** This release still accepts them and logs one line for each handshake that 1.0.0 will refuse. A self-built extension keeps working if it keeps the manifest `key`; other ids will have to be listed in the configuration in 1.0.0.
+
+### Features
+
+- **extension:** the manifest now carries a fixed public `key`, which pins the extension id to `celegobaahdoaigibmjmekhopegfkhpe` on every install.
+- **bridge:** the server logs one line for each handshake that 1.0.0 will refuse.
+- **extension:** when the bridge refuses a connection, the popup now says so and why, in English and Spanish. It asks the bridge through a new `GET /handshake-check`, which is answered only to extension origins and uses bounded lookups. With an older server the popup falls back to the generic message.
+
+### Notes
+
+- Who is accepted does not change in this release.
+- The public key gives a stable id, not proof of identity: an unpacked extension loaded by hand with the same key gets the same id.
+
 ## [0.51.0](https://github.com/jobshimo/browser-link/compare/v0.50.0...v0.51.0) (2026-11-10)
 
 The extension is now available in English and Spanish. Nothing breaks for existing users: an older extension that does not send a language gets the server's configured language, as before.
