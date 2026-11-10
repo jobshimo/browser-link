@@ -8,6 +8,20 @@ const execFileAsync = promisify(execFile);
 // fallback stays inside it on normal machines. A hung command fails closed.
 const LOOKUP_TIMEOUT_MS = 5000;
 
+/**
+ * Waits between `netstat` snapshots when the peer's endpoint is not listed
+ * yet. Measured on Windows 11 (2026-11-10, 800 fresh loopback connections
+ * polled every 20 ms): about 2 % are missing from the first snapshot and
+ * listed about 50-65 ms later; one appeared after about 0.9 s, and one was
+ * still missing after 3 s. netstat itself takes about 12-20 ms. Six
+ * snapshots over 1.25 s of waiting cover that tail; a genuinely unlisted
+ * endpoint is refused about 1.35 s later than before, well inside
+ * LOOKUP_TIMEOUT_MS (each command has its own). Only `endpoint-not-listed`
+ * is retried.
+ */
+export const NETSTAT_RETRY_DELAYS_MS = [50, 100, 200, 400, 500] as const;
+export const NETSTAT_SNAPSHOTS = NETSTAT_RETRY_DELAYS_MS.length + 1;
+
 export interface PeerProcess {
   pid: number;
   binaryName: string;
@@ -88,8 +102,10 @@ export type PeerLookupCause =
   | 'path-unreadable'
   | 'unsupported-platform';
 
+/** `detail`: counts that help diagnose a refusal in the field (never an
+ * address, a name or any other content). */
 export type PeerLookupResult =
-  { ok: true; peer: PeerProcess } | { ok: false; cause: PeerLookupCause };
+  { ok: true; peer: PeerProcess } | { ok: false; cause: PeerLookupCause; detail?: string };
 
 /** Injection seams for tests; production uses the real execFile and OS. */
 export interface PeerLookupDeps {
@@ -101,6 +117,8 @@ export interface PeerLookupDeps {
   platform?: NodeJS.Platform;
   /** This server's POSIX uid. Default `process.getuid()`. */
   getuid?: () => number | undefined;
+  /** Waits between netstat snapshots. Default a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** What the caller needs beyond identity. */
@@ -121,7 +139,10 @@ export interface Endpoint {
 
 /** Thrown internally so a parse miss travels the same path as an exec error. */
 class LookupFailure extends Error {
-  constructor(readonly reason: PeerLookupCause) {
+  constructor(
+    readonly reason: PeerLookupCause,
+    readonly detail?: string,
+  ) {
     super(reason);
   }
 }
@@ -157,12 +178,16 @@ export async function lookupPeerProcessDetailed(
       const getuid = deps.getuid ?? (() => process.getuid?.());
       result = await lookupUnix(run, host, port, request.serverEndpoint, getuid(), withPath);
     } else if (os === 'win32') {
-      result = await lookupWindows(run, host, port, request.serverEndpoint, withPath);
+      const sleep = deps.sleep ?? defaultSleep;
+      result = await lookupWindows(run, sleep, host, port, request.serverEndpoint, withPath);
     } else {
       return { ok: false, cause: 'unsupported-platform' };
     }
   } catch (err) {
-    return { ok: false, cause: classifyLookupError(err) };
+    const cause = classifyLookupError(err);
+    return err instanceof LookupFailure && err.detail !== undefined
+      ? { ok: false, cause, detail: err.detail }
+      : { ok: false, cause };
   }
   return { ok: true, peer: result };
 }
@@ -173,6 +198,9 @@ const defaultExecFile: ExecFile = async (file, args, options) => {
   const { stdout } = await execFileAsync(file, [...args], { ...options, windowsHide: true });
   return { stdout };
 };
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 function run(exec: ExecFile, file: string, args: readonly string[]): Promise<{ stdout: string }> {
   return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS });
@@ -359,17 +387,38 @@ interface WindowsIdentity {
  *
  * Like the UNIX path, this filters by LOCAL endpoint match — see
  * `parseNetstatForLocal`. Keep the two branches in sync.
+ *
+ * netstat can lag a fresh connection, so a snapshot with no owner is taken
+ * again after `NETSTAT_RETRY_DELAYS_MS`. Only that miss is retried; every
+ * check below runs on whatever the last snapshot found.
  */
 async function lookupWindows(
   exec: ExecFile,
+  sleep: (ms: number) => Promise<void>,
   host: string,
   port: number,
   server: Endpoint | undefined,
   withPath: boolean,
 ): Promise<PeerProcess> {
-  const { stdout: netstatOut } = await run(exec, 'netstat', ['-ano', '-p', 'TCP']);
-  const owners = netstatOwnersOf(netstatOut, host, port, server);
-  if (owners.length === 0) throw new LookupFailure('endpoint-not-listed');
+  const snapshot = async (): Promise<{ netstatOut: string; owners: number[] }> => {
+    const { stdout } = await run(exec, 'netstat', ['-ano', '-p', 'TCP']);
+    return { netstatOut: stdout, owners: netstatOwnersOf(stdout, host, port, server) };
+  };
+  let taken = 1;
+  let { netstatOut, owners } = await snapshot();
+  for (const delay of NETSTAT_RETRY_DELAYS_MS) {
+    if (owners.length > 0) break;
+    await sleep(delay);
+    ({ netstatOut, owners } = await snapshot());
+    taken++;
+  }
+  if (owners.length === 0) {
+    const rows = netstatRowsFor(netstatOut, host, port);
+    throw new LookupFailure(
+      'endpoint-not-listed',
+      `${String(taken)} netstat snapshots, ${String(rows)} ${rows === 1 ? 'row' : 'rows'} for the local port in the last`,
+    );
+  }
   if (owners.length > 1) throw new LookupFailure('endpoint-ambiguous');
   const pid = owners[0];
   assertPeerPid(pid);
@@ -526,6 +575,13 @@ export function parseNetstatForLocal(
  * stale one can share the peer's local endpoint. The State column is not
  * used because netstat prints it localized on non-English Windows.
  */
+/** How many netstat rows have `host:port` as their local end, any state and
+ * any pid: a count for the refusal line, nothing more. */
+function netstatRowsFor(out: string, host: string, port: number): number {
+  const target = `${host}:${port}`;
+  return out.split(/\r?\n/).filter((line) => line.trim().split(/\s+/)[1] === target).length;
+}
+
 function netstatOwnersOf(out: string, host: string, port: number, server?: Endpoint): number[] {
   const target = `${host}:${port}`;
   const foreign = server === undefined ? null : `${server.host}:${server.port}`;
