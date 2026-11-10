@@ -142,8 +142,9 @@ import {
   repairOutcome,
   type RepairOutcome,
 } from './repair-policy.js';
-import { workerFailure, type WorkerMessage } from './worker-messages.js';
+import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
+import { createConnectFailureTracker } from './connect-failure-policy.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -3737,18 +3738,18 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     });
 
     // A WebSocket 'error' is always followed by a 'close', so teardown
-    // lives in the close handler alone — this one only settles a
-    // pre-registration connect failure with the friendlier diagnosis (for
-    // a post-registration drop `settle` is already spent and this no-ops).
-    // The WebSocket API hides why an upgrade was refused, so the bridge's
-    // plain-HTTP side is asked; the close handler leaves the settling to it.
-    let connectFailure: Promise<WorkerMessage> | undefined;
-    ws.addEventListener('error', () => {
-      if (settled || connectFailure !== undefined) return;
-      connectFailure = diagnoseConnectFailure(HANDSHAKE_CHECK_URL);
-      void connectFailure.then((message) => {
+    // lives in the close handler alone; settling a pre-registration connect
+    // failure (with the bridge's diagnosis after an error) is
+    // connect-failure-policy.ts's.
+    const connectFailure = createConnectFailureTracker({
+      isSettled: () => settled,
+      settle: (message) => {
         settle(workerFailure(message));
-      });
+      },
+      diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
+    });
+    ws.addEventListener('error', () => {
+      connectFailure.onError();
     });
 
     ws.addEventListener('close', (ev: CloseEvent) => {
@@ -3774,9 +3775,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
       void cleanup(tabId).catch(() => {
         // Best effort — already-detached state is fine.
       });
-      if (connectFailure === undefined) {
-        settle(workerFailure({ code: 'ws-closed-before-registration' }));
-      }
+      connectFailure.onClose();
       if (involuntary) reconnectScheduler.schedule(tabId);
     });
   });
