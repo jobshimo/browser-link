@@ -39,11 +39,11 @@ import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import { BRIDGE_PORT } from './protocol.js';
 import {
+  HANDSHAKE_GATE_FAILED,
   createHandshakeCheckHandler,
   evaluateHandshake,
   handshakeRefusal,
   isHandshakeCheckRequest,
-  lockoutNotice,
 } from './handshake.js';
 
 export const WS_HOST = '127.0.0.1';
@@ -276,17 +276,34 @@ export function startWsBridge(
       // listed executable path). The check happens before any application
       // bytes are exchanged.
       verifyClient: (info, cb) => {
-        void evaluateHandshake(info.req, lookupPeerProcess).then((verdict) => {
-          if (!verdict.accepted) {
-            log(verdict.logLine);
-            const { status, message } = handshakeRefusal(verdict.reason);
-            cb(false, status, message);
-            return;
-          }
-          const notice = lockoutNotice(info.req.headers.origin);
-          if (notice !== undefined) log(notice);
-          cb(true);
-        });
+        // At most one verdict, and always one: anything that throws on the
+        // way (the evaluation, the log, the refusal) refuses with 500.
+        let answered = false;
+        const answer: typeof cb = (...args) => {
+          if (answered) return;
+          answered = true;
+          cb(...args);
+        };
+        evaluateHandshake(info.req, lookupPeerProcess)
+          .then((verdict) => {
+            if (!verdict.accepted) {
+              log(verdict.logLine);
+              const { status, message } = handshakeRefusal(verdict.reason);
+              answer(false, status, message);
+              return;
+            }
+            answer(true);
+          })
+          .catch((err: unknown) => {
+            answer(false, 500, HANDSHAKE_GATE_FAILED);
+            try {
+              log(
+                `Rejected WS handshake: the gate failed (${err instanceof Error ? err.message : String(err)}).`,
+              );
+            } catch {
+              // Logging is what failed; the upgrade is refused anyway.
+            }
+          });
       },
     });
 

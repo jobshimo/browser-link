@@ -2,12 +2,13 @@ import { existsSync, statSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { INSTALLERS } from '../installers/index.js';
 import { getAllowedBrowsers } from '../auth/allowlist.js';
+import { PINNED_EXTENSION_ID, allowedExtensionIds } from '../auth/extension-id.js';
 import { detectSilentDebuggerFlag, type SilentDebuggerDetection } from '../auth/silent-debugger.js';
 import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
 import type { Language } from './welcome.js';
-import { loadConfig } from '../config.js';
+import { loadConfig, type BrowserLinkConfig } from '../config.js';
 import { IPC_HOST, IPC_PORT, BRIDGE_PORT } from '../bridge/protocol.js';
 import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
 import { probeVersion, type VersionProbe } from '../lifecycle/election.js';
@@ -71,9 +72,14 @@ export interface DoctorReport {
   }[];
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
-  /** `peerExecutablePaths`: the strict-mode paths in effect; absent when
-   * strict mode is off. */
-  security: { allowedBrowsers: readonly string[]; peerExecutablePaths?: readonly string[] };
+  /** `allowedExtensionIds`: the extension ids whose Origin the bridge
+   * accepts, the pinned one first. `peerExecutablePaths`: the strict-mode
+   * paths in effect; absent when strict mode is off. */
+  security: {
+    allowedBrowsers: readonly string[];
+    allowedExtensionIds: readonly string[];
+    peerExecutablePaths?: readonly string[];
+  };
   /** v0.20.0: best-effort, informational-only detection of whether a
    * running Chrome/Chromium was launched with
    * `--silent-debugger-extension-api` (see silent-debugger.ts). `detected`
@@ -160,12 +166,19 @@ function collectLocal(): DoctorLocal {
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
-    security: {
-      allowedBrowsers: getAllowedBrowsers(),
-      ...(cfg.peerExecutablePaths !== undefined
-        ? { peerExecutablePaths: cfg.peerExecutablePaths }
-        : {}),
-    },
+    security: securityReport(cfg),
+  };
+}
+
+/** What the bridge's handshake gate accepts under `cfg`: the browser names,
+ * the extension ids (pinned first) and, in strict mode, the paths. */
+export function securityReport(cfg: BrowserLinkConfig): DoctorReport['security'] {
+  return {
+    allowedBrowsers: getAllowedBrowsers(),
+    allowedExtensionIds: allowedExtensionIds(cfg.allowedExtensionIds),
+    ...(cfg.peerExecutablePaths !== undefined
+      ? { peerExecutablePaths: cfg.peerExecutablePaths }
+      : {}),
   };
 }
 
@@ -271,6 +284,8 @@ interface DoctorI18n {
   processBindingOk: (n: number) => string;
   strictPathsOff: string;
   strictPathsOn: (n: number) => string;
+  extensionIdsHeader: string;
+  extensionIdPinned: string;
   multiAgentHeader: string;
   multiAgentMode: string;
   autoReelect: string;
@@ -327,6 +342,8 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processBindingNone: '  ✗ no allowlist for this OS — incoming WS connections will be rejected.',
     processBindingOk: (n) =>
       `  ✓ accepts WS connections only from processes run by your OS user with one of ${n} known browser binaries.`,
+    extensionIdsHeader: '  Extension ids allowed to connect (Origin chrome-extension://<id>):',
+    extensionIdPinned: 'pinned',
     strictPathsOff: '  Strict path mode (peerExecutablePaths): off',
     strictPathsOn: (n) =>
       n === 0
@@ -387,6 +404,9 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processBindingNone: '  ✗ sin allowlist para este SO — las conexiones WS entrantes se rechazan.',
     processBindingOk: (n) =>
       `  ✓ acepta conexiones WS solo de procesos de tu usuario del SO con uno de ${n} binarios de navegador conocidos.`,
+    extensionIdsHeader:
+      '  Ids de extensión que pueden conectarse (Origin chrome-extension://<id>):',
+    extensionIdPinned: 'fijado',
     strictPathsOff: '  Modo estricto por ruta (peerExecutablePaths): desactivado',
     strictPathsOn: (n) =>
       n === 0
@@ -516,6 +536,12 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
     lines.push(t.processBindingOk(r.security.allowedBrowsers.length));
     lines.push(
       `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
+    );
+  }
+  lines.push(t.extensionIdsHeader);
+  for (const id of r.security.allowedExtensionIds) {
+    lines.push(
+      `    ${id} (${id === PINNED_EXTENSION_ID ? t.extensionIdPinned : 'allowedExtensionIds'})`,
     );
   }
   const strictPaths = r.security.peerExecutablePaths;

@@ -2042,8 +2042,15 @@ changes to the stable set below ship only in a major release.
 ## Security model
 
 The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never
-on a public interface. On top of that, before accepting any WebSocket
-handshake the server asks the operating-system kernel **which process**
+on a public interface. Every WebSocket handshake must carry an `Origin`
+exactly equal to `chrome-extension://celegobaahdoaigibmjmekhopegfkhpe`, the
+browser-link extension's id (the same on every install, pinned by the public
+`key` in its manifest), or to `chrome-extension://<id>` for an id you allowed
+yourself (below). A missing Origin, a web page, or any other extension is
+refused before anything else is checked. The pinned id is a stable id, not
+proof of identity: any unpacked extension carrying the same public key gets
+it. On top of that, before accepting the handshake the server asks the
+operating-system kernel **which process**
 opened the incoming TCP connection. The peer check covers two things: the
 process must run as **the same OS user** as the server, and its binary
 name must be a known Chromium-based browser (Chrome, Chromium, Edge,
@@ -2066,7 +2073,7 @@ and `GET /handshake-check` share; the extension popup shows the reason):
 
 | Status | Reason                                                                                                                                                                     |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 403    | `Origin not allowed` — an `Origin` header is present and does not start with `chrome-extension://` (a missing `Origin` is left to the peer check)                          |
+| 403    | `Origin not allowed` — the `Origin` header is missing or is not exactly the pinned extension's or an allowed id's; no process lookup runs                                  |
 | 403    | `Cannot identify peer` — the socket exposes no remote address or port                                                                                                      |
 | 403    | `Peer process unknown` — the lookup found no single owning process; the log line names the cause                                                                           |
 | 403    | `Cannot read peer owner` — the OS user of the owning process, or of the server, could not be read                                                                          |
@@ -2074,6 +2081,7 @@ and `GET /handshake-check` share; the extension popup shows the reason):
 | 403    | `Peer is not a Chromium-based browser` — the binary is not on the allowlist                                                                                                |
 | 403    | `Peer executable path not allowed` — strict mode only: the executable path is not listed in `peerExecutablePaths`, or could not be read                                    |
 | 500    | `Process lookup failed` — the lookup promise rejected. `lookupPeerProcess` itself catches lookup errors and returns no process, which gives the 403 `Peer process unknown` |
+| 500    | `Handshake check failed` — the gate itself failed (a bug); the handshake is refused rather than left without an answer                                                     |
 
 The allowlist per OS lives in `packages/server/src/auth/allowlist.ts`.
 
@@ -2081,8 +2089,12 @@ Concretely this means:
 
 - ✔ Random local processes (curl, other Node scripts, scanners) cannot
   talk to the bridge even if they figured out the port.
+- ✔ Another extension, or an old install with another id, cannot open the
+  bridge: its Origin carries its own id. The popup says why ("does not
+  accept this extension's id").
 - ✔ A process that crafts a fake `Origin: chrome-extension://...` header
-  is still rejected: the kernel reports its real binary name.
+  is still rejected: the kernel reports its real binary name. The Origin
+  check and the peer check are independent; both must pass.
 - ✘ Malware that has already injected itself **inside Chrome** (via
   `chrome.debugger` from another extension, dylib injection, gdb attach…)
   passes the check. But that attacker already controls the browser
@@ -2096,7 +2108,17 @@ Concretely this means:
 
 No tokens to paste, no manifests to register, no manual step beyond
 clicking "Connect this tab" in the extension popup. `browser-link doctor`
-lists the current allowlist on your OS and whether strict mode is on.
+lists the current allowlist on your OS, the extension ids allowed to
+connect, and whether strict mode is on.
+
+**Allowing another extension id (experts only).** Add
+`"allowedExtensionIds"` to `config.json` in the data folder, as an array of
+Chrome extension ids (for example `["abcdefghijklmnopabcdefghijklmnop"]`, a
+build of your own). Each entry must be exactly 32 letters `a`–`p`; anything
+else (a prefix, a wildcard, a full `chrome-extension://` origin) is dropped
+with a warning in the server log, and the pinned id is always allowed. It is
+edited by hand only: no console command, admin panel item, bridge message or
+MCP tool writes it.
 
 **Strict mode (experts only).** Add `"peerExecutablePaths"` to
 `config.json` in the data folder, as an array of absolute paths to your

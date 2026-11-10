@@ -16,6 +16,7 @@ import {
   loadConfig,
   sanitizeCdpPort,
   sanitizeDownloadsMaxMb,
+  sanitizeAllowedExtensionIds,
   sanitizePeerExecutablePaths,
   saveConfig,
 } from './config.js';
@@ -570,5 +571,128 @@ describe('peerExecutablePaths (opt-in strict mode, hand-edited only)', () => {
     expect(res.ok).toBe(false);
     expect(saveSpy).not.toHaveBeenCalled();
     expect(loadConfig().peerExecutablePaths).toBeUndefined();
+  });
+});
+
+describe('allowedExtensionIds (extra extension ids, hand-edited only)', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+  const ID_A = 'abcdefghijklmnopabcdefghijklmnop';
+  const ID_B = 'ponmlkjihgfedcbaponmlkjihgfedcba';
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-extension-ids-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    vi.restoreAllMocks();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function writeConfig(contents: Record<string, unknown>): void {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify(contents) + '\n', 'utf8');
+  }
+
+  test('absent, null or an empty array is no extra id, without a warning', () => {
+    const warn = vi.fn();
+    expect(sanitizeAllowedExtensionIds(undefined, warn)).toEqual([]);
+    expect(sanitizeAllowedExtensionIds(null, warn)).toEqual([]);
+    expect(sanitizeAllowedExtensionIds([], warn)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(loadConfig().allowedExtensionIds).toBeUndefined();
+  });
+
+  test('ids of exactly 32 letters a-p are kept, in order', () => {
+    const warn = vi.fn();
+    expect(sanitizeAllowedExtensionIds([ID_A, ID_B], warn)).toEqual([ID_A, ID_B]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['too short', 'abcdefghijklmnop'],
+    ['too long', `${ID_A}a`],
+    ['a letter after p', 'qbcdefghijklmnopabcdefghijklmnop'],
+    ['upper case', ID_A.toUpperCase()],
+    ['a digit', '0bcdefghijklmnopabcdefghijklmnop'],
+    ['a wildcard', '*'],
+    ['a prefix', 'abcdefgh'],
+    ['a prefix with a wildcard', 'abcdefgh*'],
+    ['a full origin instead of an id', `chrome-extension://${ID_A}`],
+    ['an id with a trailing path', `${ID_A}/`],
+    ['surrounding spaces', ` ${ID_A} `],
+    ['a number', 42],
+  ])('%s is dropped with a warning naming the entry', (_label, entry) => {
+    const warn = vi.fn();
+    expect(sanitizeAllowedExtensionIds([entry, ID_B], warn)).toEqual([ID_B]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('allowedExtensionIds');
+    expect(String(warn.mock.calls[0]?.[0])).toContain(JSON.stringify(entry));
+  });
+
+  test('a value that is not an array is no extra id, with a warning', () => {
+    const warn = vi.fn();
+    expect(sanitizeAllowedExtensionIds(ID_A, warn)).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  test('loadConfig keeps the valid ids and warns once per dropped entry, not on every read', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    writeConfig({ allowedExtensionIds: ['*', ID_A, 'also-not-an-id'] });
+    expect(loadConfig().allowedExtensionIds).toEqual([ID_A]);
+    expect(loadConfig().allowedExtensionIds).toEqual([ID_A]);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('"*"'))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes('"also-not-an-id"'))).toHaveLength(1);
+  });
+
+  test('a list with no valid id leaves the key absent', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    writeConfig({ allowedExtensionIds: ['not-an-id'] });
+    expect(loadConfig().allowedExtensionIds).toBeUndefined();
+  });
+
+  test('saving another key keeps the hand-edited list on disk untouched', () => {
+    writeConfig({ allowedExtensionIds: ['*', ID_A] });
+    saveConfig({ mapLearningEnabled: false });
+    const onDisk = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(onDisk.allowedExtensionIds).toEqual(['*', ID_A]);
+  });
+
+  test('the admin panel cannot write it: admin.action is refused and nothing is saved', async () => {
+    const saveSpy = vi.fn();
+    const input = async (): Promise<AdminInput> => ({
+      config: loadConfig(),
+      now: Date.parse('2026-11-10T12:00:00.000Z'),
+      version: '1.0.0',
+      server: { running: null, installed: '1.0.0', outdated: false },
+      tabsConnected: 1,
+      ports: { ws: 17529, ipc: 17530 },
+      extension: { path: null, connectedVersion: '1.0.0' },
+      instructions: [],
+      clients: [],
+      cdpGrant: { live: false, remainingMs: null },
+      update: null,
+      toolNames: [],
+      downloadsDir: '/d',
+    });
+    for (const value of [ID_A, true]) {
+      const res = await applyAdminAction(
+        { id: 'allowedExtensionIds', value, confirm: true },
+        {
+          input,
+          doctor: () => Promise.resolve([]),
+          checkUpdates: () => Promise.resolve([]),
+          helpers: { saveConfig: saveSpy },
+        },
+      );
+      expect(res).toEqual({ ok: false, error: 'Unknown admin action: allowedExtensionIds' });
+    }
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(loadConfig().allowedExtensionIds).toBeUndefined();
   });
 });
