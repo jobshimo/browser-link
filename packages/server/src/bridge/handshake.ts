@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { isAllowedBrowser } from '../auth/allowlist.js';
+import { isAllowedBrowser, isAllowedExecutablePath } from '../auth/allowlist.js';
 import { PINNED_EXTENSION_ORIGIN } from '../auth/extension-id.js';
-import type { PeerLookupResult } from '../auth/process-identity.js';
+import type { PeerLookupRequest, PeerLookupResult } from '../auth/process-identity.js';
+import { loadConfig } from '../config.js';
 import { isLoopbackHost } from '../lifecycle/version-endpoint.js';
 
 /**
@@ -11,7 +12,13 @@ import { isLoopbackHost } from '../lifecycle/version-endpoint.js';
  * the HTTP status and reason of a failed upgrade).
  */
 
-export type LookupPeerProcess = (address: string, port: number) => Promise<PeerLookupResult>;
+/** Who owns the other end of a TCP connection; refused unless it runs as
+ * this server's OS user. */
+export type LookupPeerProcess = (
+  address: string,
+  port: number,
+  request: PeerLookupRequest,
+) => Promise<PeerLookupResult>;
 
 /** Every reason the gate refuses with, as a stable code. The extension keeps
  * a copy (`packages/extension/src/handshake-diagnosis.ts`), guarded by
@@ -20,7 +27,9 @@ export const HANDSHAKE_REFUSAL_REASONS = [
   'origin-not-allowed',
   'peer-unidentified',
   'peer-unknown',
+  'peer-other-user',
   'peer-not-browser',
+  'peer-path-not-allowed',
   'process-lookup-failed',
 ] as const;
 
@@ -33,7 +42,9 @@ const REFUSALS: Readonly<Record<HandshakeRefusalReason, { status: 403 | 500; mes
   'origin-not-allowed': { status: 403, message: 'Origin not allowed' },
   'peer-unidentified': { status: 403, message: 'Cannot identify peer' },
   'peer-unknown': { status: 403, message: 'Peer process unknown' },
+  'peer-other-user': { status: 403, message: 'Peer runs as another OS user' },
   'peer-not-browser': { status: 403, message: 'Peer is not a Chromium-based browser' },
+  'peer-path-not-allowed': { status: 403, message: 'Peer executable path not allowed' },
   'process-lookup-failed': { status: 500, message: 'Process lookup failed' },
 };
 
@@ -82,7 +93,8 @@ export type HandshakeVerdict =
   { accepted: true } | { accepted: false; reason: HandshakeRefusalReason; logLine: string };
 
 /** What the gate says about a request: its `Origin`, then the process that
- * owns the other end of its TCP connection. Never rejects. */
+ * owns the other end of its TCP connection (same OS user, browser name and,
+ * in the opt-in strict mode, a listed executable path). Never rejects. */
 export async function evaluateHandshake(
   req: IncomingMessage,
   lookupPeerProcess: LookupPeerProcess,
@@ -104,9 +116,14 @@ export async function evaluateHandshake(
       logLine: 'Rejected WS handshake: peer address/port not exposed by socket.',
     };
   }
+  // Read on every handshake, like every other config key the primary
+  // honours without a restart. `undefined` means strict mode is off.
+  const strictPaths = loadConfig().peerExecutablePaths;
   let lookup: PeerLookupResult;
   try {
-    lookup = await lookupPeerProcess(remoteAddress, remotePort);
+    lookup = await lookupPeerProcess(remoteAddress, remotePort, {
+      withExecutablePath: strictPaths !== undefined,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -116,6 +133,13 @@ export async function evaluateHandshake(
     };
   }
   if (!lookup.ok) {
+    if (lookup.cause === 'owner-mismatch') {
+      return {
+        accepted: false,
+        reason: 'peer-other-user',
+        logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: the owning process runs as another OS user (cause: owner-mismatch).`,
+      };
+    }
     return {
       accepted: false,
       reason: 'peer-unknown',
@@ -127,6 +151,13 @@ export async function evaluateHandshake(
       accepted: false,
       reason: 'peer-not-browser',
       logLine: `Rejected WS handshake from PID ${lookup.peer.pid} (${lookup.peer.binaryName}): not a Chromium-based browser.`,
+    };
+  }
+  if (strictPaths !== undefined && !isAllowedExecutablePath(lookup.peer.executablePath, strictPaths)) {
+    return {
+      accepted: false,
+      reason: 'peer-path-not-allowed',
+      logLine: `Rejected WS handshake from PID ${lookup.peer.pid} (${lookup.peer.binaryName}): executable path ${JSON.stringify(lookup.peer.executablePath ?? 'unread')} is not in peerExecutablePaths.`,
     };
   }
   return { accepted: true };

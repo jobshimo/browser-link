@@ -53,3 +53,22 @@ export function getAllowedBrowsers(os: NodeJS.Platform = platform()): readonly s
 export function isAllowedBrowser(binaryName: string, os: NodeJS.Platform = platform()): boolean {
   return getAllowedBrowsers(os).includes(binaryName);
 }
+
+/**
+ * The opt-in strict mode (`peerExecutablePaths` in config.json): the peer's
+ * executable path must equal one listed path — case-insensitively on
+ * Windows, whose file system is, and exactly elsewhere. An unread or empty
+ * path never matches, and an empty list allows nothing.
+ */
+export function isAllowedExecutablePath(
+  executablePath: string | undefined,
+  allowed: readonly string[],
+  os: NodeJS.Platform = platform(),
+): boolean {
+  if (executablePath === undefined || executablePath.length === 0) return false;
+  if (os === 'win32') {
+    const wanted = executablePath.toLowerCase();
+    return allowed.some((p) => p.toLowerCase() === wanted);
+  }
+  return allowed.includes(executablePath);
+}

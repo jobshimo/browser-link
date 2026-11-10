@@ -71,7 +71,9 @@ export interface DoctorReport {
   }[];
   extension: { path: string | null };
   map: { dbPath: string; exists: boolean; sizeBytes: number; apps: number };
-  security: { allowedBrowsers: readonly string[] };
+  /** `peerExecutablePaths`: the strict-mode paths in effect; absent when
+   * strict mode is off. */
+  security: { allowedBrowsers: readonly string[]; peerExecutablePaths?: readonly string[] };
   /** v0.20.0: best-effort, informational-only detection of whether a
    * running Chrome/Chromium was launched with
    * `--silent-debugger-extension-api` (see silent-debugger.ts). `detected`
@@ -158,7 +160,12 @@ function collectLocal(): DoctorLocal {
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
-    security: { allowedBrowsers: getAllowedBrowsers() },
+    security: {
+      allowedBrowsers: getAllowedBrowsers(),
+      ...(cfg.peerExecutablePaths !== undefined
+        ? { peerExecutablePaths: cfg.peerExecutablePaths }
+        : {}),
+    },
   };
 }
 
@@ -262,6 +269,8 @@ interface DoctorI18n {
   processBinding: string;
   processBindingNone: string;
   processBindingOk: (n: number) => string;
+  strictPathsOff: string;
+  strictPathsOn: (n: number) => string;
   multiAgentHeader: string;
   multiAgentMode: string;
   autoReelect: string;
@@ -316,7 +325,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     mapApps: 'apps tracked:',
     processBinding: 'Process binding:',
     processBindingNone: '  ✗ no allowlist for this OS — incoming WS connections will be rejected.',
-    processBindingOk: (n) => `  ✓ accepts WS connections from ${n} known browser binaries.`,
+    processBindingOk: (n) =>
+      `  ✓ accepts WS connections only from processes run by your OS user with one of ${n} known browser binaries.`,
+    strictPathsOff: '  Strict path mode (peerExecutablePaths): off',
+    strictPathsOn: (n) =>
+      n === 0
+        ? '  Strict path mode (peerExecutablePaths): on, no valid absolute path — every peer is refused.'
+        : `  Strict path mode (peerExecutablePaths): on, ${n} ${n === 1 ? 'path' : 'paths'}:`,
     multiAgentHeader: 'Multi-agent:',
     multiAgentMode: '  Mode             ',
     autoReelect: '  Auto-reelect     ',
@@ -370,7 +385,13 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     mapApps: 'apps registradas:',
     processBinding: 'Validación por proceso:',
     processBindingNone: '  ✗ sin allowlist para este SO — las conexiones WS entrantes se rechazan.',
-    processBindingOk: (n) => `  ✓ acepta conexiones WS desde ${n} binarios de navegador conocidos.`,
+    processBindingOk: (n) =>
+      `  ✓ acepta conexiones WS solo de procesos de tu usuario del SO con uno de ${n} binarios de navegador conocidos.`,
+    strictPathsOff: '  Modo estricto por ruta (peerExecutablePaths): desactivado',
+    strictPathsOn: (n) =>
+      n === 0
+        ? '  Modo estricto por ruta (peerExecutablePaths): activado, sin ninguna ruta absoluta válida — se rechaza todo.'
+        : `  Modo estricto por ruta (peerExecutablePaths): activado, ${n} ${n === 1 ? 'ruta' : 'rutas'}:`,
     multiAgentHeader: 'Multi-agente:',
     multiAgentMode: '  Modo             ',
     autoReelect: '  Re-elección auto ',
@@ -496,6 +517,13 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
     lines.push(
       `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
     );
+  }
+  const strictPaths = r.security.peerExecutablePaths;
+  if (strictPaths === undefined) {
+    lines.push(t.strictPathsOff);
+  } else {
+    lines.push(t.strictPathsOn(strictPaths.length));
+    for (const p of strictPaths) lines.push(`    ${p}`);
   }
   lines.push('');
   lines.push(t.multiAgentHeader);
