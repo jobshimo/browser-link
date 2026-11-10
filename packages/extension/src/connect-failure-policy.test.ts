@@ -80,6 +80,21 @@ describe('createConnectFailureTracker — a connect refused before registration'
     expect(settle).toHaveBeenCalledOnce();
   });
 
+  test('a diagnosis that throws synchronously settles like a failed one', async () => {
+    const settle = vi.fn();
+    const tracker = createConnectFailureTracker({
+      isSettled: () => false,
+      settle,
+      diagnose: () => {
+        throw new Error('boom');
+      },
+    });
+    tracker.onError();
+    await flush();
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith({ code: 'ws-connect-failed' });
+  });
+
   test('a diagnosis that rejects settles with the generic connect failure', async () => {
     const settle = vi.fn();
     const tracker = createConnectFailureTracker({
