@@ -120,8 +120,8 @@ the four-step setup:
    Developer mode → Load unpacked).
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
-   The popup's own copy is English-only; its **Admin** window speaks the
-   server's language (see [Admin panel](#admin-panel-console-and-popup)).
+   The extension speaks English and Spanish (see
+   [Extension language](#extension-language)).
 
 After the first run, `browser-link` opens on a **status view**: the running
 server (version, PID, uptime, ports, outdated or not), multi-agent, the
@@ -1595,18 +1595,29 @@ the morning by lunchtime.
 
 A handful of knobs — some on by default, all reversible.
 
+### Extension language
+
+The extension (popup, **Activity** and **Admin** windows, product notice) is
+available in English and Spanish. Switch with the **EN | ES** selector at the
+far right of each window's header, on the line of the title and version; the
+choice is remembered, and windows that are already open follow it at once.
+Until you pick one, it follows the browser's language. It is separate from the
+console's language (`language` in `config.json`, shown as **Console language**
+in the Admin panel), which the selector does not change.
+
 ### Admin panel (console and popup)
 
 The console's status view and the popup's **Admin** window render one
 description the server builds: the same sections (status, setup, diagnose,
-reference), options and labels, localised from `language` in `config.json`
-(English or Spanish). The popup's **Admin** button opens the panel in its own
+reference), options and labels. The console localises them from `language` in
+`config.json` (English or Spanish); the Admin window asks for the
+[extension's language](#extension-language) instead. The popup's **Admin** button opens the panel in its own
 window, like **Activity** (pressing it again focuses the open one), so it
 stays on screen while you change settings. The window asks the running server
 over the extension's existing connection, so it needs at least one connected
 tab; without one it says so.
 
-From the Admin window you can switch the language, enable or disable each MCP tool,
+From the Admin window you can switch the console language, enable or disable each MCP tool,
 toggle multi-agent, auto-reelect, the instructions auto-refresh, cdp-direct
 and its grant lifetime, and the activity trail; run `doctor` and an update
 check; install or remove the instructions block per client; and register
