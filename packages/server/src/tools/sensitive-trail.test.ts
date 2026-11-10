@@ -5,6 +5,13 @@ import { join } from 'node:path';
 import { handleBrowserTool, type BrowserToolDeps } from './browser-dispatch.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
 import type { AgentCaller } from './tab-claims.js';
+import type { ToolResponseMessage } from '../messages.js';
+import {
+  sendToolRequest,
+  settlePendingRequest,
+  toolResponseOutcome,
+  type PendingRequest,
+} from '../bridge/ws-bridge.js';
 import { closeActivityDb } from '../activity/db.js';
 import { query, record } from '../activity/queries.js';
 import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
@@ -106,6 +113,81 @@ describe('browser.type / browser.press via the extension: sensitive fields are n
       plain,
     );
     expect(storedPayloads()).toEqual(['Enter']);
+  });
+});
+
+describe('a failed browser.type / browser.press via the extension (S2)', () => {
+  const ERROR = 'expectation not met: url_changed after 150ms';
+
+  /** The extension answers with this error frame; the bridge settles it. */
+  function failingDeps(
+    frame: ToolResponseMessage,
+    recordActivityPayloads: boolean,
+  ): BrowserToolDeps {
+    return {
+      ...deps(undefined, recordActivityPayloads),
+      callBrowserTool: (_tabId, tool, params, timeoutMs = 30_000) => {
+        const tabs = new Map([['tab_1', { ws: { readyState: 1, send: () => {} } } as never]]);
+        const pending = new Map<string, PendingRequest>();
+        const request = sendToolRequest(tabs, pending, 'tab_1', frame.id, tool, params, timeoutMs);
+        settlePendingRequest(pending, frame.id, toolResponseOutcome(frame));
+        return request;
+      },
+    };
+  }
+
+  test.each([
+    ['browser.type', TYPE_ARGS, 'hunter2'],
+    ['browser.press', PRESS_ARGS, 'h'],
+  ] as const)(
+    '%s that fails after acting on a sensitive field: same error text, the row stores the marker (payloads on and off)',
+    async (tool, args, secret) => {
+      const frame = {
+        kind: 'tool.response',
+        id: 'r1',
+        ok: false,
+        error: ERROR,
+        sensitive_field: true,
+      } as const;
+      for (const recordPayloads of [true, false]) {
+        const error: unknown = await handleBrowserTool(
+          tool,
+          args,
+          failingDeps(frame, recordPayloads),
+          CALLER,
+        ).catch((e: unknown) => e);
+        expect(String(error)).toBe(`Error: ${ERROR}`);
+      }
+      expect(storedPayloads()).toEqual([SENSITIVE_PAYLOAD_MARKER, SENSITIVE_PAYLOAD_MARKER]);
+      expect(storedPayloads()).not.toContain(secret);
+      const rows = query({ agentId: CALLER.agent_id }).records;
+      expect(rows.every((r) => r.outcome === 'error' && r.error === ERROR)).toBe(true);
+    },
+  );
+
+  test('a failed type on a plain field is stored as today', async () => {
+    const frame = {
+      kind: 'tool.response',
+      id: 'r1',
+      ok: false,
+      error: ERROR,
+      sensitive_field: false,
+    } as const;
+    await expect(
+      handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true), CALLER),
+    ).rejects.toThrow(ERROR);
+    expect(storedPayloads()).toEqual(['hunter2']);
+  });
+
+  test('an error without the field (older extension) is stored as today', async () => {
+    const frame = { kind: 'tool.response', id: 'r1', ok: false, error: ERROR } as const;
+    await expect(
+      handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true), CALLER),
+    ).rejects.toThrow(ERROR);
+    await expect(
+      handleBrowserTool('browser.press', PRESS_ARGS, failingDeps(frame, true), CALLER),
+    ).rejects.toThrow(ERROR);
+    expect(storedPayloads()).toEqual(['h', 'hunter2']);
   });
 });
 

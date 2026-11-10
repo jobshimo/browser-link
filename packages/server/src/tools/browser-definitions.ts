@@ -1571,7 +1571,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Pass latest_id back as since_id to page efficiently instead of re-reading the whole trail.',
         'Recording can be turned off by the user (`activity.enabled`), in which case this returns an empty trail rather than an error — an empty result does not prove nothing happened.',
         'The trail is local. It is never uploaded, and `browser-link activity export --redact` is what the user runs before sharing it.',
-        'A browser.type / browser.press on a field the page declares sensitive (the `sensitive_field: true` result field) is stored with payload `[sensitive field]`, whether payload recording is on or off.',
+        'A browser.type / browser.press on a field the page declares sensitive (the `sensitive_field: true` result field) is stored with payload `[sensitive field]`, whether payload recording is on or off, and also when that call then fails (same error text).',
         'The summary counts flagged calls that resolved "ok" too (a find with matched:false, a flow that stopped on timeout, an unsettled click): a low error count does not mean nothing failed.',
       ],
     },

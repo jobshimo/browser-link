@@ -15,6 +15,7 @@ import type {
   SettingsUpdateMessage,
   TabRegisterPayload,
   TabRegisteredPayload,
+  ToolResponseMessage,
 } from '../messages.js';
 import {
   countInRange as countActivityInRange,
@@ -31,6 +32,7 @@ import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
 import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
+import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import { BRIDGE_PORT } from './protocol.js';
 import {
   createHandshakeCheckHandler,
@@ -78,15 +80,28 @@ export interface PendingRequest {
 export function settlePendingRequest(
   pendingRequests: Map<string, PendingRequest>,
   id: string,
-  outcome: { ok: true; result: unknown } | { ok: false; error: string },
+  outcome: { ok: true; result: unknown } | { ok: false; error: string; sensitive_field?: true },
 ): boolean {
   const pending = pendingRequests.get(id);
   if (!pending) return false;
   clearTimeout(pending.timeout);
   pendingRequests.delete(id);
   if (outcome.ok) pending.resolve(outcome.result);
+  else if (outcome.sensitive_field === true) pending.reject(new SensitiveFieldError(outcome.error));
   else pending.reject(new Error(outcome.error));
   return true;
+}
+
+/** The settle outcome of one extension `tool.response` frame. Only a literal
+ * `sensitive_field: true` on an error is carried (see `SensitiveFieldError`);
+ * an older extension sends none and its error settles as before. */
+export function toolResponseOutcome(
+  msg: ToolResponseMessage,
+): { ok: true; result: unknown } | { ok: false; error: string; sensitive_field?: true } {
+  if (msg.ok) return { ok: true, result: msg.result };
+  return msg.sensitive_field === true
+    ? { ok: false, error: msg.error, sensitive_field: true }
+    : { ok: false, error: msg.error };
 }
 
 /**
@@ -353,11 +368,7 @@ export function startWsBridge(
         }
 
         if (msg.kind === 'tool.response') {
-          settlePendingRequest(
-            pendingRequests,
-            msg.id,
-            msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error },
-          );
+          settlePendingRequest(pendingRequests, msg.id, toolResponseOutcome(msg));
           return;
         }
 

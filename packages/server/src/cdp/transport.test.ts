@@ -1529,3 +1529,109 @@ describe('callCdpTool — sensitive fields (S2)', () => {
     });
   });
 });
+
+/*
+ * S2 failure path on cdp-direct: a `type` / `press` that fails AFTER the
+ * focused-field probe said the field is sensitive throws the same error
+ * text, marked so the trail row stores the marker instead of the input.
+ */
+describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
+  const UNMET = { url_changed: true, timeout_ms: 150 };
+  const CALLER = { agent_id: 'agent-cdp-s2-fail', pid: 9, binary: 'node' };
+
+  /** Focused field answers `field`; resolve/focus succeed; the expect
+   * probe sees an unchanging page, so `url_changed` is never met. */
+  function unmetPage(field: unknown): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === buildFocusedFieldJs()) {
+          return field instanceof CdpError ? field : { result: { value: field } };
+        }
+        if (expression.includes("reason: 'invalid-selector'")) {
+          return { result: { value: { ok: true } } };
+        }
+        return { result: { value: { url: 'https://example.com/' } } };
+      },
+    };
+  }
+
+  afterEach(() => {
+    closeActivityDb();
+  });
+
+  function dispatchDeps(recordActivityPayloads: boolean): BrowserToolDeps {
+    return {
+      listTabs: () => [],
+      callBrowserTool: async () => {
+        throw new Error('the extension transport must not be used for a cdp: tab');
+      },
+      callCdpTool,
+      cdpGate: () => checkCdpDirectGate(),
+      recordActivity: (row) => {
+        record(row);
+      },
+      recordActivityPayloads,
+    };
+  }
+
+  const rows = (): { payload: string | null; outcome: string; error: string | null }[] =>
+    query({ agentId: CALLER.agent_id }).records;
+
+  test.each([
+    ['browser.type', { selector: '#pw', text: 'hunter2', settle_ms: 0, expect: UNMET }, 'hunter2'],
+    ['browser.press', { selector: '#pw', key: 'h', settle_ms: 0, expect: UNMET }, 'h'],
+  ] as const)(
+    '%s: same error text for the agent, the row stores the marker (payloads on and off)',
+    async (tool, args, secret) => {
+      const { port, targetId } = await startFakeTarget(unmetPage({ sensitive_field: true }));
+      grantAccess(port);
+      const tabArgs = { tab_id: `cdp:${targetId}`, ...args };
+      for (const recordPayloads of [true, false]) {
+        await expect(
+          handleBrowserTool(tool, tabArgs, dispatchDeps(recordPayloads), CALLER),
+        ).rejects.toThrow(/^expectation not met: url_changed after \d+ms/);
+      }
+      expect(rows().map((r) => r.payload)).toEqual([
+        SENSITIVE_PAYLOAD_MARKER,
+        SENSITIVE_PAYLOAD_MARKER,
+      ]);
+      expect(rows().map((r) => r.payload)).not.toContain(secret);
+      expect(
+        rows().every((r) => r.outcome === 'error' && /^expectation not met/.test(r.error ?? '')),
+      ).toBe(true);
+    },
+  );
+
+  test('a failed type on a plain field is stored as today', async () => {
+    const { port, targetId } = await startFakeTarget(unmetPage({ sensitive_field: false }));
+    grantAccess(port);
+    const args = {
+      tab_id: `cdp:${targetId}`,
+      selector: '#name',
+      text: 'alpha',
+      settle_ms: 0,
+      expect: UNMET,
+    };
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['alpha']);
+  });
+
+  test('a failure with no field report (probe failed) is stored as today', async () => {
+    const { port, targetId } = await startFakeTarget(unmetPage(new CdpError('context destroyed')));
+    grantAccess(port);
+    const args = {
+      tab_id: `cdp:${targetId}`,
+      selector: '#pw',
+      text: 'hunter2',
+      settle_ms: 0,
+      expect: UNMET,
+    };
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['hunter2']);
+  });
+});

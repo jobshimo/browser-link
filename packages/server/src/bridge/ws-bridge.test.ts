@@ -22,6 +22,7 @@ import {
   sendToolCancel,
   sendToolRequest,
   settlePendingRequest,
+  toolResponseOutcome,
   failPendingRequestsOnClose,
   type AdminHandlers,
   type PendingRequest,
@@ -43,6 +44,7 @@ import { BridgeEventLog, isExtensionEventKind } from './events.js';
 import { closeDb, getDb } from '../map/db.js';
 import { saveConfig } from '../config.js';
 import { closeActivityDb } from '../activity/db.js';
+import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import { recall } from '../map/queries.js';
 import type { AdminState, FlowRecordedPayload, ServerToExtension } from '../messages.js';
 import { VERSION } from '../version.js';
@@ -493,6 +495,47 @@ describe('in-flight tool requests and the tab socket lifecycle', () => {
     await expect(req).rejects.toThrow('no such element');
     expect(pending.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('an error frame flagged sensitive_field rejects with the same message, marked for the trail (S2)', async () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    const pending = new Map<string, PendingRequest>();
+    const req = sendToolRequest(tabs, pending, 'tab_1', 'req_1', 'type', {}, 30_000);
+
+    settlePendingRequest(
+      pending,
+      'req_1',
+      toolResponseOutcome({
+        kind: 'tool.response',
+        id: 'req_1',
+        ok: false,
+        error: 'expectation not met: url_changed after 150ms',
+        sensitive_field: true,
+      }),
+    );
+
+    const error: unknown = await req.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SensitiveFieldError);
+    expect((error as Error).message).toBe('expectation not met: url_changed after 150ms');
+  });
+
+  test('an error frame without the flag (older extension) rejects with a plain Error, as today', async () => {
+    const a = fakeSession('tab_1', WebSocket.OPEN);
+    const tabs = new Map([['tab_1', a.session]]);
+    const pending = new Map<string, PendingRequest>();
+    const req = sendToolRequest(tabs, pending, 'tab_1', 'req_1', 'type', {}, 30_000);
+
+    settlePendingRequest(
+      pending,
+      'req_1',
+      toolResponseOutcome({ kind: 'tool.response', id: 'req_1', ok: false, error: 'boom' }),
+    );
+
+    const error: unknown = await req.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SensitiveFieldError);
+    expect((error as Error).message).toBe('boom');
   });
 });
 

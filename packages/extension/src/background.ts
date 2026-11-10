@@ -17,7 +17,7 @@ import {
   buildFocusJs,
   buildFocusedFieldJs,
   isFocusedField,
-  type FocusedField,
+  actionFailure,
   buildStateJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -1770,6 +1770,7 @@ async function performType(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<TypeStepResult>> {
+  let field: unknown;
   try {
     const { selector, ref, text, clear = false } = params;
     const settle = resolveSettleParams({
@@ -1803,14 +1804,14 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
-    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.insertText', { text });
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: TypeStepResult & Partial<FocusedField> = { typed: text.length };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
+    const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
@@ -1819,7 +1820,7 @@ async function performType(
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -1836,6 +1837,7 @@ async function performPress(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<PressStepResult>> {
+  let field: unknown;
   try {
     const key = params.key;
     if (!key) return { ok: false, error: 'press: key required' };
@@ -1867,14 +1869,14 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
-    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(tabId, def, modifiers);
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: PressStepResult & Partial<FocusedField> = { key, modifiers: modifierNames };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
+    const result: PressStepResult = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
     if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
@@ -1882,7 +1884,7 @@ async function performPress(
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -3189,7 +3191,13 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: outcome.error,
+            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
+          };
         }
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
@@ -3209,7 +3217,13 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: outcome.error,
+            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
+          };
         }
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
