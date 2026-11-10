@@ -27,6 +27,7 @@ export const HANDSHAKE_REFUSAL_REASONS = [
   'origin-not-allowed',
   'peer-unidentified',
   'peer-unknown',
+  'peer-owner-unreadable',
   'peer-other-user',
   'peer-not-browser',
   'peer-path-not-allowed',
@@ -42,6 +43,7 @@ const REFUSALS: Readonly<Record<HandshakeRefusalReason, { status: 403 | 500; mes
   'origin-not-allowed': { status: 403, message: 'Origin not allowed' },
   'peer-unidentified': { status: 403, message: 'Cannot identify peer' },
   'peer-unknown': { status: 403, message: 'Peer process unknown' },
+  'peer-owner-unreadable': { status: 403, message: 'Cannot read peer owner' },
   'peer-other-user': { status: 403, message: 'Peer runs as another OS user' },
   'peer-not-browser': { status: 403, message: 'Peer is not a Chromium-based browser' },
   'peer-path-not-allowed': { status: 403, message: 'Peer executable path not allowed' },
@@ -145,6 +147,20 @@ export async function evaluateHandshake(
         accepted: false,
         reason: 'peer-other-user',
         logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: the owning process runs as another OS user (cause: owner-mismatch).`,
+      };
+    }
+    if (lookup.cause === 'owner-unreadable') {
+      return {
+        accepted: false,
+        reason: 'peer-owner-unreadable',
+        logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: the owner of the owning process could not be read (cause: owner-unreadable).`,
+      };
+    }
+    if (lookup.cause === 'path-unreadable') {
+      return {
+        accepted: false,
+        reason: 'peer-path-not-allowed',
+        logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: the executable path of the owning process could not be read for peerExecutablePaths (cause: path-unreadable).`,
       };
     }
     return {

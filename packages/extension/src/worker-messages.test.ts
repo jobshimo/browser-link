@@ -105,9 +105,24 @@ describe('a refused handshake (ws-handshake-refused): refused, and why, in both 
       'El servidor de browser-link rechazó la conexión: no pudo identificar el programa que abrió la conexión.',
     ],
     [
+      'peer-owner-unreadable',
+      'The browser-link server refused the connection: it could not read which user runs the program that opened the connection.',
+      'El servidor de browser-link rechazó la conexión: no pudo leer con qué usuario se ejecuta el programa que abrió la conexión.',
+    ],
+    [
+      'peer-other-user',
+      'The browser-link server refused the connection: the program that opened the connection runs as another user of this computer.',
+      'El servidor de browser-link rechazó la conexión: el programa que abrió la conexión se ejecuta con otro usuario de este equipo.',
+    ],
+    [
       'peer-not-browser',
       'The browser-link server refused the connection: the program that opened the connection is not a supported Chromium-based browser.',
       'El servidor de browser-link rechazó la conexión: el programa que abrió la conexión no es un navegador compatible basado en Chromium.',
+    ],
+    [
+      'peer-path-not-allowed',
+      "The browser-link server refused the connection: the browser's executable path is not in the server's peerExecutablePaths list.",
+      'El servidor de browser-link rechazó la conexión: la ruta del ejecutable del navegador no está en la lista peerExecutablePaths del servidor.',
     ],
     [
       'process-lookup-failed',
