@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { messages } from './i18n.js';
 import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
 import {
   DISCARDED_WHILE_SAVING_MESSAGE,
@@ -25,6 +26,8 @@ function wire(obj: Record<string, unknown>, nonce: string = NONCE): string {
   return JSON.stringify({ nonce, ...obj });
 }
 
+const EN = messages('en');
+const ES = messages('es');
 describe('parseRecordedPayload — happy path', () => {
   test('parses a click payload (nonce stripped from the result)', () => {
     expect(parseRecordedPayload(wire({ kind: 'click', selector: '#save' }), NONCE)).toEqual({
@@ -341,14 +344,28 @@ describe('buildNavigationWaitForStep', () => {
 
 describe('describeFlowStep', () => {
   test('describes every step kind', () => {
-    expect(describeFlowStep({ click: { selector: '#a' } })).toBe('Click #a');
-    expect(describeFlowStep({ type: { selector: '#b', text: TEXT_PLACEHOLDER } })).toBe(
+    expect(describeFlowStep({ click: { selector: '#a' } }, EN)).toBe('Click #a');
+    expect(describeFlowStep({ type: { selector: '#b', text: TEXT_PLACEHOLDER } }, EN)).toBe(
       'Type into #b',
     );
-    expect(describeFlowStep({ press: { key: 'Enter' } })).toBe('Press Enter');
-    expect(describeFlowStep(buildNavigationWaitForStep())).toBe(
+    expect(describeFlowStep({ press: { key: 'Enter' } }, EN)).toBe('Press Enter');
+    expect(describeFlowStep(buildNavigationWaitForStep(), EN)).toBe(
       "Wait for document.readyState === 'complete'",
     );
-    expect(describeFlowStep({ find: { text: 'Save' } })).toBe('Find "Save"');
+    expect(describeFlowStep({ find: { text: 'Save' } }, EN)).toBe('Find "Save"');
+  });
+});
+
+describe('describeFlowStep in Spanish', () => {
+  test('describes every step kind with the Spanish dictionary', () => {
+    expect(describeFlowStep({ click: {} }, ES)).toBe('Clic en (destino implícito)');
+    expect(describeFlowStep({ type: { text: TEXT_PLACEHOLDER } }, ES)).toBe(
+      'Escribir en (campo con el foco)',
+    );
+    expect(describeFlowStep({ press: { key: 'Enter' } }, ES)).toBe('Pulsar Enter');
+    expect(describeFlowStep({ wait_for: { network_url: '/api' } }, ES)).toBe(
+      'Esperar a la red: /api',
+    );
+    expect(describeFlowStep({ find: { text: 'Guardar' } }, ES)).toBe('Buscar "Guardar"');
   });
 });

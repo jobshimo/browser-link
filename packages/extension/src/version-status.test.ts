@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { messages } from './i18n.js';
 import {
   compareSemver,
   computeVersionCheck,
@@ -6,6 +7,8 @@ import {
   shouldShowVersionBanner,
 } from './version-status.js';
 
+const EN = messages('en');
+const ES = messages('es');
 describe('compareSemver', () => {
   test('orders by major, then minor, then patch, numerically', () => {
     expect(compareSemver('0.41.0', '0.40.9')).toBeGreaterThan(0);
@@ -85,14 +88,25 @@ describe('runningInstalledLine', () => {
       server: '0.40.0',
       installed: '0.41.0',
     });
-    expect(runningInstalledLine(check)).toBe('Server running 0.40.0 · installed 0.41.0');
+    expect(runningInstalledLine(check, EN)).toBe('Server running 0.40.0 · installed 0.41.0');
   });
 
   test('is null when the versions match or either one is unknown', () => {
     const line = (server: string | null, installed: string | null): string | null =>
-      runningInstalledLine(computeVersionCheck({ extension: '0.41.0', server, installed }));
+      runningInstalledLine(computeVersionCheck({ extension: '0.41.0', server, installed }), EN);
     expect(line('0.41.0', '0.41.0')).toBeNull();
     expect(line('0.40.0', null)).toBeNull();
     expect(line(null, '0.41.0')).toBeNull();
+  });
+});
+
+describe('runningInstalledLine in Spanish', () => {
+  test('uses the Spanish sentence', () => {
+    const check = computeVersionCheck({
+      extension: '0.41.0',
+      server: '0.40.0',
+      installed: '0.41.0',
+    });
+    expect(runningInstalledLine(check, ES)).toBe('Servidor en ejecución 0.40.0 · instalado 0.41.0');
   });
 });

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>browser-link</title>
+    <title translate="no">browser-link</title>
     <style>
       /* v0.9.0 popup — faithful to Claude Design's Bridge variant.
        *
@@ -106,6 +106,41 @@
         display: flex;
         flex-direction: column;
         line-height: 1.15;
+        min-width: 0;
+      }
+
+      /* Interface language selector: the last element of the header row, far
+       * right, on the title's line. Compact so the 320px header never wraps. */
+      .lang-switch {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 2px;
+        margin-left: auto;
+        padding: 2px;
+        border-radius: 7px;
+        background: var(--bg-soft);
+        box-shadow: inset 0 0 0 1px var(--border);
+      }
+
+      .lang-switch button {
+        width: auto;
+        margin: 0;
+        padding: 3px 7px;
+        border-radius: 5px;
+        font-size: 10.5px;
+        letter-spacing: 0.02em;
+        color: var(--text-muted);
+        background: transparent;
+      }
+
+      .lang-switch button[aria-pressed='true'] {
+        color: #ffffff;
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
+      }
+
+      .lang-switch button:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
       }
 
       .title strong {
@@ -718,8 +753,35 @@
           </svg>
         </div>
         <div class="title">
-          <strong id="app-name">browser-link</strong>
-          <span>MCP bridge · per-tab manual</span>
+          <strong id="app-name" translate="no">browser-link</strong>
+          <span data-i18n="popupSubtitle">MCP bridge · per-tab manual</span>
+        </div>
+        <div
+          class="lang-switch"
+          role="group"
+          data-i18n-aria-label="langSwitchLabel"
+          aria-label="Interface language"
+        >
+          <button
+            type="button"
+            data-lang="en"
+            lang="en"
+            aria-pressed="true"
+            translate="no"
+            title="English"
+          >
+            EN
+          </button>
+          <button
+            type="button"
+            data-lang="es"
+            lang="es"
+            aria-pressed="false"
+            translate="no"
+            title="Español"
+          >
+            ES
+          </button>
         </div>
       </header>
 
@@ -730,19 +792,21 @@
            Typical case: user ran `npm install -g @jobshimo/browser-link`
            but did not reload the unpacked extension yet. -->
       <div id="version-banner" class="version-banner" hidden>
-        <div class="version-banner-title">⚠ Version mismatch</div>
+        <div class="version-banner-title" data-i18n="popupVersionMismatch">⚠ Version mismatch</div>
         <div class="version-banner-rows">
           <div>
-            Extension: <code id="version-extension">—</code>
+            <span data-i18n="popupVersionExtension">Extension:</span>
+            <code id="version-extension">—</code>
           </div>
           <div>
-            Server: <code id="version-server">—</code>
+            <span data-i18n="popupVersionServer">Server:</span>
+            <code id="version-server">—</code>
           </div>
         </div>
-        <div class="version-banner-hint">
+        <div class="version-banner-hint" data-i18n="popupVersionHint">
           Reload the extension so both halves run the same code.
         </div>
-        <button id="version-open-extensions" class="primary">
+        <button id="version-open-extensions" class="primary" data-i18n="popupOpenExtensions">
           Open chrome://extensions
         </button>
       </div>
@@ -750,7 +814,7 @@
       <div id="card" class="card" data-state="idle">
         <div class="status-row">
           <span class="dot" aria-hidden="true"></span>
-          <span id="status-label" class="status-label">Loading…</span>
+          <span id="status-label" class="status-label" data-i18n="loading">Loading…</span>
           <span id="tab-id" class="tab-id" hidden></span>
         </div>
         <div id="url" class="url"></div>
@@ -785,8 +849,8 @@
            browser.dialog_respond tool enabled in its preset. -->
       <div id="dialog-box" class="dialog-box" hidden>
         <div class="dialog-title">
-          <span id="dialog-type" class="dialog-type">alert</span>
-          <span class="dialog-label">native dialog pending</span>
+          <span id="dialog-type" class="dialog-type"></span>
+          <span class="dialog-label" data-i18n="popupDialogPending">native dialog pending</span>
         </div>
         <div id="dialog-message" class="dialog-message"></div>
         <input
@@ -794,11 +858,12 @@
           class="dialog-prompt"
           type="text"
           placeholder="Response (only used for prompt)"
+          data-i18n-placeholder="popupDialogPromptPlaceholder"
           hidden
         />
         <div class="dialog-actions">
-          <button id="dialog-accept" class="primary">OK / Accept</button>
-          <button id="dialog-dismiss" class="danger">Cancel</button>
+          <button id="dialog-accept" class="primary" data-i18n="popupDialogAccept">OK / Accept</button>
+          <button id="dialog-dismiss" class="danger" data-i18n="cancel">Cancel</button>
         </div>
       </div>
 
@@ -808,15 +873,10 @@
            writes straight to chrome.storage.local; background.ts's sweep
            reads the live value via chrome.storage.onChanged). -->
       <div class="settings-row">
-        <label for="idle-ttl-select">Auto-disconnect idle tabs</label>
-        <select id="idle-ttl-select">
-          <option value="5">5 min</option>
-          <option value="15">15 min</option>
-          <option value="30">30 min</option>
-          <option value="60">60 min</option>
-          <option value="120">120 min</option>
-          <option value="0">Never</option>
-        </select>
+        <label for="idle-ttl-select" data-i18n="popupIdleTtl">Auto-disconnect idle tabs</label>
+        <!-- Options are rendered by popup.ts (IDLE_TTL_PRESETS) in the
+             interface language. -->
+        <select id="idle-ttl-select"></select>
       </div>
 
       <!-- Flow-recording opt-in. Off by default — recording UI (Record /
@@ -825,24 +885,30 @@
            unchecked; see the README's "Recording flows by demonstration"
            section for the full privacy contract. -->
       <div class="settings-row">
-        <label for="flow-recording-toggle">Enable flow recording</label>
+        <label for="flow-recording-toggle" data-i18n="popupFlowRecording">Enable flow recording</label>
         <input type="checkbox" id="flow-recording-toggle" />
       </div>
 
       <!-- Recording controls — hidden unless flow recording is enabled AND
            the active tab is connected (see popup.ts's refreshRecordingUi). -->
       <div id="recording-row" class="settings-row" hidden>
-        <span id="recording-indicator" hidden>● Recording…</span>
-        <button id="recording-action" class="primary" style="margin-top: 0; width: auto">
+        <span id="recording-indicator" hidden data-i18n="popupRecordingIndicator">● Recording…</span>
+        <button
+          id="recording-action"
+          class="primary"
+          style="margin-top: 0; width: auto"
+          data-i18n="popupRecord"
+        >
           Record
         </button>
       </div>
 
       <!-- Review panel — shown after Stop, before Save/Discard. -->
       <div id="recording-review" class="explanation" hidden>
-        <div style="margin-bottom: 6px; font-weight: 600; color: var(--text)">
-          <span id="recording-step-count">0</span> step(s) captured
-        </div>
+        <div
+          id="recording-step-count"
+          style="margin-bottom: 6px; font-weight: 600; color: var(--text)"
+        ></div>
         <ol
           id="recording-step-list"
           style="margin: 0 0 10px; padding-left: 18px; max-height: 120px; overflow-y: auto"
@@ -852,6 +918,7 @@
           class="dialog-prompt"
           type="text"
           placeholder="Name this flow (e.g. &quot;open task detail dialog&quot;)"
+          data-i18n-placeholder="popupRecordingNamePlaceholder"
         />
         <div
           id="recording-error"
@@ -859,8 +926,10 @@
           style="color: var(--error-fg); font-size: 11.5px; margin-bottom: 8px"
         ></div>
         <div class="dialog-actions">
-          <button id="recording-save" class="primary">Save</button>
-          <button id="recording-discard" class="danger">Discard</button>
+          <button id="recording-save" class="primary" data-i18n="popupRecordingSave">Save</button>
+          <button id="recording-discard" class="danger" data-i18n="popupRecordingDiscard">
+            Discard
+          </button>
         </div>
       </div>
 
@@ -875,9 +944,17 @@
            contract. The whole panel stays hidden while there is nothing to
            show. -->
       <div id="flows-panel" class="flows-panel" hidden>
-        <div id="flows-running-title" class="flows-title" hidden>Running flows</div>
+        <div id="flows-running-title" class="flows-title" hidden data-i18n="popupFlowsRunning">
+          Running flows
+        </div>
         <ul id="flows-running" class="flows-list"></ul>
-        <div id="flows-history-title" class="flows-title" style="margin-top: 8px" hidden>
+        <div
+          id="flows-history-title"
+          class="flows-title"
+          style="margin-top: 8px"
+          hidden
+          data-i18n="popupFlowsRecent"
+        >
           Recent flows
         </div>
         <ul id="flows-history" class="flows-list flows-history"></ul>
@@ -898,7 +975,7 @@
             stroke-linecap="round"
           />
         </svg>
-        Activity
+        <span data-i18n="popupOpenActivity">Activity</span>
       </button>
 
       <!-- Opens the Admin window: the server's settings, rendered from its
@@ -918,7 +995,7 @@
           <circle cx="10.5" cy="8" r="1.6" fill="currentColor" />
           <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
         </svg>
-        Admin
+        <span data-i18n="popupOpenAdmin">Admin</span>
       </button>
 
       <div class="notice-line">
@@ -926,7 +1003,7 @@
         <button id="notice-open" class="notice-link" type="button"></button>
       </div>
 
-      <div class="footer">manual · per-tab · loopback only</div>
+      <div class="footer" data-i18n="popupFooter">manual · per-tab · loopback only</div>
     </div>
 
     <script type="module" src="popup.js"></script>
