@@ -1,13 +1,18 @@
 import { describe, expect, test } from 'vitest';
+import { userInfo } from 'node:os';
 import {
+  buildCimIdentityScript,
+  classifyLookupError,
   decodeLsofString,
+  isValidPid,
   lookupPeerProcess,
   lookupPeerProcessDetailed,
   type PeerLookupDeps,
-  parseGetProcessName,
+  parseCimIdentity,
+  parseLsofExecutablePath,
   parseLsofOutput,
   parseNetstatForLocal,
-  parseTasklistImage,
+  parseTasklistVerbose,
 } from './process-identity.js';
 
 describe('decodeLsofString', () => {
@@ -30,15 +35,18 @@ describe('parseLsofOutput', () => {
     const out = [
       'p1061',
       'cnode',
+      'u501',
       'n127.0.0.1:17529->127.0.0.1:64836',
       'p3532',
       'cGoogle\\x20Chrome\\x20Helper',
+      'u501',
       'n127.0.0.1:64836->127.0.0.1:17529',
       '',
     ].join('\n');
     expect(parseLsofOutput(out, '127.0.0.1', 64836)).toEqual({
       pid: 3532,
       binaryName: 'Google Chrome Helper',
+      uid: 501,
     });
   });
 
@@ -46,21 +54,42 @@ describe('parseLsofOutput', () => {
     const out = [
       'p3532',
       'cGoogle\\x20Chrome\\x20Helper',
+      'u501',
       'n127.0.0.1:64836->127.0.0.1:17529',
       'p1061',
       'cnode',
+      'u501',
       'n127.0.0.1:17529->127.0.0.1:64836',
       '',
     ].join('\n');
     expect(parseLsofOutput(out, '127.0.0.1', 64836)).toEqual({
       pid: 3532,
       binaryName: 'Google Chrome Helper',
+      uid: 501,
     });
   });
 
   test('returns the single owner in a non-loopback dump', () => {
-    const out = ['p42', 'cchrome', 'n10.0.0.5:54321->1.2.3.4:80', ''].join('\n');
-    expect(parseLsofOutput(out, '10.0.0.5', 54321)).toEqual({ pid: 42, binaryName: 'chrome' });
+    const out = ['p42', 'cchrome', 'u1000', 'n10.0.0.5:54321->1.2.3.4:80', ''].join('\n');
+    expect(parseLsofOutput(out, '10.0.0.5', 54321)).toEqual({
+      pid: 42,
+      binaryName: 'chrome',
+      uid: 1000,
+    });
+  });
+
+  test('reads the u field (uid) and reports null when it is absent', () => {
+    const out = ['p42', 'cchrome', 'n127.0.0.1:54321->127.0.0.1:17529', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 54321)).toEqual({
+      pid: 42,
+      binaryName: 'chrome',
+      uid: null,
+    });
+  });
+
+  test('a malformed u field reads as no uid', () => {
+    const out = ['p42', 'cchrome', 'uroot', 'n127.0.0.1:54321->127.0.0.1:17529', ''].join('\n');
+    expect(parseLsofOutput(out, '127.0.0.1', 54321)?.uid).toBeNull();
   });
 
   test('returns null when no entry has a local endpoint matching host:port', () => {
@@ -107,6 +136,33 @@ describe('parseLsofOutput', () => {
   });
 });
 
+describe('parseLsofExecutablePath', () => {
+  test('returns the first txt name (the program itself)', () => {
+    const out = [
+      'p3532',
+      'ftxt',
+      'n/Applications/Google\\x20Chrome.app/Contents/MacOS/Google\\x20Chrome',
+      'ftxt',
+      'n/usr/lib/dyld',
+      '',
+    ].join('\n');
+    expect(parseLsofExecutablePath(out)).toBe(
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    );
+  });
+
+  test('ignores names that belong to another fd type', () => {
+    const out = ['p42', 'fcwd', 'n/home/me', 'ftxt', 'n/opt/google/chrome/chrome', ''].join('\n');
+    expect(parseLsofExecutablePath(out)).toBe('/opt/google/chrome/chrome');
+  });
+
+  test('returns null when there is no txt entry or the name is not absolute', () => {
+    expect(parseLsofExecutablePath('')).toBeNull();
+    expect(parseLsofExecutablePath(['p42', 'fcwd', 'n/home/me', ''].join('\n'))).toBeNull();
+    expect(parseLsofExecutablePath(['p42', 'ftxt', 'nchrome', ''].join('\n'))).toBeNull();
+  });
+});
+
 describe('parseNetstatForLocal', () => {
   const sample = `
 Active Connections
@@ -128,147 +184,554 @@ Active Connections
   test('returns null when nothing matches', () => {
     expect(parseNetstatForLocal(sample, '127.0.0.1', 11111)).toBeNull();
   });
-});
 
-describe('parseTasklistImage', () => {
-  test('reads the image name out of CSV no-header output', () => {
-    const out = '"chrome.exe","1234","Console","1","250,000 K"';
-    expect(parseTasklistImage(out)).toBe('chrome.exe');
+  test('rejects a local endpoint owned by two different PIDs', () => {
+    const twoOwners = `${sample}  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     5678\n`;
+    expect(parseNetstatForLocal(twoOwners, '127.0.0.1', 54321)).toBeNull();
   });
 
-  test('skips blank lines and finds the first valid row', () => {
-    const out = '\n\n"msedge.exe","42","Console","1","10 K"\n';
-    expect(parseTasklistImage(out)).toBe('msedge.exe');
-  });
-
-  test('returns null when output is empty', () => {
-    expect(parseTasklistImage('')).toBeNull();
+  test('accepts the same PID listed twice for one local endpoint', () => {
+    const twice = `${sample}  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     1234\n`;
+    expect(parseNetstatForLocal(twice, '127.0.0.1', 54321)).toBe(1234);
   });
 });
 
-describe('parseGetProcessName', () => {
-  test('appends .exe to the bare ProcessName Get-Process reports', () => {
-    expect(parseGetProcessName('chrome\r\n')).toBe('chrome.exe');
-  });
-
-  test('does not double-suffix a name that already ends in .exe', () => {
-    expect(parseGetProcessName('msedge.exe\n')).toBe('msedge.exe');
-  });
-
-  test('treats the suffix case-insensitively', () => {
-    expect(parseGetProcessName('Brave.EXE')).toBe('Brave.EXE');
-  });
-
-  test('skips leading blank lines and returns the first real value', () => {
-    expect(parseGetProcessName('\n\n  vivaldi  \n')).toBe('vivaldi.exe');
-  });
-
-  test('returns null when the process was not found (empty output)', () => {
-    expect(parseGetProcessName('')).toBeNull();
+describe('isValidPid', () => {
+  test('accepts a positive safe integer only', () => {
+    expect(isValidPid(1234)).toBe(true);
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      expect(isValidPid(bad)).toBe(false);
+    }
   });
 });
 
-describe('lookupPeerProcessDetailed: a failed lookup names its cause', () => {
+describe('buildCimIdentityScript', () => {
+  test('puts both validated pids in the CIM filter and calls GetOwner', () => {
+    const script = buildCimIdentityScript(1234, 5678);
+    expect(script).toContain("-Filter 'ProcessId = 1234 OR ProcessId = 5678'");
+    expect(script).toContain('GetOwner');
+    expect(script).toContain('ExecutablePath');
+  });
+
+  test('refuses a pid that is not a positive safe integer before building any string', () => {
+    for (const bad of [Number.NaN, 1.5, -3, 0, 2 ** 53]) {
+      expect(() => buildCimIdentityScript(bad, 5678)).toThrow();
+      expect(() => buildCimIdentityScript(1234, bad)).toThrow();
+    }
+  });
+});
+
+describe('parseCimIdentity', () => {
+  test('reads the rows PowerShell printed as JSON (BOM tolerated)', () => {
+    const out =
+      '\uFEFF[{"pid":30068,"name":"chrome.exe","path":"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe","rv":0,"domain":"PC","user":"me"}]\r\n';
+    expect(parseCimIdentity(out)).toEqual([
+      {
+        pid: 30068,
+        name: 'chrome.exe',
+        path: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        rv: 0,
+        domain: 'PC',
+        user: 'me',
+      },
+    ]);
+  });
+
+  test('returns null for output that is not the expected JSON array', () => {
+    expect(parseCimIdentity('')).toBeNull();
+    expect(parseCimIdentity('not json')).toBeNull();
+    expect(parseCimIdentity('{"pid":1}')).toBeNull();
+    expect(
+      parseCimIdentity('[{"pid":"1","name":"a","path":"","rv":0,"domain":"","user":""}]'),
+    ).toBe(null);
+  });
+});
+
+describe('parseTasklistVerbose', () => {
+  test('reads the image name and the DOMAIN\\user owner from /V CSV output', () => {
+    const out =
+      '"chrome.exe","30068","Console","1","449,008 K","Running","PC\\me","0:01:29","Title, with ""quotes"""\r\n';
+    expect(parseTasklistVerbose(out)).toEqual({ binaryName: 'chrome.exe', owner: 'PC\\me' });
+  });
+
+  test('an owner that is not DOMAIN\\user (N/A, localised N/D) reads as unknown', () => {
+    const out = '"System","4","Services","0","6,448 K","Unknown","N/A","0:10:09","N/A"';
+    expect(parseTasklistVerbose(out)).toEqual({ binaryName: 'System', owner: null });
+  });
+
+  test('returns null when no process matched (INFO line, empty output)', () => {
+    expect(
+      parseTasklistVerbose('INFO: No tasks are running which match the specified criteria.\r\n'),
+    ).toBeNull();
+    expect(parseTasklistVerbose('')).toBeNull();
+  });
+});
+
+describe('classifyLookupError', () => {
+  test('a command execFile cannot find (ENOENT) is command-missing', () => {
+    expect(
+      classifyLookupError(Object.assign(new Error('spawn lsof ENOENT'), { code: 'ENOENT' })),
+    ).toBe('command-missing');
+  });
+});
+
+describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
+  const SELF = process.pid;
+  const PEER = 1234;
   const NETSTAT = [
     '  Proto  Local Address          Foreign Address        State           PID',
-    '  TCP    127.0.0.1:54321        127.0.0.1:17529        ESTABLISHED     1234',
-    '  TCP    127.0.0.1:17529        127.0.0.1:54321        ESTABLISHED     9999',
+    `  TCP    127.0.0.1:54321        127.0.0.1:17529        ESTABLISHED     ${PEER}`,
+    `  TCP    127.0.0.1:17529        127.0.0.1:54321        ESTABLISHED     ${SELF}`,
   ].join('\r\n');
-  const LSOF = ['p3532', 'cchrome', 'n127.0.0.1:64836->127.0.0.1:17529', ''].join('\n');
+  const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const lsofFor = (uid: number | null) =>
+    [
+      'p3532',
+      'cchrome',
+      ...(uid === null ? [] : [`u${uid}`]),
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      '',
+    ].join('\n');
 
-  type Exec = NonNullable<PeerLookupDeps['exec']>;
-  /** Fake exec: answers by the command's first word, throwing Error values. */
-  function fakeExec(answers: Record<string, string | Error>): Exec {
-    return (cmd: string) => {
-      const answer = answers[cmd.split(' ')[0] ?? ''];
-      if (answer === undefined) return Promise.reject(new Error(`unexpected command ${cmd}`));
+  interface Row {
+    pid: number;
+    name: string;
+    path: string;
+    rv: number;
+    domain: string;
+    user: string;
+  }
+  const row = (over: Partial<Row> = {}): Row => ({
+    pid: PEER,
+    name: 'chrome.exe',
+    path: CHROME_PATH,
+    rv: 0,
+    domain: 'PC',
+    user: 'me',
+    ...over,
+  });
+  const selfRow = (over: Partial<Row> = {}): Row =>
+    row({ pid: SELF, name: 'node.exe', path: 'C:\\node\\node.exe', ...over });
+  const cim = (...rows: Row[]) => JSON.stringify(rows) + '\r\n';
+
+  type ExecFile = NonNullable<PeerLookupDeps['execFile']>;
+  type Call = { file: string; args: readonly string[] };
+  type Answer = string | Error | ((args: readonly string[]) => string | Error);
+  /** Fake execFile: answers by the program name, recording every call. */
+  function fakeExecFile(answers: Record<string, Answer>, calls: Call[] = []): ExecFile {
+    return (file, args) => {
+      calls.push({ file, args });
+      const entry = answers[file];
+      if (entry === undefined) return Promise.reject(new Error(`unexpected command ${file}`));
+      const answer = typeof entry === 'function' ? entry(args) : entry;
       return answer instanceof Error ? Promise.reject(answer) : Promise.resolve({ stdout: answer });
     };
   }
-  /** The shapes child_process.exec rejects with. */
+  /** The shapes child_process.execFile rejects with. */
   const timedOut = () =>
     Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM', code: null });
   const exitWith = (code: number, stderr = '') =>
     Object.assign(new Error('Command failed'), { killed: false, signal: null, code, stderr });
+  const missing = (file: string) =>
+    Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' });
+  const tasklistRow = (name: string, pid: number, owner: string) =>
+    `"${name}","${pid}","Console","1","10 K","Running","${owner}","0:00:01","N/A"\r\n`;
+  /** tasklist answering per `/FI "PID eq <n>"`. */
+  const tasklistBy = (owners: Record<number, string>) => (args: readonly string[]) => {
+    const pid = Number((args[args.length - 1] ?? '').replace('PID eq ', ''));
+    const owner = owners[pid];
+    return owner === undefined
+      ? 'INFO: No tasks are running which match the specified criteria.\r\n'
+      : tasklistRow(pid === SELF ? 'node.exe' : 'chrome.exe', pid, owner);
+  };
+  const win = (answers: Record<string, Answer>, calls?: Call[]): PeerLookupDeps => ({
+    platform: 'win32',
+    execFile: fakeExecFile(answers, calls),
+  });
+  const unix = (
+    os: NodeJS.Platform,
+    answers: Record<string, Answer>,
+    uid = 501,
+    calls?: Call[],
+  ): PeerLookupDeps => ({
+    platform: os,
+    execFile: fakeExecFile(answers, calls),
+    getuid: () => uid,
+  });
 
-  test('a successful lookup is unchanged (unix lsof)', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
-      platform: 'linux',
-      exec: fakeExec({ lsof: LSOF }),
-    });
+  // --- existing behaviour: a same-user allowlisted browser is accepted ---
+
+  test('win32: a same-user browser is identified (netstat + one CIM call)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+  });
+
+  test('linux: a same-user browser is identified (lsof uid === getuid)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: lsofFor(501) }),
+    );
     expect(res).toEqual({ ok: true, peer: { pid: 3532, binaryName: 'chrome' } });
   });
 
-  test('a successful lookup is unchanged (windows netstat + Get-Process)', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
-      platform: 'win32',
-      exec: fakeExec({ netstat: NETSTAT, powershell: 'chrome\r\n' }),
-    });
-    expect(res).toEqual({ ok: true, peer: { pid: 1234, binaryName: 'chrome.exe' } });
+  test('darwin: a same-user browser is identified (lsof uid === getuid)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('darwin', { lsof: lsofFor(501) }),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: 3532, binaryName: 'chrome' } });
   });
 
-  test('timeout', async () => {
+  // --- condition 1: the owner check fails closed ---
+
+  test('win32: GetOwner returning 2 for the peer rejects (owner-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row({ rv: 2, domain: '', user: '' }), selfRow()) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: ReturnValue 0 with an empty user rejects (owner-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row({ user: '' }), selfRow()) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: an unreadable owner of the server itself rejects (owner-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row(), selfRow({ rv: 8, domain: '', user: '' })) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: a peer that vanished before the CIM call is a parse-miss', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(selfRow()) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'parse-miss' });
+  });
+
+  // --- condition 2: compared with the server's owner, by the same method ---
+
+  test('win32: a peer owned by another account rejects (owner-mismatch)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row({ user: 'other' }), selfRow()) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-mismatch' });
+  });
+
+  test('win32: the same user name in another domain rejects (not os.userInfo().username alone)', async () => {
+    const name = userInfo().username;
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: cim(row({ domain: 'OTHERPC', user: name }), selfRow({ user: name })),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-mismatch' });
+  });
+
+  // --- condition 3: POSIX requests the u field and requires uid === getuid() ---
+
+  test('posix: lsof is asked for the u field', async () => {
+    const calls: Call[] = [];
+    await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: lsofFor(501) }, 501, calls),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.file).toBe('lsof');
+    expect(calls[0]?.args).toContain('pcun');
+  });
+
+  test('posix: a peer uid that differs from getuid() rejects (owner-mismatch)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('darwin', { lsof: lsofFor(0) }, 501),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-mismatch' });
+  });
+
+  test('posix: a missing u field rejects (owner-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: lsofFor(null) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('posix: a server without getuid() rejects (owner-unreadable)', async () => {
     const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
-      platform: 'linux',
-      exec: fakeExec({ lsof: timedOut() }),
+      ...unix('linux', { lsof: lsofFor(501) }),
+      getuid: () => undefined,
     });
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  // --- condition 4: the tasklist fallback checks the owner too ---
+
+  test('win32: PowerShell blocked → tasklist /V accepts a same-owner peer', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win(
+        {
+          netstat: NETSTAT,
+          powershell: exitWith(1),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        calls,
+      ),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+    const tasklistCalls = calls.filter((c) => c.file === 'tasklist');
+    expect(tasklistCalls).toHaveLength(2);
+    for (const c of tasklistCalls) expect(c.args).toContain('/V');
+  });
+
+  test('win32: PowerShell blocked → tasklist /V rejects a peer of another owner', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: missing('powershell'),
+        tasklist: tasklistBy({ [PEER]: 'PC\\other', [SELF]: 'PC\\me' }),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-mismatch' });
+  });
+
+  test('win32: PowerShell blocked → tasklist owner N/A rejects, even when both read N/A', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: exitWith(1),
+        tasklist: tasklistBy({ [PEER]: 'N/A', [SELF]: 'N/A' }),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: PowerShell blocked and tasklist timing out reports the fallback cause', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: exitWith(1), tasklist: timedOut() }),
+    );
     expect(res).toEqual({ ok: false, cause: 'timeout' });
   });
 
-  test('command-missing (unix shell exit 127)', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
-      platform: 'linux',
-      exec: fakeExec({ lsof: exitWith(127, 'sh: 1: lsof: not found') }),
+  // --- condition 5: execFile with argument arrays, validated pids ---
+
+  test('win32: every command is a program plus an argument array, never a shell line', async () => {
+    const calls: Call[] = [];
+    await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }, calls),
+    );
+    expect(calls.map((c) => c.file)).toEqual(['netstat', 'powershell']);
+    expect(calls[0]?.args).toEqual(['-ano', '-p', 'TCP']);
+    expect(calls[1]?.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    expect(calls[1]?.args[3]).toBe(buildCimIdentityScript(PEER, SELF));
+  });
+
+  test('win32: a pid that is not a safe integer never reaches PowerShell (invalid-pid)', async () => {
+    const calls: Call[] = [];
+    const huge = NETSTAT.replace(`ESTABLISHED     ${PEER}`, 'ESTABLISHED     99999999999999999999');
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: huge, powershell: cim(row(), selfRow()) }, calls),
+    );
+    expect(res).toEqual({ ok: false, cause: 'invalid-pid' });
+    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+  });
+
+  test('win32: a port owned by two different pids is a parse-miss', async () => {
+    const calls: Call[] = [];
+    const twoOwners = `${NETSTAT}\r\n  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     777`;
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: twoOwners, powershell: cim(row(), selfRow()) }, calls),
+    );
+    expect(res).toEqual({ ok: false, cause: 'parse-miss' });
+    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+  });
+
+  test('win32: the server as its own peer is refused before PowerShell (self)', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      17529,
+      win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }, calls),
+    );
+    expect(res).toEqual({ ok: false, cause: 'self' });
+    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+  });
+
+  // --- strict mode: the executable path, only when asked for ---
+
+  test('win32: the executable path comes from the same CIM call when asked for', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }, calls),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({
+      ok: true,
+      peer: { pid: PEER, binaryName: 'chrome.exe', executablePath: CHROME_PATH },
     });
+    expect(calls).toHaveLength(2);
+  });
+
+  test('win32: an empty ExecutablePath rejects when asked for (path-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row({ path: '' }), selfRow()) }),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({ ok: false, cause: 'path-unreadable' });
+  });
+
+  test('win32: the tasklist fallback cannot read a path and rejects when asked for', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: exitWith(1),
+        tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+      }),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({ ok: false, cause: 'path-unreadable' });
+  });
+
+  test('posix: the executable path is the first txt entry of a second lsof call', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix(
+        'linux',
+        {
+          lsof: (args) =>
+            args.includes('txt')
+              ? ['p3532', 'ftxt', 'n/opt/google/chrome/chrome', ''].join('\n')
+              : lsofFor(501),
+        },
+        501,
+        calls,
+      ),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({
+      ok: true,
+      peer: { pid: 3532, binaryName: 'chrome', executablePath: '/opt/google/chrome/chrome' },
+    });
+    expect(calls[1]?.args).toEqual(['-nP', '-a', '-p', '3532', '-d', 'txt', '-F', 'n']);
+  });
+
+  test('posix: no readable txt entry rejects when asked for (path-unreadable)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('darwin', {
+        lsof: (args) => (args.includes('txt') ? 'p3532\n' : lsofFor(501)),
+      }),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({ ok: false, cause: 'path-unreadable' });
+  });
+
+  // --- existing causes keep their meaning ---
+
+  test('timeout', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: timedOut() }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'timeout' });
+  });
+
+  test('command-missing (lsof not installed: ENOENT)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: missing('lsof') }),
+    );
     expect(res).toEqual({ ok: false, cause: 'command-missing' });
   });
 
-  test('command-missing (cmd.exe "is not recognized")', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
-      platform: 'win32',
-      exec: fakeExec({
-        netstat: exitWith(1, "'netstat' is not recognized as an internal or external command"),
-      }),
-    });
+  test('command-missing (netstat not found: ENOENT)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: missing('netstat') }),
+    );
     expect(res).toEqual({ ok: false, cause: 'command-missing' });
   });
 
   test('command-failed:<exit>', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, {
-      platform: 'linux',
-      exec: fakeExec({ lsof: exitWith(2) }),
-    });
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: exitWith(2) }),
+    );
     expect(res).toEqual({ ok: false, cause: 'command-failed:2' });
   });
 
   test('parse-miss (no row for the local endpoint)', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 11111, {
-      platform: 'win32',
-      exec: fakeExec({ netstat: NETSTAT }),
-    });
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 11111, win({ netstat: NETSTAT }));
     expect(res).toEqual({ ok: false, cause: 'parse-miss' });
   });
 
-  test('windows: PowerShell blocked and tasklist timing out reports the fallback cause', async () => {
-    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, {
-      platform: 'win32',
-      exec: fakeExec({ netstat: NETSTAT, powershell: exitWith(1), tasklist: timedOut() }),
-    });
-    expect(res).toEqual({ ok: false, cause: 'timeout' });
+  test('unsupported-platform', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 1, { platform: 'aix' });
+    expect(res).toEqual({ ok: false, cause: 'unsupported-platform' });
   });
 
   test('lookupPeerProcess keeps its PeerProcess | null contract', async () => {
     expect(
-      await lookupPeerProcess('127.0.0.1', 64836, {
-        platform: 'linux',
-        exec: fakeExec({ lsof: LSOF }),
-      }),
-    ).toEqual({ pid: 3532, binaryName: 'chrome' });
+      await lookupPeerProcess('127.0.0.1', 64836, unix('linux', { lsof: lsofFor(501) })),
+    ).toEqual({
+      pid: 3532,
+      binaryName: 'chrome',
+    });
     expect(
-      await lookupPeerProcess('127.0.0.1', 64836, {
-        platform: 'linux',
-        exec: fakeExec({ lsof: timedOut() }),
-      }),
+      await lookupPeerProcess('127.0.0.1', 64836, unix('linux', { lsof: lsofFor(0) })),
     ).toBeNull();
   });
 });

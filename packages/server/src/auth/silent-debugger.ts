@@ -18,8 +18,8 @@ export type ExecLike = (
 // A diagnostic probe, not a security check — but raised from the original
 // 3000ms to the 5000ms budget process-identity.ts's LOOKUP_TIMEOUT_MS
 // documents: WMI-backed `Get-CimInstance` is a slow cold start, and
-// process-identity.ts's imageNameForPid comment records tasklist-class
-// tools observed at ~3s on loaded Windows machines. 3000ms was tight enough
+// tasklist-class tools (process-identity.ts's fallback) were observed at ~3s
+// on loaded Windows machines. 3000ms was tight enough
 // to time out routinely on exactly the machines this probe most needs to
 // work on, silently degrading every `browser-link doctor` run to "could not
 // determine".
