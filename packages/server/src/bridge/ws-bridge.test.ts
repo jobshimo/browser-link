@@ -1129,11 +1129,21 @@ describe('startWsBridge handshake gate and message loop', () => {
     );
   });
 
+  test("the lookup is given the bridge's own endpoint, so only rows to it count", async () => {
+    const lookup = vi.fn(chromiumPeer);
+    const { url } = await bridge(lookup);
+    expect('ws' in (await connect(url, 'chrome-extension://abcdefghijklmnop'))).toBe(true);
+    const { port } = wss!.address() as AddressInfo;
+    expect(lookup.mock.calls[0]?.[2]).toMatchObject({
+      serverEndpoint: { host: '127.0.0.1', port },
+    });
+  });
+
   test('strict mode off (no peerExecutablePaths): the path is not asked for', async () => {
     const lookup = vi.fn(chromiumPeer);
     const { url } = await bridge(lookup);
     expect('ws' in (await connect(url, 'chrome-extension://abcdefghijklmnop'))).toBe(true);
-    expect(lookup.mock.calls[0]?.[2]).toEqual({ withExecutablePath: false });
+    expect(lookup.mock.calls[0]?.[2]).toMatchObject({ withExecutablePath: false });
   });
 
   describe('strict mode (peerExecutablePaths in config.json)', () => {
@@ -1160,7 +1170,7 @@ describe('startWsBridge handshake gate and message loop', () => {
       const lookup = strictPeer(allowed);
       const { url } = await bridge(lookup);
       expect('ws' in (await connect(url, 'chrome-extension://abcdefghijklmnop'))).toBe(true);
-      expect(lookup.mock.calls[0]?.[2]).toEqual({ withExecutablePath: true });
+      expect(lookup.mock.calls[0]?.[2]).toMatchObject({ withExecutablePath: true });
     });
 
     test('an executable path that is not listed is refused with 403', async () => {

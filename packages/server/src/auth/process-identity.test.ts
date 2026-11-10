@@ -194,6 +194,42 @@ Active Connections
     const twice = `${sample}  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     1234\n`;
     expect(parseNetstatForLocal(twice, '127.0.0.1', 54321)).toBe(1234);
   });
+
+  /*
+   * Real `netstat -ano -p TCP` lines from Windows 11 (2026-11-10), right
+   * after a full test run: a peer at 127.0.0.1:60554 connected to a server
+   * listening on 127.0.0.1:1042. The TIME_WAIT line is a real line whose
+   * local port was set to 60554 to model a stale row on the same endpoint.
+   */
+  describe('stale TIME_WAIT rows and the server endpoint (real output)', () => {
+    const SERVER = { host: '127.0.0.1', port: 1042 };
+    const ESTABLISHED =
+      '  TCP    127.0.0.1:60554        127.0.0.1:1042         ESTABLISHED     46344';
+    const STALE = '  TCP    127.0.0.1:60554        127.0.0.1:52878        TIME_WAIT       0';
+    const OTHER_FOREIGN =
+      '  TCP    127.0.0.1:60554        127.0.0.1:65388        ESTABLISHED     12244';
+
+    test('the same local endpoint as TIME_WAIT 0 and as ESTABLISHED <pid> is that pid', () => {
+      const out = [STALE, ESTABLISHED].join('\r\n');
+      expect(parseNetstatForLocal(out, '127.0.0.1', 60554)).toBe(46344);
+      expect(parseNetstatForLocal(out, '127.0.0.1', 60554, SERVER)).toBe(46344);
+    });
+
+    test('only a TIME_WAIT 0 row is no owner (PID 0 is never an owner)', () => {
+      expect(parseNetstatForLocal(STALE, '127.0.0.1', 60554)).toBeNull();
+    });
+
+    test('a row for the same local port to another foreign endpoint is not counted', () => {
+      const out = [OTHER_FOREIGN, ESTABLISHED].join('\r\n');
+      expect(parseNetstatForLocal(out, '127.0.0.1', 60554, SERVER)).toBe(46344);
+      expect(parseNetstatForLocal(OTHER_FOREIGN, '127.0.0.1', 60554, SERVER)).toBeNull();
+    });
+
+    test('two live pids on the same local and foreign endpoint stay ambiguous', () => {
+      const out = [ESTABLISHED, ESTABLISHED.replace('46344', '777')].join('\r\n');
+      expect(parseNetstatForLocal(out, '127.0.0.1', 60554, SERVER)).toBeNull();
+    });
+  });
 });
 
 describe('isValidPid', () => {
@@ -592,6 +628,56 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     );
     expect(res).toEqual({ ok: false, cause: 'invalid-pid' });
     expect(calls.map((c) => c.file)).toEqual(['netstat']);
+  });
+
+  test('win32: a stale TIME_WAIT 0 row on the peer endpoint does not make it ambiguous', async () => {
+    const stale = `  TCP    127.0.0.1:54321        127.0.0.1:52878        TIME_WAIT       0\r\n${NETSTAT}`;
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: stale, powershell: cim(row(), selfRow()) }),
+      { serverEndpoint: { host: '127.0.0.1', port: 17529 } },
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+  });
+
+  test('win32: only a TIME_WAIT 0 row for the peer endpoint is endpoint-not-listed', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: '  TCP    127.0.0.1:54321        127.0.0.1:17529        TIME_WAIT       0' }),
+      { serverEndpoint: { host: '127.0.0.1', port: 17529 } },
+    );
+    expect(res).toEqual({ ok: false, cause: 'endpoint-not-listed' });
+  });
+
+  test('win32: a live row to another foreign endpoint is ignored when the server endpoint is known', async () => {
+    const other = `${NETSTAT}\r\n  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     777`;
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: other, powershell: cim(row(), selfRow()) }),
+      { serverEndpoint: { host: '127.0.0.1', port: 17529 } },
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+  });
+
+  test('posix: an owner of the same local endpoint to another remote is ignored when the server endpoint is known', async () => {
+    const lsof = [
+      'p3532',
+      'cchrome',
+      'u501',
+      'n127.0.0.1:64836->127.0.0.1:17529',
+      'p4000',
+      'cnode',
+      'u501',
+      'n127.0.0.1:64836->10.0.0.9:443',
+      '',
+    ].join('\n');
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 64836, unix('linux', { lsof }), {
+      serverEndpoint: { host: '127.0.0.1', port: 17529 },
+    });
+    expect(res).toEqual({ ok: true, peer: { pid: 3532, binaryName: 'chrome' } });
   });
 
   test('win32: a port owned by two different pids is endpoint-ambiguous', async () => {

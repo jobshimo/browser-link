@@ -157,6 +157,7 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
       {},
       {
         withExecutablePath: true,
+        serverEndpoint: { host: '127.0.0.1', port },
       },
     );
     expect(res).toEqual({

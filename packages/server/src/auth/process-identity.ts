@@ -36,8 +36,9 @@ export async function lookupPeerProcess(
   host: string,
   port: number,
   deps: PeerLookupDeps = {},
+  request: PeerLookupRequest = {},
 ): Promise<PeerProcess | null> {
-  const result = await lookupPeerProcessDetailed(host, port, deps);
+  const result = await lookupPeerProcessDetailed(host, port, deps, request);
   return result.ok ? result.peer : null;
 }
 
@@ -106,6 +107,16 @@ export interface PeerLookupDeps {
 export interface PeerLookupRequest {
   /** Also read the peer's executable path (the opt-in strict mode). */
   withExecutablePath?: boolean;
+  /** The server's own end of the connection (its listening address and
+   * port). When given, only connections whose REMOTE end is this endpoint
+   * count, so a row for the same local port to anything else (a stale
+   * TIME_WAIT, a reused ephemeral port) cannot make the owner ambiguous. */
+  serverEndpoint?: Endpoint;
+}
+
+export interface Endpoint {
+  host: string;
+  port: number;
 }
 
 /** Thrown internally so a parse miss travels the same path as an exec error. */
@@ -144,9 +155,9 @@ export async function lookupPeerProcessDetailed(
   try {
     if (os === 'darwin' || os === 'linux') {
       const getuid = deps.getuid ?? (() => process.getuid?.());
-      result = await lookupUnix(run, host, port, getuid(), withPath);
+      result = await lookupUnix(run, host, port, request.serverEndpoint, getuid(), withPath);
     } else if (os === 'win32') {
-      result = await lookupWindows(run, host, port, withPath);
+      result = await lookupWindows(run, host, port, request.serverEndpoint, withPath);
     } else {
       return { ok: false, cause: 'unsupported-platform' };
     }
@@ -198,6 +209,7 @@ async function lookupUnix(
   exec: ExecFile,
   host: string,
   port: number,
+  server: Endpoint | undefined,
   serverUid: number | undefined,
   withPath: boolean,
 ): Promise<PeerProcess> {
@@ -208,7 +220,7 @@ async function lookupUnix(
     `-iTCP@${host}:${port}`,
     '-sTCP:ESTABLISHED',
   ]);
-  const owner = parseLsofOutput(stdout, host, port);
+  const owner = parseLsofOutput(stdout, host, port, server);
   if (!owner) throw new LookupFailure('parse-miss');
   assertPeerPid(owner.pid);
   assertSameOwner(owner.uid, serverUid ?? null);
@@ -252,8 +264,14 @@ export interface LsofOwner {
  * lines (one per matching socket). Names can contain spaces; lsof escapes
  * them as `\xHH`.
  */
-export function parseLsofOutput(out: string, host: string, port: number): LsofOwner | null {
+export function parseLsofOutput(
+  out: string,
+  host: string,
+  port: number,
+  server?: Endpoint,
+): LsofOwner | null {
   const target = `${host}:${port}`;
+  const remoteTarget = server === undefined ? null : `${server.host}:${server.port}`;
   const owners = new Map<number, { binaryName: string; uid: number | null }>();
   let curPid: number | null = null;
   let curName: string | null = null;
@@ -284,6 +302,7 @@ export function parseLsofOutput(out: string, host: string, port: number): LsofOw
       if (arrowIdx < 0) continue;
       const local = rest.slice(0, arrowIdx);
       if (local !== target) continue;
+      if (remoteTarget !== null && rest.slice(arrowIdx + 2) !== remoteTarget) continue;
       const existing = owners.get(curPid);
       if (existing === undefined) owners.set(curPid, { binaryName: curName, uid: curUid });
       else if (existing.binaryName !== curName) {
@@ -345,10 +364,11 @@ async function lookupWindows(
   exec: ExecFile,
   host: string,
   port: number,
+  server: Endpoint | undefined,
   withPath: boolean,
 ): Promise<PeerProcess> {
   const { stdout: netstatOut } = await run(exec, 'netstat', ['-ano', '-p', 'TCP']);
-  const owners = netstatOwnersOf(netstatOut, host, port);
+  const owners = netstatOwnersOf(netstatOut, host, port, server);
   if (owners.length === 0) throw new LookupFailure('endpoint-not-listed');
   if (owners.length > 1) throw new LookupFailure('endpoint-ambiguous');
   const pid = owners[0];
@@ -485,16 +505,30 @@ function cimOwner(row: CimProcess): string | null {
 
 /**
  * Return the single PID whose LOCAL endpoint is `host:port` in `netstat -ano`
- * output; null when none, or when two different PIDs list that endpoint.
+ * output (and, when `server` is given, whose FOREIGN endpoint is the
+ * server); null when none, or when two different PIDs list that endpoint.
  */
-export function parseNetstatForLocal(out: string, host: string, port: number): number | null {
-  const owners = netstatOwnersOf(out, host, port);
+export function parseNetstatForLocal(
+  out: string,
+  host: string,
+  port: number,
+  server?: Endpoint,
+): number | null {
+  const owners = netstatOwnersOf(out, host, port, server);
   return owners.length === 1 ? owners[0] : null;
 }
 
-/** The distinct PIDs `netstat -ano` lists with `host:port` as LOCAL end. */
-function netstatOwnersOf(out: string, host: string, port: number): number[] {
+/**
+ * The distinct live PIDs `netstat -ano` lists with `host:port` as LOCAL end.
+ *
+ * PID 0 is never an owner: netstat lists TIME_WAIT connections, which no
+ * process owns any more, under PID 0, and after heavy loopback traffic a
+ * stale one can share the peer's local endpoint. The State column is not
+ * used because netstat prints it localized on non-English Windows.
+ */
+function netstatOwnersOf(out: string, host: string, port: number, server?: Endpoint): number[] {
   const target = `${host}:${port}`;
+  const foreign = server === undefined ? null : `${server.host}:${server.port}`;
   const owners = new Set<number>();
   for (const line of out.split(/\r?\n/)) {
     if (!line.includes(target)) continue;
@@ -502,8 +536,9 @@ function netstatOwnersOf(out: string, host: string, port: number): number[] {
     const fields = line.trim().split(/\s+/);
     if (fields.length < 5) continue;
     if (fields[1] !== target) continue;
+    if (foreign !== null && fields[2] !== foreign) continue;
     const pid = Number.parseInt(fields[4] ?? '', 10);
-    if (Number.isFinite(pid)) owners.add(pid);
+    if (Number.isFinite(pid) && pid !== 0) owners.add(pid);
   }
   return [...owners];
 }
