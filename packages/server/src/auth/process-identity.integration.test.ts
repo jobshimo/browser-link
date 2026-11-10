@@ -203,6 +203,35 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
 });
 
 describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
+  // TEMPORARY measurement for CI: what PowerShell and the CIM call cost here.
+  test('MEASURE powershell cost', async () => {
+    const { port, connection } = await listen();
+    const ready = await connectFromChild(port);
+    await connection;
+    const { buildCimIdentityScript } = await import('./process-identity.js');
+    const lines: string[] = [];
+    for (const [label, cmd] of [
+      ['cim-first', buildCimIdentityScript(ready.pid, process.pid)],
+      ['empty', 'exit 0'],
+      ['empty', 'exit 0'],
+      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
+      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
+    ] as const) {
+      const t0 = performance.now();
+      let outcome = 'ok';
+      try {
+        await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
+          timeout: 60_000,
+          windowsHide: true,
+        });
+      } catch (err) {
+        outcome = `failed ${String((err as { code?: unknown }).code)}`;
+      }
+      lines.push(`${label} ${String(Math.round(performance.now() - t0))} ms ${outcome}`);
+    }
+    console.log(`MEASURE powershell: ${lines.join(' | ')}`);
+  }, 400_000);
+
   test('identifies a same-user child with its image name and executable path', async () => {
     const { port, connection } = await listen();
     const ready = await connectFromChild(port);
@@ -231,33 +260,4 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
     });
     if (res.ok) expect(res.peer.executablePath?.toLowerCase()).toBe(process.execPath.toLowerCase());
   }, 15000);
-
-  // TEMPORARY measurement for CI: what PowerShell and the CIM call cost here.
-  test('MEASURE powershell cost', async () => {
-    const { port, connection } = await listen();
-    const ready = await connectFromChild(port);
-    await connection;
-    const { buildCimIdentityScript } = await import('./process-identity.js');
-    const lines: string[] = [];
-    for (const [label, cmd] of [
-      ['empty', 'exit 0'],
-      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
-      ['empty', 'exit 0'],
-      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
-      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
-    ] as const) {
-      const t0 = performance.now();
-      let outcome = 'ok';
-      try {
-        await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
-          timeout: 60_000,
-          windowsHide: true,
-        });
-      } catch (err) {
-        outcome = `failed ${String((err as { code?: unknown }).code)}`;
-      }
-      lines.push(`${label} ${String(Math.round(performance.now() - t0))} ms ${outcome}`);
-    }
-    console.log(`MEASURE powershell: ${lines.join(' | ')}`);
-  }, 400_000);
 });
