@@ -344,12 +344,14 @@ const I18N = {
     notice: 'Read notice',
     activity: 'Activity',
     status: 'Status',
+    cdpDirectEnabled: 'cdp-direct enabled',
   },
   es: {
     footer: 'manual · por pestaña · solo loopback',
     notice: 'Ver aviso',
     activity: 'Actividad',
     status: 'Estado',
+    cdpDirectEnabled: 'cdp-direct activado',
   },
 };
 
@@ -464,6 +466,21 @@ async function languageChecks(cdp, extId) {
       admin.sessionId,
       'Admin did not follow without reload',
     );
+  });
+
+  // Console-only settings: the server's readout, the command under it, no control.
+  await check('admin.console-only', async (name) => {
+    const label = JSON.stringify(I18N[to].cdpDirectEnabled);
+    const seen = await cdp.evaluate(
+      `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; return { controls: row.querySelectorAll('input, select, button').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null }; })()`,
+      admin.sessionId,
+    );
+    const commands = ['true', 'false'].map(
+      (v) => `browser-link config set cdp-direct.enabled ${v}`,
+    );
+    if (!seen || seen.controls !== 0 || !seen.value || !commands.includes(seen.command)) {
+      throw new StepFailure(name, `cdpDirectEnabled row ${JSON.stringify(seen)}`);
+    }
   });
 
   await check('i18n.persisted', async (name) => {
