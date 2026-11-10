@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "browser-link",
   "version": "0.51.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzp+T1M1l59q51VojCr4RvwbjHYs9TuUitXI8LvtduMEfbknSQV8JIT924hXAPi6Lx0vLYHYBGc/iZOXcoelS2ZfZbQcUJyp4AX83ZNF5VZ3P3ob1aok7Ak/+ibny6KaN/cjI0R5BLxpkrAffu2V+wdsSOgZR6YSOlVitUuRGS2rp0D78rUehZD+KBziuUtFt80BjslURrljbPccFL74jezfMbE64y0BCZsJzVuFnQJSVJweuNaUeKKS0puZQu3pY0VxW7gFm/2JZMYbggvTHTKfm115mo0gt1UxKMYRoS/8oS/z4Qn2jnN0xGLAN5HSzKg20b8y+CcBKIHbZaKxvnwIDAQAB",
   "description": "Bridge between Chrome and an MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …). Per-tab manual activation.",
   "minimum_chrome_version": "118",
   "permissions": [

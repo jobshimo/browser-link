@@ -26,8 +26,15 @@ import {
   type AdminHandlers,
   type PendingRequest,
   type TabSession,
-  isAllowedHandshakeOrigin,
 } from './ws-bridge.js';
+import {
+  HANDSHAKE_CHECK_PATH,
+  HANDSHAKE_REFUSAL_REASONS,
+  handshakeRefusal,
+  isAllowedHandshakeOrigin,
+} from './handshake.js';
+import { PINNED_EXTENSION_ORIGIN } from '../auth/extension-id.js';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { BridgeEventLog, isExtensionEventKind } from './events.js';
 import { closeDb, getDb } from '../map/db.js';
 import { saveConfig } from '../config.js';
@@ -1076,5 +1083,192 @@ describe('startWsBridge handshake gate and message loop', () => {
     expect(msg.payload.serverVersion).toBe('9.9.9');
     expect(msg.payload.serverPid).toBe(process.pid);
     expect(tabs.get(msg.payload.tabId)?.url).toBe('https://example.com/');
+  });
+
+  /* 0.52.0: acceptance is unchanged, but every accepted handshake whose
+   * Origin is not exactly the pinned extension's is logged, naming the
+   * origin and the release that will refuse it (arch condition 4). */
+  const logged = (): string[] => vi.mocked(console.error).mock.calls.map((c) => String(c[0]));
+  const lockoutNotices = (): string[] => logged().filter((l) => l.includes('1.0.0 will refuse'));
+
+  test('the pinned extension Origin connects and logs no lockout notice', async () => {
+    const { url } = await bridge(chromiumPeer);
+    const outcome = await connect(url, PINNED_EXTENSION_ORIGIN);
+    expect('ws' in outcome).toBe(true);
+    expect(lockoutNotices()).toEqual([]);
+  });
+
+  test('another extension id is still accepted, with one line naming its origin and the 1.0.0 refusal', async () => {
+    const { url } = await bridge(chromiumPeer);
+    const outcome = await connect(url, 'chrome-extension://abcdefghijklmnopabcdefghijklmnop');
+    expect('ws' in outcome).toBe(true);
+    const notices = lockoutNotices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('chrome-extension://abcdefghijklmnopabcdefghijklmnop');
+    expect(notices[0]).toContain(PINNED_EXTENSION_ORIGIN);
+  });
+
+  test('a missing Origin is still accepted, with one line saying the Origin was missing', async () => {
+    const { url } = await bridge(chromiumPeer);
+    expect('ws' in (await connect(url))).toBe(true);
+    const notices = lockoutNotices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('without an Origin header');
+  });
+
+  test('a web-page Origin is still refused by its own line, not by a lockout notice', async () => {
+    const { url } = await bridge(chromiumPeer);
+    expect(await connect(url, 'http://localhost:3000')).toEqual({
+      status: 403,
+      message: 'Origin not allowed',
+    });
+    expect(lockoutNotices()).toEqual([]);
+    expect(logged().join('\n')).toContain('origin http://localhost:3000');
+  });
+});
+
+/*
+ * `GET /handshake-check`: a browser's WebSocket API hides the status and
+ * reason of a refused upgrade, so after a failed connect the extension asks
+ * this endpoint what the same gate says about its own request. It answers
+ * only `accepted` and, when refused, the reason code of that refusal.
+ */
+describe('GET /handshake-check — the handshake verdict a WebSocket cannot read', () => {
+  const CHROMIUM = getAllowedBrowsers()[0] ?? 'chrome';
+  const EXT = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+  let wss: WebSocketServer | null = null;
+
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    if (wss) await new Promise<void>((resolve) => wss?.close(() => resolve()));
+    wss = null;
+    vi.restoreAllMocks();
+  });
+
+  async function bridgePort(
+    lookup: (address: string, port: number) => Promise<PeerLookupResult>,
+  ): Promise<number> {
+    wss = await startWsBridge(new Map(), new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '9.9.9',
+      lookupPeerProcess: lookup,
+    });
+    return (wss.address() as AddressInfo).port;
+  }
+
+  interface CheckReply {
+    status: number;
+    headers: IncomingHttpHeaders;
+    body: string;
+  }
+
+  function check(
+    port: number,
+    headers: Record<string, string> = {},
+    path = HANDSHAKE_CHECK_PATH,
+  ): Promise<CheckReply> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (body += chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  const chromiumPeer = async (): Promise<PeerLookupResult> => ({
+    ok: true,
+    peer: { pid: 4321, binaryName: CHROMIUM },
+  });
+
+  test('a web-page Origin: refused with origin-not-allowed, unreadable by that page (no CORS grant)', async () => {
+    const lookup = vi.fn(chromiumPeer);
+    const port = await bridgePort(lookup);
+    const reply = await check(port, { origin: 'https://evil.example' });
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({ accepted: false, reason: 'origin-not-allowed' });
+    expect(reply.headers['access-control-allow-origin']).toBeUndefined();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('an extension Origin from a Chromium peer: accepted, readable by that extension', async () => {
+    const port = await bridgePort(chromiumPeer);
+    const reply = await check(port, { origin: EXT });
+    expect(JSON.parse(reply.body)).toEqual({ accepted: true });
+    expect(reply.headers['access-control-allow-origin']).toBe(EXT);
+    expect(reply.headers.vary).toBe('Origin');
+    expect(reply.headers['cache-control']).toBe('no-store');
+  });
+
+  test('a missing Origin is accepted, as the handshake does in this release', async () => {
+    const port = await bridgePort(chromiumPeer);
+    expect(JSON.parse((await check(port)).body)).toEqual({ accepted: true });
+  });
+
+  test.each([
+    [
+      'a non-Chromium peer',
+      async (): Promise<PeerLookupResult> => ({
+        ok: true,
+        peer: { pid: 99, binaryName: 'node.exe' },
+      }),
+      'peer-not-browser',
+    ],
+    [
+      'an unidentifiable peer process',
+      async (): Promise<PeerLookupResult> => ({ ok: false, cause: 'timeout' }),
+      'peer-unknown',
+    ],
+    [
+      'a peer lookup that throws',
+      async (): Promise<PeerLookupResult> => {
+        throw new Error('lookup exploded');
+      },
+      'process-lookup-failed',
+    ],
+  ])('%s: the same reason code the handshake refuses with', async (_label, lookup, reason) => {
+    const port = await bridgePort(lookup);
+    const reply = await check(port, { origin: EXT });
+    expect(JSON.parse(reply.body)).toEqual({ accepted: false, reason });
+  });
+
+  test('answers only on a loopback Host, like /version', async () => {
+    const port = await bridgePort(chromiumPeer);
+    const reply = await check(port, { origin: EXT, host: 'rebound.example' });
+    expect(reply.status).toBe(403);
+    expect(reply.body).not.toContain('accepted');
+  });
+
+  test('logs nothing: the refused handshake already logged its own line', async () => {
+    const port = await bridgePort(async () => ({ ok: false, cause: 'timeout' }));
+    await check(port, { origin: 'https://evil.example' });
+    await check(port, { origin: EXT });
+    await check(port);
+    const lines = vi.mocked(console.error).mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => !l.includes('WebSocket listening'))).toEqual([]);
+  });
+
+  test('/version and unknown paths answer as before', async () => {
+    const port = await bridgePort(chromiumPeer);
+    expect(JSON.parse((await check(port, {}, '/version')).body).version).toBe('9.9.9');
+    expect((await check(port, {}, '/nope')).status).toBe(404);
+  });
+});
+
+describe('handshakeRefusal — one reason code per refusal the gate can give', () => {
+  test('every code maps to the HTTP status and message the upgrade is refused with', () => {
+    expect(HANDSHAKE_REFUSAL_REASONS.map((r) => [r, handshakeRefusal(r)])).toEqual([
+      ['origin-not-allowed', { status: 403, message: 'Origin not allowed' }],
+      ['peer-unidentified', { status: 403, message: 'Cannot identify peer' }],
+      ['peer-unknown', { status: 403, message: 'Peer process unknown' }],
+      ['peer-not-browser', { status: 403, message: 'Peer is not a Chromium-based browser' }],
+      ['process-lookup-failed', { status: 500, message: 'Process lookup failed' }],
+    ]);
   });
 });
