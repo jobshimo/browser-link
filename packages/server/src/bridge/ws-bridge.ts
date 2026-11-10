@@ -33,7 +33,7 @@ import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import { BRIDGE_PORT } from './protocol.js';
 import {
-  answerHandshakeCheck,
+  createHandshakeCheckHandler,
   evaluateHandshake,
   handshakeRefusal,
   isHandshakeCheckRequest,
@@ -233,9 +233,10 @@ export function startWsBridge(
   const { host, port, version } = resolveBridgeOptions(options);
   const lookupPeerProcess = options.lookupPeerProcess ?? lookupPeerProcessDetailed;
   return new Promise((resolve, reject) => {
+    const answerHandshakeCheck = createHandshakeCheckHandler(lookupPeerProcess);
     const httpServer = createServer((req, res) => {
       if (isHandshakeCheckRequest(req)) {
-        void answerHandshakeCheck(req, res, lookupPeerProcess);
+        void answerHandshakeCheck(req, res);
         return;
       }
       handleBridgeHttpRequest(req, res, version, options.isRepairing);

@@ -228,7 +228,9 @@ async function main() {
   } finally {
     closeProbe();
   }
-  console.log(`worker.origin websocket=${String(seen.websocket)} fetch=${String(seen.fetch)}`);
+  console.log(
+    `worker.origin websocket=${String(seen.websocket)} fetch=${String(seen.fetch)} sec-fetch-site=${String(seen.fetchSite)}`,
+  );
 
   // 5. The nine calls.
   const tl = now();

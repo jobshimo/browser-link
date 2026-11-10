@@ -68,6 +68,16 @@ describe('diagnoseConnectFailure', () => {
     expect(await diagnoseConnectFailure(url)).toEqual({ code: 'ws-connect-failed' });
   });
 
+  test('a busy bridge (503 { busy: true }): no diagnosis, the generic connect failure', async () => {
+    const url = await stub(503, JSON.stringify({ busy: true }));
+    expect(await diagnoseConnectFailure(url)).toEqual({ code: 'ws-connect-failed' });
+  });
+
+  test('a plain 403 refusal of the check itself: no diagnosis, the generic connect failure', async () => {
+    const url = await stub(403, 'Forbidden');
+    expect(await diagnoseConnectFailure(url)).toEqual({ code: 'ws-connect-failed' });
+  });
+
   test('no server listening: the generic connect failure', async () => {
     const url = await stub(200, '{}');
     await new Promise<void>((resolve) => server?.close(() => resolve()));

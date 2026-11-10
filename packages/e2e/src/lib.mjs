@@ -83,9 +83,10 @@ export async function pinnedExtensionId() {
  * and a plain fetch carry, then closes them: what the extension's worker
  * announces, observed without touching the bridge. */
 export async function originProbe() {
-  const seen = { websocket: undefined, fetch: undefined };
+  const seen = { websocket: undefined, fetch: undefined, fetchSite: undefined };
   const server = createHttpServer((req, res) => {
     seen.fetch = req.headers.origin ?? '(none)';
+    seen.fetchSite = req.headers['sec-fetch-site'] ?? '(none)';
     res.writeHead(204);
     res.end();
   });

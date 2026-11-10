@@ -136,6 +136,9 @@ const EN = {
   workerServerTimeout: 'Timed out waiting for the server.',
   workerHandshakeRefused: (reason: string): string =>
     `The browser-link server refused the connection: ${reason}`,
+  // Not dead: an extension cannot be refused for its Origin before 1.0.0,
+  // which accepts only the exact pinned id; from then on an extension with
+  // another id (an old install) gets this reason.
   handshakeReasonOriginNotAllowed:
     "it does not accept this extension's id. Reload the extension from the installed browser-link version.",
   handshakeReasonPeerUnidentified: 'it could not see which program opened the connection.',

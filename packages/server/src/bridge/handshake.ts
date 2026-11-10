@@ -57,6 +57,16 @@ export function isAllowedHandshakeOrigin(origin: string | undefined): boolean {
   return origin.startsWith('chrome-extension://');
 }
 
+/** Control characters (C0, DEL, C1) and the Unicode line separators. */
+const LINE_SEPARATORS = String.fromCharCode(0x2028, 0x2029);
+const UNPRINTABLE = new RegExp('[\\x00-\\x1f\\x7f-\\x9f' + LINE_SEPARATORS + ']', 'g');
+
+/** A client-supplied Origin made safe for one log line: every control or
+ * line-separator character becomes its `\uXXXX` escape. */
+export function printableOrigin(origin: string): string {
+  return origin.replace(UNPRINTABLE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 /**
  * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
  * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
@@ -82,7 +92,7 @@ export async function evaluateHandshake(
     return {
       accepted: false,
       reason: 'origin-not-allowed',
-      logLine: `Rejected WS handshake from origin ${String(origin)}: only the extension may connect.`,
+      logLine: `Rejected WS handshake from origin ${printableOrigin(String(origin))}: only the extension may connect.`,
     };
   }
   const remoteAddress = normaliseLoopback(req.socket.remoteAddress ?? '');
@@ -128,44 +138,74 @@ export async function evaluateHandshake(
 export function lockoutNotice(origin: string | undefined): string | undefined {
   if (origin === PINNED_EXTENSION_ORIGIN) return undefined;
   const from =
-    origin === undefined || origin === ''
+    origin === undefined
       ? 'without an Origin header'
-      : `from origin ${JSON.stringify(origin)}`;
+      : origin === ''
+        ? 'with an empty Origin header'
+        : `from origin ${printableOrigin(origin)}`;
   return `Accepted WS handshake ${from}; browser-link 1.0.0 will refuse it (only ${PINNED_EXTENSION_ORIGIN} will be allowed).`;
 }
 
+/** Diagnostic lookups that may run at once, across all callers. Each one is
+ * an OS process lookup (netstat plus PowerShell on Windows, about 0.5 s). */
+export const MAX_CONCURRENT_HANDSHAKE_CHECKS = 2;
+
+function forbidden(res: ServerResponse): void {
+  res.writeHead(403, { 'content-type': 'text/plain' });
+  res.end('Forbidden');
+}
+
 /**
- * `GET /handshake-check`: the gate's verdict on this very request, as
- * `{ accepted: true }` or `{ accepted: false, reason }`. Loopback `Host`
- * only, like `/version`. Readable cross-origin only by an extension context
- * (a web page's Origin gets no CORS grant). Opens nothing and logs nothing.
+ * The `GET /handshake-check` handler: the gate's verdict on the asking
+ * request, as `{ accepted: true }` or `{ accepted: false, reason }`, for an
+ * extension context only. A foreign `Host` or any `Origin` that is not
+ * `chrome-extension://…` (missing, empty, `null`, a web page's) gets a plain
+ * 403 with no process lookup and no CORS grant, so a web page cannot use the
+ * endpoint to make the server run lookups.
+ *
+ * Bounded work: one lookup in flight per remote endpoint (a second request on
+ * the same connection shares it) and at most `maxConcurrent` in all; over the
+ * cap the answer is `503 { busy: true }`, which the extension reads as "no
+ * diagnosis". Verdicts are never cached past their lookup. Logs nothing.
  */
-export async function answerHandshakeCheck(
-  req: IncomingMessage,
-  res: ServerResponse,
+export function createHandshakeCheckHandler(
   lookupPeerProcess: LookupPeerProcess,
-): Promise<void> {
-  if (!isLoopbackHost(req.headers.host)) {
-    res.writeHead(403, { 'content-type': 'text/plain' });
-    res.end('Forbidden');
-    return;
-  }
-  const verdict = await evaluateHandshake(req, lookupPeerProcess);
-  const origin = req.headers.origin;
-  const cors =
-    origin !== undefined && origin.startsWith('chrome-extension://')
-      ? { 'access-control-allow-origin': origin, vary: 'Origin' }
-      : {};
-  res.writeHead(200, {
-    'content-type': 'application/json',
-    'cache-control': 'no-store',
-    ...cors,
-  });
-  res.end(
-    JSON.stringify(
-      verdict.accepted ? { accepted: true } : { accepted: false, reason: verdict.reason },
-    ),
-  );
+  maxConcurrent: number = MAX_CONCURRENT_HANDSHAKE_CHECKS,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const inFlight = new Map<string, Promise<HandshakeVerdict>>();
+  return async (req, res) => {
+    const origin = req.headers.origin;
+    if (!isLoopbackHost(req.headers.host) || !origin?.startsWith('chrome-extension://')) {
+      forbidden(res);
+      return;
+    }
+    const headers = {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': origin,
+      vary: 'Origin',
+    };
+    const endpoint = `${req.socket.remoteAddress ?? ''}:${String(req.socket.remotePort)}`;
+    let verdict = inFlight.get(endpoint);
+    if (verdict === undefined) {
+      if (inFlight.size >= maxConcurrent) {
+        res.writeHead(503, headers);
+        res.end(JSON.stringify({ busy: true }));
+        return;
+      }
+      verdict = evaluateHandshake(req, lookupPeerProcess).finally(() => {
+        inFlight.delete(endpoint);
+      });
+      inFlight.set(endpoint, verdict);
+    }
+    const settled = await verdict;
+    res.writeHead(200, headers);
+    res.end(
+      JSON.stringify(
+        settled.accepted ? { accepted: true } : { accepted: false, reason: settled.reason },
+      ),
+    );
+  };
 }
 
 /** Whether a plain HTTP request is the handshake check. */
