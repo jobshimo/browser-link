@@ -306,6 +306,14 @@ be seen, it could not be identified, or checking it failed. A connection with no
 `Origin` (a script, for example) is refused before any process
 lookup runs.
 
+On Windows, `netstat` can omit a connection that was just opened from its first
+snapshot, so the server looks again, up to six snapshots over about 1.25 s, before
+refusing. If a refusal still happens, the popup says "The browser-link server
+refused the connection: it could not identify the program that opened the
+connection." (or, when the diagnosis itself cannot answer, "WebSocket connection
+failed. Is the MCP server running?"), and the server log line says how many
+snapshots were taken and how many rows mentioned the port.
+
 **Allowing another extension id (experts only).** To connect your own build of
 the extension, add its id to `allowedExtensionIds` in `config.json`, in the data
 folder (see [Where your data lives](#where-your-data-lives)):
@@ -338,6 +346,11 @@ process), passes the same-user check, and it passes the name check if its binary
 carries a browser's name. Strict mode closes that gap by path. Malware already
 inside your browser is outside this model too (see
 [Security model](#security-model)).
+
+On Windows the lookup also counts a socket that `netstat` lists only as bound
+(foreign port 0) when no row to the server exists. If one process has a row to
+the server and another has a bound-only row for the same endpoint, the row to the
+server decides instead of the lookup refusing as ambiguous.
 
 ### The Admin window no longer changes what an agent may do
 
