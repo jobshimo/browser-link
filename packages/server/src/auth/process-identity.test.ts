@@ -230,6 +230,45 @@ Active Connections
       expect(parseNetstatForLocal(out, '127.0.0.1', 60554, SERVER)).toBeNull();
     });
   });
+
+  /*
+   * Real `netstat -ano -p TCP` lines from Windows 11 (2026-11-10), captured
+   * while the bridge on 127.0.0.1:61526 refused a real Chrome handshake as
+   * endpoint-not-listed (about 1 run in 8 of `pnpm test:e2e`): the server's
+   * own row shows the connection from 127.0.0.1:51960, but netstat lists the
+   * Chrome socket on that endpoint only as LISTENING with foreign port 0.
+   */
+  describe('a peer socket listed only as bound (LISTENING, foreign port 0) — real output', () => {
+    const SERVER = { host: '127.0.0.1', port: 61526 };
+    const OUT = [
+      '  TCP    127.0.0.1:49761        127.0.0.1:61526        TIME_WAIT       0',
+      '  TCP    127.0.0.1:50575        127.0.0.1:61526        ESTABLISHED     16484',
+      '  TCP    127.0.0.1:51960        127.0.0.1:0            LISTENING       46324',
+      '  TCP    127.0.0.1:61526        127.0.0.1:50575        CLOSED          48604',
+      '  TCP    127.0.0.1:61526        127.0.0.1:51960        ESTABLISHED     48604',
+      '  TCP    127.0.0.1:61526        127.0.0.1:62741        ESTABLISHED     48604',
+      '  TCP    127.0.0.1:63111        127.0.0.1:61526        ESTABLISHED     46324',
+    ].join('\r\n');
+
+    test('with no row to the server, the one process bound to the peer endpoint owns it', () => {
+      expect(parseNetstatForLocal(OUT, '127.0.0.1', 51960, SERVER)).toBe(46324);
+    });
+
+    test('a row to the server still wins over a bound-only row', () => {
+      const out = `${OUT}\r\n  TCP    127.0.0.1:51960        127.0.0.1:61526        ESTABLISHED     777`;
+      expect(parseNetstatForLocal(out, '127.0.0.1', 51960, SERVER)).toBe(777);
+    });
+
+    test('two processes bound to the peer endpoint stay ambiguous', () => {
+      const out = `${OUT}\r\n  TCP    127.0.0.1:51960        0.0.0.0:0              LISTENING       777`;
+      expect(parseNetstatForLocal(out, '127.0.0.1', 51960, SERVER)).toBeNull();
+    });
+
+    test('a bound-only row of PID 0 is no owner', () => {
+      const out = OUT.replace('LISTENING       46324', 'LISTENING       0');
+      expect(parseNetstatForLocal(out, '127.0.0.1', 51960, SERVER)).toBeNull();
+    });
+  });
 });
 
 describe('isValidPid', () => {

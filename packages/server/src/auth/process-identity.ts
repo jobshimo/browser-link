@@ -530,17 +530,23 @@ function netstatOwnersOf(out: string, host: string, port: number, server?: Endpo
   const target = `${host}:${port}`;
   const foreign = server === undefined ? null : `${server.host}:${server.port}`;
   const owners = new Set<number>();
+  // Windows sometimes lists the peer's socket only as bound (LISTENING,
+  // foreign port 0) while the server's own row shows the connection from
+  // that endpoint. Those rows count only when no row to the server exists,
+  // and the one-owner rule still applies to them.
+  const boundOnly = new Set<number>();
   for (const line of out.split(/\r?\n/)) {
     if (!line.includes(target)) continue;
     // Format:  Proto  LocalAddress  ForeignAddress  State  PID
     const fields = line.trim().split(/\s+/);
     if (fields.length < 5) continue;
     if (fields[1] !== target) continue;
-    if (foreign !== null && fields[2] !== foreign) continue;
     const pid = Number.parseInt(fields[4] ?? '', 10);
-    if (Number.isFinite(pid) && pid !== 0) owners.add(pid);
+    if (!Number.isFinite(pid) || pid === 0) continue;
+    if (foreign === null || fields[2] === foreign) owners.add(pid);
+    else if (fields[2]?.endsWith(':0')) boundOnly.add(pid);
   }
-  return [...owners];
+  return owners.size > 0 ? [...owners] : [...boundOnly];
 }
 
 /**
