@@ -164,10 +164,13 @@ export function adminUi(state: AdminState | null | undefined, language: Language
   return state?.ui ?? fallbackAdminUi(language);
 }
 
-/** `not-connected` is the background's own code for "no open socket"; it
- * reads as the server's (or fallback) sentence. Anything else is shown as is. */
-export function describeAdminError(error: string, ui: AdminUiStrings): string {
-  return error === 'not-connected' ? ui.notConnected : error;
+/** The service worker's own codes read in the interface language:
+ * `not-connected` (no open socket) as the server's (or fallback) sentence,
+ * `timeout` (no answer in time) from the dictionary. Anything else is the
+ * server's text, shown as is. */
+export function describeAdminError(error: string, ui: AdminUiStrings, t: Messages): string {
+  if (error === 'not-connected') return ui.notConnected;
+  return error === 'timeout' ? t.workerServerTimeout : error;
 }
 
 export type AdminNextAction =
@@ -186,8 +189,9 @@ export function nextAction(
   result: AdminActionResult,
   request: AdminRequest,
   ui: AdminUiStrings,
+  t: Messages,
 ): AdminNextAction {
-  if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui) };
+  if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui, t) };
   if (!result.applied) {
     const resend: AdminRequest & { confirm: true } = { id: request.id, confirm: true };
     if (request.value !== undefined) resend.value = request.value;
@@ -215,7 +219,13 @@ export type ConfirmState =
   | { phase: 'error'; message: string };
 
 export type ConfirmEvent =
-  | { type: 'result'; request: AdminRequest; result: AdminActionResult; ui: AdminUiStrings }
+  | {
+      type: 'result';
+      request: AdminRequest;
+      result: AdminActionResult;
+      ui: AdminUiStrings;
+      t: Messages;
+    }
   | { type: 'cancel' };
 
 export function initialConfirmState(): ConfirmState {
@@ -225,7 +235,7 @@ export function initialConfirmState(): ConfirmState {
 /** idle → confirming(preview, pendingRequest) → applied | error; cancel → idle. */
 export function reduceConfirm(_state: ConfirmState, event: ConfirmEvent): ConfirmState {
   if (event.type === 'cancel') return { phase: 'idle' };
-  const action = nextAction(event.result, event.request, event.ui);
+  const action = nextAction(event.result, event.request, event.ui, event.t);
   if (action.type === 'confirm') {
     return { phase: 'confirming', preview: action.preview, pendingRequest: action.resend };
   }

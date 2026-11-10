@@ -33,6 +33,7 @@ import {
 import type { FlowStep } from './flow.js';
 import type { Messages } from './i18n.js';
 import { startUiLanguage } from './ui-language.js';
+import { renderWorkerText } from './worker-messages.js';
 import {
   runningInstalledLine,
   shouldShowVersionBanner,
@@ -43,22 +44,30 @@ import {
 // produces. Kept in sync by hand because there's no shared workspace
 // dep between the two extension entrypoints today — and these types
 // are tiny.
-interface ConnectResult {
-  ok: boolean;
+
+/** A failure as the service worker reports it: its English `error`, plus a
+ * `code` and `values` when it has them (worker-messages.ts). Both are
+ * `unknown`: an older or newer worker may send neither or a code this popup
+ * does not know, and then the English text is shown. */
+interface WorkerFailure {
   error?: string;
+  code?: unknown;
+  values?: unknown;
+}
+
+interface ConnectResult extends WorkerFailure {
+  ok: boolean;
   serverTabId?: string;
 }
 
-interface RecordingActionResult {
+interface RecordingActionResult extends WorkerFailure {
   ok: boolean;
-  error?: string;
 }
 
-interface StopRecordingResult {
+interface StopRecordingResult extends WorkerFailure {
   ok: boolean;
   steps?: FlowStep[];
   capped?: boolean;
-  error?: string;
 }
 
 interface RecordingStatusResult {
@@ -97,10 +106,13 @@ interface PendingDialogResult {
  * version-status.ts (shared by both entrypoints). */
 type VersionCheckResult = VersionCheck;
 
-/** background.ts's answer to `{ action: 'repairConnection' }`. */
+/** background.ts's answer to `{ action: 'repairConnection' }`: the English
+ * `message` plus, from 0.51.0, its `code` and `values`. */
 interface RepairResult {
   ok: boolean;
   message: string;
+  code?: unknown;
+  values?: unknown;
 }
 
 /** background.ts's answer to `{ action: 'flowsStatus' }`. `running` spans
@@ -264,8 +276,11 @@ function renderRunningInstalledLine(check: VersionCheckResult): void {
 function setRepairOutcome(result: RepairResult): void {
   const { outcome } = repairControls;
   outcome.hidden = false;
-  // Composed by the service worker (repair-policy.ts), shown as it comes.
-  lang.plain(outcome, result.message);
+  // Composed by the service worker (repair-policy.ts) with a code, rendered
+  // in the interface language; without one, its English text.
+  lang.text(outcome, (t) =>
+    renderWorkerText(t, { text: result.message, code: result.code, values: result.values }),
+  );
   outcome.style.color = result.ok ? 'var(--connected-fg)' : 'var(--error-fg)';
 }
 
@@ -524,9 +539,11 @@ function setRecordingError(message: Text | null): void {
   lang.text(el, message);
 }
 
-/** The service worker's error verbatim, or `fallback` when it sent none. */
-function errorOr(error: string | undefined, fallback: Text): Text {
-  return error === undefined ? fallback : verbatim(error);
+/** The service worker's error in the interface language (its English text
+ * when it carries no known code), or `fallback` when it sent none. */
+function errorOr(failure: WorkerFailure, fallback: Text): Text {
+  const { error, code, values } = failure;
+  return error === undefined ? fallback : (t) => renderWorkerText(t, { text: error, code, values });
 }
 
 /**
@@ -580,12 +597,12 @@ async function onRecordingAction(): Promise<void> {
   if (status.active) {
     const result = await send<StopRecordingResult>({ action: 'stopRecording', tabId: tab.id });
     if (!result.ok) {
-      setRecordingError(errorOr(result.error, (t) => t.popupCouldNotStopRecording));
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotStopRecording));
     }
   } else {
     const result = await send<RecordingActionResult>({ action: 'startRecording', tabId: tab.id });
     if (!result.ok) {
-      setRecordingError(errorOr(result.error, (t) => t.popupCouldNotStartRecording));
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotStartRecording));
     }
   }
   await refreshRecordingUi(tab.id, true);
@@ -605,7 +622,7 @@ async function onSaveRecording(): Promise<void> {
       name: nameInput.value,
     });
     if (!result.ok) {
-      setRecordingError(errorOr(result.error, (t) => t.popupCouldNotSaveFlow));
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotSaveFlow));
       return;
     }
     nameInput.value = '';
@@ -913,7 +930,7 @@ async function onAction(): Promise<void> {
       }
       setStatus(
         'error',
-        errorOr(result.error, (t) => t.popupUnknownError),
+        errorOr(result, (t) => t.popupUnknownError),
       );
       setAction(retryLabel, 'primary');
       return;

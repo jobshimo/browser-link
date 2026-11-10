@@ -201,7 +201,7 @@ async function refreshAdmin(): Promise<void> {
     return;
   }
   if (!reply.ok) {
-    renderAdminEmpty(describeAdminError(reply.error, adminStrings));
+    renderAdminEmpty(describeAdminError(reply.error, adminStrings, lang.t));
     return;
   }
   adminStrings = adminUi(reply.state, lang.language);
@@ -230,7 +230,13 @@ async function runAdminAction(request: AdminRequest): Promise<void> {
     result = { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
   adminBusy = false;
-  adminConfirm = reduceConfirm(adminConfirm, { type: 'result', request, result, ui: adminStrings });
+  adminConfirm = reduceConfirm(adminConfirm, {
+    type: 'result',
+    request,
+    result,
+    ui: adminStrings,
+    t: lang.t,
+  });
   renderAdminConfirm();
   // A confirming toggle or select already shows the new value; leave it until
   // the human decides. Every other outcome re-describes, so an applied change

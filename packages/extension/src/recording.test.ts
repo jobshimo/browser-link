@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import { messages } from './i18n.js';
+import { englishText } from './worker-messages.js';
 import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
 import {
-  DISCARDED_WHILE_SAVING_MESSAGE,
+  DISCARDED_WHILE_SAVING,
   MAX_RECORDED_SELECTOR_LENGTH,
   MAX_RECORDING_STEPS,
   TEXT_PLACEHOLDER,
@@ -233,10 +234,10 @@ describe('isSameRecordingSession — Discard/Save race guard', () => {
   });
 });
 
-describe('DISCARDED_WHILE_SAVING_MESSAGE', () => {
-  test('is a non-empty, human-readable string', () => {
-    expect(typeof DISCARDED_WHILE_SAVING_MESSAGE).toBe('string');
-    expect(DISCARDED_WHILE_SAVING_MESSAGE.length).toBeGreaterThan(0);
+describe('DISCARDED_WHILE_SAVING', () => {
+  test('is the coded message the popup renders in its language', () => {
+    expect(DISCARDED_WHILE_SAVING).toEqual({ code: 'recording-discarded-while-saving' });
+    expect(englishText(DISCARDED_WHILE_SAVING)).toBe('Discarded before the save finished.');
   });
 });
 

@@ -15,6 +15,7 @@
  */
 import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
 import type { Messages } from './i18n.js';
+import type { WorkerMessage } from './worker-messages.js';
 
 /** Reuses `MAX_FLOW_STEPS` from flow.ts (itself mirroring the server's
  * `browser.flow` schema) as the single source of truth — a recording can
@@ -105,7 +106,7 @@ export function generateRecordingSession(): RecordingSession {
  * scope for this fix), so a Discard is a promise about what the extension
  * does with the capture, not a guarantee the server never saw it.
  */
-export const DISCARDED_WHILE_SAVING_MESSAGE = 'Discarded before the save finished.';
+export const DISCARDED_WHILE_SAVING: WorkerMessage = { code: 'recording-discarded-while-saving' };
 
 /**
  * Pure guard for `saveRecording`'s success continuation: true only when

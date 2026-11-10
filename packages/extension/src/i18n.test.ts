@@ -83,3 +83,22 @@ describe('isStaticKey', () => {
     expect(isStaticKey('toString')).toBe(false);
   });
 });
+
+describe('Spanish register', () => {
+  test('is neutral professional Spanish, never voseo', () => {
+    const es = messages('es');
+    const texts = dictionaryKeys().flatMap((key) => {
+      const value: unknown = es[key];
+      if (typeof value === 'string') return [value];
+      try {
+        const r: unknown = (value as (...a: unknown[]) => unknown)('x', 'y', 'z');
+        return typeof r === 'string' ? [r] : [];
+      } catch {
+        return [];
+      }
+    });
+    const voseo =
+      /(?<!\p{L})(acá|vos|conectá|conectás|reiniciá|abrí|recargá|actualizá|usá|tenés|podés|querés|elegí|hacé|probá)(?!\p{L})/iu;
+    expect(texts.filter((s) => voseo.test(s))).toEqual([]);
+  });
+});

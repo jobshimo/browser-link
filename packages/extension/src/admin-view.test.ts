@@ -247,14 +247,21 @@ describe('adminUi', () => {
 
 describe('describeAdminError', () => {
   test('not-connected becomes the notConnected text', () => {
-    expect(describeAdminError('not-connected', UI_ES)).toBe(UI_ES.notConnected);
-    expect(describeAdminError('not-connected', fallbackAdminUi('en'))).toBe(
+    expect(describeAdminError('not-connected', UI_ES, ES)).toBe(UI_ES.notConnected);
+    expect(describeAdminError('not-connected', fallbackAdminUi('en'), ES)).toBe(
       'Connect a tab to administer the server',
     );
   });
 
   test('any other error is shown as is', () => {
-    expect(describeAdminError('timeout', UI_ES)).toBe('timeout');
+    expect(describeAdminError('unknown action', UI_ES, ES)).toBe('unknown action');
+  });
+
+  test('the service worker timeout code reads in the interface language', () => {
+    expect(describeAdminError('timeout', UI_ES, ES)).toBe(
+      'Se agotó el tiempo de espera del servidor.',
+    );
+    expect(describeAdminError('timeout', UI_ES, EN)).toBe('Timed out waiting for the server.');
   });
 });
 
@@ -268,7 +275,7 @@ describe('nextAction', () => {
       needsConfirm: true,
       preview: 'Activar multi-agente para todos los agentes',
     };
-    expect(nextAction(result, request, UI_ES)).toEqual({
+    expect(nextAction(result, request, UI_ES, ES)).toEqual({
       type: 'confirm',
       preview: 'Activar multi-agente para todos los agentes',
       confirmLabel: 'Confirmar',
@@ -278,7 +285,9 @@ describe('nextAction', () => {
   });
 
   test('applied with requiresRestart says a restart is required and asks for a refresh', () => {
-    expect(nextAction({ ok: true, applied: true, requiresRestart: true }, request, UI_ES)).toEqual({
+    expect(
+      nextAction({ ok: true, applied: true, requiresRestart: true }, request, UI_ES, ES),
+    ).toEqual({
       type: 'applied',
       message: UI_ES.restartRequired,
       refresh: true,
@@ -287,16 +296,21 @@ describe('nextAction', () => {
 
   test('applied without restart says changed and carries any output lines', () => {
     expect(
-      nextAction({ ok: true, applied: true, output: ['ok: port 9876'] }, { id: 'doctor' }, UI_ES),
+      nextAction(
+        { ok: true, applied: true, output: ['ok: port 9876'] },
+        { id: 'doctor' },
+        UI_ES,
+        ES,
+      ),
     ).toEqual({ type: 'applied', message: 'Cambiado', output: ['ok: port 9876'], refresh: true });
   });
 
   test('an error is shown, not-connected localised', () => {
-    expect(nextAction({ ok: false, error: 'unknown action' }, request, UI_ES)).toEqual({
+    expect(nextAction({ ok: false, error: 'unknown action' }, request, UI_ES, ES)).toEqual({
       type: 'error',
       message: 'unknown action',
     });
-    expect(nextAction({ ok: false, error: 'not-connected' }, request, UI_ES)).toEqual({
+    expect(nextAction({ ok: false, error: 'not-connected' }, request, UI_ES, ES)).toEqual({
       type: 'error',
       message: UI_ES.notConnected,
     });
@@ -309,7 +323,7 @@ describe('nextAction', () => {
       needsConfirm: true,
       preview: 'p',
     };
-    const action = nextAction(result, { id: 'instructions.install:claude-code' }, UI_ES);
+    const action = nextAction(result, { id: 'instructions.install:claude-code' }, UI_ES, ES);
     expect(action.type === 'confirm' && action.resend).toEqual({
       id: 'instructions.install:claude-code',
       confirm: true,
@@ -337,6 +351,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
         request,
         result: needsConfirm,
         ui: UI_ES,
+        t: ES,
       }),
     ).toEqual({
       phase: 'confirming',
@@ -351,6 +366,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
       request,
       result: needsConfirm,
       ui: UI_ES,
+      t: ES,
     });
     expect(reduceConfirm(confirming, { type: 'cancel' })).toEqual({ phase: 'idle' });
   });
@@ -361,6 +377,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
       request,
       result: needsConfirm,
       ui: UI_ES,
+      t: ES,
     });
     expect(
       reduceConfirm(confirming, {
@@ -368,6 +385,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
         request: { ...request, confirm: true },
         result: { ok: true, applied: true },
         ui: UI_ES,
+        t: ES,
       }),
     ).toEqual({ phase: 'applied', message: 'Cambiado' });
   });
@@ -379,6 +397,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
         request: { id: 'doctor' },
         result: { ok: true, applied: true, output: ['a', 'b'] },
         ui: UI_ES,
+        t: ES,
       }),
     ).toEqual({ phase: 'applied', message: 'Cambiado', output: ['a', 'b'] });
   });
@@ -390,6 +409,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
         request,
         result: { ok: false, error: 'not-connected' },
         ui: UI_ES,
+        t: ES,
       }),
     ).toEqual({ phase: 'error', message: UI_ES.notConnected });
   });

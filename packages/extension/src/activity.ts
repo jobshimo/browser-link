@@ -24,6 +24,13 @@ const verbatim =
   () =>
     message;
 
+/** A failed reply's error: the service worker's own `timeout` code in the
+ * interface language; anything else is the server's text, shown as is. */
+const errorText =
+  (error: string): Text =>
+  (t) =>
+    error === 'timeout' ? t.workerServerTimeout : error;
+
 /** A count as the reader writes it, in the interface language. */
 const num = (n: number): string => n.toLocaleString(lang.language);
 
@@ -423,9 +430,9 @@ async function load(): Promise<void> {
         (t) => t.activityNoTabDetail,
       );
     } else {
-      showState((t) => t.activityReadFailed, verbatim(error));
+      showState((t) => t.activityReadFailed, errorText(error));
     }
-    lang.text(ui.status, (t) => t.activityStatusError(error));
+    lang.text(ui.status, (t) => t.activityStatusError(errorText(error)(t)));
     return;
   }
 
@@ -594,7 +601,7 @@ ui.purgeCheck.addEventListener('click', () => {
     ui.purgeCheck.disabled = false;
     if (!reply.ok) {
       const error = reply.error;
-      lang.text(ui.purgeSummary, (t) => t.activityCheckFailed(error));
+      lang.text(ui.purgeSummary, (t) => t.activityCheckFailed(errorText(error)(t)));
       return;
     }
     renderStats(reply.stats);
@@ -630,7 +637,7 @@ ui.purgeRun.addEventListener('click', () => {
     lang.text(ui.purgeRun, deletePermanentlyLabel);
     if (!reply.ok) {
       const error = reply.error;
-      lang.text(ui.purgeSummary, (t) => t.activityPurgeFailed(error));
+      lang.text(ui.purgeSummary, (t) => t.activityPurgeFailed(errorText(error)(t)));
       return;
     }
     renderStats(reply.stats);

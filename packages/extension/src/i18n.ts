@@ -114,6 +114,36 @@ const EN = {
   stepFind: (text: string): string => `Find "${text}"`,
   stepUnknown: 'Unknown step',
 
+  // Messages the service worker returns with a code (worker-messages.ts). The
+  // English entries are, word for word, what it sent before codes existed.
+  workerTabAlreadyConnected: 'This tab is already connected',
+  workerTabNoUrl: 'Tab has no URL or title',
+  workerDebuggerAttachFailed: (detail: string): string => `Could not attach debugger: ${detail}`,
+  workerCdpEnableFailed: (detail: string): string => `Could not enable CDP: ${detail}`,
+  workerWsConnectFailed: 'WebSocket connection failed. Is the MCP server running?',
+  workerWsClosedBeforeRegistration: 'WebSocket closed before registration',
+  workerRecordingDisabled: 'Flow recording is disabled. Enable it in settings first.',
+  workerTabNotConnected: 'This tab is not connected.',
+  workerRecordingInProgress: 'A recording is already in progress (or awaiting review).',
+  workerTabGone: 'Tab no longer exists.',
+  workerRecordingStartFailed: (detail: string): string => `Could not start recording: ${detail}`,
+  workerNotRecording: 'Not currently recording this tab.',
+  workerRecordingDiscarded: 'Discarded before the save finished.',
+  workerNoReviewedRecording: 'No reviewed recording to save for this tab.',
+  workerServerNotConnected: 'Not connected to the server.',
+  workerNameRequired: 'Name is required.',
+  workerNoSteps: 'No steps were captured.',
+  workerServerTimeout: 'Timed out waiting for the server.',
+  repairServerTooOld: (version: string | undefined): string =>
+    `server ${version ?? '(unknown version)'} cannot repair itself: run \`browser-link stop\` and restart your agent`,
+  repairNoServer: 'no server is running: start browser-link from your agent or a console',
+  repairNoAnswer:
+    'The server did not answer the repair request: run `browser-link stop` and restart your agent',
+  repairRestarting: 'The server is restarting; connected tabs reconnect by themselves.',
+  repairFailed: (detail: string): string => `Repair failed: ${detail}`,
+  repairReconnected: (reconnected: number, total: number): string =>
+    `Reconnected ${String(reconnected)} of ${String(total)} tab${total === 1 ? '' : 's'}.`,
+
   // Activity window: static text.
   activityDocTitle: 'browser-link — Activity',
   activityTitle: 'Activity',
@@ -306,6 +336,38 @@ const ES: Messages = {
   stepWait: 'Esperar',
   stepFind: (text: string): string => `Buscar "${text}"`,
   stepUnknown: 'Paso desconocido',
+
+  workerTabAlreadyConnected: 'Esta pestaña ya está conectada',
+  workerTabNoUrl: 'La pestaña no tiene URL ni título',
+  workerDebuggerAttachFailed: (detail: string): string =>
+    `No se pudo conectar el depurador: ${detail}`,
+  workerCdpEnableFailed: (detail: string): string => `No se pudo activar CDP: ${detail}`,
+  workerWsConnectFailed: 'Falló la conexión WebSocket. ¿Está en marcha el servidor MCP?',
+  workerWsClosedBeforeRegistration: 'El WebSocket se cerró antes del registro',
+  workerRecordingDisabled:
+    'La grabación de flujos está desactivada. Actívela antes en los ajustes.',
+  workerTabNotConnected: 'Esta pestaña no está conectada.',
+  workerRecordingInProgress: 'Ya hay una grabación en curso (o pendiente de revisión).',
+  workerTabGone: 'La pestaña ya no existe.',
+  workerRecordingStartFailed: (detail: string): string =>
+    `No se pudo iniciar la grabación: ${detail}`,
+  workerNotRecording: 'Esta pestaña no se está grabando.',
+  workerRecordingDiscarded: 'Se descartó antes de que terminara el guardado.',
+  workerNoReviewedRecording: 'No hay ninguna grabación revisada que guardar en esta pestaña.',
+  workerServerNotConnected: 'No hay conexión con el servidor.',
+  workerNameRequired: 'El nombre es obligatorio.',
+  workerNoSteps: 'No se capturó ningún paso.',
+  workerServerTimeout: 'Se agotó el tiempo de espera del servidor.',
+  repairServerTooOld: (version: string | undefined): string =>
+    `el servidor ${version ?? '(versión desconocida)'} no puede repararse solo: ejecute \`browser-link stop\` y reinicie su agente`,
+  repairNoServer:
+    'no hay ningún servidor en marcha: inicie browser-link desde su agente o una consola',
+  repairNoAnswer:
+    'El servidor no respondió a la solicitud de reparación: ejecute `browser-link stop` y reinicie su agente',
+  repairRestarting: 'El servidor se está reiniciando; las pestañas conectadas se reconectan solas.',
+  repairFailed: (detail: string): string => `La reparación falló: ${detail}`,
+  repairReconnected: (reconnected: number, total: number): string =>
+    `${reconnected === 1 ? 'Se reconectó' : 'Se reconectaron'} ${String(reconnected)} de ${String(total)} ${total === 1 ? 'pestaña' : 'pestañas'}.`,
 
   activityDocTitle: 'browser-link — Actividad',
   activityTitle: 'Actividad',
