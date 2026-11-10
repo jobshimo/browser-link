@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import { DoctorView } from './doctor.js';
 import type { DoctorReport } from '../../commands/doctor.js';
+import { PINNED_EXTENSION_ID } from '../../auth/extension-id.js';
 
 /* The Doctor screen renders the formatted rows of an injected runner's
  * report; no port, process or client file is probed. The real runner is
@@ -46,7 +47,7 @@ const REPORT: DoctorReport = {
   ],
   extension: { path: '/ext/dist' },
   map: { dbPath: '/data/map.db', exists: true, sizeBytes: 2048, apps: 3 },
-  security: { allowedBrowsers: ['chrome.exe'] },
+  security: { allowedBrowsers: ['chrome.exe'], allowedExtensionIds: [PINNED_EXTENSION_ID] },
   silentDebugger: { detected: null },
   server: {
     running: { version: '0.48.0', pid: 4242, startedAt: '2026-11-09T11:00:00.000Z' },
