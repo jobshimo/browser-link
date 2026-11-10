@@ -264,7 +264,7 @@ async function lookupUnix(
     '-d',
     'txt',
     '-F',
-    'n',
+    'fn',
   ]);
   const executablePath = parseLsofExecutablePath(txt);
   if (executablePath === null) throw new LookupFailure('path-unreadable');
@@ -347,9 +347,13 @@ export function parseLsofOutput(
 }
 
 /**
- * Parse `lsof -a -p <pid> -d txt -F n` output: the first `n` field of a
+ * Parse `lsof -a -p <pid> -d txt -F fn` output: the first `n` field of a
  * `txt` descriptor, which is the program's own executable. Returns null when
  * there is none or it is not an absolute path.
+ *
+ * `f` is asked for explicitly: Ubuntu 24.04's lsof prints none for `-F n`. A
+ * name with no `f` before it in its process block is still a txt entry, since
+ * `-d txt` selected only those.
  */
 export function parseLsofExecutablePath(out: string): string | null {
   let fd: string | null = null;
@@ -357,8 +361,9 @@ export function parseLsofExecutablePath(out: string): string | null {
     if (line.length === 0) continue;
     const tag = line[0];
     const rest = line.slice(1);
-    if (tag === 'f') fd = rest;
-    else if (tag === 'n' && fd === 'txt') {
+    if (tag === 'p') fd = null;
+    else if (tag === 'f') fd = rest;
+    else if (tag === 'n' && (fd === 'txt' || fd === null)) {
       const path = decodeLsofString(rest);
       return path.startsWith('/') ? path : null;
     }

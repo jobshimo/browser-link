@@ -158,6 +158,14 @@ describe('parseLsofExecutablePath', () => {
     expect(parseLsofExecutablePath(out)).toBe('/opt/google/chrome/chrome');
   });
 
+  /* Real output of `lsof -nP -a -p <pid> -d txt -F n` on the ubuntu-latest
+   * GitHub runner (Ubuntu 24.04, 2026-11-10): no `f` field is printed, so
+   * every name in the block is a txt entry (`-d txt` selected only those). */
+  test('Linux lsof without f fields: the first name of the block is the program', () => {
+    const out = 'p3385\nn/opt/hostedtoolcache/node/22.23.4/x64/bin/node\n';
+    expect(parseLsofExecutablePath(out)).toBe('/opt/hostedtoolcache/node/22.23.4/x64/bin/node');
+  });
+
   test('returns null when there is no txt entry or the name is not absolute', () => {
     expect(parseLsofExecutablePath('')).toBeNull();
     expect(parseLsofExecutablePath(['p42', 'fcwd', 'n/home/me', ''].join('\n'))).toBeNull();
@@ -891,7 +899,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(res).toEqual({ ok: false, cause: 'path-unreadable' });
   });
 
-  test('posix: the executable path is the first txt entry of a second lsof call', async () => {
+  test('posix: the executable path is the first txt entry of a second lsof call, which asks for the fd field', async () => {
     const calls: Call[] = [];
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
@@ -913,7 +921,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       ok: true,
       peer: { pid: 3532, binaryName: 'chrome', executablePath: '/opt/google/chrome/chrome' },
     });
-    expect(calls[1]?.args).toEqual(['-nP', '-a', '-p', '3532', '-d', 'txt', '-F', 'n']);
+    expect(calls[1]?.args).toEqual(['-nP', '-a', '-p', '3532', '-d', 'txt', '-F', 'fn']);
   });
 
   test('posix: no readable txt entry rejects when asked for (path-unreadable)', async () => {
