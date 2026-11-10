@@ -4,7 +4,11 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { lookupPeerProcess, lookupPeerProcessDetailed } from './process-identity.js';
+import {
+  lookupPeerProcess,
+  lookupPeerProcessDetailed,
+  type PeerLookupDeps,
+} from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +25,55 @@ async function lsofAvailable(): Promise<boolean> {
     return false;
   }
 }
+
+/** One lookup command as the real execFile ran it: which program, how long,
+ * how it ended, and its output (only real loopback test data). Printed with
+ * a failing assertion, and the timings always, so CI names the cause. */
+interface TraceEntry {
+  file: string;
+  ms: number;
+  outcome: string;
+  stdout?: string;
+  stderr?: string;
+}
+
+function tracingExecFile(trace: TraceEntry[]): NonNullable<PeerLookupDeps['execFile']> {
+  return async (file, args, options) => {
+    const t0 = performance.now();
+    try {
+      const { stdout, stderr } = await execFileAsync(file, [...args], {
+        ...options,
+        windowsHide: true,
+      });
+      trace.push({
+        file,
+        ms: Math.round(performance.now() - t0),
+        outcome: 'exit 0',
+        stdout,
+        stderr,
+      });
+      return { stdout };
+    } catch (err) {
+      const e = err as {
+        code?: unknown;
+        killed?: boolean;
+        signal?: unknown;
+        stdout?: string;
+        stderr?: string;
+      };
+      trace.push({
+        file,
+        ms: Math.round(performance.now() - t0),
+        outcome: `failed code=${String(e.code)} killed=${String(e.killed)} signal=${String(e.signal)}`,
+        stdout: e.stdout,
+        stderr: e.stderr,
+      });
+      throw err;
+    }
+  };
+}
+
+const showTrace = (trace: TraceEntry[]): string => JSON.stringify(trace, null, 2);
 
 let server: Server | null = null;
 let acceptedSocket: Socket | null = null;
@@ -107,15 +160,19 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
     const ready = await connectFromChild(port);
     await connection;
 
+    const trace: TraceEntry[] = [];
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
       ready.localPort,
-      {},
+      { execFile: tracingExecFile(trace) },
       {
         withExecutablePath: true,
       },
     );
-    expect(res.ok).toBe(true);
+    console.log(
+      `posix path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms`).join(', ')}`,
+    );
+    expect(res, showTrace(trace)).toMatchObject({ ok: true });
     if (!res.ok) return;
     expect(res.peer.pid).toBe(ready.pid);
     expect(res.peer.executablePath?.startsWith('/')).toBe(true);
@@ -151,16 +208,20 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
     const ready = await connectFromChild(port);
     await connection;
 
+    const trace: TraceEntry[] = [];
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
       ready.localPort,
-      {},
+      { execFile: tracingExecFile(trace) },
       {
         withExecutablePath: true,
         serverEndpoint: { host: '127.0.0.1', port },
       },
     );
-    expect(res).toEqual({
+    console.log(
+      `windows path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}`,
+    );
+    expect(res, showTrace(trace)).toEqual({
       ok: true,
       peer: {
         pid: ready.pid,
