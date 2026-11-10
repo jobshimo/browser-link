@@ -86,6 +86,21 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     }
   });
 
+  test('actionFailure carries the flag the same way on both transports', () => {
+    for (const field of [{ sensitive_field: true }, { sensitive_field: false }, true, undefined]) {
+      expect(srv.actionFailure('boom', field)).toEqual(ext.actionFailure('boom', field));
+    }
+    expect(srv.actionFailure('boom', { sensitive_field: true })).toEqual({
+      ok: false,
+      error: 'boom',
+      sensitive_field: true,
+    });
+    expect(srv.actionFailure('boom', { sensitive_field: false })).toEqual({
+      ok: false,
+      error: 'boom',
+    });
+  });
+
   test('buildSettleJs', () => {
     const opts = { settle_ms: 150, settle_timeout_ms: 2000 };
     expect(srv.buildSettleJs(opts)).toBe(ext.buildSettleJs(opts));

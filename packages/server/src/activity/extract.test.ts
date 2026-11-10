@@ -14,6 +14,7 @@ import {
 } from './extract.js';
 import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 import type { ActivityInput } from './types.js';
+import { SensitiveFieldError } from './sensitive-field-error.js';
 
 const caller = { agent_id: 'a-1', pid: 4242, binary: 'node', label: 'claude-code' };
 
@@ -256,6 +257,49 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
     });
     expect(row.payload).toBe('2 steps: type → press');
     expect(JSON.stringify(row)).not.toContain('hunter2');
+  });
+});
+
+describe('buildRow — a failed call on a sensitive field (S2)', () => {
+  const base = { caller, durationMs: 5 };
+  const typeArgs = { tab_id: 'tab_1', selector: '#pw', text: 'hunter2' };
+  const pressArgs = { tab_id: 'tab_1', selector: '#pw', key: 'x' };
+
+  test.each([
+    ['browser.type', typeArgs],
+    ['browser.press', pressArgs],
+  ] as const)(
+    '%s failing after the field was reported sensitive stores the marker',
+    (tool, args) => {
+      const error = new SensitiveFieldError('expectation not met: url_changed after 150ms');
+      for (const recordPayloads of [true, false]) {
+        const row = buildRow({ ...base, tool, args, error, recordPayloads });
+        expect(row.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(row.outcome).toBe('error');
+        expect(row.error).toBe('expectation not met: url_changed after 150ms');
+      }
+    },
+  );
+
+  test('a plain error (plain field, or an older extension) is stored as today', () => {
+    const error = new Error('expectation not met: url_changed after 150ms');
+    const on = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      error,
+      recordPayloads: true,
+    });
+    expect(on.payload).toBe('hunter2');
+    expect(on.error).toBe('expectation not met: url_changed after 150ms');
+    const off = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      error,
+      recordPayloads: false,
+    });
+    expect(off.payload).toBeNull();
   });
 });
 

@@ -1,6 +1,7 @@
 import type { ActivityFlag, ActivityInput, ActivityTransport } from './types.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 import { categorise } from '../errors/categories.js';
+import { SensitiveFieldError } from './sensitive-field-error.js';
 
 /**
  * Turn one tool dispatch into a trail row.
@@ -173,11 +174,13 @@ function resultData(result: unknown): unknown {
 }
 
 /** True only when a `type` / `press` executor said the field it acted on is
- * one the page declares sensitive. An executor that reports nothing (an
- * older extension, a failed probe, a thrown call) is false: the row is
- * stored as before. */
-export function reportsSensitiveField(tool: string, result: unknown): boolean {
+ * one the page declares sensitive: `sensitive_field: true` on its result, or
+ * a `SensitiveFieldError` when it failed after acting on that field. An
+ * executor that reports nothing (an older extension, a failed probe, a plain
+ * error) is false: the row is stored as before. */
+export function reportsSensitiveField(tool: string, result: unknown, error?: unknown): boolean {
   if (!FIELD_INPUT_TOOLS.has(tool)) return false;
+  if (error instanceof SensitiveFieldError) return true;
   const data = resultData(result);
   return (
     typeof data === 'object' &&
@@ -288,7 +291,7 @@ export function buildRow({
     agent: agentNameFor(caller),
     agentPid: caller?.pid ?? null,
     selector: extractSelector(tool, args),
-    payload: reportsSensitiveField(tool, result)
+    payload: reportsSensitiveField(tool, result, error)
       ? SENSITIVE_PAYLOAD_MARKER
       : recordPayloads
         ? extractPayload(tool, args)

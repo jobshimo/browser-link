@@ -57,7 +57,10 @@ import type { ExpectMet, ExpectParams } from './expect.js';
  * tool.response would have returned for that failure — both the thin
  * `case`/switch wrappers and this module's step executor consume this
  * shape, so the two call paths can never drift. */
-export type ActionOutcome<T> = { ok: true; result: T } | { ok: false; error: string };
+/** `sensitive_field` on a failure: a `type` / `press` failed after finding the
+ * focused field sensitive (see `actionFailure` in `inpage/builders.ts`). */
+export type ActionOutcome<T> =
+  { ok: true; result: T } | { ok: false; error: string; sensitive_field?: boolean };
 
 /** The error text for an action target given as an observer `ref` (spec v4
  * §6.3) that could not be resolved, shared by both transports' perform*
@@ -180,6 +183,10 @@ export interface TypeStepResult {
   selector?: string;
   ref?: string;
   reresolved?: boolean;
+  /** True when the focused field is one the page declares sensitive (see
+   * `buildFocusedFieldJs`), false when it is not; absent when the probe
+   * answered nothing usable. */
+  sensitive_field?: boolean;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
@@ -199,6 +206,10 @@ export interface PressStepResult {
   modifiers: string[];
   ref?: string;
   reresolved?: boolean;
+  /** True when the focused field is one the page declares sensitive (see
+   * `buildFocusedFieldJs`), false when it is not; absent when the probe
+   * answered nothing usable. */
+  sensitive_field?: boolean;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }

@@ -22,6 +22,7 @@ import { checkCdpDirectGate } from './gate.js';
 import { buildTargetWsUrl, cdpTargetIdFromTabId, isDrivablePageTarget } from './targets.js';
 import { CdpClient } from './client.js';
 import { cdpUnsupportedToolError } from './support.js';
+import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import {
   buildClickResolveJs,
   buildFindJs,
@@ -29,7 +30,7 @@ import {
   buildFocusJs,
   buildFocusedFieldJs,
   isFocusedField,
-  type FocusedField,
+  actionFailure,
   buildSnapshotJs,
   buildStateJs,
   buildTypeResolveJs,
@@ -642,6 +643,7 @@ async function performType(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<TypeStepResult>> {
+  let field: unknown;
   try {
     const { selector, ref, text, clear = false } = params;
     const settle = resolveSettleParams({
@@ -675,14 +677,14 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
-    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.insertText', { text });
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: TypeStepResult & Partial<FocusedField> = { typed: text.length };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
+    const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
@@ -691,7 +693,7 @@ async function performType(
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -708,6 +710,7 @@ async function performPress(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<PressStepResult>> {
+  let field: unknown;
   try {
     const key = params.key;
     if (!key) return { ok: false, error: 'press: key required' };
@@ -739,14 +742,14 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
-    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(client, def, modifiers);
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: PressStepResult & Partial<FocusedField> = { key, modifiers: modifierNames };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
+    const result: PressStepResult = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
     if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
@@ -754,7 +757,7 @@ async function performPress(
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -972,6 +975,14 @@ async function getTargetInfo(client: CdpClient): Promise<{ title: string; url: s
  * `timeout_ms` reaches cdp-direct tabs too. Kept in the signature for
  * shape-parity with `callBrowserTool` for every other tool.
  */
+/** The error a failed `type` / `press` throws: the executor's text, as a
+ * `SensitiveFieldError` when the failure carries `sensitive_field: true`. */
+function failureError(outcome: { error: string; sensitive_field?: boolean }): Error {
+  return outcome.sensitive_field === true
+    ? new SensitiveFieldError(outcome.error)
+    : new Error(outcome.error);
+}
+
 export async function callCdpTool(
   tabId: string,
   tool: string,
@@ -1072,7 +1083,7 @@ export async function callCdpTool(
           typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
         expect: p.expect as ExpectParams | undefined,
       });
-      if (!outcome.ok) throw new Error(outcome.error);
+      if (!outcome.ok) throw failureError(outcome);
       return outcome.result;
     }
 
@@ -1090,7 +1101,7 @@ export async function callCdpTool(
           typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
         expect: p.expect as ExpectParams | undefined,
       });
-      if (!outcome.ok) throw new Error(outcome.error);
+      if (!outcome.ok) throw failureError(outcome);
       return outcome.result;
     }
 

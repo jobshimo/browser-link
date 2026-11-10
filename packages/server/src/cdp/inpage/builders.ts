@@ -934,6 +934,22 @@ export function isFocusedField(value: unknown): value is FocusedField {
 }
 
 /**
+ * The failure a `type` / `press` returns once its focused-field probe has
+ * run: the same error text, plus `sensitive_field: true` when the probe
+ * found the field sensitive, so the trail does not store the input of a
+ * call that failed after acting on it. A plain field, or a probe that
+ * answered nothing usable, gives the plain failure.
+ */
+export function actionFailure(
+  error: string,
+  field: unknown,
+): { ok: false; error: string; sensitive_field?: true } {
+  return isFocusedField(field) && field.sensitive_field
+    ? { ok: false, error, sensitive_field: true }
+    : { ok: false, error };
+}
+
+/**
  * Build the `wait_for` selector probe: one poll tick of `browser.wait_for`
  * in selector mode, evaluating to a boolean. The element is resolved with
  * `deepQueryFirst` — the same deep search scope `find` / `click` / `type`
