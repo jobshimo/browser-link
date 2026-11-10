@@ -3,21 +3,16 @@ import { platform } from 'node:os';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-// Bounds each lookup command except the CIM call. The slow `tasklist /V`
-// fallback stays inside it on normal machines. A hung command fails closed.
+// Bounds each lookup command. A cold PowerShell start plus the CIM owner
+// query was measured at about 1 s on Windows 11 and 0.5-0.7 s on the
+// windows-latest GitHub runner; the slow `tasklist /V` fallback stays inside
+// it on normal machines. A hung command fails closed. The first CIM call
+// after boot, while WMI starts, took 8.2 s and over 10 s on that runner: it
+// times out, the tasklist fallback still verifies the owner, but it reads no
+// executable path, so strict mode refuses that one handshake; the next one,
+// with WMI up, passes. A bound long enough for that first call was not kept:
+// it varied past 10 s and would hold every hung lookup that long.
 const LOOKUP_TIMEOUT_MS = 5000;
-
-/**
- * Bounds the PowerShell CIM call (owner, image name, executable path). It is
- * about 1 s on the maintainer's Windows 11 and 0.5-0.7 s warm on the
- * windows-latest GitHub runner, but the first CIM call after boot took
- * 8162 ms there (WMI starting up), which overran 5 s: the lookup fell back
- * to tasklist, which reads no path, so strict mode refused a real browser.
- * 10 s covers that first call. Worst case of one Windows lookup: six netstat
- * snapshots (about 1.35 s plus 6 x 5 s if netstat itself hangs), then this
- * call, then the tasklist fallback (two calls run together, 5 s).
- */
-export const CIM_TIMEOUT_MS = 10_000;
 
 /**
  * Waits between `netstat` snapshots when the peer's endpoint is not listed
@@ -70,8 +65,7 @@ export async function lookupPeerProcess(
 /**
  * Why a peer lookup produced no accepted owner, for the handshake-refusal
  * log line:
- * - `timeout`: a lookup command exceeded its bound (LOOKUP_TIMEOUT_MS, or
- *   CIM_TIMEOUT_MS for the PowerShell CIM call).
+ * - `timeout`: a lookup command exceeded LOOKUP_TIMEOUT_MS.
  * - `command-missing`: lsof / netstat / tasklist is not installed or not
  *   on PATH (ENOENT).
  * - `command-failed:<exit>`: the command ran and exited non-zero (lsof
@@ -214,13 +208,8 @@ const defaultExecFile: ExecFile = async (file, args, options) => {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-function run(
-  exec: ExecFile,
-  file: string,
-  args: readonly string[],
-  timeout: number = LOOKUP_TIMEOUT_MS,
-): Promise<{ stdout: string }> {
-  return exec(file, args, { timeout });
+function run(exec: ExecFile, file: string, args: readonly string[]): Promise<{ stdout: string }> {
+  return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS });
 }
 
 /** Refuse a pid that is malformed or is this very process. */
@@ -465,12 +454,12 @@ async function lookupWindows(
 async function windowsIdentity(exec: ExecFile, pid: number): Promise<WindowsIdentity> {
   let stdout: string;
   try {
-    ({ stdout } = await run(
-      exec,
-      'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', buildCimIdentityScript(pid, process.pid)],
-      CIM_TIMEOUT_MS,
-    ));
+    ({ stdout } = await run(exec, 'powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCimIdentityScript(pid, process.pid),
+    ]));
   } catch (err) {
     if (err instanceof LookupFailure) throw err;
     // PowerShell missing, disabled by policy, or timed out — fall back.

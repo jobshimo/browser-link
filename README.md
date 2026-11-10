@@ -2243,9 +2243,9 @@ refused too.
   call (`Win32_Process` + `GetOwner`) then reads the image name and the
   owner of that PID and of the server itself, and the two owners must be
   equal. `tasklist /V` is the fallback when PowerShell is missing or
-  locked down; it compares the owners the same way. The CIM call may take
-  up to 10 s (the first one after boot was measured at about 8 s on a slow
-  machine); every other lookup command is bounded at 5 s.
+  locked down, or when the CIM call takes over 5 s (the first one after
+  boot, while WMI starts, can on a slow machine); it compares the owners the
+  same way.
 
 The handshake is refused in these cases (`evaluateHandshake` in
 `packages/server/src/bridge/handshake.ts`, the gate the WebSocket upgrade
@@ -2307,7 +2307,8 @@ browser executables (for example
 executable path must then equal one of them (case-insensitive on Windows,
 exact elsewhere), and a path that cannot be read is refused (on Windows
 the `tasklist` fallback reports no path, so with strict mode on, a machine
-where PowerShell is blocked refuses every browser). Absent or
+where PowerShell is blocked refuses every browser, and the first connect
+after boot can be refused while WMI starts; connect again). Absent or
 empty means no path check. A list with no valid absolute path refuses
 every peer. It is edited by hand only: no console command, admin panel
 item, bridge message or MCP tool writes it. Update the list when your

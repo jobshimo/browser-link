@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   lookupPeerProcess,
+  buildCimIdentityScript,
   lookupPeerProcessDetailed,
   type PeerLookupDeps,
 } from './process-identity.js';
@@ -209,12 +210,23 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
 });
 
 describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
-  // The first CIM call after boot took about 8 s on the windows-latest runner
-  // (CIM_TIMEOUT_MS is 10 s), so this test allows 30 s.
+  // A fresh CI VM starts WMI on the first CIM call: 8.2 s and over 10 s were
+  // measured on windows-latest, past the 5 s lookup bound (by design: that
+  // first strict-mode handshake is refused, see LOOKUP_TIMEOUT_MS). So WMI
+  // is started first with a generous bound, and the lookup itself must then
+  // read the path within its normal bounds.
   test('identifies a same-user child with its image name and executable path', async () => {
     const { port, connection } = await listen();
     const ready = await connectFromChild(port);
     await connection;
+
+    const t0 = performance.now();
+    await execFileAsync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', buildCimIdentityScript(ready.pid, process.pid)],
+      { timeout: 60_000, windowsHide: true },
+    );
+    console.log(`windows WMI warm-up: ${String(Math.round(performance.now() - t0))} ms`);
 
     const trace: TraceEntry[] = [];
     const res = await lookupPeerProcessDetailed(
@@ -238,5 +250,5 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
       },
     });
     if (res.ok) expect(res.peer.executablePath?.toLowerCase()).toBe(process.execPath.toLowerCase());
-  }, 30_000);
+  }, 90_000);
 });

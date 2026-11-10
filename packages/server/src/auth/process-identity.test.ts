@@ -7,7 +7,6 @@ import {
   isValidPid,
   lookupPeerProcess,
   lookupPeerProcessDetailed,
-  CIM_TIMEOUT_MS,
   NETSTAT_RETRY_DELAYS_MS,
   NETSTAT_SNAPSHOTS,
   type PeerLookupDeps,
@@ -466,10 +465,9 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   // --- existing behaviour: a same-user allowlisted browser is accepted ---
 
   /* Measured on the windows-latest runner (2026-11-10): the first CIM call
-   * after boot took 8162 ms, later ones 526-674 ms, an empty PowerShell
-   * about 300 ms. The CIM call gets its own bound above that first call;
-   * every other command keeps the 5 s one. */
-  test('win32: the PowerShell CIM call is bounded by CIM_TIMEOUT_MS, netstat and tasklist by 5 s', async () => {
+   * after boot took 8162 ms in one run and over 10 s in another, later ones
+   * 526-674 ms. Every command, the CIM call included, keeps the 5 s bound. */
+  test('win32: every lookup command is bounded by 5 s, the CIM call included', async () => {
     const calls: Call[] = [];
     await lookupPeerProcessDetailed(
       '127.0.0.1',
@@ -485,11 +483,37 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     );
     expect(calls.map((c) => [c.file, c.timeout])).toEqual([
       ['netstat', 5000],
-      ['powershell', CIM_TIMEOUT_MS],
+      ['powershell', 5000],
       ['tasklist', 5000],
       ['tasklist', 5000],
     ]);
-    expect(CIM_TIMEOUT_MS).toBe(10_000);
+  });
+
+  test('win32: a CIM call that times out (WMI starting) still verifies the owner through tasklist', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: timedOut(),
+        tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+      }),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+  });
+
+  test('win32: in strict mode that timed-out CIM call refuses with path-unreadable (tasklist reads no path)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: timedOut(),
+        tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+      }),
+      { withExecutablePath: true },
+    );
+    expect(res).toEqual({ ok: false, cause: 'path-unreadable' });
   });
 
   test('win32: a same-user browser is identified (netstat + one CIM call)', async () => {
