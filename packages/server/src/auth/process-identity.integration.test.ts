@@ -73,7 +73,13 @@ function tracingExecFile(trace: TraceEntry[]): NonNullable<PeerLookupDeps['execF
   };
 }
 
-const showTrace = (trace: TraceEntry[]): string => JSON.stringify(trace, null, 2);
+/** The connection under test and every command run, for a failure message. */
+const failureContext = (
+  serverPort: number,
+  peer: { pid: number; localPort: number },
+  trace: TraceEntry[],
+): string =>
+  `server port ${String(serverPort)}, peer pid ${String(peer.pid)} on port ${String(peer.localPort)}\n${JSON.stringify(trace, null, 2)}`;
 
 let server: Server | null = null;
 let acceptedSocket: Socket | null = null;
@@ -172,7 +178,7 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
     console.log(
       `posix path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms`).join(', ')}`,
     );
-    expect(res, showTrace(trace)).toMatchObject({ ok: true });
+    expect(res, failureContext(port, ready, trace)).toMatchObject({ ok: true });
     if (!res.ok) return;
     expect(res.peer.pid).toBe(ready.pid);
     expect(res.peer.executablePath?.startsWith('/')).toBe(true);
@@ -203,35 +209,8 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
 });
 
 describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
-  // TEMPORARY measurement for CI: what PowerShell and the CIM call cost here.
-  test('MEASURE powershell cost', async () => {
-    const { port, connection } = await listen();
-    const ready = await connectFromChild(port);
-    await connection;
-    const { buildCimIdentityScript } = await import('./process-identity.js');
-    const lines: string[] = [];
-    for (const [label, cmd] of [
-      ['cim-first', buildCimIdentityScript(ready.pid, process.pid)],
-      ['empty', 'exit 0'],
-      ['empty', 'exit 0'],
-      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
-      ['cim', buildCimIdentityScript(ready.pid, process.pid)],
-    ] as const) {
-      const t0 = performance.now();
-      let outcome = 'ok';
-      try {
-        await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
-          timeout: 60_000,
-          windowsHide: true,
-        });
-      } catch (err) {
-        outcome = `failed ${String((err as { code?: unknown }).code)}`;
-      }
-      lines.push(`${label} ${String(Math.round(performance.now() - t0))} ms ${outcome}`);
-    }
-    console.log(`MEASURE powershell: ${lines.join(' | ')}`);
-  }, 400_000);
-
+  // The first CIM call after boot took about 8 s on the windows-latest runner
+  // (CIM_TIMEOUT_MS is 10 s), so this test allows 30 s.
   test('identifies a same-user child with its image name and executable path', async () => {
     const { port, connection } = await listen();
     const ready = await connectFromChild(port);
@@ -250,7 +229,7 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
     console.log(
       `windows path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}`,
     );
-    expect(res, showTrace(trace)).toEqual({
+    expect(res, failureContext(port, ready, trace)).toEqual({
       ok: true,
       peer: {
         pid: ready.pid,
@@ -259,5 +238,5 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
       },
     });
     if (res.ok) expect(res.peer.executablePath?.toLowerCase()).toBe(process.execPath.toLowerCase());
-  }, 15000);
+  }, 30_000);
 });

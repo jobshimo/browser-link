@@ -7,6 +7,7 @@ import {
   isValidPid,
   lookupPeerProcess,
   lookupPeerProcessDetailed,
+  CIM_TIMEOUT_MS,
   NETSTAT_RETRY_DELAYS_MS,
   NETSTAT_SNAPSHOTS,
   type PeerLookupDeps,
@@ -400,12 +401,12 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   const cim = (...rows: Row[]) => JSON.stringify(rows) + '\r\n';
 
   type ExecFile = NonNullable<PeerLookupDeps['execFile']>;
-  type Call = { file: string; args: readonly string[] };
+  type Call = { file: string; args: readonly string[]; timeout?: number };
   type Answer = string | Error | ((args: readonly string[]) => string | Error);
   /** Fake execFile: answers by the program name, recording every call. */
   function fakeExecFile(answers: Record<string, Answer>, calls: Call[] = []): ExecFile {
-    return (file, args) => {
-      calls.push({ file, args });
+    return (file, args, options) => {
+      calls.push({ file, args, timeout: options.timeout });
       const entry = answers[file];
       if (entry === undefined) return Promise.reject(new Error(`unexpected command ${file}`));
       const answer = typeof entry === 'function' ? entry(args) : entry;
@@ -463,6 +464,33 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   });
 
   // --- existing behaviour: a same-user allowlisted browser is accepted ---
+
+  /* Measured on the windows-latest runner (2026-11-10): the first CIM call
+   * after boot took 8162 ms, later ones 526-674 ms, an empty PowerShell
+   * about 300 ms. The CIM call gets its own bound above that first call;
+   * every other command keeps the 5 s one. */
+  test('win32: the PowerShell CIM call is bounded by CIM_TIMEOUT_MS, netstat and tasklist by 5 s', async () => {
+    const calls: Call[] = [];
+    await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win(
+        {
+          netstat: NETSTAT,
+          powershell: exitWith(1),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        calls,
+      ),
+    );
+    expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['netstat', 5000],
+      ['powershell', CIM_TIMEOUT_MS],
+      ['tasklist', 5000],
+      ['tasklist', 5000],
+    ]);
+    expect(CIM_TIMEOUT_MS).toBe(10_000);
+  });
 
   test('win32: a same-user browser is identified (netstat + one CIM call)', async () => {
     const res = await lookupPeerProcessDetailed(
