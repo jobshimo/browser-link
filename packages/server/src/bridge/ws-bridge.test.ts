@@ -1206,6 +1206,22 @@ describe('startWsBridge handshake gate and message loop', () => {
     });
   });
 
+  test("the refusal line carries the lookup's diagnostic counts", async () => {
+    const detail = '6 netstat snapshots, 0 rows for the local port in the last';
+    const { url } = await bridge(async () => ({
+      ok: false,
+      cause: 'endpoint-not-listed',
+      detail,
+    }));
+    expect(await connect(url, PINNED_EXTENSION_ORIGIN)).toEqual({
+      status: 403,
+      message: 'Peer process unknown',
+    });
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
+      `(cause: endpoint-not-listed; ${detail})`,
+    );
+  });
+
   test('a peer lookup that fails with a typed cause is refused with 403', async () => {
     const { url } = await bridge(async () => ({ ok: false, cause: 'timeout' }));
     expect(await connect(url, PINNED_EXTENSION_ORIGIN)).toEqual({

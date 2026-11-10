@@ -7,6 +7,8 @@ import {
   isValidPid,
   lookupPeerProcess,
   lookupPeerProcessDetailed,
+  NETSTAT_RETRY_DELAYS_MS,
+  NETSTAT_SNAPSHOTS,
   type PeerLookupDeps,
   parseCimIdentity,
   parseLsofExecutablePath,
@@ -419,10 +421,28 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       ? 'INFO: No tasks are running which match the specified criteria.\r\n'
       : tasklistRow(pid === SELF ? 'node.exe' : 'chrome.exe', pid, owner);
   };
-  const win = (answers: Record<string, Answer>, calls?: Call[]): PeerLookupDeps => ({
+  /** Waits between netstat snapshots are recorded, never slept. */
+  const win = (
+    answers: Record<string, Answer>,
+    calls?: Call[],
+    waits: number[] = [],
+  ): PeerLookupDeps => ({
     platform: 'win32',
     execFile: fakeExecFile(answers, calls),
+    sleep: (ms) => {
+      waits.push(ms);
+      return Promise.resolve();
+    },
   });
+  /** netstat answering a different snapshot on each call (the last one
+   * repeats). */
+  const snapshots =
+    (...outs: string[]) =>
+    () => {
+      const out = outs.shift() ?? '';
+      if (outs.length === 0) outs.push(out);
+      return out;
+    };
   const unix = (
     os: NodeJS.Platform,
     answers: Record<string, Answer>,
@@ -687,7 +707,95 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       win({ netstat: '  TCP    127.0.0.1:54321        127.0.0.1:17529        TIME_WAIT       0' }),
       { serverEndpoint: { host: '127.0.0.1', port: 17529 } },
     );
-    expect(res).toEqual({ ok: false, cause: 'endpoint-not-listed' });
+    expect(res).toEqual({
+      ok: false,
+      cause: 'endpoint-not-listed',
+      detail: `${String(NETSTAT_SNAPSHOTS)} netstat snapshots, 1 row for the local port in the last`,
+    });
+  });
+
+  // --- netstat can lag a fresh connection: bounded retry on a miss only ---
+
+  test('win32: a row missing from the first snapshot and present in the second is that pid, after two netstat calls', async () => {
+    const calls: Call[] = [];
+    const waits: number[] = [];
+    const empty = NETSTAT.split('\r\n')[0] ?? '';
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: snapshots(empty, NETSTAT), powershell: cim(row(), selfRow()) }, calls, waits),
+      { serverEndpoint: { host: '127.0.0.1', port: 17529 } },
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+    expect(calls.filter((c) => c.file === 'netstat')).toHaveLength(2);
+    expect(waits).toEqual([NETSTAT_RETRY_DELAYS_MS[0]]);
+  });
+
+  test('win32: a retry still runs the owner check on what it finds', async () => {
+    const empty = NETSTAT.split('\r\n')[0] ?? '';
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: snapshots(empty, NETSTAT),
+        powershell: cim(row({ user: 'other' }), selfRow()),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-mismatch' });
+  });
+
+  test('win32: a row that never appears is endpoint-not-listed after exactly the bounded snapshots', async () => {
+    const calls: Call[] = [];
+    const waits: number[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      11111,
+      win({ netstat: NETSTAT }, calls, waits),
+    );
+    expect(res).toEqual({
+      ok: false,
+      cause: 'endpoint-not-listed',
+      detail: `${String(NETSTAT_SNAPSHOTS)} netstat snapshots, 0 rows for the local port in the last`,
+    });
+    expect(calls.map((c) => c.file)).toEqual(Array(NETSTAT_SNAPSHOTS).fill('netstat'));
+    expect(waits).toEqual([...NETSTAT_RETRY_DELAYS_MS]);
+  });
+
+  test('win32: an ambiguous first snapshot is refused at once, one netstat call', async () => {
+    const calls: Call[] = [];
+    const waits: number[] = [];
+    const twoOwners = `${NETSTAT}\r\n  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     777`;
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: snapshots(twoOwners, NETSTAT) }, calls, waits),
+    );
+    expect(res).toEqual({ ok: false, cause: 'endpoint-ambiguous' });
+    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+    expect(waits).toEqual([]);
+  });
+
+  test('win32: a first snapshot naming a non-browser returns it at once (the gate refuses it), one netstat call', async () => {
+    const calls: Call[] = [];
+    const waits: number[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win(
+        { netstat: NETSTAT, powershell: cim(row({ name: 'node.exe' }), selfRow()) },
+        calls,
+        waits,
+      ),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'node.exe' } });
+    expect(calls.filter((c) => c.file === 'netstat')).toHaveLength(1);
+    expect(waits).toEqual([]);
+  });
+
+  test('win32: the retry bound stays well inside the lookup timeout', () => {
+    expect(NETSTAT_SNAPSHOTS).toBe(NETSTAT_RETRY_DELAYS_MS.length + 1);
+    const waited = NETSTAT_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
+    expect(waited).toBeLessThanOrEqual(1500);
   });
 
   test('win32: a live row to another foreign endpoint is ignored when the server endpoint is known', async () => {
@@ -860,7 +968,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
 
   test('endpoint-not-listed (netstat has no row for the local endpoint)', async () => {
     const res = await lookupPeerProcessDetailed('127.0.0.1', 11111, win({ netstat: NETSTAT }));
-    expect(res).toEqual({ ok: false, cause: 'endpoint-not-listed' });
+    expect(res).toMatchObject({ ok: false, cause: 'endpoint-not-listed' });
   });
 
   test('parse-miss (lsof printed no single owner of the local endpoint)', async () => {

@@ -195,7 +195,7 @@ export async function evaluateHandshake(
     return {
       accepted: false,
       reason: 'peer-unknown',
-      logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process (cause: ${lookup.cause}).`,
+      logLine: `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process (cause: ${lookup.cause}${lookup.detail === undefined ? '' : `; ${lookup.detail}`}).`,
     };
   }
   if (!isAllowedBrowser(lookup.peer.binaryName)) {
