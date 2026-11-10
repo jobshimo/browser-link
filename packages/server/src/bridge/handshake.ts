@@ -119,10 +119,17 @@ export async function evaluateHandshake(
   // Read on every handshake, like every other config key the primary
   // honours without a restart. `undefined` means strict mode is off.
   const strictPaths = loadConfig().peerExecutablePaths;
+  // The bridge's own end of this connection: only OS rows whose remote end
+  // is the bridge count, so stale rows on the peer's port do not.
+  const localAddress = normaliseLoopback(req.socket.localAddress ?? '');
+  const localPort = req.socket.localPort;
   let lookup: PeerLookupResult;
   try {
     lookup = await lookupPeerProcess(remoteAddress, remotePort, {
       withExecutablePath: strictPaths !== undefined,
+      ...(localAddress && localPort != null
+        ? { serverEndpoint: { host: localAddress, port: localPort } }
+        : {}),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -153,7 +160,10 @@ export async function evaluateHandshake(
       logLine: `Rejected WS handshake from PID ${lookup.peer.pid} (${lookup.peer.binaryName}): not a Chromium-based browser.`,
     };
   }
-  if (strictPaths !== undefined && !isAllowedExecutablePath(lookup.peer.executablePath, strictPaths)) {
+  if (
+    strictPaths !== undefined &&
+    !isAllowedExecutablePath(lookup.peer.executablePath, strictPaths)
+  ) {
     return {
       accepted: false,
       reason: 'peer-path-not-allowed',

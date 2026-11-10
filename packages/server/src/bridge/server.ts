@@ -236,7 +236,20 @@ export class IpcServer {
     // Kernel-level process binding. Same trick as the WS bridge: we ask the
     // OS which process owns the peer's TCP port, and reject anything that
     // does not look like a Node-family binary.
-    const lookup = this.options.peerLookup ?? lookupPeerProcess;
+    // Only OS rows whose remote end is this IPC server's own endpoint count.
+    const localAddr = normaliseLoopback(socket.localAddress ?? '');
+    const localPort = socket.localPort;
+    const lookup =
+      this.options.peerLookup ??
+      ((host: string, port: number) =>
+        lookupPeerProcess(
+          host,
+          port,
+          {},
+          localAddr && localPort != null
+            ? { serverEndpoint: { host: localAddr, port: localPort } }
+            : {},
+        ));
     const peer = await lookup(remoteAddr, remotePort).catch(() => null);
     if (!peer || !NODE_PROCESS_NAMES.has(peer.binaryName.toLowerCase())) {
       const binary = (peer?.binaryName ?? 'unknown').replace(/\n|\r/g, ' ');
