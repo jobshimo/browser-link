@@ -1,3 +1,5 @@
+import type { Messages } from './i18n.js';
+
 /**
  * Version facts the popup shows, computed from what the server reported in
  * `tab.registered`. Pure on purpose: background.ts gathers the inputs, this
@@ -74,8 +76,8 @@ export function shouldShowVersionBanner(check: VersionCheck): boolean {
 
 /** "Server running X · installed Y" when the server runs a different version
  * than the one installed on disk; null when they match or either is unknown. */
-export function runningInstalledLine(check: VersionCheck): string | null {
+export function runningInstalledLine(check: VersionCheck, t: Messages): string | null {
   if (check.server === null || check.installed === null) return null;
   if (check.installed === check.server) return null;
-  return `Server running ${check.server} · installed ${check.installed}`;
+  return t.popupRunningInstalled(check.server, check.installed);
 }

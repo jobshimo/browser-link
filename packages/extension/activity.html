@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>browser-link — Activity</title>
+    <title data-i18n="activityDocTitle">browser-link — Activity</title>
     <style>
       /* Same slate-blue system as popup.html, extended for a window that
        * stays open: a dark variant (this panel is watched for long stretches)
@@ -569,22 +569,100 @@
       .hidden {
         display: none !important;
       }
+
+      /* Interface language selector: the last element of the header row. */
+      .lang-switch {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-soft);
+      }
+
+      .lang-switch button {
+        padding: 3px 8px;
+        border: none;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--text-muted);
+        background: transparent;
+      }
+
+      .lang-switch button[aria-pressed='true'] {
+        color: #fff;
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+      }
     </style>
   </head>
   <body>
     <header>
       <div class="mark" aria-hidden="true"></div>
       <div class="titles">
-        <h1>Activity</h1>
-        <span class="subtitle" id="subtitle">Everything agents did in your browser</span>
+        <h1 data-i18n="activityTitle">Activity</h1>
+        <span class="subtitle" id="subtitle" data-i18n="activitySubtitle">
+          Everything agents did in your browser
+        </span>
       </div>
-      <button id="live" type="button" aria-pressed="true" title="Keep the newest actions streaming in">
-        <span class="live-dot" aria-hidden="true"></span>Live
+      <button
+        id="live"
+        type="button"
+        aria-pressed="true"
+        title="Keep the newest actions streaming in"
+        data-i18n-title="activityLiveTitle"
+      >
+        <span class="live-dot" aria-hidden="true"></span
+        ><span data-i18n="activityLive">Live</span>
       </button>
-      <button id="refresh" type="button" title="Reload now">Refresh</button>
-      <button id="export" class="primary" type="button" title="Download the visible trail">
+      <button
+        id="refresh"
+        type="button"
+        title="Reload now"
+        data-i18n-title="activityRefreshTitle"
+        data-i18n="activityRefresh"
+      >
+        Refresh
+      </button>
+      <button
+        id="export"
+        class="primary"
+        type="button"
+        title="Download the visible trail"
+        data-i18n-title="activityExportTitle"
+        data-i18n="activityExport"
+      >
         Export
       </button>
+      <div
+        class="lang-switch"
+        role="group"
+        data-i18n-aria-label="langSwitchLabel"
+        aria-label="Interface language"
+      >
+        <button
+          type="button"
+          data-lang="en"
+          lang="en"
+          aria-pressed="true"
+          translate="no"
+          title="English"
+        >
+          EN
+        </button>
+        <button
+          type="button"
+          data-lang="es"
+          lang="es"
+          aria-pressed="false"
+          translate="no"
+          title="Español"
+        >
+          ES
+        </button>
+      </div>
     </header>
 
     <!-- Size and counts, always on screen. The whole reason this strip is
@@ -594,65 +672,103 @@
     <div class="usage" id="usage">
       <div class="usage-figure">
         <span class="usage-value" id="usage-rows">—</span>
-        <span class="usage-label">actions</span>
+        <span class="usage-label" data-i18n="activityUsageActions">actions</span>
       </div>
       <div class="usage-figure">
         <span class="usage-value" id="usage-size">—</span>
-        <span class="usage-label">on disk</span>
+        <span class="usage-label" data-i18n="activityUsageDisk">on disk</span>
       </div>
       <div class="usage-figure">
         <span class="usage-value" id="usage-span">—</span>
-        <span class="usage-label">oldest entry</span>
+        <span class="usage-label" data-i18n="activityUsageOldest">oldest entry</span>
       </div>
-      <div class="usage-meter" title="How full the trail is before it starts pruning its oldest entries">
+      <div
+        class="usage-meter"
+        title="How full the trail is before it starts pruning its oldest entries"
+        data-i18n-title="activityUsageMeterTitle"
+      >
         <div class="usage-meter-fill" id="usage-fill"></div>
         <span class="usage-meter-text" id="usage-cap"></span>
       </div>
-      <button id="purge-toggle" type="button" class="danger-ghost">Purge…</button>
+      <button id="purge-toggle" type="button" class="danger-ghost" data-i18n="activityPurgeToggle">
+        Purge…
+      </button>
     </div>
 
     <!-- Purge panel. Collapsed by default; a destructive control that is always
          expanded is a destructive control someone eventually hits by accident. -->
     <div class="purge" id="purge-panel" hidden>
       <div class="purge-row">
-        <label for="purge-from">From</label>
+        <label for="purge-from" data-i18n="activityPurgeFrom">From</label>
         <input id="purge-from" type="date" />
-        <label for="purge-to">To</label>
+        <label for="purge-to" data-i18n="activityPurgeTo">To</label>
         <input id="purge-to" type="date" />
-        <button id="purge-preset-30d" type="button" class="chip">Older than 30 days</button>
-        <button id="purge-preset-7d" type="button" class="chip">Older than 7 days</button>
-        <button id="purge-preset-all" type="button" class="chip">Everything</button>
+        <button id="purge-preset-30d" type="button" class="chip" data-i18n="activityPreset30d">
+          Older than 30 days
+        </button>
+        <button id="purge-preset-7d" type="button" class="chip" data-i18n="activityPreset7d">
+          Older than 7 days
+        </button>
+        <button id="purge-preset-all" type="button" class="chip" data-i18n="activityPresetAll">
+          Everything
+        </button>
         <span class="spacer" style="margin-left: auto"></span>
-        <button id="purge-cancel" type="button">Close</button>
+        <button id="purge-cancel" type="button" data-i18n="close">Close</button>
       </div>
       <div class="purge-confirm" id="purge-confirm">
-        <p id="purge-summary">Pick a range. Leave both dates empty to purge the whole trail.</p>
+        <p id="purge-summary" data-i18n="activityPurgeIntro">
+          Pick a range. Leave both dates empty to purge the whole trail.
+        </p>
         <div class="purge-actions">
-          <button id="purge-check" type="button">Check how many</button>
-          <button id="purge-run" type="button" class="danger" disabled>
+          <button id="purge-check" type="button" data-i18n="activityPurgeCheck">
+            Check how many
+          </button>
+          <button id="purge-run" type="button" class="danger" disabled data-i18n="activityPurgeRun">
             Delete permanently
           </button>
         </div>
         <p class="purge-warning">
-          <strong>This cannot be undone.</strong> Deleted rows are gone from
-          <code>activity.db</code> — they are not in the recycle bin and not recoverable from an
-          earlier export unless you already made one.
+          <strong data-i18n="activityPurgeWarningStrong">This cannot be undone.</strong>
+          <span data-i18n="activityPurgeWarningBefore">Deleted rows are gone from</span>
+          <code translate="no">activity.db</code>
+          <span data-i18n="activityPurgeWarningAfter"
+            >— they are not in the recycle bin and not recoverable from an earlier export unless
+            you already made one.</span
+          >
         </p>
       </div>
     </div>
 
     <div class="filters">
-      <select id="filter-agent" aria-label="Filter by agent">
-        <option value="">All agents</option>
+      <select
+        id="filter-agent"
+        aria-label="Filter by agent"
+        data-i18n-aria-label="activityFilterAgent"
+      >
+        <option value="" data-i18n="activityAllAgents">All agents</option>
       </select>
-      <select id="filter-tool" aria-label="Filter by tool">
-        <option value="">All tools</option>
+      <select id="filter-tool" aria-label="Filter by tool" data-i18n-aria-label="activityFilterTool">
+        <option value="" data-i18n="activityAllTools">All tools</option>
       </select>
-      <button id="filter-failed" type="button" aria-pressed="false" title="Show only actions that errored">
+      <button
+        id="filter-failed"
+        type="button"
+        aria-pressed="false"
+        title="Show only actions that errored"
+        data-i18n-title="activityFailuresOnlyTitle"
+        data-i18n="activityFailuresOnly"
+      >
         Failures only
       </button>
-      <input id="filter-text" type="search" placeholder="Filter selector, URL or payload…" aria-label="Free-text filter" />
-      <button id="filter-reset" type="button">Reset</button>
+      <input
+        id="filter-text"
+        type="search"
+        placeholder="Filter selector, URL or payload…"
+        data-i18n-placeholder="activityFilterTextPlaceholder"
+        aria-label="Free-text filter"
+        data-i18n-aria-label="activityFilterText"
+      />
+      <button id="filter-reset" type="button" data-i18n="activityReset">Reset</button>
       <span class="spacer"></span>
       <span class="count" id="count"></span>
     </div>
@@ -661,18 +777,18 @@
       <table id="table" class="hidden">
         <thead>
           <tr>
-            <th scope="col">When</th>
-            <th scope="col">Agent</th>
-            <th scope="col">Tool</th>
-            <th scope="col">Target</th>
-            <th scope="col">Result</th>
+            <th scope="col" data-i18n="activityColWhen">When</th>
+            <th scope="col" data-i18n="activityColAgent">Agent</th>
+            <th scope="col" data-i18n="activityColTool">Tool</th>
+            <th scope="col" data-i18n="activityColTarget">Target</th>
+            <th scope="col" data-i18n="activityColResult">Result</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
 
       <div class="state" id="state">
-        <strong id="state-title">Loading…</strong>
+        <strong id="state-title" data-i18n="loading">Loading…</strong>
         <span id="state-detail"></span>
       </div>
     </div>
@@ -680,7 +796,9 @@
     <footer>
       <span id="status">—</span>
       <span class="spacer" style="margin-left: auto"></span>
-      <span id="hint">Trail is stored locally in activity.db · never uploaded</span>
+      <span id="hint" data-i18n="activityFooterHint">
+        Trail is stored locally in activity.db · never uploaded
+      </span>
     </footer>
 
     <script type="module" src="activity.js"></script>

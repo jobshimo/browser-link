@@ -3,10 +3,10 @@
  * popup — no `chrome.*` here, same split as idle-policy.ts and
  * flow-recording-policy.ts (popup.ts owns the storage I/O and the DOM).
  *
- * Language: the popup has no language setting of its own (every other
- * popup string is English), so the notice follows the browser UI
- * language — Spanish when `navigator.language` starts with `es`, English
- * otherwise.
+ * Language: the notice follows the interface language chosen with the
+ * header selector (ui-language.ts); before any choice that is the browser
+ * language, Spanish when `navigator.language` starts with `es` and English
+ * otherwise (i18n.ts `defaultLanguage`).
  *
  * Why a copy of `NOTICE` lives here instead of an import: the extension is
  * built with plain `tsc` (no bundler), so a runtime import of
@@ -18,8 +18,7 @@
  */
 
 import type { NoticeText } from '@browser-link/shared';
-
-export type NoticeLanguage = 'es' | 'en';
+import type { Language } from './i18n.js';
 
 /** `chrome.storage.local` key set to `true` once the user confirmed the
  * full notice before their first Connect on this browser profile. */
@@ -44,12 +43,6 @@ export const NOTICE: { es: NoticeText; en: NoticeText } = {
   },
 };
 
-/** Spanish when the browser language starts with `es`, English otherwise
- * (including when the language is unavailable). */
-export function noticeLanguage(navLang: string | undefined): NoticeLanguage {
-  return navLang?.toLowerCase().startsWith('es') ? 'es' : 'en';
-}
-
 /** The full notice must be confirmed before Connect unless the stored
  * acknowledgement is the literal `true` — any other value (missing,
  * corrupted) shows it again rather than failing open. */
@@ -57,7 +50,7 @@ export function shouldShowNoticeBeforeConnect(stored: unknown): boolean {
   return stored !== true;
 }
 
-const SHORT_LINE: Record<NoticeLanguage, { lead: string; link: string }> = {
+const SHORT_LINE: Record<Language, { lead: string; link: string }> = {
   es: {
     lead: 'Herramienta de desarrollo: el agente actúa con su sesión en las pestañas conectadas.',
     link: 'Ver aviso',
@@ -70,27 +63,27 @@ const SHORT_LINE: Record<NoticeLanguage, { lead: string; link: string }> = {
 
 /** The bottom line split for rendering: `lead` as text, `link` as the
  * control that opens the full notice. */
-export function noticeShortLineParts(lang: NoticeLanguage): { lead: string; link: string } {
+export function noticeShortLineParts(lang: Language): { lead: string; link: string } {
   return SHORT_LINE[lang];
 }
 
 /** The popup's one-line notice, link words included. */
-export function noticeShortLine(lang: NoticeLanguage): string {
+export function noticeShortLine(lang: Language): string {
   const { lead, link } = SHORT_LINE[lang];
   return `${lead} ${link}`;
 }
 
 /** The full notice (title + paragraphs) in `lang`. */
-export function noticeFull(lang: NoticeLanguage): NoticeText {
+export function noticeFull(lang: Language): NoticeText {
   return NOTICE[lang];
 }
 
 /** Label of the confirmation button shown before the first Connect. */
-export function noticeAcknowledgeLabel(lang: NoticeLanguage): string {
+export function noticeAcknowledgeLabel(lang: Language): string {
   return lang === 'es' ? 'Entendido' : 'I understand';
 }
 
 /** Label of the control that closes the notice opened from the bottom line. */
-export function noticeCloseLabel(lang: NoticeLanguage): string {
+export function noticeCloseLabel(lang: Language): string {
   return lang === 'es' ? 'Cerrar' : 'Close';
 }

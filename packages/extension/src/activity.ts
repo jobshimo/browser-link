@@ -11,6 +11,28 @@
  * this page shows survives closing the browser, and closing this page loses
  * nothing.
  */
+import type { Messages } from './i18n.js';
+import { startUiLanguage } from './ui-language.js';
+
+/** The interface language (header selector); see ui-language.ts. */
+const lang = await startUiLanguage();
+
+/** Text set from the dictionary, re-rendered on a language switch. */
+type Text = (t: Messages) => string;
+const verbatim =
+  (message: string): Text =>
+  () =>
+    message;
+
+/** A failed reply's error: the service worker's own `timeout` code in the
+ * interface language; anything else is the server's text, shown as is. */
+const errorText =
+  (error: string): Text =>
+  (t) =>
+    error === 'timeout' ? t.workerServerTimeout : error;
+
+/** A count as the reader writes it, in the interface language. */
+const num = (n: number): string => n.toLocaleString(lang.language);
 
 /** Row shape as the server serialises it. Structural, not imported: the
  * extension must not take a build dependency on the server package. */
@@ -110,6 +132,9 @@ const ui = {
 
 let records: ActivityRecord[] = [];
 let lastStats: ActivityStats | null = null;
+/** The agent list of the last reply, kept to rebuild the filter's labels on a
+ * language switch without asking the server again. */
+let lastAgents: { agent: string; count: number }[] = [];
 /** Rows the last dry run said the current range would delete. Cleared whenever
  * the range changes, so the red button can never act on a stale count — the
  * user must always be shown a number for the range they are actually about to
@@ -183,7 +208,7 @@ function toLocalDay(date: Date): string {
 
 /** Full local timestamp, for the hover on a relative time. */
 function formatExact(iso: string): string {
-  return new Date(iso).toLocaleString();
+  return new Date(iso).toLocaleString(lang.language);
 }
 
 /** Bytes as a human reads them. Binary units because that is what a file
@@ -203,7 +228,7 @@ function formatBytes(bytes: number): string {
 
 function formatDay(iso: string | null): string {
   if (iso === null) return '—';
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return new Date(iso).toLocaleDateString(lang.language, { month: 'short', day: 'numeric' });
 }
 
 /**
@@ -214,26 +239,26 @@ function formatDay(iso: string | null): string {
  */
 function renderStats(stats: ActivityStats): void {
   lastStats = stats;
-  ui.usageRows.textContent = stats.rows.toLocaleString();
+  ui.usageRows.textContent = num(stats.rows);
   ui.usageSize.textContent = formatBytes(stats.bytes);
   ui.usageSpan.textContent = formatDay(stats.oldest_at);
 
   const ratio = stats.max_rows > 0 ? stats.rows / stats.max_rows : 0;
   ui.usageFill.style.width = `${Math.min(100, Math.round(ratio * 100))}%`;
-  ui.usageCap.textContent = `${stats.rows.toLocaleString()} / ${stats.max_rows.toLocaleString()}`;
+  ui.usageCap.textContent = `${num(stats.rows)} / ${num(stats.max_rows)}`;
   // Amber past 80%: the trail is close to dropping its oldest entries, which
   // is the one moment the user genuinely needs to decide between purging and
   // exporting first.
   ui.usageMeter.classList.toggle('warn', ratio >= 0.8);
 }
 
-function formatTime(iso: string): string {
+function formatTime(iso: string, t: Messages): string {
   const then = new Date(iso).getTime();
   const secondsAgo = Math.round((Date.now() - then) / 1000);
-  if (secondsAgo < 5) return 'just now';
-  if (secondsAgo < 60) return `${secondsAgo}s ago`;
-  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)}m ago`;
-  return new Date(iso).toLocaleTimeString();
+  if (secondsAgo < 5) return t.activityJustNow;
+  if (secondsAgo < 60) return t.activitySecondsAgo(secondsAgo);
+  if (secondsAgo < 3600) return t.activityMinutesAgo(Math.floor(secondsAgo / 60));
+  return new Date(iso).toLocaleTimeString(lang.language);
 }
 
 /** What the action acted on, in priority order. A selector says the most; a
@@ -251,13 +276,15 @@ function matchesText(record: ActivityRecord, needle: string): boolean {
   return hay.includes(needle);
 }
 
-function buildRow(record: ActivityRecord): HTMLTableRowElement {
+/** One table row. Rows are rebuilt by `render()`, which a language switch
+ * calls, so they read the dictionary directly instead of binding. */
+function buildRow(record: ActivityRecord, t: Messages): HTMLTableRowElement {
   const tr = document.createElement('tr');
   if (record.outcome === 'error') tr.className = 'failed';
 
   const when = document.createElement('td');
   when.className = 'when';
-  when.textContent = formatTime(record.at);
+  when.textContent = formatTime(record.at, t);
   when.title = formatExact(record.at);
 
   const agent = document.createElement('td');
@@ -265,7 +292,7 @@ function buildRow(record: ActivityRecord): HTMLTableRowElement {
     const badge = document.createElement('span');
     badge.className = 'agent';
     badge.textContent = record.agent;
-    if (record.agentPid !== null) badge.title = `pid ${record.agentPid}`;
+    if (record.agentPid !== null) badge.title = t.activityAgentPid(record.agentPid);
     agent.append(badge);
   } else {
     agent.textContent = '—';
@@ -277,7 +304,7 @@ function buildRow(record: ActivityRecord): HTMLTableRowElement {
   if (record.flowId) {
     const tag = document.createElement('span');
     tag.className = 'flow-tag';
-    tag.textContent = 'flow';
+    tag.textContent = t.activityFlowTag;
     tag.title = record.flowId;
     tool.append(tag);
   }
@@ -305,16 +332,18 @@ function buildRow(record: ActivityRecord): HTMLTableRowElement {
   const outcome = document.createElement('td');
   outcome.className = `outcome ${record.outcome}`;
   outcome.textContent =
-    record.outcome === 'ok' ? `ok · ${record.durationMs}ms` : (record.error ?? 'error');
+    record.outcome === 'ok'
+      ? t.activityOutcomeOk(record.durationMs)
+      : (record.error ?? t.activityOutcomeError);
   if (record.outcome === 'error' && record.error) outcome.title = record.error;
 
   tr.append(when, agent, tool, target, outcome);
   return tr;
 }
 
-function showState(title: string, detail = ''): void {
-  ui.stateTitle.textContent = title;
-  ui.stateDetail.textContent = detail;
+function showState(title: Text, detail: Text = verbatim('')): void {
+  lang.text(ui.stateTitle, title);
+  lang.text(ui.stateDetail, detail);
   ui.state.classList.remove('hidden');
   ui.table.classList.add('hidden');
 }
@@ -322,15 +351,21 @@ function showState(title: string, detail = ''): void {
 function render(): void {
   const needle = ui.text.value.trim().toLowerCase();
   const visible = records.filter((r) => matchesText(r, needle));
+  const total = records.length;
 
   if (visible.length === 0) {
-    showState(
-      records.length === 0 ? 'No activity yet' : 'Nothing matches this filter',
-      records.length === 0
-        ? 'Actions appear here the moment an agent touches a connected tab.'
-        : 'Try clearing the search box or the dropdowns.',
-    );
-    ui.count.textContent = records.length === 0 ? '' : `0 of ${records.length} shown`;
+    if (total === 0) {
+      showState(
+        (t) => t.activityNoActivity,
+        (t) => t.activityNoActivityDetail,
+      );
+    } else {
+      showState(
+        (t) => t.activityNoMatch,
+        (t) => t.activityNoMatchDetail,
+      );
+    }
+    lang.text(ui.count, (t) => (total === 0 ? '' : t.activityShownOf(num(0), num(total))));
     return;
   }
 
@@ -338,57 +373,66 @@ function render(): void {
   ui.table.classList.remove('hidden');
 
   const fragment = document.createDocumentFragment();
-  for (const record of visible) fragment.append(buildRow(record));
+  for (const record of visible) fragment.append(buildRow(record, lang.t));
   ui.rows.replaceChildren(fragment);
-  ui.count.textContent =
-    visible.length === records.length
-      ? `${visible.length} actions`
-      : `${visible.length} of ${records.length} shown`;
+  const shown = visible.length;
+  lang.text(ui.count, (t) =>
+    shown === total ? t.activityActions(num(shown)) : t.activityShownOf(num(shown), num(total)),
+  );
+}
+
+/** Rebuild a filter's options: the "all" entry in the interface language,
+ * then one per value. Built as nodes, never markup: agent labels are
+ * self-declared text off a socket. */
+function fillOptions(
+  select: HTMLSelectElement,
+  all: Text,
+  entries: { value: string; label: string }[],
+): void {
+  const current = select.value;
+  const first = document.createElement('option');
+  first.value = '';
+  const options = entries.map(({ value, label }) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  });
+  select.replaceChildren(first, ...options);
+  lang.text(first, all);
+  select.value = current;
 }
 
 function refreshAgentOptions(agents: { agent: string; count: number }[]): void {
-  const current = ui.agent.value;
-  const options = ['<option value="">All agents</option>'];
-  for (const { agent, count } of agents) {
-    options.push(`<option value="${escapeAttr(agent)}">${escapeHtml(agent)} (${count})</option>`);
-  }
-  ui.agent.innerHTML = options.join('');
-  ui.agent.value = current;
+  lastAgents = agents;
+  fillOptions(
+    ui.agent,
+    (t) => t.activityAllAgents,
+    agents.map(({ agent, count }) => ({ value: agent, label: `${agent} (${num(count)})` })),
+  );
 }
 
 function refreshToolOptions(): void {
-  const current = ui.tool.value;
-  const options = ['<option value="">All tools</option>'];
-  for (const tool of [...knownTools].sort()) {
-    options.push(`<option value="${escapeAttr(tool)}">${escapeHtml(tool)}</option>`);
-  }
-  ui.tool.innerHTML = options.join('');
-  ui.tool.value = current;
-}
-
-/** The two option lists are the only place this page builds markup from a
- * string, and both values are server-owned. Escaped anyway: an agent label is
- * self-declared text, and "it cannot contain a quote today" is not a security
- * boundary. */
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c);
-}
-function escapeAttr(value: string): string {
-  return escapeHtml(value).replace(/"/g, '&quot;');
+  fillOptions(
+    ui.tool,
+    (t) => t.activityAllTools,
+    [...knownTools].sort().map((tool) => ({ value: tool, label: tool })),
+  );
 }
 
 async function load(): Promise<void> {
   const reply = await ask(serverFilters());
   if (!reply.ok) {
-    if (reply.error === 'not-connected') {
+    const error = reply.error;
+    if (error === 'not-connected') {
       showState(
-        'No connected tab',
-        'The trail lives in the browser-link server. Connect a tab from the popup to read it.',
+        (t) => t.activityNoTab,
+        (t) => t.activityNoTabDetail,
       );
     } else {
-      showState('Could not read the trail', reply.error);
+      showState((t) => t.activityReadFailed, errorText(error));
     }
-    ui.status.textContent = `error: ${reply.error}`;
+    lang.text(ui.status, (t) => t.activityStatusError(errorText(error)(t)));
     return;
   }
 
@@ -397,7 +441,8 @@ async function load(): Promise<void> {
   for (const record of records) knownTools.add(record.tool);
   refreshAgentOptions(reply.agents);
   refreshToolOptions();
-  ui.status.textContent = `${reply.total} actions recorded`;
+  const total = reply.total;
+  lang.text(ui.status, (t) => t.activityRecorded(num(total)));
   render();
 }
 
@@ -418,7 +463,8 @@ async function tail(): Promise<void> {
   records = [...reply.records, ...records].slice(0, MAX_ROWS_IN_VIEW);
   refreshAgentOptions(reply.agents);
   refreshToolOptions();
-  ui.status.textContent = `${reply.total} actions recorded`;
+  const total = reply.total;
+  lang.text(ui.status, (t) => t.activityRecorded(num(total)));
   render();
 }
 
@@ -485,27 +531,33 @@ function rangeFromInputs(): { from?: string; to?: string } {
   };
 }
 
-function describeRange(): string {
+/** The range the inputs hold right now, in words. Read at render time, so a
+ * summary re-rendered after a switch names the same range in the new language. */
+function describeRange(t: Messages): string {
   const from = ui.purgeFrom.value;
   const to = ui.purgeTo.value;
-  if (!from && !to) return 'the entire trail';
-  if (from && to) return `${from} → ${to}`;
-  if (from) return `everything from ${from} onwards`;
-  return `everything up to ${to}`;
+  if (!from && !to) return t.activityRangeAll;
+  if (from && to) return t.activityRangeBetween(from, to);
+  if (from) return t.activityRangeFrom(from);
+  return t.activityRangeTo(to);
 }
+
+const deletePermanentlyLabel: Text = (t) => t.activityPurgeRun;
 
 /** Invalidate any resolved count. Called on every change to the range. */
 function resetPurgeConfirmation(): void {
   pendingPurgeCount = null;
   ui.purgeRun.disabled = true;
-  ui.purgeRun.textContent = 'Delete permanently';
+  lang.text(ui.purgeRun, deletePermanentlyLabel);
   // Restate what is currently stored next to the range being chosen — deciding
   // what to delete is much easier with the total in the same sentence.
-  const current =
-    lastStats === null
-      ? ''
-      : ` Currently ${lastStats.rows.toLocaleString()} actions, ${formatBytes(lastStats.bytes)}.`;
-  ui.purgeSummary.textContent = `Ready to check: ${describeRange()}.${current}`;
+  const stats = lastStats;
+  lang.text(ui.purgeSummary, (t) =>
+    t.activityReadyToCheck(
+      describeRange(t),
+      stats === null ? null : { rows: num(stats.rows), size: formatBytes(stats.bytes) },
+    ),
+  );
 }
 
 function setDaysAgo(days: number): void {
@@ -544,23 +596,28 @@ ui.purgeTo.addEventListener('change', resetPurgeConfirmation);
 
 ui.purgeCheck.addEventListener('click', () => {
   ui.purgeCheck.disabled = true;
-  ui.purgeSummary.textContent = 'Counting…';
+  lang.text(ui.purgeSummary, (t) => t.activityCounting);
   void purgeAsk({ ...rangeFromInputs(), dryRun: true }).then((reply) => {
     ui.purgeCheck.disabled = false;
     if (!reply.ok) {
-      ui.purgeSummary.textContent = `Could not check: ${reply.error}`;
+      const error = reply.error;
+      lang.text(ui.purgeSummary, (t) => t.activityCheckFailed(errorText(error)(t)));
       return;
     }
     renderStats(reply.stats);
     pendingPurgeCount = reply.removed;
-    if (reply.removed === 0) {
-      ui.purgeSummary.textContent = `Nothing to delete in ${describeRange()}.`;
+    const { removed } = reply;
+    const rows = reply.stats.rows;
+    if (removed === 0) {
+      lang.text(ui.purgeSummary, (t) => t.activityNothingToDelete(describeRange(t)));
       ui.purgeRun.disabled = true;
       return;
     }
-    ui.purgeSummary.textContent = `This will permanently delete ${reply.removed.toLocaleString()} of ${reply.stats.rows.toLocaleString()} actions (${describeRange()}).`;
+    lang.text(ui.purgeSummary, (t) =>
+      t.activityWillDelete(num(removed), num(rows), describeRange(t)),
+    );
     ui.purgeRun.disabled = false;
-    ui.purgeRun.textContent = `Delete ${reply.removed.toLocaleString()} permanently`;
+    lang.text(ui.purgeRun, (t) => t.activityDeleteCount(num(removed)));
   });
 });
 
@@ -569,21 +626,25 @@ ui.purgeRun.addEventListener('click', () => {
   // Native confirm on purpose: it is modal, it cannot be missed, and this is
   // the last moment before rows stop existing.
   const ok = window.confirm(
-    `Permanently delete ${pendingPurgeCount.toLocaleString()} actions (${describeRange()})?\n\nThis cannot be undone.`,
+    lang.t.activityConfirmDelete(num(pendingPurgeCount), describeRange(lang.t)),
   );
   if (!ok) return;
 
   ui.purgeRun.disabled = true;
-  ui.purgeRun.textContent = 'Deleting…';
-  ui.purgeSummary.textContent = 'Deleting and reclaiming disk space…';
+  lang.text(ui.purgeRun, (t) => t.activityDeleting);
+  lang.text(ui.purgeSummary, (t) => t.activityDeletingDetail);
   void purgeAsk(rangeFromInputs()).then((reply) => {
-    ui.purgeRun.textContent = 'Delete permanently';
+    lang.text(ui.purgeRun, deletePermanentlyLabel);
     if (!reply.ok) {
-      ui.purgeSummary.textContent = `Purge failed: ${reply.error}`;
+      const error = reply.error;
+      lang.text(ui.purgeSummary, (t) => t.activityPurgeFailed(errorText(error)(t)));
       return;
     }
     renderStats(reply.stats);
-    ui.purgeSummary.textContent = `Deleted ${reply.removed.toLocaleString()} actions. ${reply.stats.rows.toLocaleString()} left, ${formatBytes(reply.stats.bytes)} on disk.`;
+    const { removed, stats } = reply;
+    lang.text(ui.purgeSummary, (t) =>
+      t.activityDeleted(num(removed), num(stats.rows), formatBytes(stats.bytes)),
+    );
     resetPurgeConfirmation();
     // The rows on screen may no longer exist — reload rather than leave the
     // table showing what was just deleted.
@@ -622,6 +683,16 @@ document.addEventListener('visibilitychange', () => {
     setLive(true);
     void tail();
   }
+});
+
+// A language switch rebuilds what is not bound text: the table (relative
+// times, outcome cells), the usage strip's dates and numbers and the filter
+// options. No request to the server: the data on screen has not changed.
+lang.onChange(() => {
+  if (lastStats !== null) renderStats(lastStats);
+  refreshAgentOptions(lastAgents);
+  refreshToolOptions();
+  if (records.length > 0) render();
 });
 
 setLive(true);

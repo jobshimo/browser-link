@@ -13,6 +13,13 @@
  */
 import type { BridgeRepairResultMessage } from '@browser-link/shared';
 import { compareSemver } from './version-status.js';
+import {
+  codeFields,
+  englishText,
+  type WorkerMessage,
+  type WorkerMessageCode,
+  type WorkerMessageValues,
+} from './worker-messages.js';
 
 /** First server version that understands `bridge.repair`. */
 export const MIN_REPAIR_VERSION = '0.41.0';
@@ -48,13 +55,24 @@ export function rememberedTabIds(stored: Record<string, unknown>): number[] {
   return ids.sort((a, b) => a - b);
 }
 
-const STOP_AND_RESTART = 'run `browser-link stop` and restart your agent';
-const NO_SERVER_MESSAGE = 'no server is running: start browser-link from your agent or a console';
+/** The English text the popup always received, plus the code and values a
+ * window renders in its own language (worker-messages.ts). */
+interface CodedText {
+  message: string;
+  code: WorkerMessageCode;
+  values?: WorkerMessageValues;
+}
+
+function coded(message: WorkerMessage): CodedText {
+  return { message: englishText(message), ...codeFields(message) };
+}
+
+const NO_SERVER: WorkerMessage = { code: 'repair-no-server' };
 
 export type RepairPlan =
   | { step: 'ask-server-restart' }
   | { step: 'reconnect-only'; tabIds: number[] }
-  | { step: 'manual'; reason: 'server-too-old' | 'no-server'; message: string };
+  | ({ step: 'manual'; reason: 'server-too-old' | 'no-server' } & CodedText);
 
 export interface RepairInput {
   /** At least one extension socket is open. */
@@ -71,48 +89,42 @@ export function planRepair(input: RepairInput): RepairPlan {
     if (input.serverVersion !== null && compareSemver(input.serverVersion, min) >= 0) {
       return { step: 'ask-server-restart' };
     }
-    const label = input.serverVersion ?? '(unknown version)';
     return {
       step: 'manual',
       reason: 'server-too-old',
-      message: `server ${label} cannot repair itself: ${STOP_AND_RESTART}`,
+      ...coded(
+        input.serverVersion === null
+          ? { code: 'repair-server-too-old' }
+          : { code: 'repair-server-too-old', values: { version: input.serverVersion } },
+      ),
     };
   }
   // No socket and no remembered tab: there is nothing to reconnect through,
   // so there is no live connection to repair either.
   if (input.rememberedTabIds.length === 0) {
-    return { step: 'manual', reason: 'no-server', message: NO_SERVER_MESSAGE };
+    return { step: 'manual', reason: 'no-server', ...coded(NO_SERVER) };
   }
   return { step: 'reconnect-only', tabIds: [...input.rememberedTabIds] };
 }
 
 /** What the popup shows under the button. */
-export interface RepairOutcome {
-  ok: boolean;
-  message: string;
+export type RepairOutcome = { ok: boolean } & CodedText;
+
+export function repairOutcome(ok: boolean, message: WorkerMessage): RepairOutcome {
+  return { ok, ...coded(message) };
 }
 
 export function describeRepairReply(reply: BridgeRepairResultMessage | 'timeout'): RepairOutcome {
-  if (reply === 'timeout') {
-    return {
-      ok: false,
-      message: `The server did not answer the repair request: ${STOP_AND_RESTART}`,
-    };
-  }
-  if (reply.ok) {
-    return {
-      ok: true,
-      message: 'The server is restarting; connected tabs reconnect by themselves.',
-    };
-  }
-  return { ok: false, message: `Repair failed: ${reply.error}` };
+  if (reply === 'timeout') return repairOutcome(false, { code: 'repair-no-answer' });
+  if (reply.ok) return repairOutcome(true, { code: 'repair-restarting' });
+  return repairOutcome(false, { code: 'repair-failed', values: { detail: reply.error } });
 }
 
 export function describeReconnectResults(results: ReadonlyArray<{ ok: boolean }>): RepairOutcome {
   const reconnected = results.filter((r) => r.ok).length;
-  if (reconnected === 0) return { ok: false, message: NO_SERVER_MESSAGE };
-  return {
-    ok: true,
-    message: `Reconnected ${reconnected} of ${results.length} tab${results.length === 1 ? '' : 's'}.`,
-  };
+  if (reconnected === 0) return repairOutcome(false, NO_SERVER);
+  return repairOutcome(true, {
+    code: 'repair-reconnected',
+    values: { reconnected, total: results.length },
+  });
 }

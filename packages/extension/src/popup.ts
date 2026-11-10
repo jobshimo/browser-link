@@ -27,11 +27,13 @@ import {
   noticeAcknowledgeLabel,
   noticeCloseLabel,
   noticeFull,
-  noticeLanguage,
   noticeShortLineParts,
   shouldShowNoticeBeforeConnect,
 } from './notice-policy.js';
 import type { FlowStep } from './flow.js';
+import type { Messages } from './i18n.js';
+import { startUiLanguage } from './ui-language.js';
+import { renderWorkerText } from './worker-messages.js';
 import {
   runningInstalledLine,
   shouldShowVersionBanner,
@@ -42,22 +44,30 @@ import {
 // produces. Kept in sync by hand because there's no shared workspace
 // dep between the two extension entrypoints today — and these types
 // are tiny.
-interface ConnectResult {
-  ok: boolean;
+
+/** A failure as the service worker reports it: its English `error`, plus a
+ * `code` and `values` when it has them (worker-messages.ts). Both are
+ * `unknown`: an older or newer worker may send neither or a code this popup
+ * does not know, and then the English text is shown. */
+interface WorkerFailure {
   error?: string;
+  code?: unknown;
+  values?: unknown;
+}
+
+interface ConnectResult extends WorkerFailure {
+  ok: boolean;
   serverTabId?: string;
 }
 
-interface RecordingActionResult {
+interface RecordingActionResult extends WorkerFailure {
   ok: boolean;
-  error?: string;
 }
 
-interface StopRecordingResult {
+interface StopRecordingResult extends WorkerFailure {
   ok: boolean;
   steps?: FlowStep[];
   capped?: boolean;
-  error?: string;
 }
 
 interface RecordingStatusResult {
@@ -96,10 +106,13 @@ interface PendingDialogResult {
  * version-status.ts (shared by both entrypoints). */
 type VersionCheckResult = VersionCheck;
 
-/** background.ts's answer to `{ action: 'repairConnection' }`. */
+/** background.ts's answer to `{ action: 'repairConnection' }`: the English
+ * `message` plus, from 0.51.0, its `code` and `values`. */
 interface RepairResult {
   ok: boolean;
   message: string;
+  code?: unknown;
+  values?: unknown;
 }
 
 /** background.ts's answer to `{ action: 'flowsStatus' }`. `running` spans
@@ -138,13 +151,26 @@ function $(id: string): HTMLElement {
   return el;
 }
 
+/** The interface language (header selector). Every text this file sets goes
+ * through `lang.text`/`lang.attr` as a function of the dictionary, so a
+ * switch re-renders it in its current state; text that is not interface
+ * copy (a server error, a URL) is returned as is by its function. */
+const lang = await startUiLanguage();
+
+/** Text set from the dictionary, or a message to show verbatim. */
+type Text = (t: Messages) => string;
+const verbatim =
+  (message: string): Text =>
+  () =>
+    message;
+
 function setCardState(state: CardState): void {
   $('card').dataset.state = state;
 }
 
-function setStatus(state: CardState, label: string, tabId?: string): void {
+function setStatus(state: CardState, label: Text, tabId?: string): void {
   setCardState(state);
-  $('status-label').textContent = label;
+  lang.text($('status-label'), label);
   const tabIdEl = $('tab-id');
   if (tabId) {
     tabIdEl.textContent = tabId;
@@ -169,9 +195,9 @@ function setExplanation(html: string | null): void {
   el.innerHTML = html;
 }
 
-function setAction(label: string, variant: 'primary' | 'danger', disabled = false): void {
+function setAction(label: Text, variant: 'primary' | 'danger', disabled = false): void {
   const btn = $('action') as HTMLButtonElement;
-  btn.textContent = label;
+  lang.text(btn, label);
   btn.className = variant;
   btn.disabled = disabled;
 }
@@ -219,9 +245,6 @@ function createRepairControls(): {
   const button = document.createElement('button');
   button.id = 'repair-connection';
   button.type = 'button';
-  button.textContent = REPAIR_LABEL;
-  button.title =
-    'Restart the browser-link server on the installed version, or reconnect the tabs you connected';
   button.style.marginTop = '8px';
   button.style.background = 'var(--bg)';
   button.style.color = 'var(--connecting-fg)';
@@ -237,29 +260,34 @@ function createRepairControls(): {
   outcome.style.paddingTop = '0';
 
   action.after(versionLine, button, outcome);
+  lang.text(button, (t) => t.popupRepair);
+  lang.attr(button, 'title', (t) => t.popupRepairTitle);
   return { versionLine, button, outcome };
 }
 
-const REPAIR_LABEL = 'Repair connection';
 const repairControls = createRepairControls();
 
 function renderRunningInstalledLine(check: VersionCheckResult): void {
-  const line = runningInstalledLine(check);
-  repairControls.versionLine.hidden = line === null;
-  repairControls.versionLine.textContent = line ?? '';
+  const { versionLine } = repairControls;
+  versionLine.hidden = runningInstalledLine(check, lang.t) === null;
+  lang.text(versionLine, (t) => runningInstalledLine(check, t) ?? '');
 }
 
 function setRepairOutcome(result: RepairResult): void {
   const { outcome } = repairControls;
   outcome.hidden = false;
-  outcome.textContent = result.message;
+  // Composed by the service worker (repair-policy.ts) with a code, rendered
+  // in the interface language; without one, its English text.
+  lang.text(outcome, (t) =>
+    renderWorkerText(t, { text: result.message, code: result.code, values: result.values }),
+  );
   outcome.style.color = result.ok ? 'var(--connected-fg)' : 'var(--error-fg)';
 }
 
 async function onRepair(): Promise<void> {
   const { button, outcome } = repairControls;
   button.disabled = true;
-  button.textContent = 'Repairing…';
+  lang.text(button, (t) => t.popupRepairing);
   outcome.hidden = true;
   try {
     setRepairOutcome(await send<RepairResult>({ action: 'repairConnection' }));
@@ -267,7 +295,7 @@ async function onRepair(): Promise<void> {
     setRepairOutcome({ ok: false, message: err instanceof Error ? err.message : String(err) });
   } finally {
     button.disabled = false;
-    button.textContent = REPAIR_LABEL;
+    lang.text(button, (t) => t.popupRepair);
   }
   await refresh();
 }
@@ -297,6 +325,21 @@ async function refreshVersionBanner(): Promise<void> {
 /** DOM id of the synthetic <option> injected for out-of-preset values. */
 const IDLE_TTL_CUSTOM_OPTION_ID = 'idle-ttl-custom';
 
+/** The curated choices, in minutes; 0 is "Never". */
+const IDLE_TTL_PRESETS = [5, 15, 30, 60, 120, 0] as const;
+
+/** Fill the select with the presets, labelled in the interface language. */
+function renderIdleTtlPresets(select: HTMLSelectElement): void {
+  for (const minutes of IDLE_TTL_PRESETS) {
+    const option = document.createElement('option');
+    option.value = String(minutes);
+    lang.text(option, (t) => (minutes === 0 ? t.popupNever : t.popupMinutes(minutes)));
+    select.appendChild(option);
+  }
+}
+
+renderIdleTtlPresets($('idle-ttl-select') as HTMLSelectElement);
+
 /**
  * Make sure the select can actually DISPLAY `minutes`. The popup only
  * ships a curated preset list (5/15/30/60/120/Never), but the CLI accepts
@@ -320,7 +363,7 @@ function ensureIdleTtlOption(select: HTMLSelectElement, minutes: number): void {
   const option = custom ?? document.createElement('option');
   option.id = IDLE_TTL_CUSTOM_OPTION_ID;
   option.value = value;
-  option.textContent = `${minutes} min (custom)`;
+  lang.text(option, (t) => t.popupMinutesCustom(minutes));
   if (!custom) {
     const neverOption = Array.from(select.options).find((opt) => opt.value === '0') ?? null;
     select.insertBefore(option, neverOption);
@@ -356,10 +399,13 @@ async function onIdleTtlChange(): Promise<void> {
 
 /** Card label shown while background.ts's auto-reconnect scheduler is
  * retrying a dropped tab. Doubles as the sentinel `syncReconnectCard`
- * matches on, so the poll only ever rewrites the card into or out of THIS
- * state and can never clobber onAction's transient "Connecting…"/
- * "Disconnecting…" labels. */
-const RECONNECTING_LABEL = 'Reconnecting…';
+ * matches on (in the current language: a switch re-renders the label too),
+ * so the poll only ever rewrites the card into or out of THIS state and can
+ * never clobber onAction's transient "Connecting…"/"Disconnecting…" labels. */
+const reconnectingLabel: Text = (t) => t.popupStatusReconnecting;
+const connectLabel: Text = (t) => t.popupConnect;
+const disconnectLabel: Text = (t) => t.popupDisconnect;
+const retryLabel: Text = (t) => t.popupRetry;
 
 /**
  * Keep the connection card truthful across reconnect transitions while the
@@ -370,7 +416,7 @@ const RECONNECTING_LABEL = 'Reconnecting…';
  * connected on exhaustion). Everything else is left alone.
  */
 function syncReconnectCard(status: StatusResult): void {
-  const showingReconnect = $('status-label').textContent === RECONNECTING_LABEL;
+  const showingReconnect = $('status-label').textContent === reconnectingLabel(lang.t);
   const shouldShowReconnect = !status.connected && status.reconnecting === true;
   if (shouldShowReconnect === showingReconnect) return;
   if (shouldShowReconnect) {
@@ -378,16 +424,16 @@ function syncReconnectCard(status: StatusResult): void {
     // a user-driven round-trip is mid-flight and owns the card.
     const cardState = $('card').dataset.state;
     if (cardState !== 'idle' && cardState !== 'connected') return;
-    setStatus('connecting', RECONNECTING_LABEL);
-    setAction('Connect this tab', 'primary');
+    setStatus('connecting', reconnectingLabel);
+    setAction(connectLabel, 'primary');
     return;
   }
   if (status.connected) {
-    setStatus('connected', 'Connected', status.serverTabId);
-    setAction('Disconnect this tab', 'danger');
+    setStatus('connected', (t) => t.popupStatusConnected, status.serverTabId);
+    setAction(disconnectLabel, 'danger');
   } else {
-    setStatus('idle', 'Not connected');
-    setAction('Connect this tab', 'primary');
+    setStatus('idle', (t) => t.popupStatusNotConnected);
+    setAction(connectLabel, 'primary');
   }
 }
 
@@ -398,8 +444,10 @@ function renderPendingDialog(pending: PendingDialogInfo | null): void {
     return;
   }
   box.hidden = false;
-  $('dialog-type').textContent = pending.type;
-  $('dialog-message').textContent = pending.message || '(empty)';
+  // `alert` / `confirm` / `prompt`: the dialog's technical kind, not copy.
+  lang.plain($('dialog-type'), pending.type);
+  const message = pending.message;
+  lang.text($('dialog-message'), (t) => message || t.popupDialogEmpty);
   const promptInput = $('dialog-prompt-input') as HTMLInputElement;
   if (pending.type === 'prompt') {
     promptInput.hidden = false;
@@ -459,33 +507,43 @@ function renderRecordingReview(
   ambiguousIndices: number[],
 ): void {
   $('recording-review').hidden = false;
-  const capNotice = capped ? ' — stopped: 20-step limit reached' : '';
-  $('recording-step-count').textContent = `${steps.length}${capNotice}`;
+  lang.text($('recording-step-count'), (t) => t.popupStepsCaptured(steps.length, capped));
   const ambiguous = new Set(ambiguousIndices);
   const list = $('recording-step-list');
   list.innerHTML = '';
   steps.forEach((step, i) => {
     const li = document.createElement('li');
-    li.textContent = describeFlowStep(step);
+    const description = document.createElement('span');
+    li.appendChild(description);
+    list.appendChild(li);
+    lang.text(description, (t) => describeFlowStep(step, t));
     if (ambiguous.has(i)) {
       const warn = document.createElement('span');
-      warn.textContent = ' ⚠ selector may match multiple elements';
       warn.style.color = 'var(--idle-fg)';
       li.appendChild(warn);
+      lang.text(warn, (t) => t.popupSelectorAmbiguous);
     }
-    list.appendChild(li);
   });
 }
 
-function setRecordingError(message: string | null): void {
+/** `message` is the service worker's own error when it sent one, else the
+ * popup's fallback sentence. */
+function setRecordingError(message: Text | null): void {
   const el = $('recording-error');
   if (message === null) {
     el.hidden = true;
-    el.textContent = '';
+    lang.plain(el, '');
     return;
   }
   el.hidden = false;
-  el.textContent = message;
+  lang.text(el, message);
+}
+
+/** The service worker's error in the interface language (its English text
+ * when it carries no known code), or `fallback` when it sent none. */
+function errorOr(failure: WorkerFailure, fallback: Text): Text {
+  const { error, code, values } = failure;
+  return error === undefined ? fallback : (t) => renderWorkerText(t, { text: error, code, values });
 }
 
 /**
@@ -522,11 +580,11 @@ async function refreshRecordingUi(tabId: number, connected: boolean): Promise<vo
   $('recording-review').hidden = true;
   if (status.active) {
     indicator.hidden = false;
-    actionBtn.textContent = 'Stop';
+    lang.text(actionBtn, (t) => t.popupStop);
     actionBtn.className = 'danger';
   } else {
     indicator.hidden = true;
-    actionBtn.textContent = 'Record';
+    lang.text(actionBtn, (t) => t.popupRecord);
     actionBtn.className = 'primary';
   }
 }
@@ -538,10 +596,14 @@ async function onRecordingAction(): Promise<void> {
   const status = await send<RecordingStatusResult>({ action: 'recordingStatus', tabId: tab.id });
   if (status.active) {
     const result = await send<StopRecordingResult>({ action: 'stopRecording', tabId: tab.id });
-    if (!result.ok) setRecordingError(result.error ?? 'Could not stop recording.');
+    if (!result.ok) {
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotStopRecording));
+    }
   } else {
     const result = await send<RecordingActionResult>({ action: 'startRecording', tabId: tab.id });
-    if (!result.ok) setRecordingError(result.error ?? 'Could not start recording.');
+    if (!result.ok) {
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotStartRecording));
+    }
   }
   await refreshRecordingUi(tab.id, true);
 }
@@ -560,7 +622,7 @@ async function onSaveRecording(): Promise<void> {
       name: nameInput.value,
     });
     if (!result.ok) {
-      setRecordingError(result.error ?? 'Could not save the flow.');
+      setRecordingError(errorOr(result, (t) => t.popupCouldNotSaveFlow));
       return;
     }
     nameInput.value = '';
@@ -610,10 +672,10 @@ function ensureRunningRow(list: HTMLElement, flowId: string): HTMLElement {
   const stop = document.createElement('button');
   stop.className = 'danger flow-stop';
   stop.dataset.flowId = flowId;
-  stop.textContent = 'Stop';
 
   row.append(dot, text, stop);
   list.appendChild(row);
+  lang.text(stop, (t) => t.popupStop);
   return row;
 }
 
@@ -627,19 +689,22 @@ function renderRunningFlows(views: RunningFlowView[]): void {
     const detail = row.querySelector('.flow-detail');
     const dot = row.querySelector('.flow-dot');
     const stop = row.querySelector('button');
-    if (name) name.textContent = flowTabLabel(view);
+    if (name) lang.text(name, (t) => flowTabLabel(view, t));
     // Set every tick rather than at row creation: a row is updated in
     // place for its whole life (see ensureRunningRow), so anything left
     // unset here would never be corrected.
     if (dot instanceof HTMLElement) dot.dataset.detached = view.detached ? 'true' : 'false';
     if (detail) {
-      detail.textContent = `${describeFlowProgress(view)} · ${formatFlowDuration(view.elapsedMs)}`;
+      lang.text(
+        detail,
+        (t) => `${describeFlowProgress(view, t)} · ${formatFlowDuration(view.elapsedMs)}`,
+      );
     }
     if (stop instanceof HTMLButtonElement) {
       // One click, no confirmation — but the button does not vanish
       // either: cancellation is cooperative and lands within one step, so
       // "Stopping…" is the truthful state for that gap.
-      stop.textContent = view.cancelling ? 'Stopping…' : 'Stop';
+      lang.text(stop, (t) => (view.cancelling ? t.popupStopping : t.popupStop));
       stop.disabled = view.cancelling;
     }
   }
@@ -660,17 +725,17 @@ function renderFlowHistory(entries: FlowHistoryEntry[]): void {
     const outcome = document.createElement('span');
     outcome.className = 'flow-outcome';
     outcome.dataset.outcome = entry.outcome;
-    outcome.textContent = entry.outcome;
 
     const text = document.createElement('div');
     text.className = 'flow-text';
     const detail = document.createElement('div');
     detail.className = 'flow-detail';
-    detail.textContent = describeFlowHistoryEntry(entry);
     text.appendChild(detail);
 
     row.append(outcome, text);
     list.appendChild(row);
+    lang.text(outcome, (t) => t.flowOutcome(entry.outcome));
+    lang.text(detail, (t) => describeFlowHistoryEntry(entry, t));
   }
   $('flows-history-title').hidden = entries.length === 0;
 }
@@ -705,8 +770,8 @@ async function refresh(): Promise<void> {
   const urlEl = $('url');
 
   if (!tab?.id) {
-    setStatus('error', 'No active tab');
-    setAction('Open a tab first', 'primary', true);
+    setStatus('error', (t) => t.popupStatusNoTab);
+    setAction((t) => t.popupOpenTabFirst, 'primary', true);
     urlEl.textContent = '';
     setExplanation(null);
     renderPendingDialog(null);
@@ -725,8 +790,8 @@ async function refresh(): Promise<void> {
   });
 
   if (status.connected) {
-    setStatus('connected', 'Connected', status.serverTabId);
-    setAction('Disconnect this tab', 'danger');
+    setStatus('connected', (t) => t.popupStatusConnected, status.serverTabId);
+    setAction(disconnectLabel, 'danger');
     await refreshPendingDialog(tab.id);
   } else if (status.reconnecting) {
     // Auto-reconnect is retrying after an involuntary drop (e.g. the
@@ -734,12 +799,12 @@ async function refresh(): Promise<void> {
     // stays available: pressing it cancels any FUTURE retries, and if an
     // attempt is already mid-flight the background's per-tab lock answers
     // with a benign already-in-progress result that keeps this same card.
-    setStatus('connecting', RECONNECTING_LABEL);
-    setAction('Connect this tab', 'primary');
+    setStatus('connecting', reconnectingLabel);
+    setAction(connectLabel, 'primary');
     renderPendingDialog(null);
   } else {
-    setStatus('idle', 'Not connected');
-    setAction('Connect this tab', 'primary');
+    setStatus('idle', (t) => t.popupStatusNotConnected);
+    setAction(connectLabel, 'primary');
     renderPendingDialog(null);
   }
   await refreshRecordingUi(tab.id, status.connected);
@@ -765,39 +830,45 @@ async function respondToDialog(accept: boolean): Promise<void> {
 }
 
 /**
- * Product notice. The popup has no language setting, so the notice follows
- * the browser UI language (see notice-policy.ts). Two modes share one
- * panel: 'read' (opened from the bottom line, Close only) and 'gate'
- * (before the first Connect on this profile: "I understand" stores the
- * acknowledgement and resumes the Connect; Close cancels it).
+ * Product notice, in the interface language (see notice-policy.ts). Two
+ * modes share one panel: 'read' (opened from the bottom line, Close only)
+ * and 'gate' (before the first Connect on this profile: "I understand"
+ * stores the acknowledgement and resumes the Connect; Close cancels it).
+ * Its approved copy lives in notice-policy.ts, keyed by language, so a
+ * switch re-renders it from there rather than from the dictionary.
  */
-const NOTICE_LANG = noticeLanguage(navigator.language);
-
 function renderNoticeLine(): void {
-  const { lead, link } = noticeShortLineParts(NOTICE_LANG);
-  $('notice-line-text').textContent = lead;
-  $('notice-open').textContent = link;
+  const { lead, link } = noticeShortLineParts(lang.language);
+  lang.plain($('notice-line-text'), lead);
+  lang.plain($('notice-open'), link);
 }
 
-function openNotice(mode: 'read' | 'gate'): void {
-  const notice = noticeFull(NOTICE_LANG);
-  $('notice-title').textContent = notice.title;
-  const body = $('notice-body');
-  body.replaceChildren(
+function renderNoticePanel(): void {
+  const notice = noticeFull(lang.language);
+  lang.plain($('notice-title'), notice.title);
+  $('notice-body').replaceChildren(
     ...notice.paragraphs.map((text) => {
       const p = document.createElement('p');
       p.textContent = text;
       return p;
     }),
   );
-  const ack = $('notice-acknowledge') as HTMLButtonElement;
-  ack.textContent = noticeAcknowledgeLabel(NOTICE_LANG);
-  ack.hidden = mode !== 'gate';
-  $('notice-close').textContent = noticeCloseLabel(NOTICE_LANG);
+  lang.plain($('notice-acknowledge'), noticeAcknowledgeLabel(lang.language));
+  lang.plain($('notice-close'), noticeCloseLabel(lang.language));
+}
+
+function openNotice(mode: 'read' | 'gate'): void {
+  renderNoticePanel();
+  ($('notice-acknowledge') as HTMLButtonElement).hidden = mode !== 'gate';
   const panel = $('notice-panel');
   panel.hidden = false;
   panel.scrollIntoView({ block: 'nearest' });
 }
+
+lang.onChange(() => {
+  renderNoticeLine();
+  renderNoticePanel();
+});
 
 function closeNotice(): void {
   $('notice-panel').hidden = true;
@@ -833,8 +904,11 @@ async function onAction(): Promise<void> {
   // Transient "connecting" state — the card flips to the blue palette so
   // the user sees something is happening even if the round-trip to the
   // server takes a beat.
-  setStatus('connecting', status.connected ? 'Disconnecting…' : 'Connecting…');
-  setAction(status.connected ? 'Disconnecting…' : 'Connecting…', 'primary', true);
+  const inFlight: Text = status.connected
+    ? (t) => t.popupStatusDisconnecting
+    : (t) => t.popupStatusConnecting;
+  setStatus('connecting', inFlight);
+  setAction(inFlight, 'primary', true);
 
   if (status.connected) {
     await send<{ ok: boolean }>({ action: 'disconnect', tabId: tab.id });
@@ -850,12 +924,15 @@ async function onAction(): Promise<void> {
         // benign: that attempt is doing exactly what the click asked for.
         // Show the reconnect card; the 800ms poll flips it to Connected
         // (or Not connected) once the in-flight attempt lands.
-        setStatus('connecting', RECONNECTING_LABEL);
-        setAction('Connect this tab', 'primary');
+        setStatus('connecting', reconnectingLabel);
+        setAction(connectLabel, 'primary');
         return;
       }
-      setStatus('error', result.error ?? 'Unknown error');
-      setAction('Retry', 'primary');
+      setStatus(
+        'error',
+        errorOr(result, (t) => t.popupUnknownError),
+      );
+      setAction(retryLabel, 'primary');
       return;
     }
   }
@@ -865,8 +942,8 @@ async function onAction(): Promise<void> {
 
 $('action').addEventListener('click', () => {
   onAction().catch((err: unknown) => {
-    setStatus('error', err instanceof Error ? err.message : String(err));
-    setAction('Retry', 'primary');
+    setStatus('error', verbatim(err instanceof Error ? err.message : String(err)));
+    setAction(retryLabel, 'primary');
   });
 });
 
@@ -880,8 +957,8 @@ $('notice-close').addEventListener('click', () => {
 
 $('notice-acknowledge').addEventListener('click', () => {
   acknowledgeNoticeAndConnect().catch((err: unknown) => {
-    setStatus('error', err instanceof Error ? err.message : String(err));
-    setAction('Retry', 'primary');
+    setStatus('error', verbatim(err instanceof Error ? err.message : String(err)));
+    setAction(retryLabel, 'primary');
   });
 });
 
@@ -922,13 +999,13 @@ $('flow-recording-toggle').addEventListener('change', () => {
 
 $('recording-action').addEventListener('click', () => {
   onRecordingAction().catch((err: unknown) => {
-    setRecordingError(err instanceof Error ? err.message : String(err));
+    setRecordingError(verbatim(err instanceof Error ? err.message : String(err)));
   });
 });
 
 $('recording-save').addEventListener('click', () => {
   onSaveRecording().catch((err: unknown) => {
-    setRecordingError(err instanceof Error ? err.message : String(err));
+    setRecordingError(verbatim(err instanceof Error ? err.message : String(err)));
   });
 });
 
@@ -949,7 +1026,7 @@ $('flows-running').addEventListener('click', (ev) => {
   if (flowId === undefined) return;
   // Optimistic local echo: the round trip is sub-millisecond, but the
   // button must never look ignored.
-  button.textContent = 'Stopping…';
+  lang.text(button, (t) => t.popupStopping);
   button.disabled = true;
   stopFlow(flowId).catch(() => {
     // Best effort — the next poll tick re-syncs the row with whatever the
@@ -1019,7 +1096,7 @@ $('app-name').textContent = `browser-link (${chrome.runtime.getManifest().versio
 
 renderNoticeLine();
 refresh().catch((err: unknown) => {
-  setStatus('error', err instanceof Error ? err.message : String(err));
+  setStatus('error', verbatim(err instanceof Error ? err.message : String(err)));
 });
 refreshIdleTtlSetting().catch(() => {
   // Best effort — the periodic timer above retries every 800ms regardless.

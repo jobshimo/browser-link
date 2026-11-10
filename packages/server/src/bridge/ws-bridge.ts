@@ -5,6 +5,7 @@ import type {
   AdminActionMessage,
   AdminActionResult,
   AdminDescribeMessage,
+  AdminRequestLanguage,
   AdminState,
   ActivityQueryMessage,
   ActivityStatsPayload,
@@ -180,11 +181,13 @@ export interface WsBridgeOptions {
 /** What the primary hands the bridge to answer `admin.describe` and
  * `admin.action`. Both may reject; the bridge turns that into `ok: false`. */
 export interface AdminHandlers {
-  describe: () => Promise<AdminState>;
+  /** `language`: the extension's, when its request carried a valid one. */
+  describe: (opts?: { language?: AdminRequestLanguage }) => Promise<AdminState>;
   action: (req: {
     id: string;
     value?: string | number | boolean;
     confirm?: boolean;
+    language?: AdminRequestLanguage;
   }) => Promise<AdminActionResult>;
 }
 
@@ -741,6 +744,12 @@ function errorMessage(error: unknown): string {
 
 const ADMIN_UNAVAILABLE = 'admin panel unavailable';
 
+/** The frame's `language` when it is one the server speaks; anything else
+ * (absent, an older extension, a typo) means the configured language. */
+function requestedAdminLanguage(value: unknown): { language?: AdminRequestLanguage } {
+  return value === 'en' || value === 'es' ? { language: value } : {};
+}
+
 /**
  * Answer one `admin.describe` or `admin.action` frame. Exported so it is
  * unit-testable directly, like `handleActivityQueryMessage`. Never rejects:
@@ -766,7 +775,7 @@ export async function handleAdminMessage(
         kind: 'admin.state',
         request_id: msg.request_id,
         ok: true,
-        state: await admin.describe(),
+        state: await admin.describe(requestedAdminLanguage(msg.language)),
       };
     } catch (error) {
       return {
@@ -792,6 +801,7 @@ export async function handleAdminMessage(
       ? { value }
       : {}),
     ...(msg.confirm === true ? { confirm: true } : {}),
+    ...requestedAdminLanguage(msg.language),
   };
   try {
     return {

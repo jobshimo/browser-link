@@ -1,10 +1,10 @@
-import { loadConfig } from '../config.js';
 import { buildServerStatus } from '../commands/doctor.js';
 import { checkForUpdates, type UpdateCheckResult } from '../commands/update-check.js';
 import { formatUpdate } from '../commands/updates.js';
 import { buildVersionInfo } from '../lifecycle/version-endpoint.js';
 import { readInstalledVersion } from '../version.js';
 import type { AdminHandlers } from '../bridge/ws-bridge.js';
+import type { Language } from '../commands/welcome.js';
 import { applyAdminAction } from './actions.js';
 import { adminLanguage, buildAdminState, type AdminInput } from './descriptor.js';
 import { gatherAdminInput } from './sources.js';
@@ -27,9 +27,9 @@ export interface PrimaryAdminOptions {
   doctor?: () => Promise<string[]>;
 }
 
-async function runDoctorLines(): Promise<string[]> {
+async function runDoctorLines(language: Language): Promise<string[]> {
   const { runDoctor, formatDoctor } = await import('../commands/doctor.js');
-  return formatDoctor(await runDoctor(), adminLanguage(loadConfig())).split('\n');
+  return formatDoctor(await runDoctor(), language).split('\n');
 }
 
 export function createPrimaryAdminHandlers(opts: PrimaryAdminOptions): AdminHandlers {
@@ -63,20 +63,21 @@ export function createPrimaryAdminHandlers(opts: PrimaryAdminOptions): AdminHand
       });
   };
 
-  const checkUpdatesLines = async (): Promise<string[]> => {
+  const checkUpdatesLines = async (language: Language): Promise<string[]> => {
     const r = await check({ force: true });
     update = { latest: r.latest, isNewer: r.isNewer };
     const info =
       r.latest === null
         ? { current: r.current, latest: null, newer: null }
         : { current: r.current, latest: r.latest, newer: r.isNewer };
-    return formatUpdate(info, adminLanguage(loadConfig())).split('\n');
+    return formatUpdate(info, language).split('\n');
   };
 
   return {
-    describe: async () => {
+    describe: async (opts = {}) => {
       startBackgroundCheck();
-      return buildAdminState(await input());
+      const facts = await input();
+      return buildAdminState(facts, opts.language ?? adminLanguage(facts.config));
     },
     action: (req) =>
       applyAdminAction(req, {

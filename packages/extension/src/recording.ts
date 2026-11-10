@@ -14,6 +14,8 @@
  * that has access to a field's real value in the first place.
  */
 import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
+import type { Messages } from './i18n.js';
+import type { WorkerMessage } from './worker-messages.js';
 
 /** Reuses `MAX_FLOW_STEPS` from flow.ts (itself mirroring the server's
  * `browser.flow` schema) as the single source of truth — a recording can
@@ -104,7 +106,7 @@ export function generateRecordingSession(): RecordingSession {
  * scope for this fix), so a Discard is a promise about what the extension
  * does with the capture, not a guarantee the server never saw it.
  */
-export const DISCARDED_WHILE_SAVING_MESSAGE = 'Discarded before the save finished.';
+export const DISCARDED_WHILE_SAVING: WorkerMessage = { code: 'recording-discarded-while-saving' };
 
 /**
  * Pure guard for `saveRecording`'s success continuation: true only when
@@ -294,17 +296,17 @@ export function isNavigationForRecording(lastRecordedUrl: string, currentUrl: st
 /** One-line human-readable description of a `FlowStep`, for the popup's
  * step review list. Deliberately terse — the popup shows these in a
  * scrollable `<ol>` alongside the step count. */
-export function describeFlowStep(step: FlowStep): string {
-  if ('click' in step) return `Click ${step.click.selector ?? '(implicit target)'}`;
-  if ('type' in step) return `Type into ${step.type.selector ?? '(focused field)'}`;
-  if ('press' in step) return `Press ${step.press.key}`;
+export function describeFlowStep(step: FlowStep, t: Messages): string {
+  if ('click' in step) return t.stepClick(step.click.selector ?? t.stepImplicitTarget);
+  if ('type' in step) return t.stepType(step.type.selector ?? t.stepFocusedField);
+  if ('press' in step) return t.stepPress(step.press.key);
   if ('wait_for' in step) {
     const w = step.wait_for;
-    if (w.selector) return `Wait for ${w.selector}`;
-    if (w.expression) return `Wait for ${w.expression}`;
-    if (w.network_url) return `Wait for network: ${w.network_url}`;
-    return 'Wait';
+    if (w.selector) return t.stepWaitFor(w.selector);
+    if (w.expression) return t.stepWaitFor(w.expression);
+    if (w.network_url) return t.stepWaitForNetwork(w.network_url);
+    return t.stepWait;
   }
-  if ('find' in step) return `Find "${step.find.text}"`;
-  return 'Unknown step';
+  if ('find' in step) return t.stepFind(step.find.text);
+  return t.stepUnknown;
 }

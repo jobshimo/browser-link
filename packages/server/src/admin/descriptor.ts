@@ -306,8 +306,13 @@ function referenceSection(input: AdminInput, t: AdminI18n): AdminSection {
   };
 }
 
-export function buildAdminState(input: AdminInput): AdminState {
-  const language = adminLanguage(input.config);
+/** `language`: the one an `admin.describe`/`admin.action` asked for (the
+ * extension's interface language), for this answer only; by default the
+ * configured one. The `language` item's value stays the configured one. */
+export function buildAdminState(
+  input: AdminInput,
+  language: Language = adminLanguage(input.config),
+): AdminState {
   const t = ADMIN_I18N[language];
   return {
     version: 1,

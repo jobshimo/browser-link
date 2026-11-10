@@ -1,5 +1,5 @@
 /**
- * Render model for the popup's Admin section.
+ * Render model for the Admin window.
  *
  * The server describes its administration state and actions as data, with
  * every label already localised (`AdminState`). This module turns that data
@@ -16,18 +16,23 @@ import type {
   AdminState,
   AdminUiStrings,
 } from '@browser-link/shared';
+import { messages, type Language, type Messages } from './i18n.js';
 
 /** Used when the server sent no `ui` block, or when no server answered at all
- * (no tab connected), so the popup still has words to show. */
-export const FALLBACK_ADMIN_UI: AdminUiStrings = {
-  language: 'en',
-  confirm: 'Confirm',
-  cancel: 'Cancel',
-  apply: 'Apply',
-  notConnected: 'Connect a tab to administer the server',
-  restartRequired: 'Restart the server to apply this change',
-  changed: 'Changed',
-};
+ * (no tab connected), so the window still has words to show, in the
+ * interface language. */
+export function fallbackAdminUi(language: Language): AdminUiStrings {
+  const t = messages(language);
+  return {
+    language,
+    confirm: t.adminConfirm,
+    cancel: t.cancel,
+    apply: t.adminApply,
+    notConnected: t.adminNotConnected,
+    restartRequired: t.adminRestartRequired,
+    changed: t.adminChanged,
+  };
+}
 
 export type AdminControl = 'none' | 'toggle' | 'select' | 'button' | 'link';
 
@@ -62,9 +67,9 @@ export interface AdminRequest {
 
 const EMPTY_VALUE = '—';
 
-function stringifyValue(value: AdminItem['value']): string {
+function stringifyValue(value: AdminItem['value'], t: Messages): string {
   if (value === undefined || value === null || value === '') return EMPTY_VALUE;
-  if (typeof value === 'boolean') return value ? 'on' : 'off';
+  if (typeof value === 'boolean') return value ? t.adminOn : t.adminOff;
   return String(value);
 }
 
@@ -78,14 +83,14 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
-function rowFor(section: AdminSection, item: AdminItem): AdminRow {
+function rowFor(section: AdminSection, item: AdminItem, t: Messages): AdminRow {
   const row: AdminRow = {
     sectionId: section.id,
     sectionTitle: section.title,
     itemId: item.id,
     kind: item.kind,
     label: item.label,
-    valueText: stringifyValue(item.value),
+    valueText: stringifyValue(item.value, t),
     control: 'none',
   };
   if (item.description !== undefined) row.description = item.description;
@@ -137,7 +142,7 @@ function rowFor(section: AdminSection, item: AdminItem): AdminRow {
 
 /** Flatten the server state into rows, section then item order. A malformed
  * state yields no rows: the popup shows an empty section, never a crash. */
-export function buildAdminRows(state: AdminState | null | undefined): AdminRow[] {
+export function buildAdminRows(state: AdminState | null | undefined, t: Messages): AdminRow[] {
   if (!state || !Array.isArray(state.sections)) return [];
   const rows: AdminRow[] = [];
   // The state arrives off a socket as JSON: entries are typed loosely here so
@@ -148,21 +153,24 @@ export function buildAdminRows(state: AdminState | null | undefined): AdminRow[]
     const items = section.items as (AdminItem | null | undefined)[];
     for (const item of items) {
       if (!item || typeof item.id !== 'string') continue;
-      rows.push(rowFor(section, item));
+      rows.push(rowFor(section, item, t));
     }
   }
   return rows;
 }
 
-/** The server's UI strings, or the English fallback. */
-export function adminUi(state: AdminState | null | undefined): AdminUiStrings {
-  return state?.ui ?? FALLBACK_ADMIN_UI;
+/** The server's UI strings, or the fallback in the interface language. */
+export function adminUi(state: AdminState | null | undefined, language: Language): AdminUiStrings {
+  return state?.ui ?? fallbackAdminUi(language);
 }
 
-/** `not-connected` is the background's own code for "no open socket"; it
- * reads as the server's (or fallback) sentence. Anything else is shown as is. */
-export function describeAdminError(error: string, ui: AdminUiStrings): string {
-  return error === 'not-connected' ? ui.notConnected : error;
+/** The service worker's own codes read in the interface language:
+ * `not-connected` (no open socket) as the server's (or fallback) sentence,
+ * `timeout` (no answer in time) from the dictionary. Anything else is the
+ * server's text, shown as is. */
+export function describeAdminError(error: string, ui: AdminUiStrings, t: Messages): string {
+  if (error === 'not-connected') return ui.notConnected;
+  return error === 'timeout' ? t.workerServerTimeout : error;
 }
 
 export type AdminNextAction =
@@ -181,8 +189,9 @@ export function nextAction(
   result: AdminActionResult,
   request: AdminRequest,
   ui: AdminUiStrings,
+  t: Messages,
 ): AdminNextAction {
-  if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui) };
+  if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui, t) };
   if (!result.applied) {
     const resend: AdminRequest & { confirm: true } = { id: request.id, confirm: true };
     if (request.value !== undefined) resend.value = request.value;
@@ -210,7 +219,13 @@ export type ConfirmState =
   | { phase: 'error'; message: string };
 
 export type ConfirmEvent =
-  | { type: 'result'; request: AdminRequest; result: AdminActionResult; ui: AdminUiStrings }
+  | {
+      type: 'result';
+      request: AdminRequest;
+      result: AdminActionResult;
+      ui: AdminUiStrings;
+      t: Messages;
+    }
   | { type: 'cancel' };
 
 export function initialConfirmState(): ConfirmState {
@@ -220,7 +235,7 @@ export function initialConfirmState(): ConfirmState {
 /** idle → confirming(preview, pendingRequest) → applied | error; cancel → idle. */
 export function reduceConfirm(_state: ConfirmState, event: ConfirmEvent): ConfirmState {
   if (event.type === 'cancel') return { phase: 'idle' };
-  const action = nextAction(event.result, event.request, event.ui);
+  const action = nextAction(event.result, event.request, event.ui, event.t);
   if (action.type === 'confirm') {
     return { phase: 'confirming', preview: action.preview, pendingRequest: action.resend };
   }

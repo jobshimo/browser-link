@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { messages } from './i18n.js';
 import {
   MAX_DETACHED_FLOW_RECORDS,
   MAX_DETACHED_MANIFEST_BYTES,
@@ -53,6 +54,8 @@ function entryFor(overrides: Partial<FlowRegistryEntry> = {}): FlowRegistryEntry
   };
 }
 
+const EN = messages('en');
+const ES = messages('es');
 describe('flow registry — lifecycle', () => {
   test('a registered flow is listed as running with its starting progress', () => {
     const registry = createFlowRegistry();
@@ -432,54 +435,63 @@ describe('flow panel formatting', () => {
       steps: 5,
       cancelling: false,
     };
-    expect(describeFlowProgress({ ...base, step: 0 })).toBe('starting…');
-    expect(describeFlowProgress({ ...base, step: 2 })).toBe('step 2/5');
-    expect(describeFlowProgress({ ...base, step: 2, iteration: 12, iterations: 50 })).toBe(
+    expect(describeFlowProgress({ ...base, step: 0 }, EN)).toBe('starting…');
+    expect(describeFlowProgress({ ...base, step: 2 }, EN)).toBe('step 2/5');
+    expect(describeFlowProgress({ ...base, step: 2, iteration: 12, iterations: 50 }, EN)).toBe(
       'step 2/5 · iteration 12/50',
     );
   });
 
   test('a flow falls back to its tab id when the title is unavailable', () => {
-    expect(flowTabLabel({ title: 'Inbox', tabId: 4 })).toBe('Inbox');
-    expect(flowTabLabel({ title: '   ', tabId: 4 })).toBe('Tab 4');
-    expect(flowTabLabel({ title: '', tabId: 4 })).toBe('Tab 4');
+    expect(flowTabLabel({ title: 'Inbox', tabId: 4 }, EN)).toBe('Inbox');
+    expect(flowTabLabel({ title: '   ', tabId: 4 }, EN)).toBe('Tab 4');
+    expect(flowTabLabel({ title: '', tabId: 4 }, EN)).toBe('Tab 4');
   });
 
   test('a history line reports counts, duration and the failing step', () => {
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 2_000,
-        outcome: 'completed',
-        steps: 3,
-        stepsCompleted: 3,
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 2_000,
+          outcome: 'completed',
+          steps: 3,
+          stepsCompleted: 3,
+        },
+        EN,
+      ),
     ).toBe('3/3 steps · 2s');
 
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 8_000,
-        outcome: 'cancelled',
-        steps: 1,
-        stepsCompleted: 0,
-        iterationsCompleted: 23,
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 8_000,
+          outcome: 'cancelled',
+          steps: 1,
+          stepsCompleted: 0,
+          iterationsCompleted: 23,
+        },
+        EN,
+      ),
     ).toBe('0/1 steps · 23 iterations · 8s');
 
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 1_500,
-        outcome: 'failed',
-        steps: 4,
-        stepsCompleted: 2,
-        failedStep: 2,
-        failedStepKind: 'click',
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 1_500,
+          outcome: 'failed',
+          steps: 4,
+          stepsCompleted: 2,
+          failedStep: 2,
+          failedStepKind: 'click',
+        },
+        EN,
+      ),
       // 0-based index reported 1-based, because the panel is for humans.
     ).toBe('2/4 steps · 1s · failed at step 3 (click)');
   });
@@ -654,71 +666,86 @@ describe('detached flows — outcome and history', () => {
 
   test('the popup renders expiry and worker termination in words', () => {
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 1_800_000,
-        outcome: 'expired',
-        steps: 1,
-        stepsCompleted: 1,
-        iterationsCompleted: 412,
-        detached: true,
-        stoppedBy: 'expired',
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 1_800_000,
+          outcome: 'expired',
+          steps: 1,
+          stepsCompleted: 1,
+          iterationsCompleted: 412,
+          detached: true,
+          stoppedBy: 'expired',
+        },
+        EN,
+      ),
     ).toBe('detached · 1/1 steps · 412 iterations · 30m 00s · hit the 30-minute detached ceiling');
 
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 4_000,
-        outcome: 'failed',
-        steps: 2,
-        stepsCompleted: 1,
-        detached: true,
-        stoppedBy: 'worker-terminated',
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 4_000,
+          outcome: 'failed',
+          steps: 2,
+          stepsCompleted: 1,
+          detached: true,
+          stoppedBy: 'worker-terminated',
+        },
+        EN,
+      ),
     ).toBe('detached · 1/2 steps · 4s · extension worker was terminated — not resumed');
   });
 
   test('a plain cancellation does not repeat itself in the detail line', () => {
     expect(
-      describeFlowHistoryEntry({
-        flowId: 'f',
-        startedAt: 0,
-        durationMs: 2_000,
-        outcome: 'cancelled',
-        steps: 3,
-        stepsCompleted: 1,
-        stoppedBy: 'cancelled',
-      }),
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 2_000,
+          outcome: 'cancelled',
+          steps: 3,
+          stepsCompleted: 1,
+          stoppedBy: 'cancelled',
+        },
+        EN,
+      ),
     ).toBe('1/3 steps · 2s');
   });
 
   test('a detached running row says so in its progress line', () => {
     expect(
-      describeFlowProgress({
-        flowId: 'f',
-        tabId: 1,
-        title: '',
-        elapsedMs: 0,
-        steps: 3,
-        step: 2,
-        cancelling: false,
-        detached: true,
-      }),
+      describeFlowProgress(
+        {
+          flowId: 'f',
+          tabId: 1,
+          title: '',
+          elapsedMs: 0,
+          steps: 3,
+          step: 2,
+          cancelling: false,
+          detached: true,
+        },
+        EN,
+      ),
     ).toBe('detached · step 2/3');
     expect(
-      describeFlowProgress({
-        flowId: 'f',
-        tabId: 1,
-        title: '',
-        elapsedMs: 0,
-        steps: 3,
-        step: 0,
-        cancelling: false,
-        detached: true,
-      }),
+      describeFlowProgress(
+        {
+          flowId: 'f',
+          tabId: 1,
+          title: '',
+          elapsedMs: 0,
+          steps: 3,
+          step: 0,
+          cancelling: false,
+          detached: true,
+        },
+        EN,
+      ),
     ).toBe('detached · starting…');
   });
 
@@ -1160,5 +1187,44 @@ describe('detached flows — the flow_status payload', () => {
       state: 'unknown',
       detached: false,
     });
+  });
+});
+
+describe('flow rows in Spanish', () => {
+  test('progress, tab fallback, history and stop reasons follow the dictionary', () => {
+    const running = {
+      flowId: 'f',
+      tabId: 4,
+      title: '',
+      elapsedMs: 0,
+      steps: 5,
+      step: 2,
+      iteration: 3,
+      iterations: 9,
+      cancelling: false,
+      detached: true,
+    };
+    expect(describeFlowProgress(running, ES)).toBe('desacoplado · paso 2/5 · iteración 3/9');
+    expect(describeFlowProgress({ ...running, step: 0, detached: false }, ES)).toBe('iniciando…');
+    expect(flowTabLabel(running, ES)).toBe('Pestaña 4');
+    expect(
+      describeFlowHistoryEntry(
+        {
+          flowId: 'f',
+          startedAt: 0,
+          durationMs: 1_500,
+          outcome: 'failed',
+          steps: 4,
+          stepsCompleted: 2,
+          failedStep: 2,
+          failedStepKind: 'click',
+          detached: true,
+          stoppedBy: 'worker-terminated',
+        },
+        ES,
+      ),
+    ).toBe(
+      'desacoplado · 2/4 pasos · 1s · falló en el paso 3 (click) · el proceso de la extensión se cerró; no se reanudó',
+    );
   });
 });

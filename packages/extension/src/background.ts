@@ -1,6 +1,7 @@
 import type {
   ActivityPurgeResultMessage,
   AdminActionResultMessage,
+  AdminRequestLanguage,
   AdminStateMessage,
   ActivityResultMessage,
   BridgeRepairResultMessage,
@@ -109,7 +110,7 @@ import {
 } from './flow-recording-policy.js';
 import { buildRecorderJs, buildStopRecorderJs } from './inpage/recorder.js';
 import {
-  DISCARDED_WHILE_SAVING_MESSAGE,
+  DISCARDED_WHILE_SAVING,
   appendRecordingStep,
   buildAmbiguousNote,
   buildNavigationWaitForStep,
@@ -135,8 +136,10 @@ import {
   planRepair,
   prevTabIdKey,
   rememberedTabIds,
+  repairOutcome,
   type RepairOutcome,
 } from './repair-policy.js';
+import { workerFailure } from './worker-messages.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -528,8 +531,16 @@ type RuntimeMessage =
   | { action: 'activityQuery'; query?: Record<string, unknown> }
   | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean }
   // Tab-independent: administration acts on the server, not on one tab.
-  | { action: 'adminDescribe' }
-  | { action: 'adminAction'; id: string; value?: string | number | boolean; confirm?: boolean };
+  // `language`: the Admin window's interface language, forwarded so the
+  // server answers in it (see AdminDescribeMessage).
+  | { action: 'adminDescribe'; language?: unknown }
+  | {
+      action: 'adminAction';
+      id: string;
+      value?: string | number | boolean;
+      confirm?: boolean;
+      language?: unknown;
+    };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
@@ -726,9 +737,15 @@ async function adminRoundTrip(
   });
 }
 
-function adminDescribe(): Promise<AdminReply> {
+/** The window's language when it is one the server speaks; otherwise
+ * nothing, and the server uses its configured language. */
+function adminLanguageField(language: unknown): { language?: AdminRequestLanguage } {
+  return language === 'en' || language === 'es' ? { language } : {};
+}
+
+function adminDescribe(language: unknown): Promise<AdminReply> {
   return adminRoundTrip(
-    (request_id) => ({ kind: 'admin.describe', request_id }),
+    (request_id) => ({ kind: 'admin.describe', request_id, ...adminLanguageField(language) }),
     ADMIN_TIMEOUT_MS,
     (request_id, error) => ({ kind: 'admin.state', request_id, ok: false, error }),
   );
@@ -738,6 +755,7 @@ function adminAction(input: {
   id: string;
   value?: string | number | boolean;
   confirm?: boolean;
+  language?: unknown;
 }): Promise<AdminReply> {
   return adminRoundTrip(
     (request_id) => ({
@@ -746,6 +764,7 @@ function adminAction(input: {
       id: input.id,
       ...(input.value !== undefined ? { value: input.value } : {}),
       ...(input.confirm === true ? { confirm: true } : {}),
+      ...adminLanguageField(input.language),
     }),
     input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,
     (request_id, error) => ({
@@ -3492,7 +3511,7 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
  * the per-tab in-flight lock for the full duration of the attempt. */
 async function doConnectTab(tabId: number): Promise<ConnectResult> {
   if (tabStates.has(tabId)) {
-    return { ok: false, error: 'This tab is already connected' };
+    return workerFailure({ code: 'tab-already-connected' });
   }
 
   // Whatever tab holds this Chrome id now, it is not the closed one whose
@@ -3503,7 +3522,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
 
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !tab.title) {
-    return { ok: false, error: 'Tab has no URL or title' };
+    return workerFailure({ code: 'tab-no-url' });
   }
 
   const previousTabId = await readPreviousTabId(tabId);
@@ -3511,10 +3530,10 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
   try {
     await chrome.debugger.attach({ tabId }, CDP_VERSION);
   } catch (err) {
-    return {
-      ok: false,
-      error: `Could not attach debugger: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return workerFailure({
+      code: 'debugger-attach-failed',
+      values: { detail: err instanceof Error ? err.message : String(err) },
+    });
   }
 
   const state: TabState = {
@@ -3536,10 +3555,10 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     await cdp(tabId, 'DOM.enable');
   } catch (err) {
     await cleanup(tabId);
-    return {
-      ok: false,
-      error: `Could not enable CDP: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return workerFailure({
+      code: 'cdp-enable-failed',
+      values: { detail: err instanceof Error ? err.message : String(err) },
+    });
   }
 
   await installObserver(state);
@@ -3699,7 +3718,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     // pre-registration connect failure with the friendlier diagnosis (for
     // a post-registration drop `settle` is already spent and this no-ops).
     ws.addEventListener('error', () => {
-      settle({ ok: false, error: 'WebSocket connection failed. Is the MCP server running?' });
+      settle(workerFailure({ code: 'ws-connect-failed' }));
     });
 
     ws.addEventListener('close', (ev: CloseEvent) => {
@@ -3708,7 +3727,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
         // A newer connection already owns this tab — this close belongs to
         // a superseded socket, and tearing state down here would kill the
         // NEW bridge rather than the one that just died.
-        settle({ ok: false, error: 'WebSocket closed before registration' });
+        settle(workerFailure({ code: 'ws-closed-before-registration' }));
         return;
       }
       // Decide BEFORE cleanup wipes the evidence: an unclean close of a
@@ -3725,7 +3744,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
       void cleanup(tabId).catch(() => {
         // Best effort — already-detached state is fine.
       });
-      settle({ ok: false, error: 'WebSocket closed before registration' });
+      settle(workerFailure({ code: 'ws-closed-before-registration' }));
       if (involuntary) reconnectScheduler.schedule(tabId);
     });
   });
@@ -3836,7 +3855,9 @@ async function repairConnection(): Promise<RepairOutcome> {
   switch (plan.step) {
     case 'ask-server-restart':
       // `planRepair` only picks this step when a socket is open.
-      return socket ? askServerRestart(socket) : { ok: false, message: 'Not connected' };
+      return socket
+        ? askServerRestart(socket)
+        : repairOutcome(false, { code: 'server-not-connected' });
     case 'reconnect-only': {
       // Same path as the popup's Connect: an explicit attempt replaces any
       // pending auto-reconnect for the tab, and connectTab's per-tab lock
@@ -3853,8 +3874,10 @@ async function repairConnection(): Promise<RepairOutcome> {
       );
       return describeReconnectResults(results);
     }
-    case 'manual':
-      return { ok: false, message: plan.message };
+    case 'manual': {
+      const { step: _step, reason: _reason, ...outcome } = plan;
+      return { ok: false, ...outcome };
+    }
   }
 }
 
@@ -3953,19 +3976,19 @@ async function handleRecordingNavigation(tabId: number, newUrl: string): Promise
  * (recording OR under-review) is already in progress for this tab. */
 async function startRecording(tabId: number): Promise<{ ok: boolean; error?: string }> {
   if (!flowRecordingEnabledCache) {
-    return { ok: false, error: 'Flow recording is disabled. Enable it in settings first.' };
+    return workerFailure({ code: 'recording-disabled' });
   }
   const state = tabStates.get(tabId);
-  if (!state) return { ok: false, error: 'This tab is not connected.' };
+  if (!state) return workerFailure({ code: 'tab-not-connected' });
   if (state.recording) {
-    return { ok: false, error: 'A recording is already in progress (or awaiting review).' };
+    return workerFailure({ code: 'recording-in-progress' });
   }
 
   let tab: chrome.tabs.Tab;
   try {
     tab = await chrome.tabs.get(tabId);
   } catch {
-    return { ok: false, error: 'Tab no longer exists.' };
+    return workerFailure({ code: 'tab-gone' });
   }
 
   // Fresh per-session identity: randomized binding name (no stable global
@@ -3976,10 +3999,10 @@ async function startRecording(tabId: number): Promise<{ ok: boolean; error?: str
   try {
     await cdp(tabId, 'Runtime.addBinding', { name: session.bindingName });
   } catch (err) {
-    return {
-      ok: false,
-      error: `Could not start recording: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return workerFailure({
+      code: 'recording-start-failed',
+      values: { detail: err instanceof Error ? err.message : String(err) },
+    });
   }
   try {
     await injectRecorder(tabId, session);
@@ -3997,10 +4020,10 @@ async function startRecording(tabId: number): Promise<{ ok: boolean; error?: str
     } catch {
       // Tab likely already detached — nothing left to roll back.
     }
-    return {
-      ok: false,
-      error: `Could not start recording: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return workerFailure({
+      code: 'recording-start-failed',
+      values: { detail: err instanceof Error ? err.message : String(err) },
+    });
   }
 
   state.recording = {
@@ -4054,7 +4077,7 @@ async function stopRecording(
 ): Promise<{ ok: boolean; steps?: FlowStep[]; capped?: boolean; error?: string }> {
   const state = tabStates.get(tabId);
   if (!state?.recording || state.recording.status !== 'recording') {
-    return { ok: false, error: 'Not currently recording this tab.' };
+    return workerFailure({ code: 'not-recording' });
   }
   await finishRecording(tabId);
   return { ok: true, steps: state.recording.steps, capped: state.recording.capped };
@@ -4074,7 +4097,7 @@ async function stopRecording(
  * bug). This is what makes Discard-while-saving actually inert on the
  * extension side instead of merely racing the real response.
  *
- * See `DISCARDED_WHILE_SAVING_MESSAGE`'s doc for the honest limitation:
+ * See `DISCARDED_WHILE_SAVING`'s doc for the honest limitation:
  * this cannot retract a `flow.recorded` request the server already
  * received and persisted before this ran. */
 function clearRecording(tabId: number): void {
@@ -4085,7 +4108,7 @@ function clearRecording(tabId: number): void {
   const pending = state.pendingFlowSave;
   if (pending) {
     state.pendingFlowSave = undefined;
-    pending({ ok: false, error: DISCARDED_WHILE_SAVING_MESSAGE });
+    pending(workerFailure(DISCARDED_WHILE_SAVING));
   }
 }
 
@@ -4146,14 +4169,14 @@ async function saveRecording(
   const state = tabStates.get(tabId);
   const recording = state?.recording;
   if (!state || !recording || recording.status !== 'reviewing') {
-    return { ok: false, error: 'No reviewed recording to save for this tab.' };
+    return workerFailure({ code: 'no-reviewed-recording' });
   }
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.serverTabId) {
-    return { ok: false, error: 'Not connected to the server.' };
+    return workerFailure({ code: 'server-not-connected' });
   }
   const trimmedName = name.trim();
-  if (trimmedName.length === 0) return { ok: false, error: 'Name is required.' };
-  if (recording.steps.length === 0) return { ok: false, error: 'No steps were captured.' };
+  if (trimmedName.length === 0) return workerFailure({ code: 'name-required' });
+  if (recording.steps.length === 0) return workerFailure({ code: 'no-steps' });
 
   // Fold the ambiguous-selector warning into the saved recipe's
   // description so the computed safety signal travels WITH the recipe, not
@@ -4195,7 +4218,7 @@ async function saveRecording(
     // Best-effort timeout so the popup never hangs forever if the WS drops
     // mid-request without a clean close event.
     setTimeout(() => {
-      settle({ ok: false, error: 'Timed out waiting for the server.' });
+      settle(workerFailure({ code: 'server-timeout' }));
     }, 10_000);
   });
 
@@ -4277,7 +4300,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     return true;
   }
   if (msg.action === 'adminDescribe') {
-    void adminDescribe().then(sendResponse);
+    void adminDescribe(msg.language).then(sendResponse);
     return true;
   }
   if (msg.action === 'adminAction') {

@@ -32,6 +32,8 @@ describe('planRepair', () => {
         step: 'manual',
         reason: 'server-too-old',
         message: `server 0.40.0 cannot repair itself: ${STOP_AND_RESTART}`,
+        code: 'repair-server-too-old',
+        values: { version: '0.40.0' },
       },
     );
   });
@@ -41,6 +43,7 @@ describe('planRepair', () => {
       step: 'manual',
       reason: 'server-too-old',
       message: `server (unknown version) cannot repair itself: ${STOP_AND_RESTART}`,
+      code: 'repair-server-too-old',
     });
   });
 
@@ -55,6 +58,7 @@ describe('planRepair', () => {
       step: 'manual',
       reason: 'no-server',
       message: NO_SERVER,
+      code: 'repair-no-server',
     });
   });
 
@@ -108,6 +112,7 @@ describe('describeRepairReply', () => {
     ).toEqual({
       ok: true,
       message: 'The server is restarting; connected tabs reconnect by themselves.',
+      code: 'repair-restarting',
     });
   });
 
@@ -119,13 +124,19 @@ describe('describeRepairReply', () => {
         ok: false,
         error: 'boom',
       }),
-    ).toEqual({ ok: false, message: 'Repair failed: boom' });
+    ).toEqual({
+      ok: false,
+      message: 'Repair failed: boom',
+      code: 'repair-failed',
+      values: { detail: 'boom' },
+    });
   });
 
   test('no answer in time falls back to the manual instruction', () => {
     expect(describeRepairReply('timeout')).toEqual({
       ok: false,
       message: `The server did not answer the repair request: ${STOP_AND_RESTART}`,
+      code: 'repair-no-answer',
     });
   });
 });
@@ -135,6 +146,8 @@ describe('describeReconnectResults', () => {
     expect(describeReconnectResults([{ ok: false }, { ok: true }])).toEqual({
       ok: true,
       message: 'Reconnected 1 of 2 tabs.',
+      code: 'repair-reconnected',
+      values: { reconnected: 1, total: 2 },
     });
   });
 
@@ -142,6 +155,7 @@ describe('describeReconnectResults', () => {
     expect(describeReconnectResults([{ ok: false }, { ok: false }])).toEqual({
       ok: false,
       message: NO_SERVER,
+      code: 'repair-no-server',
     });
   });
 });

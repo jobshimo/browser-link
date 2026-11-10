@@ -144,7 +144,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updateAvailable: (latest) => `v${latest} available`,
     upToDate: 'up to date',
     activity: 'Activity trail',
-    language: 'Language',
+    language: 'Console language',
     tool: (name) => `Tool ${name}`,
     multiAgent: 'Multi-agent mode',
     autoReelect: 'Auto-reelect on primary close',
@@ -198,8 +198,8 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
       confirm: 'Confirmar',
       cancel: 'Cancelar',
       apply: 'Aplicar',
-      notConnected: 'Conectá una pestaña para administrar browser-link desde acá.',
-      restartRequired: 'Reiniciá tu cliente MCP para que el cambio tenga efecto.',
+      notConnected: 'Conecte una pestaña para administrar browser-link desde aquí.',
+      restartRequired: 'Reinicie su cliente MCP para que el cambio surta efecto.',
       changed: 'Guardado.',
     },
     sections: {
@@ -214,19 +214,19 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     server: 'Servidor',
     serverRunning: (version) => `en marcha v${version}`,
     serverNotRunning: 'detenido',
-    serverNotRunningHint: 'Lo arranca tu cliente MCP; abrí una sesión que use browser-link.',
+    serverNotRunningHint: 'Lo inicia su cliente MCP; abra una sesión que use browser-link.',
     installed: 'Versión instalada',
     installedOutdated: (installed) => `${installed} (desactualizado: hace falta reiniciar)`,
     pid: 'PID',
     uptime: 'Tiempo en marcha',
     tabs: 'Pestañas conectadas',
-    tabsUnknownHint: 'Solo lo sabe el servidor en marcha; abrí el popup de la extensión.',
+    tabsUnknownHint: 'Solo lo sabe el servidor en marcha; abra el popup de la extensión.',
     ports: 'Puertos',
     multiAgentStatus: 'Multi-agente',
     extension: 'Extensión',
     extensionAligned: (version) => `v${version} (alineada)`,
     extensionMismatch: (ext, server) =>
-      `v${ext} (servidor v${server}: recargá o actualizá uno de los dos)`,
+      `v${ext} (servidor v${server}: recargue o actualice uno de los dos)`,
     extensionNotConnected: 'ninguna pestaña conectada',
     instructionsFor: (client) => `Instrucciones — ${client}`,
     instructionsState: (state) => {
@@ -240,7 +240,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
         case 'no-file':
           return 'sin archivo de instrucciones';
         case 'corrupt':
-          return 'corrupto (arreglalo a mano)';
+          return 'corrupto (corríjalo a mano)';
       }
     },
     cdpDirect: 'cdp-direct',
@@ -253,7 +253,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updateAvailable: (latest) => `v${latest} disponible`,
     upToDate: 'al día',
     activity: 'Registro de actividad',
-    language: 'Idioma',
+    language: 'Idioma de la consola',
     tool: (name) => `Tool ${name}`,
     multiAgent: 'Modo multi-agente',
     autoReelect: 'Re-elección automática al cerrar el primary',
@@ -287,7 +287,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
       'Reemplaza el servidor en marcha, por eso solo se hace desde una terminal.',
     about: 'Acerca de',
     aboutText:
-      'browser-link es un servidor MCP que deja a los agentes ver y actuar sobre las pestañas de Chrome que conectás.',
+      'browser-link es un servidor MCP que deja a los agentes ver y actuar sobre las pestañas de Chrome que usted conecte.',
     repo: 'Repositorio en GitHub',
     extensionPath: 'Carpeta de la extensión',
     extensionNotFound: 'no se encontró junto al servidor',

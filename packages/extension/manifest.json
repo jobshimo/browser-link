@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "browser-link",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "description": "Bridge between Chrome and an MCP client (Claude Code, OpenCode, GitHub Copilot CLI, …). Per-tab manual activation.",
   "minimum_chrome_version": "118",
   "permissions": [

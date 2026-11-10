@@ -95,6 +95,35 @@ describe('applyAdminAction — allowlist', () => {
     });
   });
 
+  test('a requested language localises errors and previews for that request only', async () => {
+    // config.language stays English: the request decides.
+    expect(await applyAdminAction({ id: 'nope', language: 'es' }, deps())).toEqual({
+      ok: false,
+      error: 'Acción de administración desconocida: nope',
+    });
+    const result = await applyAdminAction(
+      { id: 'tools.browser.evaluate', value: false, language: 'es' },
+      deps(),
+    );
+    expect(result).toMatchObject({
+      preview: 'Deshabilitar la tool browser.evaluate para todos los agentes',
+    });
+    expect(loadConfig().language).toBeUndefined();
+  });
+
+  test('an applied action returns its fresh state in the requested language', async () => {
+    const result = await applyAdminAction({ id: 'doctor', language: 'es' }, deps());
+    if (!result.ok || !result.applied) throw new Error('not applied');
+    expect(result.state?.ui.language).toBe('es');
+  });
+
+  test('without a requested language the configured one still decides', async () => {
+    DEFAULT_ADMIN_HELPERS.saveConfig({ language: 'es' });
+    const result = await applyAdminAction({ id: 'doctor' }, deps());
+    if (!result.ok || !result.applied) throw new Error('not applied');
+    expect(result.state?.ui.language).toBe('es');
+  });
+
   test('never throws: a failing source becomes ok:false', async () => {
     const result = await applyAdminAction(
       { id: 'doctor' },
@@ -127,7 +156,7 @@ describe('applyAdminAction — confirm step', () => {
       return r.ok && !r.applied ? r.preview : undefined;
     };
     expect(await preview('multiAgent', false)).toBe('Turn off: Multi-agent mode');
-    expect(await preview('language', 'es')).toBe('Set Language to Español');
+    expect(await preview('language', 'es')).toBe('Set Console language to Español');
     expect(await preview('instructions.install.claude')).toBe(
       "Write the browser-link instructions block into Claude Code's file",
     );

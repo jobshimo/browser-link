@@ -6,7 +6,6 @@ import {
   noticeAcknowledgeLabel,
   noticeCloseLabel,
   noticeFull,
-  noticeLanguage,
   noticeShortLine,
   noticeShortLineParts,
   shouldShowNoticeBeforeConnect,
@@ -21,22 +20,6 @@ describe('notice copy', () => {
 describe('NOTICE_ACKNOWLEDGED_STORAGE_KEY', () => {
   test('is the agreed chrome.storage.local key', () => {
     expect(NOTICE_ACKNOWLEDGED_STORAGE_KEY).toBe('noticeAcknowledged');
-  });
-});
-
-describe('noticeLanguage', () => {
-  test('Spanish for any es* browser language', () => {
-    expect(noticeLanguage('es')).toBe('es');
-    expect(noticeLanguage('es-ES')).toBe('es');
-    expect(noticeLanguage('es-419')).toBe('es');
-    expect(noticeLanguage('ES-mx')).toBe('es');
-  });
-
-  test('English for everything else, including a missing language', () => {
-    expect(noticeLanguage('en-US')).toBe('en');
-    expect(noticeLanguage('fr')).toBe('en');
-    expect(noticeLanguage('')).toBe('en');
-    expect(noticeLanguage(undefined)).toBe('en');
   });
 });
 

@@ -341,9 +341,14 @@ export type AdminActionResult =
   | { ok: true; applied: true; requiresRestart?: boolean; state?: AdminState; output?: string[] }
   | { ok: true; applied: false; needsConfirm: true; preview: string }
   | { ok: false; error: string };
+/** `language` (extensions from 0.51.0): render this answer's labels, previews,
+ * errors and `ui` block in the extension's interface language. Absent or
+ * invalid: the server's configured language. Never written to disk. */
+export type AdminRequestLanguage = 'en' | 'es';
 export interface AdminDescribeMessage {
   kind: 'admin.describe';
   request_id: string;
+  language?: AdminRequestLanguage;
 }
 export interface AdminActionMessage {
   kind: 'admin.action';
@@ -351,6 +356,7 @@ export interface AdminActionMessage {
   id: string;
   value?: string | number | boolean;
   confirm?: boolean;
+  language?: AdminRequestLanguage;
 }
 export type AdminStateMessage =
   | { kind: 'admin.state'; request_id: string; ok: true; state: AdminState }
