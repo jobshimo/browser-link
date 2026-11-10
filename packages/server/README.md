@@ -29,13 +29,13 @@ through a small WebSocket relay and a companion Chrome extension. Only
 tabs you explicitly connect are ever reachable; everything else stays
 invisible to the agent.
 
-It exposes 31 MCP tools — 25 for driving the connected tab (read the DOM,
+It exposes 40 MCP tools — 34 for driving the connected tab (read the DOM,
 click, type, run JS, watch console/network, drive multi-step flows…) and 6
 for a persistent UI map, a small local SQLite DB where the agent saves
 selectors, flows and gotchas it learns about each app so it does not
 rediscover them every session. Every tool is individually toggle-able, and
 the whole thing runs loopback-only — nothing here talks to the network
-except the npm registry, on `browser-link updates`.
+except the npm registry update check (on `browser-link updates`, when the terminal UI opens and every six hours after, and when the Admin window asks for its state).
 
 A `browser-link` CLI binary handles setup (register with your MCP client,
 show the extension install steps, diagnose the current state) and, new in
@@ -49,7 +49,7 @@ delete stale knowledge, or export/import it as JSON.
 npm install -g @jobshimo/browser-link
 ```
 
-This puts the `browser-link` binary on your PATH on macOS, Linux and Windows.
+This puts the `browser-link` binary on your PATH on macOS, Linux and Windows. CI runs on Windows and Linux; macOS is supported in code but no CI job runs on it, so its peer check is covered only by unit tests with a stubbed `lsof`.
 
 ### Windows: skip the npm shim for faster CLI calls
 
@@ -93,7 +93,7 @@ browser-link install --client claude       # register only in Claude Code
 browser-link extension                     # show the Chrome extension assets path + steps
 browser-link doctor                        # diagnose current setup (running vs installed version, live processes); every probe runs in parallel
 browser-link stop                          # stop every live browser-link server, one line per process
-browser-link tools                         # show which of the 31 MCP tools are enabled
+browser-link tools                         # show which of the 40 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link map                           # list apps the persistent UI map knows about
 browser-link instructions install          # write the short browser-link trigger into each client's global .md
@@ -106,13 +106,14 @@ After `install`, restart your MCP client. After `extension`, load the
 unpacked extension as instructed, then click "Connect this tab" on every
 tab you want the agent to reach.
 
-## The 31 tools, at a glance
+## The 40 tools, at a glance
 
-| Family                   | Count | What it covers                                                                  |
-| ------------------------ | ----: | ------------------------------------------------------------------------------- |
-| Browser bridge — read    |    13 | list/claim tabs, snapshot/find/state, console, network, wait_for(_tab), events  |
-| Browser bridge — actions |    12 | navigate, click, type, press, drag, flow, evaluate, dialogs, permissions, reset |
-| Persistent UI map        |     6 | recall, save, record_use, forget, rename_app, apps                              |
+| Family                                 | Count | What it covers                                                                  |
+| -------------------------------------- | ----: | ------------------------------------------------------------------------------- |
+| Browser bridge — read                  |    17 | tabs, snapshot/find/state, console, network, wait_for(_tab), events, activity   |
+| Browser bridge — actions               |    13 | navigate, click, type, press, drag, flow, dialogs, permissions, download, reset |
+| Browser bridge — JS and knowledge loop |     4 | evaluate, read, wrap_up, feedback                                               |
+| Persistent UI map                      |     6 | recall, save, record_use, forget, rename_app, apps                              |
 
 Every tool can be disabled per machine via `browser-link tools disable
 <name>` or a preset (`all` / `readonly` / `no-eval` / `no-map`). The full
