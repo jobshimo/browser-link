@@ -49,8 +49,16 @@ export async function lookupPeerProcess(
  *   on PATH (ENOENT).
  * - `command-failed:<exit>`: the command ran and exited non-zero (lsof
  *   exits 1 when nothing matches).
- * - `parse-miss`: the command succeeded but no single owner of the local
- *   endpoint could be read from its output (none, or two different pids).
+ * - `parse-miss`: lsof or the tasklist fallback succeeded but no single
+ *   owner could be read from its output.
+ * - `endpoint-not-listed`: netstat lists no connection whose local end is
+ *   the peer's endpoint.
+ * - `endpoint-ambiguous`: netstat lists that local endpoint under two
+ *   different pids.
+ * - `cim-unparsable`: the PowerShell CIM reply is not the expected JSON
+ *   array of rows.
+ * - `peer-row-missing` / `server-row-missing`: the CIM reply has no row for
+ *   the peer's pid (it exited) or for this server's pid.
  * - `invalid-pid`: the pid read from the OS is not a positive safe integer;
  *   it never reaches a PowerShell command.
  * - `self`: the owner is this very process (never accepted as a peer).
@@ -67,6 +75,11 @@ export type PeerLookupCause =
   | 'command-missing'
   | `command-failed:${string}`
   | 'parse-miss'
+  | 'endpoint-not-listed'
+  | 'endpoint-ambiguous'
+  | 'cim-unparsable'
+  | 'peer-row-missing'
+  | 'server-row-missing'
   | 'invalid-pid'
   | 'self'
   | 'owner-unreadable'
@@ -335,8 +348,10 @@ async function lookupWindows(
   withPath: boolean,
 ): Promise<PeerProcess> {
   const { stdout: netstatOut } = await run(exec, 'netstat', ['-ano', '-p', 'TCP']);
-  const pid = parseNetstatForLocal(netstatOut, host, port);
-  if (pid === null) throw new LookupFailure('parse-miss');
+  const owners = netstatOwnersOf(netstatOut, host, port);
+  if (owners.length === 0) throw new LookupFailure('endpoint-not-listed');
+  if (owners.length > 1) throw new LookupFailure('endpoint-ambiguous');
+  const pid = owners[0];
   assertPeerPid(pid);
 
   const identity = await windowsIdentity(exec, pid);
@@ -371,9 +386,11 @@ async function windowsIdentity(exec: ExecFile, pid: number): Promise<WindowsIden
     return tasklistIdentity(exec, pid);
   }
   const rows = parseCimIdentity(stdout);
-  const peer = rows?.find((r) => r.pid === pid);
-  const server = rows?.find((r) => r.pid === process.pid);
-  if (!peer || !server || peer.name.length === 0) throw new LookupFailure('parse-miss');
+  if (rows === null) throw new LookupFailure('cim-unparsable');
+  const peer = rows.find((r) => r.pid === pid);
+  const server = rows.find((r) => r.pid === process.pid);
+  if (!peer || peer.name.length === 0) throw new LookupFailure('peer-row-missing');
+  if (!server) throw new LookupFailure('server-row-missing');
   assertSameOwner(cimOwner(peer), cimOwner(server));
   return { binaryName: peer.name, executablePath: peer.path.length > 0 ? peer.path : null };
 }
@@ -471,8 +488,14 @@ function cimOwner(row: CimProcess): string | null {
  * output; null when none, or when two different PIDs list that endpoint.
  */
 export function parseNetstatForLocal(out: string, host: string, port: number): number | null {
+  const owners = netstatOwnersOf(out, host, port);
+  return owners.length === 1 ? owners[0] : null;
+}
+
+/** The distinct PIDs `netstat -ano` lists with `host:port` as LOCAL end. */
+function netstatOwnersOf(out: string, host: string, port: number): number[] {
   const target = `${host}:${port}`;
-  let found: number | null = null;
+  const owners = new Set<number>();
   for (const line of out.split(/\r?\n/)) {
     if (!line.includes(target)) continue;
     // Format:  Proto  LocalAddress  ForeignAddress  State  PID
@@ -480,11 +503,9 @@ export function parseNetstatForLocal(out: string, host: string, port: number): n
     if (fields.length < 5) continue;
     if (fields[1] !== target) continue;
     const pid = Number.parseInt(fields[4] ?? '', 10);
-    if (!Number.isFinite(pid)) continue;
-    if (found !== null && found !== pid) return null;
-    found = pid;
+    if (Number.isFinite(pid)) owners.add(pid);
   }
-  return found;
+  return [...owners];
 }
 
 /**
