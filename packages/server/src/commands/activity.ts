@@ -4,6 +4,7 @@ import type { Language } from './welcome.js';
 import { formatRelative } from './map.js';
 import {
   clear,
+  compact as compactActivityDb,
   countInRange,
   exportAll,
   listAgents,
@@ -32,6 +33,8 @@ const I18N = {
     exported: (n: number, path: string) => `Exported ${n} actions to ${path}`,
     exportedRedacted: 'Payloads, titles and query strings were redacted.',
     cleared: (n: number) => `Removed ${n} actions from the trail.`,
+    compactFailed: (reason: string) =>
+      `The actions were deleted, but the database file could not be compacted (${reason}), so old text may remain in it. Close the running server (browser-link stop, and your agent) and run the command again.`,
     clearedNone: 'Nothing to remove.',
     confirmClear:
       'This deletes the activity trail. Re-run with --yes to confirm, or pass --older-than to keep recent history.',
@@ -104,6 +107,8 @@ const I18N = {
     exported: (n: number, path: string) => `Exportadas ${n} acciones a ${path}`,
     exportedRedacted: 'Se han ocultado los payloads, los títulos y las query strings.',
     cleared: (n: number) => `Eliminadas ${n} acciones del rastro.`,
+    compactFailed: (reason: string) =>
+      `Las acciones se eliminaron, pero no se pudo compactar el archivo de la base (${reason}), así que puede quedar texto viejo en él. Cerrá el servidor que esté corriendo (browser-link stop, y tu agente) y volvé a correr el comando.`,
     clearedNone: 'No hay nada que eliminar.',
     confirmClear:
       'Esto borra el rastro de actividad. Vuelve a ejecutarlo con --yes para confirmar, o usa --older-than para conservar lo reciente.',
@@ -363,8 +368,33 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
-function runClear(argv: string[], language: Language): string {
+/** Test seam: the compaction every `clear` form ends with. */
+export interface ActivityCommandDeps {
+  compact?: () => void;
+}
+
+/** Compact the file after a delete. A failure is not swallowed: the rows are
+ * gone but the text may still be in the file, and the operator asked for it
+ * to be gone. Thrown, the message reaches stderr with exit code 1 through the
+ * CLI's top-level handler. */
+function compactAfterClear(compact: () => void, language: Language): void {
+  try {
+    compact();
+  } catch (error) {
+    throw new Error(
+      I18N[language].compactFailed(error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
+  }
+}
+
+function runClear(argv: string[], language: Language, deps: ActivityCommandDeps): string {
   const t = I18N[language];
+  const compact =
+    deps.compact ??
+    (() => {
+      compactActivityDb();
+    });
   const olderThan = flagValue(argv, 'older-than');
   const from = flagValue(argv, 'from');
   const to = flagValue(argv, 'to');
@@ -377,15 +407,17 @@ function runClear(argv: string[], language: Language): string {
       ...(to !== undefined ? { to: localDayToUtc(to, 'end') } : {}),
     };
     const willRemove = countInRange(range);
-    if (willRemove === 0) return t.clearedNone;
-    if (!hasFlag(argv, 'yes')) return t.confirmRange(willRemove);
-    return t.cleared(purgeRange(range));
+    if (!hasFlag(argv, 'yes')) return willRemove === 0 ? t.clearedNone : t.confirmRange(willRemove);
+    const removed = purgeRange(range, { vacuum: false });
+    compactAfterClear(compact, language);
+    return removed === 0 ? t.clearedNone : t.cleared(removed);
   }
 
   if (olderThan !== undefined) {
     const ms = parseDuration(olderThan);
     if (ms === null) return t.badOlderThan(olderThan);
     const removed = clear(new Date(Date.now() - ms).toISOString());
+    compactAfterClear(compact, language);
     return removed === 0 ? t.clearedNone : t.cleared(removed);
   }
 
@@ -394,6 +426,7 @@ function runClear(argv: string[], language: Language): string {
   // required rather than offered.
   if (!hasFlag(argv, 'yes')) return t.confirmClear;
   const removed = clear();
+  compactAfterClear(compact, language);
   return removed === 0 ? t.clearedNone : t.cleared(removed);
 }
 
@@ -499,7 +532,11 @@ function runReport(argv: string[], language: Language): string {
   return lines.join('\n');
 }
 
-export function runActivityCommand(argv: string[], language: Language = 'en'): string {
+export function runActivityCommand(
+  argv: string[],
+  language: Language = 'en',
+  deps: ActivityCommandDeps = {},
+): string {
   const t = I18N[language];
   const sub = argv[0];
 
@@ -507,7 +544,7 @@ export function runActivityCommand(argv: string[], language: Language = 'en'): s
   if (sub === 'stats') return runStats(language);
   if (sub === 'report') return runReport(argv.slice(1), language);
   if (sub === 'export') return runExport(argv.slice(1), language);
-  if (sub === 'clear') return runClear(argv.slice(1), language);
+  if (sub === 'clear') return runClear(argv.slice(1), language, deps);
 
   const page = query(
     buildQuery(argv).limit === undefined ? { ...buildQuery(argv), limit: 50 } : buildQuery(argv),

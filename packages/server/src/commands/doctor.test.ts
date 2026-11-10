@@ -1,3 +1,7 @@
+import { afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createServer, type AddressInfo } from 'node:net';
 import { describe, expect, test } from 'vitest';
 import {
@@ -367,5 +371,73 @@ describe('checkPort — a stalled event loop is not a closed port (S1)', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe('runDoctor — a malformed client config (S2)', () => {
+  const saved = {
+    home: process.env.HOME,
+    profile: process.env.USERPROFILE,
+    data: process.env.BROWSER_LINK_DATA_DIR,
+  };
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'browser-link-doctor-badcfg-'));
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    process.env.BROWSER_LINK_DATA_DIR = join(dir, 'data');
+    writeFileSync(join(dir, '.claude.json'), '{ not json', 'utf8');
+  });
+
+  afterEach(() => {
+    for (const [key, value] of [
+      ['HOME', saved.home],
+      ['USERPROFILE', saved.profile],
+      ['BROWSER_LINK_DATA_DIR', saved.data],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const probes = {
+    checkPort: async () => ({ listening: false, detail: 'no MCP server running' }),
+    detectSilentDebugger: async () => ({ detected: null }),
+    probeVersion: async () => ({ kind: 'none' }) as never,
+    listBridgeProcesses: async () => [],
+    readInstalledVersion: () => '1.0.0',
+  };
+
+  test('resolves, with the broken client reported as failed and the other checks still present', async () => {
+    const report = await runDoctor(probes);
+    const claude = report.clients.find((c) => c.displayName === 'Claude Code');
+    expect(claude?.configError).toContain('Could not parse Claude config');
+    expect(claude?.configError).toContain('.claude.json');
+    expect(report.clients.length).toBeGreaterThan(1);
+    expect(report.ws.port).toBe(17529);
+    expect(report.map.dbPath).toContain('data');
+  });
+
+  test.each([
+    ['en', '✗ config could not be read'],
+    ['es', '✗ no se pudo leer la config'],
+  ] as const)(
+    'formatDoctor (%s) names the client, the file and the parse error',
+    async (language, label) => {
+      const out = formatDoctor(await runDoctor(probes), language);
+      const line = out.split('\n').find((l) => l.startsWith('  Claude Code')) ?? '';
+      expect(line).toContain(label);
+      expect(out).toContain(join(dir, '.claude.json'));
+      expect(out).toContain('Could not parse Claude config');
+      expect(out).toContain(
+        language === 'en' ? 'Chrome extension assets:' : 'Assets de la extensión',
+      );
+    },
+  );
+
+  test('a client with a readable config keeps its previous output', () => {
+    expect(formatDoctor(makeReport())).not.toContain('could not be read');
   });
 });

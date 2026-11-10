@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { WebSocket, WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import type {
   ActivityPurgeMessage,
   AdminActionMessage,
@@ -38,6 +38,7 @@ import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import { BRIDGE_PORT } from './protocol.js';
+import { checkExtensionFrame } from './frame-check.js';
 import {
   HANDSHAKE_GATE_FAILED,
   createHandshakeCheckHandler,
@@ -136,11 +137,13 @@ function log(msg: string): void {
   console.error(`[browser-link] ${msg}`);
 }
 
-function safeParse(raw: string): ExtensionToServer | null {
+/** Parse one frame to `unknown`; the runtime check in `frame-check.ts` is
+ * what turns it into an `ExtensionToServer`. */
+function safeParse(raw: string): unknown {
   try {
-    return JSON.parse(raw) as ExtensionToServer;
+    return JSON.parse(raw) as unknown;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -336,8 +339,9 @@ export function startWsBridge(
 
     wss.on('connection', (ws) => {
       let assignedTabId: string | null = null;
+      let currentKind = 'unknown';
 
-      ws.on('message', (raw) => {
+      const handleFrame = (raw: RawData): void => {
         // `raw` from ws is Buffer | ArrayBuffer | Buffer[]. Normalize to
         // a single utf-8 string so safeParse can't see '[object Object]'
         // when the platform hands us an unexpected shape.
@@ -346,8 +350,14 @@ export function startWsBridge(
           : Array.isArray(raw)
             ? Buffer.concat(raw).toString('utf8')
             : Buffer.from(raw).toString('utf8');
-        const msg = safeParse(text);
-        if (!msg) return;
+        const checked = checkExtensionFrame(safeParse(text));
+        if (!checked.ok) {
+          // The kind only, never the payload: the frame is untrusted input.
+          log(`Dropped malformed frame (kind: ${checked.kind})`);
+          return;
+        }
+        const msg = checked.msg;
+        currentKind = msg.kind;
 
         if (msg.kind === 'tab.register' && !assignedTabId) {
           // The extension may pass `previousTabId` so we can preserve the
@@ -500,12 +510,35 @@ export function startWsBridge(
         // out only while the socket is still open.
         const reply = routeRequestMessage(msg, options.admin);
         if (reply instanceof Promise) {
-          void reply.then((r) => {
-            if (ws.readyState === WebSocket.OPEN) send(ws, r);
-          });
+          void reply
+            .then((r) => {
+              if (ws.readyState === WebSocket.OPEN) send(ws, r);
+            })
+            .catch((error: unknown) => {
+              failSocket(msg.kind, error);
+            });
           return;
         }
         if (reply !== null) send(ws, reply);
+      };
+
+      // An exception while handling one frame costs that socket, never the
+      // process or the other sockets (their tabs are keyed by their own ws).
+      const failSocket = (kind: string, error: unknown): void => {
+        log(
+          `Error handling ${kind} frame, closing the socket: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        ws.close(1011, 'internal error');
+      };
+
+      ws.on('message', (raw) => {
+        try {
+          handleFrame(raw);
+        } catch (error) {
+          failSocket(currentKind, error);
+        }
       });
 
       ws.on('close', (code: number) => {

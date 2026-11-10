@@ -68,6 +68,9 @@ export interface DoctorReport {
     installed: boolean;
     registered: boolean;
     configPath: string;
+    /** Set when the client's config file could not be read (for example it
+     * does not parse); the other fields are then best-effort. */
+    configError?: string;
     instructions: { state: InstructionsState; filePath: string };
   }[];
   extension: { path: string | null };
@@ -138,7 +141,17 @@ type DoctorLocal = Pick<DoctorReport, 'multiAgent' | 'clients' | 'extension' | '
 
 function collectLocal(): DoctorLocal {
   const clients = INSTALLERS.map((i) => {
-    const d = i.detect();
+    let d: ReturnType<typeof i.detect> & { configError?: string };
+    try {
+      d = i.detect();
+    } catch (error) {
+      d = {
+        installed: true,
+        registered: false,
+        configPath: i.configPath(),
+        configError: error instanceof Error ? error.message : String(error),
+      };
+    }
     const instructions = getInstructionsInstaller(i.id).detect();
     return {
       id: i.id,
@@ -255,6 +268,8 @@ interface DoctorI18n {
   clientRegistered: string;
   clientNotRegistered: string;
   clientConfig: string;
+  clientConfigError: string;
+  clientConfigErrorDetail: string;
   clientInstructions: string;
   instructionsInstalled: (version: string | null) => string;
   instructionsOutdated: (version: string | null) => string;
@@ -314,6 +329,8 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientRegistered: '✓ registered',
     clientNotRegistered: '⚠ installed but not registered',
     clientConfig: 'config:',
+    clientConfigError: '✗ config could not be read',
+    clientConfigErrorDetail: 'error:',
     clientInstructions: 'instructions:',
     instructionsInstalled: (v) => (v === null ? `✓ installed (legacy)` : `✓ installed (v${v})`),
     instructionsOutdated: (v) => (v === null ? `⚠ outdated (legacy)` : `⚠ outdated (v${v})`),
@@ -375,6 +392,8 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     clientRegistered: '✓ registrado',
     clientNotRegistered: '⚠ instalado pero no registrado',
     clientConfig: 'config:',
+    clientConfigError: '✗ no se pudo leer la config',
+    clientConfigErrorDetail: 'error:',
     clientInstructions: 'instrucciones:',
     instructionsInstalled: (v) => (v === null ? `✓ instaladas (legacy)` : `✓ instaladas (v${v})`),
     instructionsOutdated: (v) =>
@@ -462,13 +481,19 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
   lines.push('');
   lines.push(t.clientsHeader);
   for (const c of r.clients) {
-    const status = !c.installed
-      ? t.clientNotInstalled
-      : c.registered
-        ? t.clientRegistered
-        : t.clientNotRegistered;
+    const status =
+      c.configError !== undefined
+        ? red(t.clientConfigError)
+        : !c.installed
+          ? t.clientNotInstalled
+          : c.registered
+            ? t.clientRegistered
+            : t.clientNotRegistered;
     lines.push(`  ${c.displayName.padEnd(20)} ${status}`);
     lines.push(`  ${' '.repeat(20)} ${t.clientConfig} ${c.configPath}`);
+    if (c.configError !== undefined) {
+      lines.push(`  ${' '.repeat(20)} ${t.clientConfigErrorDetail} ${red(c.configError)}`);
+    }
     const instr = c.instructions.state;
     let instrLabel: string;
     let outdatedSubline: string | null = null;

@@ -235,6 +235,27 @@ export function clear(before?: string, db?: Database.Database): number {
   return handle.prepare('DELETE FROM activity WHERE at < ?').run(before).changes;
 }
 
+/**
+ * Hand the freed pages back to the filesystem and fold the WAL into the main
+ * file, so deleted text is gone from the bytes on disk. Throws when SQLite
+ * cannot (typically another connection holds the file): callers decide
+ * whether that is fatal.
+ *
+ * VACUUM ALONE IS NOT ENOUGH IN WAL MODE, and getting this wrong is invisible
+ * in the worst way: the rows go, the reported size does not move, and the user
+ * reasonably concludes the purge did nothing. In WAL mode the freed pages land
+ * in `activity.db-wal` rather than being handed back to the filesystem. TRUNCATE
+ * checkpoints fold the WAL back into the main DB and then truncate the sidecar
+ * to zero — once before, so VACUUM rewrites a DB that already contains
+ * everything, and once after, so the pages VACUUM itself freed are released.
+ */
+export function compact(db?: Database.Database): void {
+  const handle = db ?? getActivityDb();
+  handle.pragma('wal_checkpoint(TRUNCATE)');
+  handle.exec('VACUUM');
+  handle.pragma('wal_checkpoint(TRUNCATE)');
+}
+
 /** An inclusive date window. Both ends optional: `{ from }` alone means
  * "everything since", `{ to }` alone means "everything up to", `{}` means the
  * whole trail. ISO-8601 strings, compared lexically — which is exactly right
@@ -293,19 +314,7 @@ export function purgeRange(
   const removed = handle.prepare(`DELETE FROM activity ${where}`).run(...params).changes;
   if (removed > 0 && options.vacuum !== false) {
     try {
-      // VACUUM ALONE IS NOT ENOUGH IN WAL MODE, and getting this wrong is
-      // invisible in the worst way: the rows go, the reported size does not
-      // move, and the user reasonably concludes the purge did nothing.
-      //
-      // In WAL mode the freed pages land in `activity.db-wal` rather than
-      // being handed back to the filesystem, so the file set stays exactly as
-      // large as before. TRUNCATE checkpoints fold the WAL back into the main
-      // DB and then truncate the sidecar to zero — once before, so VACUUM
-      // rewrites a DB that already contains everything, and once after, so the
-      // pages VACUUM itself freed are actually released.
-      handle.pragma('wal_checkpoint(TRUNCATE)');
-      handle.exec('VACUUM');
-      handle.pragma('wal_checkpoint(TRUNCATE)');
+      compact(handle);
     } catch {
       // A checkpoint or VACUUM can fail while another connection holds the
       // file. The rows are already gone, which is what was asked for; the

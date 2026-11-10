@@ -99,3 +99,75 @@ describe('DoctorView', () => {
     unmount();
   });
 });
+
+describe('DoctorView — failures (S2)', () => {
+  const BROKEN: DoctorReport = {
+    ...REPORT,
+    clients: [
+      {
+        id: 'claude',
+        displayName: 'Claude Code',
+        installed: true,
+        registered: false,
+        configPath: '/home/u/.claude.json',
+        configError: 'Could not parse Claude config at /home/u/.claude.json.',
+        instructions: { state: { kind: 'no-file' }, filePath: '/home/u/CLAUDE.md' },
+      },
+    ],
+  };
+
+  test.each([
+    ['en', '✗ config could not be read'],
+    ['es', '✗ no se pudo leer la config'],
+  ] as const)('shows the failed client check in %s', async (language, label) => {
+    const { lastFrame, unmount } = render(
+      <DoctorView language={language} onBack={noop} runDoctor={async () => BROKEN} />,
+    );
+    await tick();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain(label);
+    expect(frame).toContain('/home/u/.claude.json');
+    expect(frame).toContain('Could not parse Claude config');
+    unmount();
+  });
+
+  test.each([
+    ['en', 'Diagnosis failed', 'Diagnosing'],
+    ['es', 'El diagnóstico falló', 'Diagnosticando'],
+  ] as const)(
+    'a rejecting runner shows an error state in %s, no spinner',
+    async (language, text, spinner) => {
+      const { lastFrame, unmount } = render(
+        <DoctorView
+          language={language}
+          onBack={noop}
+          runDoctor={async () => {
+            throw new Error('boom');
+          }}
+        />,
+      );
+      await tick();
+      const frame = lastFrame() ?? '';
+      expect(frame).toContain(text);
+      expect(frame).toContain('boom');
+      expect(frame).not.toContain(spinner);
+      unmount();
+    },
+  );
+
+  test('r after a failure runs the runner again', async () => {
+    let n = 0;
+    const run = vi.fn(async () => {
+      if (n++ === 0) throw new Error('boom');
+      return REPORT;
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <DoctorView language="en" onBack={noop} runDoctor={run} />,
+    );
+    await tick();
+    stdin.write('r');
+    await tick();
+    expect(lastFrame()).toContain('127.0.0.1:17529');
+    unmount();
+  });
+});
