@@ -15,6 +15,7 @@ import type {
   SettingsUpdateMessage,
   TabRegisterPayload,
   TabRegisteredPayload,
+  ToolResponseMessage,
 } from '../messages.js';
 import {
   countInRange as countActivityInRange,
@@ -23,7 +24,11 @@ import {
   query as queryActivity,
   stats as activityStats,
 } from '../activity/queries.js';
-import { lookupPeerProcessDetailed, type PeerLookupResult } from '../auth/process-identity.js';
+import {
+  lookupPeerProcessDetailed,
+  type PeerLookupRequest,
+  type PeerLookupResult,
+} from '../auth/process-identity.js';
 import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
@@ -31,13 +36,14 @@ import { isExtensionEventKind, type BridgeEventLog } from './events.js';
 import { loadConfig } from '../config.js';
 import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
+import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import { BRIDGE_PORT } from './protocol.js';
 import {
+  HANDSHAKE_GATE_FAILED,
   createHandshakeCheckHandler,
   evaluateHandshake,
   handshakeRefusal,
   isHandshakeCheckRequest,
-  lockoutNotice,
 } from './handshake.js';
 
 export const WS_HOST = '127.0.0.1';
@@ -78,15 +84,28 @@ export interface PendingRequest {
 export function settlePendingRequest(
   pendingRequests: Map<string, PendingRequest>,
   id: string,
-  outcome: { ok: true; result: unknown } | { ok: false; error: string },
+  outcome: { ok: true; result: unknown } | { ok: false; error: string; sensitive_field?: true },
 ): boolean {
   const pending = pendingRequests.get(id);
   if (!pending) return false;
   clearTimeout(pending.timeout);
   pendingRequests.delete(id);
   if (outcome.ok) pending.resolve(outcome.result);
+  else if (outcome.sensitive_field === true) pending.reject(new SensitiveFieldError(outcome.error));
   else pending.reject(new Error(outcome.error));
   return true;
+}
+
+/** The settle outcome of one extension `tool.response` frame. Only a literal
+ * `sensitive_field: true` on an error is carried (see `SensitiveFieldError`);
+ * an older extension sends none and its error settles as before. */
+export function toolResponseOutcome(
+  msg: ToolResponseMessage,
+): { ok: true; result: unknown } | { ok: false; error: string; sensitive_field?: true } {
+  if (msg.ok) return { ok: true, result: msg.result };
+  return msg.sensitive_field === true
+    ? { ok: false, error: msg.error, sensitive_field: true }
+    : { ok: false, error: msg.error };
 }
 
 /**
@@ -167,10 +186,15 @@ export interface WsBridgeOptions {
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
-  /** Who owns the other end of a handshake's TCP connection. Default
-   * `lookupPeerProcessDetailed` (the OS lookup); injectable so tests can
-   * drive the real handshake gate from a Node process. */
-  lookupPeerProcess?: (address: string, port: number) => Promise<PeerLookupResult>;
+  /** Who owns the other end of a handshake's TCP connection, refused unless
+   * it runs as this server's OS user. Default `lookupPeerProcessDetailed`
+   * (the OS lookup); injectable so tests can drive the real handshake gate
+   * from a Node process. */
+  lookupPeerProcess?: (
+    address: string,
+    port: number,
+    request: PeerLookupRequest,
+  ) => Promise<PeerLookupResult>;
 }
 
 /** What the primary hands the bridge to answer `admin.describe` and
@@ -231,7 +255,10 @@ export function startWsBridge(
   options: WsBridgeOptions = {},
 ): Promise<WebSocketServer> {
   const { host, port, version } = resolveBridgeOptions(options);
-  const lookupPeerProcess = options.lookupPeerProcess ?? lookupPeerProcessDetailed;
+  const lookupPeerProcess =
+    options.lookupPeerProcess ??
+    ((address: string, peerPort: number, request: PeerLookupRequest) =>
+      lookupPeerProcessDetailed(address, peerPort, {}, request));
   return new Promise((resolve, reject) => {
     const answerHandshakeCheck = createHandshakeCheckHandler(lookupPeerProcess);
     const httpServer = createServer((req, res) => {
@@ -244,20 +271,39 @@ export function startWsBridge(
     const wss = new WebSocketServer({
       server: httpServer,
       // Refuse the upgrade unless the gate accepts its Origin and the OS
-      // confirms the peer is a Chromium-based browser. The check happens
-      // before any application bytes are exchanged.
+      // confirms the peer runs as this server's OS user and is a
+      // Chromium-based browser (and, in the opt-in strict mode, runs from a
+      // listed executable path). The check happens before any application
+      // bytes are exchanged.
       verifyClient: (info, cb) => {
-        void evaluateHandshake(info.req, lookupPeerProcess).then((verdict) => {
-          if (!verdict.accepted) {
-            log(verdict.logLine);
-            const { status, message } = handshakeRefusal(verdict.reason);
-            cb(false, status, message);
-            return;
-          }
-          const notice = lockoutNotice(info.req.headers.origin);
-          if (notice !== undefined) log(notice);
-          cb(true);
-        });
+        // At most one verdict, and always one: anything that throws on the
+        // way (the evaluation, the log, the refusal) refuses with 500.
+        let answered = false;
+        const answer: typeof cb = (...args) => {
+          if (answered) return;
+          answered = true;
+          cb(...args);
+        };
+        evaluateHandshake(info.req, lookupPeerProcess)
+          .then((verdict) => {
+            if (!verdict.accepted) {
+              log(verdict.logLine);
+              const { status, message } = handshakeRefusal(verdict.reason);
+              answer(false, status, message);
+              return;
+            }
+            answer(true);
+          })
+          .catch((err: unknown) => {
+            answer(false, 500, HANDSHAKE_GATE_FAILED);
+            try {
+              log(
+                `Rejected WS handshake: the gate failed (${err instanceof Error ? err.message : String(err)}).`,
+              );
+            } catch {
+              // Logging is what failed; the upgrade is refused anyway.
+            }
+          });
       },
     });
 
@@ -353,11 +399,7 @@ export function startWsBridge(
         }
 
         if (msg.kind === 'tool.response') {
-          settlePendingRequest(
-            pendingRequests,
-            msg.id,
-            msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error },
-          );
+          settlePendingRequest(pendingRequests, msg.id, toolResponseOutcome(msg));
           return;
         }
 

@@ -5,8 +5,10 @@ import {
   checkPort,
   formatDoctor,
   runDoctor,
+  securityReport,
   type DoctorReport,
 } from './doctor.js';
+import { PINNED_EXTENSION_ID } from '../auth/extension-id.js';
 
 /**
  * Doctor format-layer tests. v0.8.3 escalates outdated agent-instructions
@@ -38,7 +40,7 @@ function makeReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
     ],
     extension: { path: null },
     map: { dbPath: '/tmp/map.db', exists: false, sizeBytes: 0, apps: 0 },
-    security: { allowedBrowsers: [] },
+    security: { allowedBrowsers: [], allowedExtensionIds: [PINNED_EXTENSION_ID] },
     silentDebugger: { detected: null },
     ...overrides,
   };
@@ -286,6 +288,62 @@ describe('runDoctor — concurrency (S1)', () => {
       { pid: 7, startedAt: '1970-01-01T00:00:00.000Z', command: 'node browser-link' },
     ]);
     expect(report.map.dbPath).toBe('/tmp/map.db');
+  });
+});
+
+describe('formatDoctor — process binding: same OS user, names, strict mode', () => {
+  const security = (peerExecutablePaths?: string[]): DoctorReport['security'] => ({
+    allowedBrowsers: ['chrome.exe', 'msedge.exe'],
+    allowedExtensionIds: [PINNED_EXTENSION_ID],
+    ...(peerExecutablePaths === undefined ? {} : { peerExecutablePaths }),
+  });
+
+  test('says the check covers the same OS user plus the browser name', () => {
+    const out = formatDoctor(makeReport({ security: security() }));
+    expect(out).toContain('your OS user');
+    expect(out).toContain('2 known browser binaries');
+    expect(formatDoctor(makeReport({ security: security() }), 'es')).toContain('tu usuario del SO');
+  });
+
+  test('strict path mode off when peerExecutablePaths is absent', () => {
+    expect(formatDoctor(makeReport({ security: security() }))).toContain(
+      'Strict path mode (peerExecutablePaths): off',
+    );
+  });
+
+  test('strict path mode on lists the paths in effect', () => {
+    const out = formatDoctor(makeReport({ security: security(['C:\\a\\chrome.exe']) }));
+    expect(out).toContain('Strict path mode (peerExecutablePaths): on, 1 path');
+    expect(out).toContain('C:\\a\\chrome.exe');
+  });
+
+  test('strict path mode on with no valid path says every peer is refused', () => {
+    const out = formatDoctor(makeReport({ security: security([]) }), 'es');
+    expect(out).toContain('Modo estricto por ruta (peerExecutablePaths): activado');
+    expect(out).toContain('se rechaza todo');
+  });
+});
+
+describe('doctor — the extension ids allowed to connect (1.0.0)', () => {
+  const CONFIGURED = 'ponmlkjihgfedcbaponmlkjihgfedcba';
+
+  test('the report lists the pinned id, then the configured ones', () => {
+    expect(securityReport({}).allowedExtensionIds).toEqual([PINNED_EXTENSION_ID]);
+    expect(securityReport({ allowedExtensionIds: [CONFIGURED] }).allowedExtensionIds).toEqual([
+      PINNED_EXTENSION_ID,
+      CONFIGURED,
+    ]);
+  });
+
+  test('the formatted report prints every id in effect, marking where each comes from', () => {
+    const security = securityReport({ allowedExtensionIds: [CONFIGURED] });
+    const out = formatDoctor(makeReport({ security }));
+    expect(out).toContain('Extension ids allowed to connect');
+    expect(out).toContain(`${PINNED_EXTENSION_ID} (pinned)`);
+    expect(out).toContain(`${CONFIGURED} (allowedExtensionIds)`);
+    const es = formatDoctor(makeReport({ security }), 'es');
+    expect(es).toContain('Ids de extensión que pueden conectarse');
+    expect(es).toContain(`${PINNED_EXTENSION_ID} (fijado)`);
   });
 });
 

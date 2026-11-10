@@ -48,6 +48,9 @@ export interface AdminI18n {
   cdpDirectEnabled: string;
   cdpDirectPort: string;
   cdpDirectGrantTtl: string;
+  /** Prose around a pasteable example command carrying the current value. */
+  cdpDirectPortHint: (command: string) => string;
+  cdpDirectGrantTtlHint: (command: string) => string;
   minutes: (n: number) => string;
   never: string;
   activityEnabled: string;
@@ -63,9 +66,10 @@ export interface AdminI18n {
   updatesCheck: string;
   instructionsInstall: (client: string) => string;
   instructionsUninstall: (client: string) => string;
-  register: (client: string) => string;
+  registration: (client: string) => string;
   registered: string;
   notRegistered: string;
+  registeredHint: (command: string) => string;
   stop: string;
   stopDescription: string;
   selfUpdate: string;
@@ -80,13 +84,10 @@ export interface AdminI18n {
   unknownAction: (id: string) => string;
   notAnAction: (id: string) => string;
   invalidValue: (id: string) => string;
-  previewToolOn: (name: string) => string;
-  previewToolOff: (name: string) => string;
   previewToggle: (label: string, on: boolean) => string;
   previewSelect: (label: string, option: string) => string;
   previewInstall: (client: string) => string;
   previewUninstall: (client: string) => string;
-  previewRegister: (client: string) => string;
 }
 
 const v = (version: string | null): string => (version === null ? 'unversioned' : `v${version}`);
@@ -152,6 +153,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     cdpDirectEnabled: 'cdp-direct enabled',
     cdpDirectPort: 'cdp-direct port',
     cdpDirectGrantTtl: 'cdp-direct grant lifetime',
+    cdpDirectPortHint: (command) => `A port number, for example: ${command}`,
+    cdpDirectGrantTtlHint: (command) =>
+      `A whole number of minutes or never, for example: ${command}`,
     minutes: (n) => `${n} min`,
     never: 'never expires',
     activityEnabled: 'Record the activity trail',
@@ -168,9 +172,10 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updatesCheck: 'Check for updates',
     instructionsInstall: (client) => `Install instructions block — ${client}`,
     instructionsUninstall: (client) => `Remove instructions block — ${client}`,
-    register: (client) => `Register with ${client}`,
+    registration: (client) => `MCP registration — ${client}`,
     registered: 'registered',
     notRegistered: 'not registered',
+    registeredHint: (command) => `Already registered; to remove it: ${command}`,
     stop: 'Stop the server / free the port',
     stopDescription: 'Ends the running server, so it is only available from a terminal.',
     selfUpdate: 'Update browser-link',
@@ -184,14 +189,11 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     unknownAction: (id) => `Unknown admin action: ${id}`,
     notAnAction: (id) => `${id} is read-only`,
     invalidValue: (id) => `Invalid value for ${id}`,
-    previewToolOn: (name) => `Enable tool ${name} for every agent`,
-    previewToolOff: (name) => `Disable tool ${name} for every agent`,
     previewToggle: (label, on) => `Turn ${on ? 'on' : 'off'}: ${label}`,
     previewSelect: (label, option) => `Set ${label} to ${option}`,
     previewInstall: (client) => `Write the browser-link instructions block into ${client}'s file`,
     previewUninstall: (client) =>
       `Remove the browser-link instructions block from ${client}'s file`,
-    previewRegister: (client) => `Register browser-link in ${client}'s MCP config`,
   },
   es: {
     ui: {
@@ -261,6 +263,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     cdpDirectEnabled: 'cdp-direct activado',
     cdpDirectPort: 'Puerto de cdp-direct',
     cdpDirectGrantTtl: 'Duración del permiso de cdp-direct',
+    cdpDirectPortHint: (command) => `Un número de puerto, por ejemplo: ${command}`,
+    cdpDirectGrantTtlHint: (command) =>
+      `Un número entero de minutos o never, por ejemplo: ${command}`,
     minutes: (n) => `${n} min`,
     never: 'no vence',
     activityEnabled: 'Guardar el registro de actividad',
@@ -277,9 +282,10 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updatesCheck: 'Buscar actualizaciones',
     instructionsInstall: (client) => `Instalar el bloque de instrucciones — ${client}`,
     instructionsUninstall: (client) => `Quitar el bloque de instrucciones — ${client}`,
-    register: (client) => `Registrar en ${client}`,
+    registration: (client) => `Registro MCP — ${client}`,
     registered: 'registrado',
     notRegistered: 'sin registrar',
+    registeredHint: (command) => `Ya está registrado; para quitarlo: ${command}`,
     stop: 'Detener el servidor / liberar el puerto',
     stopDescription: 'Termina el servidor en marcha, por eso solo se hace desde una terminal.',
     selfUpdate: 'Actualizar browser-link',
@@ -294,14 +300,11 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     unknownAction: (id) => `Acción de administración desconocida: ${id}`,
     notAnAction: (id) => `${id} es de solo lectura`,
     invalidValue: (id) => `Valor inválido para ${id}`,
-    previewToolOn: (name) => `Habilitar la tool ${name} para todos los agentes`,
-    previewToolOff: (name) => `Deshabilitar la tool ${name} para todos los agentes`,
     previewToggle: (label, on) => `${on ? 'Activar' : 'Desactivar'}: ${label}`,
     previewSelect: (label, option) => `Cambiar ${label} a ${option}`,
     previewInstall: (client) =>
       `Escribir el bloque de instrucciones de browser-link en el archivo de ${client}`,
     previewUninstall: (client) =>
       `Quitar el bloque de instrucciones de browser-link del archivo de ${client}`,
-    previewRegister: (client) => `Registrar browser-link en la configuración MCP de ${client}`,
   },
 };

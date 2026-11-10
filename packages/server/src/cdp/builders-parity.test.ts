@@ -66,6 +66,41 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildFocusJs({ ref: 'k3x9ab:e7' })).toBe(ext.buildFocusJs({ ref: 'k3x9ab:e7' }));
   });
 
+  test('buildFocusedFieldJs and the deep active-element walk it shares with buildStateJs', () => {
+    expect(srv.DEEP_ACTIVE_ELEMENT_JS).toBe(ext.DEEP_ACTIVE_ELEMENT_JS);
+    expect(srv.buildFocusedFieldJs()).toBe(ext.buildFocusedFieldJs());
+    expect(srv.SENSITIVE_AUTOCOMPLETE_TOKENS).toEqual(ext.SENSITIVE_AUTOCOMPLETE_TOKENS);
+  });
+
+  test('isFocusedField reads an evaluation answer the same way on both transports', () => {
+    for (const value of [
+      { sensitive_field: true },
+      { sensitive_field: false },
+      { sensitive_field: 'yes' },
+      true,
+      null,
+      undefined,
+      {},
+    ]) {
+      expect(srv.isFocusedField(value)).toBe(ext.isFocusedField(value));
+    }
+  });
+
+  test('actionFailure carries the flag the same way on both transports', () => {
+    for (const field of [{ sensitive_field: true }, { sensitive_field: false }, true, undefined]) {
+      expect(srv.actionFailure('boom', field)).toEqual(ext.actionFailure('boom', field));
+    }
+    expect(srv.actionFailure('boom', { sensitive_field: true })).toEqual({
+      ok: false,
+      error: 'boom',
+      sensitive_field: true,
+    });
+    expect(srv.actionFailure('boom', { sensitive_field: false })).toEqual({
+      ok: false,
+      error: 'boom',
+    });
+  });
+
   test('buildSettleJs', () => {
     const opts = { settle_ms: 150, settle_timeout_ms: 2000 };
     expect(srv.buildSettleJs(opts)).toBe(ext.buildSettleJs(opts));

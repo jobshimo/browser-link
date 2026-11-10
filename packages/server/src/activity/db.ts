@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getActivityDbPath } from './paths.js';
 
@@ -33,11 +33,47 @@ export function getActivityDb(): Database.Database {
   if (dbInstance) return dbInstance;
   const path = getActivityDbPath();
   mkdirSync(dirname(path), { recursive: true });
+  restrictToOwner(path);
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   runMigrations(db);
   dbInstance = db;
   return db;
+}
+
+/** Owner read/write only. */
+const OWNER_ONLY = 0o600;
+
+/**
+ * Keep the trail readable by its owner only, on POSIX: the file is created
+ * 0600 when it does not exist yet, and an existing file (or WAL / shared
+ * memory file) this process owns is tightened to 0600. SQLite creates the
+ * `-wal` and `-shm` files with the database file's mode, so a 0600
+ * database keeps them 0600 too. A file owned by another user is left
+ * alone, and so is every stored row: only the mode changes.
+ *
+ * A no-op on Windows, where Node maps the mode to the read-only flag and
+ * nothing else; access there follows the data directory's ACL, which
+ * already belongs to the user.
+ *
+ * Best effort: a filesystem that refuses chmod must not stop the trail.
+ */
+function restrictToOwner(path: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    closeSync(openSync(path, 'a', OWNER_ONLY));
+  } catch {
+    return;
+  }
+  const uid = process.getuid?.();
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      const stat = statSync(file);
+      if (stat.uid === uid && (stat.mode & 0o777) !== OWNER_ONLY) chmodSync(file, OWNER_ONLY);
+    } catch {
+      // Absent (no WAL yet) or unreadable: nothing to tighten.
+    }
+  }
 }
 
 function runMigrations(db: Database.Database): void {

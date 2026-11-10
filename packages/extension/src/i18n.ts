@@ -136,15 +136,20 @@ const EN = {
   workerServerTimeout: 'Timed out waiting for the server.',
   workerHandshakeRefused: (reason: string): string =>
     `The browser-link server refused the connection: ${reason}`,
-  // Not dead: an extension cannot be refused for its Origin before 1.0.0,
-  // which accepts only the exact pinned id; from then on an extension with
-  // another id (an old install) gets this reason.
+  // Since 1.0.0 the bridge accepts only the pinned extension id (and the
+  // ids in allowedExtensionIds); an extension with another id gets this.
   handshakeReasonOriginNotAllowed:
     "it does not accept this extension's id. Reload the extension from the installed browser-link version.",
   handshakeReasonPeerUnidentified: 'it could not see which program opened the connection.',
   handshakeReasonPeerUnknown: 'it could not identify the program that opened the connection.',
+  handshakeReasonPeerOwnerUnreadable:
+    'it could not read which user runs the program that opened the connection.',
+  handshakeReasonPeerOtherUser:
+    'the program that opened the connection runs as another user of this computer.',
   handshakeReasonPeerNotBrowser:
     'the program that opened the connection is not a supported Chromium-based browser.',
+  handshakeReasonPeerPathNotAllowed:
+    "the browser's executable path is not in the server's peerExecutablePaths list.",
   handshakeReasonLookupFailed: 'checking the program that opened the connection failed.',
   handshakeReasonOther: 'this extension version does not know the reason. Update the extension.',
   repairServerTooOld: (version: string | undefined): string =>
@@ -377,8 +382,14 @@ const ES: Messages = {
     'no acepta el id de esta extensión. Vuelva a cargar la extensión desde la versión de browser-link instalada.',
   handshakeReasonPeerUnidentified: 'no pudo ver qué programa abrió la conexión.',
   handshakeReasonPeerUnknown: 'no pudo identificar el programa que abrió la conexión.',
+  handshakeReasonPeerOwnerUnreadable:
+    'no pudo leer con qué usuario se ejecuta el programa que abrió la conexión.',
+  handshakeReasonPeerOtherUser:
+    'el programa que abrió la conexión se ejecuta con otro usuario de este equipo.',
   handshakeReasonPeerNotBrowser:
     'el programa que abrió la conexión no es un navegador compatible basado en Chromium.',
+  handshakeReasonPeerPathNotAllowed:
+    'la ruta del ejecutable del navegador no está en la lista peerExecutablePaths del servidor.',
   handshakeReasonLookupFailed: 'falló la comprobación del programa que abrió la conexión.',
   handshakeReasonOther: 'esta versión de la extensión no conoce el motivo. Actualice la extensión.',
   repairServerTooOld: (version: string | undefined): string =>

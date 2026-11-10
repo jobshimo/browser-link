@@ -40,7 +40,10 @@ describe('diagnoseConnectFailure', () => {
     'origin-not-allowed',
     'peer-unidentified',
     'peer-unknown',
+    'peer-owner-unreadable',
+    'peer-other-user',
     'peer-not-browser',
+    'peer-path-not-allowed',
     'process-lookup-failed',
   ])('a refusal for %s becomes ws-handshake-refused with that reason', async (reason) => {
     const url = await stub(200, JSON.stringify({ accepted: false, reason }));

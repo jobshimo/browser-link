@@ -195,18 +195,18 @@ describe('buildAdminState — status section', () => {
 });
 
 describe('buildAdminState — setup section', () => {
-  test('ids and kinds, one toggle per catalogue tool, restart flags', () => {
+  test('ids and kinds, one readout per catalogue tool, restart flags', () => {
     const sec = section(buildAdminState(input()), 'setup');
     expect(shape(sec)).toEqual([
       ['language', 'select'],
-      ['tools.browser.list_tabs', 'toggle'],
-      ['tools.browser.evaluate', 'toggle'],
+      ['tools.browser.list_tabs', 'readout'],
+      ['tools.browser.evaluate', 'readout'],
       ['multiAgent', 'toggle'],
       ['autoReelect', 'toggle'],
       ['instructionsAutoRefresh', 'toggle'],
-      ['cdpDirectEnabled', 'toggle'],
+      ['cdpDirectEnabled', 'readout'],
       ['cdpDirectPort', 'readout'],
-      ['cdpDirectGrantTtlMinutes', 'select'],
+      ['cdpDirectGrantTtlMinutes', 'readout'],
       ['activityEnabled', 'toggle'],
       ['activityRecordPayloads', 'toggle'],
       ['downloadsDir', 'readout'],
@@ -217,25 +217,18 @@ describe('buildAdminState — setup section', () => {
     expect(item(sec, 'multiAgent').requiresRestart).toBe(true);
     expect(item(sec, 'autoReelect').requiresRestart).toBe(true);
     expect(item(sec, 'instructionsAutoRefresh').requiresRestart).toBe(true);
-    expect(item(sec, 'cdpDirectEnabled').requiresRestart).toBeUndefined();
   });
 
-  test('values reflect the config: disabled tools are off, defaults applied', () => {
-    const sec = section(
-      buildAdminState(input({ config: { disabledTools: ['browser.evaluate'] } })),
-      'setup',
-    );
-    expect(item(sec, 'tools.browser.list_tabs').value).toBe(true);
-    expect(item(sec, 'tools.browser.evaluate').value).toBe(false);
+  test('values reflect the config: defaults applied', () => {
+    const sec = section(buildAdminState(input({ config: {} })), 'setup');
     expect(item(sec, 'language').value).toBe('en');
     expect(item(sec, 'language').options).toEqual([
       { value: 'en', label: 'English' },
       { value: 'es', label: 'Español' },
     ]);
-    expect(item(sec, 'cdpDirectGrantTtlMinutes').value).toBe('60');
     expect(item(sec, 'cdpDirectPort')).toMatchObject({
       value: 9222,
-      hint: 'browser-link config set cdp-direct.port <port>',
+      hint: 'A port number, for example: browser-link config set cdp-direct.port 9222',
     });
     expect(item(sec, 'downloadsDir')).toMatchObject({
       value: '/data/downloads',
@@ -243,14 +236,97 @@ describe('buildAdminState — setup section', () => {
     });
   });
 
-  test('a grant TTL outside the common options is still listed as the current option', () => {
+  test('tools, cdp-direct and its grant lifetime are readouts carrying their console command', () => {
     const sec = section(
+      buildAdminState(input({ config: { disabledTools: ['browser.evaluate'] } })),
+      'setup',
+    );
+    expect(item(sec, 'tools.browser.list_tabs')).toEqual({
+      id: 'tools.browser.list_tabs',
+      kind: 'readout',
+      label: 'Tool browser.list_tabs',
+      value: 'on',
+      writesDisk: false,
+      hint: 'browser-link tools disable browser.list_tabs',
+    });
+    expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
+      kind: 'readout',
+      value: 'off',
+      hint: 'browser-link tools enable browser.evaluate',
+    });
+    expect(item(sec, 'cdpDirectEnabled')).toEqual({
+      id: 'cdpDirectEnabled',
+      kind: 'readout',
+      label: 'cdp-direct enabled',
+      value: 'off',
+      writesDisk: false,
+      hint: 'browser-link config set cdp-direct.enabled true',
+    });
+    expect(item(sec, 'cdpDirectGrantTtlMinutes')).toEqual({
+      id: 'cdpDirectGrantTtlMinutes',
+      kind: 'readout',
+      label: 'cdp-direct grant lifetime',
+      value: '60 min',
+      writesDisk: false,
+      hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl 60',
+    });
+  });
+
+  test('the readout values follow the config', () => {
+    const sec = section(
+      buildAdminState(input({ config: { cdpDirectEnabled: true, cdpDirectGrantTtlMinutes: 0 } })),
+      'setup',
+    );
+    expect(item(sec, 'cdpDirectEnabled')).toMatchObject({
+      value: 'on',
+      hint: 'browser-link config set cdp-direct.enabled false',
+    });
+    expect(item(sec, 'cdpDirectGrantTtlMinutes')).toMatchObject({
+      value: 'never expires',
+      hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl never',
+    });
+    const port = section(buildAdminState(input({ config: { cdpDirectPort: 9333 } })), 'setup');
+    expect(item(port, 'cdpDirectPort').hint).toBe(
+      'A port number, for example: browser-link config set cdp-direct.port 9333',
+    );
+    const seven = section(
       buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 7 } })),
       'setup',
     );
-    const ttl = item(sec, 'cdpDirectGrantTtlMinutes');
-    expect(ttl.value).toBe('7');
-    expect(ttl.options?.some((o) => o.value === '7')).toBe(true);
+    expect(item(seven, 'cdpDirectGrantTtlMinutes').value).toBe('7 min');
+  });
+
+  test('the readouts render in the requested language; the command is not translated', () => {
+    const sec = section(
+      buildAdminState(
+        input({ config: { language: 'en', disabledTools: ['browser.evaluate'] } }),
+        'es',
+      ),
+      'setup',
+    );
+    expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
+      label: 'Tool browser.evaluate',
+      value: 'desactivado',
+      hint: 'browser-link tools enable browser.evaluate',
+    });
+    expect(item(sec, 'cdpDirectEnabled')).toMatchObject({
+      label: 'cdp-direct activado',
+      value: 'desactivado',
+      hint: 'browser-link config set cdp-direct.enabled true',
+    });
+    expect(item(sec, 'cdpDirectGrantTtlMinutes')).toMatchObject({
+      label: 'Duración del permiso de cdp-direct',
+      value: '60 min',
+      hint: 'Un número entero de minutos o never, por ejemplo: browser-link config set cdp-direct.grant-ttl 60',
+    });
+    expect(item(sec, 'cdpDirectPort')).toMatchObject({
+      hint: 'Un número de puerto, por ejemplo: browser-link config set cdp-direct.port 9222',
+    });
+    const never = section(
+      buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 0 } }), 'es'),
+      'setup',
+    );
+    expect(item(never, 'cdpDirectGrantTtlMinutes').value).toBe('no vence');
   });
 
   test('en and es labels', () => {
@@ -277,7 +353,7 @@ describe('buildAdminState — diagnose section', () => {
       ['instructions.install.claude', 'button'],
       ['instructions.uninstall.claude', 'button'],
       ['instructions.install.opencode', 'button'],
-      ['client.register.claude', 'button'],
+      ['client.register.claude', 'readout'],
       ['stop', 'readout'],
       ['selfUpdate', 'readout'],
     ]);
@@ -285,7 +361,35 @@ describe('buildAdminState — diagnose section', () => {
     expect(item(sec, 'updates.check').writesDisk).toBe(false);
     expect(item(sec, 'instructions.install.claude').writesDisk).toBe(true);
     expect(item(sec, 'instructions.uninstall.claude').writesDisk).toBe(true);
-    expect(item(sec, 'client.register.claude').writesDisk).toBe(true);
+    expect(item(sec, 'client.register.claude').writesDisk).toBe(false);
+  });
+
+  test('client registration is a readout carrying the install or removal command, only for installed clients', () => {
+    const sec = section(
+      buildAdminState(
+        input({
+          clients: [
+            { id: 'claude', displayName: 'Claude Code', installed: true, registered: true },
+            { id: 'copilot', displayName: 'GitHub Copilot', installed: true, registered: false },
+            { id: 'opencode', displayName: 'OpenCode', installed: false, registered: false },
+          ],
+        }),
+      ),
+      'diagnose',
+    );
+    expect(item(sec, 'client.register.claude')).toEqual({
+      id: 'client.register.claude',
+      kind: 'readout',
+      label: 'MCP registration — Claude Code',
+      value: 'registered',
+      writesDisk: false,
+      hint: 'Already registered; to remove it: browser-link uninstall --client claude',
+    });
+    expect(item(sec, 'client.register.copilot')).toMatchObject({
+      value: 'not registered',
+      hint: 'browser-link install --client copilot',
+    });
+    expect(sec.items.some((i) => i.id === 'client.register.opencode')).toBe(false);
   });
 
   test('stop and self-update are never actions: readouts carrying the console command', () => {
@@ -319,11 +423,15 @@ describe('buildAdminState — diagnose section', () => {
     const en = section(buildAdminState(input()), 'diagnose');
     expect(en.title).toBe('Diagnose');
     expect(item(en, 'doctor').label).toBe('Run doctor');
-    expect(item(en, 'client.register.claude').label).toBe('Register with Claude Code');
+    expect(item(en, 'client.register.claude').label).toBe('MCP registration — Claude Code');
     const es = section(buildAdminState(input({ config: { language: 'es' } })), 'diagnose');
     expect(es.title).toBe('Diagnóstico');
     expect(item(es, 'doctor').label).toBe('Ejecutar doctor');
-    expect(item(es, 'client.register.claude').label).toBe('Registrar en Claude Code');
+    expect(item(es, 'client.register.claude')).toMatchObject({
+      label: 'Registro MCP — Claude Code',
+      value: 'registrado',
+      hint: 'Ya está registrado; para quitarlo: browser-link uninstall --client claude',
+    });
   });
 });
 

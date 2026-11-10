@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { platform } from 'node:os';
+import { dirname, join, posix, win32 } from 'node:path';
+import { isExtensionId } from './auth/extension-id.js';
 import { getDataDir } from './map/paths.js';
 import { sanitizeDisabledTools } from './permissions.js';
 
@@ -168,6 +170,32 @@ export interface BrowserLinkConfig {
    * a hand-edited value outside [1, 64] reads as the default.
    */
   downloadsMaxMb?: number;
+  /**
+   * Opt-in strict mode of the bridge's peer check, for experts. Absent or
+   * empty: no path check (the peer must still run as the same OS user and
+   * carry an allowlisted browser name). Non-empty: the peer's executable
+   * path must also equal one of these absolute paths (case-insensitive on
+   * Windows, exact elsewhere), and a path that cannot be read is refused.
+   *
+   * Hand-edited in config.json only: no CLI command, admin panel item,
+   * bridge message or MCP tool writes it. After `loadConfig`, `undefined`
+   * means off and an array means on; entries that are not absolute strings
+   * are dropped but strict mode stays on, so a mistyped list refuses every
+   * peer instead of silently turning the check off.
+   */
+  peerExecutablePaths?: string[];
+  /**
+   * Extra Chrome extension ids allowed to open the bridge, for experts (for
+   * example a Web Store build or your own fork). The pinned id
+   * (`auth/extension-id.ts`) is always allowed; the handshake compares the
+   * full `Origin` with `chrome-extension://<id>` exactly.
+   *
+   * Hand-edited in config.json only: no CLI command, admin panel item,
+   * bridge message or MCP tool writes it. After `loadConfig` it holds only
+   * well-formed ids (exactly 32 letters a-p) and is absent when none is
+   * left; every other entry is dropped with a warning.
+   */
+  allowedExtensionIds?: string[];
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
@@ -211,6 +239,79 @@ export function sanitizeDownloadsMaxMb(raw: unknown): number {
     return raw;
   }
   return DEFAULT_DOWNLOADS_MAX_MB;
+}
+
+/** Read-side sanitizer for `peerExecutablePaths` (config.json is
+ * untrusted): absent, null or an empty array is `undefined` (strict mode
+ * off); any other value turns strict mode on and keeps only the entries
+ * that are absolute paths for `os`. A non-array value keeps nothing. */
+export function sanitizePeerExecutablePaths(
+  raw: unknown,
+  os: NodeJS.Platform = platform(),
+): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) return [];
+  if (raw.length === 0) return undefined;
+  const paths = os === 'win32' ? win32 : posix;
+  return (raw as unknown[]).filter(
+    (p): p is string => typeof p === 'string' && p.length > 0 && paths.isAbsolute(p),
+  );
+}
+
+/** What `JSON.stringify` leaves raw that a log line must not carry: DEL,
+ * the C1 controls and the Unicode line separators. */
+const UNPRINTABLE_IN_JSON = new RegExp(
+  '[\\x7f-\\x9f' + String.fromCharCode(0x2028, 0x2029) + ']',
+  'g',
+);
+
+/** An untrusted config value made safe and short for one warning line. */
+function printableEntry(value: unknown): string {
+  // The value comes from parsed JSON, so it always serializes.
+  const text = JSON.stringify(value);
+  const short = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  return short.replace(
+    UNPRINTABLE_IN_JSON,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/** Warnings already printed by this process: `loadConfig` runs on every
+ * tool call and handshake, and one line per bad entry is enough. */
+const warnedConfigLines = new Set<string>();
+
+function warnOnce(line: string): void {
+  if (warnedConfigLines.has(line)) return;
+  warnedConfigLines.add(line);
+  console.warn(line);
+}
+
+/** Read-side sanitizer for `allowedExtensionIds` (config.json is
+ * untrusted): keeps the entries that are extension ids (exactly 32 letters
+ * a-p), in order; every other entry, and a value that is not an array, is
+ * dropped with a warning. Absent or null is no extra id. */
+export function sanitizeAllowedExtensionIds(
+  raw: unknown,
+  warn: (line: string) => void = warnOnce,
+): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    warn(
+      `[browser-link] config.json allowedExtensionIds: ignored ${printableEntry(raw)} (expected an array of extension ids).`,
+    );
+    return [];
+  }
+  const ids: string[] = [];
+  for (const entry of raw as unknown[]) {
+    if (isExtensionId(entry)) {
+      ids.push(entry);
+    } else {
+      warn(
+        `[browser-link] config.json allowedExtensionIds: dropped ${printableEntry(entry)} (an extension id is exactly 32 letters a-p).`,
+      );
+    }
+  }
+  return ids;
 }
 
 /** Defensive safety net for a `cdp-direct.grant-ttl` value THE USER NEVER
@@ -331,8 +432,15 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // a corrupted config.json the same way sanitizeCdpPort does for the port.
   const idleTtlMinutes =
     cfg.idleTtlMinutes === undefined ? undefined : clampIdleTtlMinutes(cfg.idleTtlMinutes);
+  // Present only when strict mode is on, so `undefined` keeps meaning off.
+  const peerExecutablePaths = sanitizePeerExecutablePaths(cfg.peerExecutablePaths);
+  // Present only when at least one well-formed id is left.
+  const allowedExtensionIds = sanitizeAllowedExtensionIds(cfg.allowedExtensionIds);
+  const { peerExecutablePaths: _raw, allowedExtensionIds: _rawIds, ...rest } = cfg;
   return {
-    ...cfg,
+    ...rest,
+    ...(peerExecutablePaths !== undefined ? { peerExecutablePaths } : {}),
+    ...(allowedExtensionIds.length > 0 ? { allowedExtensionIds } : {}),
     multiAgent,
     autoReelect,
     cdpDirectEnabled,

@@ -49,6 +49,7 @@
 
 - [What it is](#what-it-is)
 - [Quick start](#quick-start)
+- [Upgrading to 1.0](#upgrading-to-10)
 - [How it works](#how-it-works)
 - [Use cases](#use-cases)
 - [What the agent can do](#what-the-agent-can-do)
@@ -118,10 +119,10 @@ the four-step setup:
 3. **Install the Chrome extension.** The UI prints the absolute path to the
    bundled assets and the OS-specific steps (`chrome://extensions` →
    Developer mode → Load unpacked).
-   Since 0.52.0 the extension carries a fixed public key, so its id is the
-   same on every install. Updating to that version changes the id once:
-   reload the extension in `chrome://extensions`; its stored settings start
-   fresh.
+   The extension carries a fixed public key, so its id is the same on every
+   install, and the server accepts only that id (see
+   [Upgrading to 1.0](#upgrading-to-10)). After updating the server, reload the
+   extension in `chrome://extensions`.
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
    The extension speaks English and Spanish (see
@@ -263,6 +264,161 @@ In cmd, the same with a macro:
 `doskey browser-link=node "<npm root -g>\@jobshimo\browser-link\dist\cli.js" $*`.
 The function only changes your terminal: the MCP server your client starts
 pays the shim once per session, not once per call.
+
+## Upgrading to 1.0
+
+1.0.0 is the hardening release. Most of it is stricter checks on who may talk to
+the bridge, so a few things that worked before are now refused. If you come from
+0.52 or older, do this once:
+
+1. **Update the server:** `npm install -g @jobshimo/browser-link@latest`, then
+   restart your MCP client.
+2. **Reload the extension** in `chrome://extensions`, from the extension folder
+   of the version you just installed (the console's setup step prints its path),
+   so the extension and the server are the same version. A 0.51 or older
+   extension, or any extension without the pinned id, is refused, and its popup
+   says so ("it does not accept this extension's id. Reload the extension from
+   the installed browser-link version."). If the id changes, Chrome treats it as
+   a new extension and its stored settings (idle timeout, flow recording,
+   language) start fresh.
+3. **Run the browser as the same OS user as the server.** A browser that runs as
+   another user of the machine is refused (see below).
+4. **If you used the Admin window to change tools, cdp-direct or MCP client
+   registration, use the console instead** (commands below).
+
+Stored activity rows are not changed by the update.
+
+### What now stops a connection
+
+Since 1.0.0 the bridge accepts a connection only if every check passes. The
+extension popup shows the reason when one fails, and the server log names the
+cause of every refusal:
+
+| Check  | Refused when                                                                                                          | Popup says (short)                               |
+| ------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Origin | The `Origin` is missing, or is not exactly `chrome-extension://celegobaahdoaigibmjmekhopegfkhpe` or an id you allowed | it does not accept this extension's id           |
+| Owner  | The browser process runs as another OS user than the server, or its owner cannot be read                              | runs as another user / could not read which user |
+| Name   | The process is not a Chrome, Chromium, Edge, Brave or Vivaldi binary                                                  | not a supported Chromium-based browser           |
+| Path   | Strict mode only (below): the executable path is not in your list, or cannot be read                                  | the path is not in `peerExecutablePaths`         |
+
+Three more reasons can appear: the program that opened the connection could not
+be seen, it could not be identified, or checking it failed. A connection with no
+`Origin` (a script, for example) is refused before any process
+lookup runs.
+
+On Windows, `netstat` can omit a connection that was just opened from its first
+snapshot, so the server looks again, up to six snapshots over about 1.25 s, before
+refusing. If a refusal still happens, the popup says "The browser-link server
+refused the connection: it could not identify the program that opened the
+connection." (or, when the diagnosis itself cannot answer, "WebSocket connection
+failed. Is the MCP server running?"), and the server log line says how many
+snapshots were taken and how many rows mentioned the port.
+
+**Allowing another extension id (experts only).** To connect your own build of
+the extension, add its id to `allowedExtensionIds` in `config.json`, in the data
+folder (see [Where your data lives](#where-your-data-lives)):
+
+```json
+{ "allowedExtensionIds": ["abcdefghijklmnopabcdefghijklmnop"] }
+```
+
+An id is exactly 32 characters, each a letter from `a` to `p`. Any other entry
+(a prefix, a wildcard, a full `chrome-extension://` origin) is dropped with a
+warning in the server log. The pinned id is always allowed. You edit this key by
+hand: it cannot be set from the Admin window, the console, the bridge or an MCP
+tool. `browser-link doctor` lists the ids in effect.
+
+**Strict mode by executable path (experts only).** `peerExecutablePaths` in
+`config.json` makes the server also require the browser's full path to be in a
+list you wrote (see [Security model](#security-model)). Before turning it on:
+
+- A list with no valid absolute path refuses **every** browser. A mistyped list
+  never turns the check off.
+- A `config.json` the server cannot parse falls back to the defaults, with a
+  warning in the log. That turns strict mode off, drops your allowed ids and
+  clears the tool deny list. Keep the file valid.
+
+**Known gap.** The peer check does not tell apart two programs that both run as
+your user. A process that runs as you but is confined away from your files, while
+it can still open a loopback connection (a Flatpak or Snap app with network
+access, a macOS App Sandbox app with `network.client`, a Windows low-integrity
+process), passes the same-user check, and it passes the name check if its binary
+carries a browser's name. Strict mode closes that gap by path. Malware already
+inside your browser is outside this model too (see
+[Security model](#security-model)).
+
+On Windows the lookup also counts a socket that `netstat` lists only as bound
+(foreign port 0) when no row to the server exists. If one process has a row to
+the server and another has a bound-only row for the same endpoint, the row to the
+server decides instead of the lookup refusing as ambiguous.
+
+### The Admin window no longer changes what an agent may do
+
+Anything that can reach the bridge could have made these changes from the Admin
+window, so in 1.0.0 the window shows each one as a **readout** (the current value
+and the console command) and the server refuses the write. The console does all
+of them:
+
+| What                          | Command                                                                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Disable or enable an MCP tool | `browser-link tools disable <tool>` / `browser-link tools enable <tool>`                                       |
+| cdp-direct on or off          | `browser-link config set cdp-direct.enabled true` / `browser-link config set cdp-direct.enabled false`         |
+| cdp-direct grant lifetime     | `browser-link config set cdp-direct.grant-ttl <minutes>` (a whole number of minutes, or `never`)               |
+| Register with an MCP client   | `browser-link install --client <claude\|opencode\|copilot>`; to remove: `browser-link uninstall --client <id>` |
+
+Still available from the Admin window: console language, multi-agent,
+auto-reelect, the instructions auto-refresh, the activity trail switches,
+`doctor`, the update check, and installing or removing the instructions block per
+client. The cdp-direct port and the downloads folder were already readouts.
+
+### The activity trail
+
+- **Password fields are no longer stored.** When `browser.type` or
+  `browser.press` acts on a field the page declares sensitive (an
+  `<input type="password">`, or an `autocomplete` attribute containing
+  `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`),
+  the row stores `[sensitive field]` instead of the text or key, whether
+  `activity.record-payloads` is on or off. The tool result carries
+  `sensitive_field: true` or `false`. A call that fails on such a field stores
+  the marker too.
+- **Rows already stored are untouched.** Text typed before 1.0.0 stays in
+  `activity.db`. To remove it, purge the trail (see [Purging](#purging)):
+  `browser-link activity clear --from 2000-01-01 --yes` deletes every row and
+  then reclaims the disk space. Plain `browser-link activity clear --yes` also
+  deletes every row but does not shrink the file, so deleted text can stay in
+  free pages.
+- **What is not detected.** Only a field the page itself marks is detected. These
+  are stored as before:
+  - `browser.evaluate` expressions;
+  - plain text fields, even one named or labelled "password";
+  - `browser.press` on a field that is not marked sensitive (each key is stored);
+  - URLs with query strings (`navigate`, `download`) and `find` text;
+  - fields inside cross-origin iframes, closed shadow roots and `contenteditable`
+    elements (reported as not sensitive);
+  - a field whose focus changes between the check and the typing;
+  - a bridge timeout or a socket that closes while typing: no report arrives, so
+    the text is stored.
+- **Who can read payloads.** Other agents read them through `browser.activity`,
+  and bridge clients can read them too. `activity.record-payloads false` is how
+  you keep text out of the trail.
+- **File mode.** On Linux and macOS the activity database is created readable by
+  its owner only (mode 0600), and an existing one is tightened. On Windows that
+  mode does little: access follows the permissions of the data folder.
+
+### The pinned extension id
+
+The extension's manifest carries a fixed public `key`, which gives every install
+the id `celegobaahdoaigibmjmekhopegfkhpe`. A public key gives a **stable id, not
+proof of identity**: an unpacked extension loaded by hand with the same key gets
+the same id. The Origin check keeps out pages, scripts and other extensions; the
+process checks keep out other users. Neither authenticates the extension itself.
+
+### Chrome version
+
+The minimum is Chrome 118 (the manifest declares it). The end-to-end suite passed
+on Windows against Chrome for Testing 118.0.5993.70 and against the current
+stable Chrome, including a check that the pinned Origin is accepted while the
+server enforces it.
 
 ## How it works
 
@@ -1513,7 +1669,12 @@ The same thing from the terminal:
 browser-link activity stats                          # rows, size, oldest, newest
 browser-link activity clear --to 2026-07-31          # counts first, asks for --yes
 browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
+browser-link activity clear --from 2000-01-01 --yes  # every row, then reclaim the space
 ```
+
+A date range (`--from` / `--to`) vacuums the file, so the deleted text is gone
+from disk. `browser-link activity clear --yes` (the whole trail) and
+`--older-than` delete the rows but do not vacuum.
 
 ### Friction report (v0.43.0)
 
@@ -1571,14 +1732,25 @@ expression `browser.evaluate` ran, the URL `browser.navigate` went to. That is
 deliberate — a trail that cannot tell you what an agent typed answers none of
 the questions people open it for.
 
-Two things keep that honest:
+Three things keep that honest:
 
 - **Nothing uploads it.** The trail is a SQLite file in your data dir
   (`activity.db`, beside `map.db`), read over loopback and never sent anywhere.
-- **Redaction happens on the way out, not on the way in.** You keep the full
-  trail; `--redact` is what you run when handing it to someone else. That way
-  the decision is made deliberately, once, at export — instead of silently at
-  record time where it cannot be undone.
+- **Redaction happens on the way out, with one exception decided by the page.**
+  You keep the full trail; `--redact` is what you run when handing it to
+  someone else. The exception: since 1.0.0, when `browser.type` or
+  `browser.press` acts on a field the page itself declares sensitive (a
+  password input, or an `autocomplete` of `current-password`, `new-password`,
+  `one-time-code`, `cc-number` or `cc-csc`), the row stores
+  `[sensitive field]` instead of the text, with `record-payloads` on or off.
+  Rows stored earlier are not changed.
+- **It is not complete.** Detection relies on what the page declares, so
+  `evaluate` expressions, plain text fields, `press` on unmarked fields, URLs
+  with query strings, fields in cross-origin iframes, closed shadow roots and
+  `contenteditable`, and text typed when a bridge timeout or a closed socket
+  hides the report are stored as typed. Other agents (`browser.activity`) and
+  bridge clients can read the payloads. The full list is under
+  [Upgrading to 1.0](#upgrading-to-10).
 
 If you would rather not record the text at all:
 
@@ -1621,29 +1793,35 @@ stays on screen while you change settings. The window asks the running server
 over the extension's existing connection, so it needs at least one connected
 tab; without one it says so.
 
-From the Admin window you can switch the console language, enable or disable each MCP tool,
-toggle multi-agent, auto-reelect, the instructions auto-refresh, cdp-direct
-and its grant lifetime, and the activity trail; run `doctor` and an update
-check; install or remove the instructions block per client; and register
-browser-link with a detected client. The rules:
+From the Admin window you can switch the console language; toggle multi-agent,
+auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
+and an update check; and install or remove the instructions block per client.
+Since 1.0.0 it only **shows** the settings that widen what an agent may do: each
+MCP tool, cdp-direct on or off, its grant lifetime and MCP client registration
+appear as a value plus the console command that changes it
+(`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
+`browser-link config set cdp-direct.grant-ttl <minutes>`,
+`browser-link install --client <id>`), and the server refuses a write for them
+if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
-  one-line preview ("Disable tool browser.evaluate for every agent") and
+  one-line preview (for example "Turn off: Record the activity trail") and
   applies it only after you confirm. `doctor` and the update check only read,
   so they run straight away.
 - **Same write path as the CLI.** The server applies a change through the
-  helpers `browser-link tools`, `multi-agent`, `config set` and
-  `instructions` use, with their validation, and accepts only the entries
-  it described: an unknown action, tool or value is refused.
+  helpers `browser-link multi-agent`, `config set` and `instructions` use,
+  with their validation, and accepts only the entries it described: an unknown
+  action or value is refused.
 - **Some changes need a restart.** Multi-agent, auto-reelect, the
   instructions auto-refresh and the activity settings are read when the
   server starts; the panel says "restart required".
 - **Never from the popup:** stopping the server (`browser-link stop`) and
   updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
   server that answers the popup, so they appear as the console commands to
-  run. The cdp-direct port and the downloads folder are shown with their
-  `browser-link config set` command; idle disconnect and flow recording keep
-  their own popup controls.
+  run. The same goes for the tool set, cdp-direct (on or off, grant lifetime and
+  port), MCP client registration and the downloads folder, shown with their
+  console command; idle disconnect and flow recording keep their own popup
+  controls.
 
 ### Agent instructions
 
@@ -2042,29 +2220,48 @@ changes to the stable set below ship only in a major release.
 ## Security model
 
 The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never
-on a public interface. On top of that, before accepting any WebSocket
-handshake the server asks the operating-system kernel **which process**
-opened the incoming TCP connection. If the owning binary is not a known
-Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi) the
-handshake is refused with HTTP 403 before any application bytes are
-exchanged.
+on a public interface. Every WebSocket handshake must carry an `Origin`
+exactly equal to `chrome-extension://celegobaahdoaigibmjmekhopegfkhpe`, the
+browser-link extension's id (the same on every install, pinned by the public
+`key` in its manifest), or to `chrome-extension://<id>` for an id you allowed
+yourself (below). A missing Origin, a web page, or any other extension is
+refused before anything else is checked. The pinned id is a stable id, not
+proof of identity: any unpacked extension carrying the same public key gets
+it. On top of that, before accepting the handshake the server asks the
+operating-system kernel **which process**
+opened the incoming TCP connection. The peer check covers two things: the
+process must run as **the same OS user** as the server, and its binary
+name must be a known Chromium-based browser (Chrome, Chromium, Edge,
+Brave, Vivaldi). Otherwise the handshake is refused with HTTP 403 before
+any application bytes are exchanged. An owner that cannot be read is
+refused too.
 
-- **macOS / Linux** → `lsof -nP -F pcn -iTCP@<host>:<port> -sTCP:ESTABLISHED`
+- **macOS / Linux** → `lsof -nP -F pcun -iTCP@<host>:<port> -sTCP:ESTABLISHED`;
+  the process uid must equal the server's uid
   (`packages/server/src/auth/process-identity.ts`).
-- **Windows** → `netstat -ano` locates the owning PID; the process name
-  is then resolved via PowerShell `Get-Process`, with `tasklist` as the
-  fallback when PowerShell is missing, locked down, or slow.
+- **Windows** → `netstat -ano` locates the owning PID; one PowerShell CIM
+  call (`Win32_Process` + `GetOwner`) then reads the image name and the
+  owner of that PID and of the server itself, and the two owners must be
+  equal. `tasklist /V` is the fallback when PowerShell is missing or
+  locked down, or when the CIM call takes over 5 s (the first one after
+  boot, while WMI starts, can on a slow machine); it compares the owners the
+  same way.
 
-The handshake is refused in these cases (`verifyClient` in
-`packages/server/src/bridge/ws-bridge.ts`):
+The handshake is refused in these cases (`evaluateHandshake` in
+`packages/server/src/bridge/handshake.ts`, the gate the WebSocket upgrade
+and `GET /handshake-check` share; the extension popup shows the reason):
 
 | Status | Reason                                                                                                                                                                     |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 403    | `Origin not allowed` — an `Origin` header is present and does not start with `chrome-extension://` (a missing `Origin` is left to the peer check)                          |
+| 403    | `Origin not allowed` — the `Origin` header is missing or is not exactly the pinned extension's or an allowed id's; no process lookup runs                                  |
 | 403    | `Cannot identify peer` — the socket exposes no remote address or port                                                                                                      |
-| 403    | `Peer process unknown` — the lookup returned no owning process                                                                                                             |
+| 403    | `Peer process unknown` — the lookup found no single owning process; the log line names the cause                                                                           |
+| 403    | `Cannot read peer owner` — the OS user of the owning process, or of the server, could not be read                                                                          |
+| 403    | `Peer runs as another OS user` — the owning process belongs to a different OS user than the server                                                                         |
 | 403    | `Peer is not a Chromium-based browser` — the binary is not on the allowlist                                                                                                |
+| 403    | `Peer executable path not allowed` — strict mode only: the executable path is not listed in `peerExecutablePaths`, or could not be read                                    |
 | 500    | `Process lookup failed` — the lookup promise rejected. `lookupPeerProcess` itself catches lookup errors and returns no process, which gives the 403 `Peer process unknown` |
+| 500    | `Handshake check failed` — the gate itself failed (a bug); the handshake is refused rather than left without an answer                                                     |
 
 The allowlist per OS lives in `packages/server/src/auth/allowlist.ts`.
 
@@ -2072,16 +2269,53 @@ Concretely this means:
 
 - ✔ Random local processes (curl, other Node scripts, scanners) cannot
   talk to the bridge even if they figured out the port.
+- ✔ Another extension, or an old install with another id, cannot open the
+  bridge: its Origin carries its own id. The popup says why ("does not
+  accept this extension's id").
 - ✔ A process that crafts a fake `Origin: chrome-extension://...` header
-  is still rejected: the kernel reports its real binary name.
+  is still rejected: the kernel reports its real binary name. The Origin
+  check and the peer check are independent; both must pass.
 - ✘ Malware that has already injected itself **inside Chrome** (via
   `chrome.debugger` from another extension, dylib injection, gdb attach…)
   passes the check. But that attacker already controls the browser
   directly — the bridge gives them nothing they did not already have.
+- ✘ Known gap: a process that runs as **your own OS user** but is confined
+  from your files while it can still reach loopback (a Flatpak or Snap app
+  with network access and no home access, a macOS App Sandbox app with
+  `network.client`, a Windows low-integrity process) passes the same-user
+  check, and it passes the name check if its binary carries a browser's
+  name. The strict mode below closes this gap by executable path.
 
 No tokens to paste, no manifests to register, no manual step beyond
 clicking "Connect this tab" in the extension popup. `browser-link doctor`
-lists the current allowlist on your OS.
+lists the current allowlist on your OS, the extension ids allowed to
+connect, and whether strict mode is on.
+
+**Allowing another extension id (experts only).** Add
+`"allowedExtensionIds"` to `config.json` in the data folder, as an array of
+Chrome extension ids (for example `["abcdefghijklmnopabcdefghijklmnop"]`, a
+build of your own). Each entry must be exactly 32 letters `a`–`p`; anything
+else (a prefix, a wildcard, a full `chrome-extension://` origin) is dropped
+with a warning in the server log, and the pinned id is always allowed. It is
+edited by hand only: no console command, admin panel item, bridge message or
+MCP tool writes it.
+
+**Strict mode (experts only).** Add `"peerExecutablePaths"` to
+`config.json` in the data folder, as an array of absolute paths to your
+browser executables (for example
+`["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"]`). The peer's
+executable path must then equal one of them (case-insensitive on Windows,
+exact elsewhere), and a path that cannot be read is refused (on Windows
+the `tasklist` fallback reports no path, so with strict mode on, a machine
+where PowerShell is blocked refuses every browser, and the first connect
+after boot can be refused while WMI starts; connect again). Absent or
+empty means no path check. A list with no valid absolute path refuses
+every peer. It is edited by hand only: no console command, admin panel
+item, bridge message or MCP tool writes it. Update the list when your
+browser moves (a channel switch or a reinstall elsewhere), or it stops
+connecting. The socket can belong to a helper process (on macOS, `Google
+Chrome Helper`), so list the path the refusal line in the server log
+names.
 
 **The Stop button is part of this model, not a convenience.** The human is
 the only actor guaranteed to be present while an agent drives your

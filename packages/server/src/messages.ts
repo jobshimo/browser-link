@@ -71,9 +71,12 @@ export interface ToolRequestMessage {
   params: unknown;
 }
 
+/** `sensitive_field` on an error: a `type` / `press` failed after its executor
+ * found the focused field sensitive, so the trail stores a marker instead of
+ * the input. Absent from older extensions (the row is then stored as before). */
 export type ToolResponseMessage =
   | { kind: 'tool.response'; id: string; ok: true; result: unknown }
-  | { kind: 'tool.response'; id: string; ok: false; error: string };
+  | { kind: 'tool.response'; id: string; ok: false; error: string; sensitive_field?: boolean };
 
 /**
  * Ask the extension to stop a running `browser.flow` by its `flow_id` (the

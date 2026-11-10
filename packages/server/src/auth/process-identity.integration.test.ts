@@ -4,13 +4,19 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { lookupPeerProcess } from './process-identity.js';
+import {
+  lookupPeerProcess,
+  buildCimIdentityScript,
+  lookupPeerProcessDetailed,
+  type PeerLookupDeps,
+} from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
-// Real-loopback test: lsof must agree on which side is local. Skipped where
-// lsof isn't the lookup primitive (Windows uses netstat, covered elsewhere).
+// Real-loopback tests: lsof (macOS / Linux) or netstat + PowerShell CIM
+// (Windows) must agree on which side is local and who owns it.
 const isUnix = platform() === 'darwin' || platform() === 'linux';
+const isWindows = platform() === 'win32';
 
 async function lsofAvailable(): Promise<boolean> {
   try {
@@ -21,64 +27,126 @@ async function lsofAvailable(): Promise<boolean> {
   }
 }
 
-describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection', () => {
-  let server: Server | null = null;
-  let acceptedSocket: Socket | null = null;
-  let child: ChildProcess | null = null;
+/** One lookup command as the real execFile ran it: which program, how long,
+ * how it ended, and its output (only real loopback test data). Printed with
+ * a failing assertion, and the timings always, so CI names the cause. */
+interface TraceEntry {
+  file: string;
+  ms: number;
+  outcome: string;
+  stdout?: string;
+  stderr?: string;
+}
 
-  afterEach(async () => {
-    acceptedSocket?.destroy();
-    acceptedSocket = null;
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
-      child = null;
+function tracingExecFile(trace: TraceEntry[]): NonNullable<PeerLookupDeps['execFile']> {
+  return async (file, args, options) => {
+    const t0 = performance.now();
+    try {
+      const { stdout, stderr } = await execFileAsync(file, [...args], {
+        ...options,
+        windowsHide: true,
+      });
+      trace.push({
+        file,
+        ms: Math.round(performance.now() - t0),
+        outcome: 'exit 0',
+        stdout,
+        stderr,
+      });
+      return { stdout };
+    } catch (err) {
+      const e = err as {
+        code?: unknown;
+        killed?: boolean;
+        signal?: unknown;
+        stdout?: string;
+        stderr?: string;
+      };
+      trace.push({
+        file,
+        ms: Math.round(performance.now() - t0),
+        outcome: `failed code=${String(e.code)} killed=${String(e.killed)} signal=${String(e.signal)}`,
+        stdout: e.stdout,
+        stderr: e.stderr,
+      });
+      throw err;
     }
-    if (server) {
-      await new Promise<void>((r) => server!.close(() => r()));
-      server = null;
-    }
+  };
+}
+
+/** The connection under test and every command run, for a failure message. */
+const failureContext = (
+  serverPort: number,
+  peer: { pid: number; localPort: number },
+  trace: TraceEntry[],
+): string =>
+  `server port ${String(serverPort)}, peer pid ${String(peer.pid)} on port ${String(peer.localPort)}\n${JSON.stringify(trace, null, 2)}`;
+
+let server: Server | null = null;
+let acceptedSocket: Socket | null = null;
+let child: ChildProcess | null = null;
+
+afterEach(async () => {
+  acceptedSocket?.destroy();
+  acceptedSocket = null;
+  if (child && !child.killed) {
+    child.kill('SIGKILL');
+    child = null;
+  }
+  if (server) {
+    await new Promise<void>((r) => server!.close(() => r()));
+    server = null;
+  }
+});
+
+/** Listen on a free loopback port; resolves with the port and a promise of
+ * the first accepted connection. */
+async function listen(): Promise<{ port: number; connection: Promise<Socket> }> {
+  server = createServer();
+  const connection = new Promise<Socket>((resolve) => {
+    server!.once('connection', (sock) => {
+      acceptedSocket = sock;
+      resolve(sock);
+    });
   });
+  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
+  return { port: (server.address() as { port: number }).port, connection };
+}
 
+/** Spawn a child node that opens a TCP connection and holds it. The child
+ * prints "READY <pid> <localPort>" once connected, then blocks on stdin so
+ * the connection can be measured deterministically. */
+async function connectFromChild(port: number): Promise<{ pid: number; localPort: number }> {
+  const childScript = `
+    const net = require('node:net');
+    const sock = net.createConnection({ host: '127.0.0.1', port: ${port} }, () => {
+      process.stdout.write('READY ' + process.pid + ' ' + sock.localPort + '\\n');
+    });
+    sock.on('error', (e) => { process.stderr.write('ERR ' + e.message + '\\n'); process.exit(1); });
+    // Block forever; the test kills us in afterEach.
+    process.stdin.resume();
+  `;
+  child = spawn(process.execPath, ['-e', childScript], { stdio: ['pipe', 'pipe', 'pipe'] });
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    child!.stdout!.on('data', (chunk: Buffer) => {
+      buf += chunk.toString();
+      const m = buf.match(/READY (\d+) (\d+)/);
+      if (m) resolve({ pid: Number(m[1]), localPort: Number(m[2]) });
+    });
+    child!.stderr!.on('data', (chunk: Buffer) => {
+      reject(new Error('child stderr: ' + chunk.toString()));
+    });
+    child!.once('exit', (code) => reject(new Error('child exited early: ' + code)));
+  });
+}
+
+describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection', () => {
   test('identifies the connecting child process — not the server itself', async () => {
     if (!(await lsofAvailable())) return; // belt-and-suspenders: skip if lsof is missing
 
-    server = createServer();
-    const connection = new Promise<Socket>((resolve) => {
-      server!.once('connection', (sock) => {
-        acceptedSocket = sock;
-        resolve(sock);
-      });
-    });
-    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
-    const port = (server.address() as { port: number }).port;
-
-    // Spawn a child node that opens a TCP connection and holds it. The child
-    // prints "READY <pid> <localPort>" once connected, then blocks on stdin
-    // so we can measure the connection deterministically.
-    const childScript = `
-      const net = require('node:net');
-      const sock = net.createConnection({ host: '127.0.0.1', port: ${port} }, () => {
-        process.stdout.write('READY ' + process.pid + ' ' + sock.localPort + '\\n');
-      });
-      sock.on('error', (e) => { process.stderr.write('ERR ' + e.message + '\\n'); process.exit(1); });
-      // Block forever; the test kills us in afterEach.
-      process.stdin.resume();
-    `;
-    child = spawn(process.execPath, ['-e', childScript], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-    const ready = await new Promise<{ pid: number; localPort: number }>((resolve, reject) => {
-      let buf = '';
-      child!.stdout!.on('data', (chunk: Buffer) => {
-        buf += chunk.toString();
-        const m = buf.match(/READY (\d+) (\d+)/);
-        if (m) resolve({ pid: Number(m[1]), localPort: Number(m[2]) });
-      });
-      child!.stderr!.on('data', (chunk: Buffer) => {
-        reject(new Error('child stderr: ' + chunk.toString()));
-      });
-      child!.once('exit', (code) => reject(new Error('child exited early: ' + code)));
-    });
-
+    const { port, connection } = await listen();
+    const ready = await connectFromChild(port);
     // Wait for the server to actually accept the connection so lsof can see it.
     await connection;
 
@@ -92,19 +160,36 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
     expect(peer!.pid).not.toBe(process.pid);
   });
 
+  test('reads the same-user child executable path when asked for', async () => {
+    if (!(await lsofAvailable())) return;
+
+    const { port, connection } = await listen();
+    const ready = await connectFromChild(port);
+    await connection;
+
+    const trace: TraceEntry[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      ready.localPort,
+      { execFile: tracingExecFile(trace) },
+      {
+        withExecutablePath: true,
+      },
+    );
+    console.log(
+      `posix path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms`).join(', ')}`,
+    );
+    expect(res, failureContext(port, ready, trace)).toMatchObject({ ok: true });
+    if (!res.ok) return;
+    expect(res.peer.pid).toBe(ready.pid);
+    expect(res.peer.executablePath?.startsWith('/')).toBe(true);
+    expect(res.peer.executablePath?.toLowerCase()).toContain('node');
+  });
+
   test('returns null when the peer is THIS process (defense in depth)', async () => {
     if (!(await lsofAvailable())) return;
 
-    server = createServer();
-    const connection = new Promise<Socket>((resolve) => {
-      server!.once('connection', (sock) => {
-        acceptedSocket = sock;
-        resolve(sock);
-      });
-    });
-    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
-    const port = (server.address() as { port: number }).port;
-
+    const { port, connection } = await listen();
     const { createConnection } = await import('node:net');
     const sock = createConnection({ host: '127.0.0.1', port });
     await new Promise<void>((resolve, reject) => {
@@ -122,4 +207,48 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
       sock.destroy();
     }
   });
+});
+
+describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
+  // A fresh CI VM starts WMI on the first CIM call: 8.2 s and over 10 s were
+  // measured on windows-latest, past the 5 s lookup bound (by design: that
+  // first strict-mode handshake is refused, see LOOKUP_TIMEOUT_MS). So WMI
+  // is started first with a generous bound, and the lookup itself must then
+  // read the path within its normal bounds.
+  test('identifies a same-user child with its image name and executable path', async () => {
+    const { port, connection } = await listen();
+    const ready = await connectFromChild(port);
+    await connection;
+
+    const t0 = performance.now();
+    await execFileAsync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', buildCimIdentityScript(ready.pid, process.pid)],
+      { timeout: 60_000, windowsHide: true },
+    );
+    console.log(`windows WMI warm-up: ${String(Math.round(performance.now() - t0))} ms`);
+
+    const trace: TraceEntry[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      ready.localPort,
+      { execFile: tracingExecFile(trace) },
+      {
+        withExecutablePath: true,
+        serverEndpoint: { host: '127.0.0.1', port },
+      },
+    );
+    console.log(
+      `windows path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}`,
+    );
+    expect(res, failureContext(port, ready, trace)).toEqual({
+      ok: true,
+      peer: {
+        pid: ready.pid,
+        binaryName: 'node.exe',
+        executablePath: expect.stringMatching(/node\.exe$/i) as unknown,
+      },
+    });
+    if (res.ok) expect(res.peer.executablePath?.toLowerCase()).toBe(process.execPath.toLowerCase());
+  }, 90_000);
 });

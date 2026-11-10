@@ -15,6 +15,9 @@ import {
   buildClickResolveJs,
   buildTypeResolveJs,
   buildFocusJs,
+  buildFocusedFieldJs,
+  isFocusedField,
+  actionFailure,
   buildStateJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -139,8 +142,9 @@ import {
   repairOutcome,
   type RepairOutcome,
 } from './repair-policy.js';
-import { workerFailure, type WorkerMessage } from './worker-messages.js';
+import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
+import { createConnectFailureTracker } from './connect-failure-policy.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -1767,6 +1771,7 @@ async function performType(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<TypeStepResult>> {
+  let field: unknown;
   try {
     const { selector, ref, text, clear = false } = params;
     const settle = resolveSettleParams({
@@ -1800,21 +1805,23 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await cdp(tabId, 'Input.insertText', { text });
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
+    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -1831,6 +1838,7 @@ async function performPress(
     expect?: ExpectParams;
   },
 ): Promise<ActionOutcome<PressStepResult>> {
+  let field: unknown;
   try {
     const key = params.key;
     if (!key) return { ok: false, error: 'press: key required' };
@@ -1862,20 +1870,22 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
+    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(tabId, def, modifiers);
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
+    if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: PressStepResult = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
+    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return actionFailure(err instanceof Error ? err.message : String(err), field);
   }
 }
 
@@ -3182,7 +3192,13 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: outcome.error,
+            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
+          };
         }
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
@@ -3202,7 +3218,13 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           expect: p.expect as ExpectParams | undefined,
         });
         if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+          return {
+            kind: 'tool.response',
+            id: msg.id,
+            ok: false,
+            error: outcome.error,
+            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
+          };
         }
         return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
@@ -3716,18 +3738,18 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     });
 
     // A WebSocket 'error' is always followed by a 'close', so teardown
-    // lives in the close handler alone — this one only settles a
-    // pre-registration connect failure with the friendlier diagnosis (for
-    // a post-registration drop `settle` is already spent and this no-ops).
-    // The WebSocket API hides why an upgrade was refused, so the bridge's
-    // plain-HTTP side is asked; the close handler leaves the settling to it.
-    let connectFailure: Promise<WorkerMessage> | undefined;
-    ws.addEventListener('error', () => {
-      if (settled || connectFailure !== undefined) return;
-      connectFailure = diagnoseConnectFailure(HANDSHAKE_CHECK_URL);
-      void connectFailure.then((message) => {
+    // lives in the close handler alone; settling a pre-registration connect
+    // failure (with the bridge's diagnosis after an error) is
+    // connect-failure-policy.ts's.
+    const connectFailure = createConnectFailureTracker({
+      isSettled: () => settled,
+      settle: (message) => {
         settle(workerFailure(message));
-      });
+      },
+      diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
+    });
+    ws.addEventListener('error', () => {
+      connectFailure.onError();
     });
 
     ws.addEventListener('close', (ev: CloseEvent) => {
@@ -3753,9 +3775,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
       void cleanup(tabId).catch(() => {
         // Best effort — already-detached state is fine.
       });
-      if (connectFailure === undefined) {
-        settle(workerFailure({ code: 'ws-closed-before-registration' }));
-      }
+      connectFailure.onClose();
       if (involuntary) reconnectScheduler.schedule(tabId);
     });
   });

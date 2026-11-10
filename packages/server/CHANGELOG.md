@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.0.0](https://github.com/jobshimo/browser-link/compare/v0.52.0...v1.0.0) (2026-11-10)
+
+This is the hardening release. After updating the server, reload the extension in `chrome://extensions` (a 0.51 or older extension is now refused, and its popup says why), run the browser as the same OS user as the server, and use the console for the three settings that left the Admin window. The README section [Upgrading to 1.0](https://github.com/jobshimo/browser-link#upgrading-to-10) has the details. From this release on, versioning follows semver.
+
+### ⚠ BREAKING CHANGES
+
+- **bridge:** the bridge accepts a connection only when its `Origin` is exactly `chrome-extension://celegobaahdoaigibmjmekhopegfkhpe` or `chrome-extension://<id>` for an id listed in the new `allowedExtensionIds` key of `config.json`. A missing `Origin`, another extension, a web page, a prefix or a wildcard get a 403. Remedy: reload the extension from the installed version; to allow your own build, add its id (32 letters `a`-`p`) to `allowedExtensionIds` by hand.
+- **bridge:** the browser process must run as the same OS user as the server, in addition to carrying a Chrome, Chromium, Edge, Brave or Vivaldi name. An owner that cannot be read is refused. Remedy: run the browser and the MCP client as the same user.
+- **admin:** the Admin window no longer changes the MCP tool set, cdp-direct (on or off, and its grant lifetime) or MCP client registration; it shows each as a readout with its console command and the server refuses the write. Remedy: use `browser-link tools enable|disable <tool>`, `browser-link config set cdp-direct.enabled true|false`, `browser-link config set cdp-direct.grant-ttl <minutes|never>`, and `browser-link install --client <id>` / `browser-link uninstall --client <id>`.
+- **activity:** the activity trail no longer stores the text or key typed into a sensitive field (see Features). Rows stored before 1.0.0 are not changed. Remedy, to remove old rows: `browser-link activity clear --from 2000-01-01 --yes` (deletes every row and reclaims the disk space).
+
+### Features
+
+- **bridge:** `allowedExtensionIds` in `config.json` lists extra extension ids that may connect. Entries that are not exactly 32 letters `a`-`p` are dropped with a warning. It is edited by hand only: the Admin window, the console, the bridge and the MCP tools cannot write it. `browser-link doctor` lists the ids in effect.
+- **bridge:** optional strict mode. `peerExecutablePaths` in `config.json`, an array of absolute paths, makes the server also require the browser's executable path to be in the list (case-insensitive on Windows). A path that cannot be read is refused, and a list with no valid absolute path refuses every browser. Hand-edited only; for experts.
+- **bridge:** new refusal reasons, each shown in the extension popup and named in the server log: `Cannot read peer owner`, `Peer runs as another OS user` and `Peer executable path not allowed`. On Windows the owner is read with one PowerShell CIM call, with `tasklist /V` as the fallback; lookups use argument arrays, and a port owned by two processes is refused. `doctor` states that the peer check covers the same user plus the browser name, and whether strict mode is on.
+- **activity:** when `browser.type` or `browser.press` acts on a field the page declares sensitive (`<input type="password">`, or an `autocomplete` containing `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`), the trail stores `[sensitive field]` instead of the text or key, whether `activity.record-payloads` is on or off. The tool result gains `sensitive_field` (`true` or `false`); an older extension does not send it and the row is stored as before. This applies to the extension and to cdp-direct.
+- **activity:** on Linux and macOS the activity database is created readable by its owner only (0600), and an existing one is tightened.
+- **admin:** the readouts show the console command that changes each setting, in English and Spanish.
+
+### Bug Fixes
+
+- **auth:** the Windows peer lookup ignores stale `TIME_WAIT` rows (listed under PID 0) and rows that are not connections to the server, which could make a real browser look ambiguous after heavy loopback traffic. It also counts a peer socket that `netstat` lists only as bound when no row to the server exists.
+- **auth:** a failed Windows peer lookup now names the stage that missed (`endpoint-not-listed`, `endpoint-ambiguous`, `cim-unparsable`, `peer-row-missing`, `server-row-missing`) instead of a generic parse failure.
+- **auth:** on Windows, `netstat` can omit a connection that was just opened from its first snapshot, so a real browser could be refused. A peer lookup that finds no row now takes up to six snapshots, waiting 50, 100, 200, 400 and 500 ms between them, before refusing; an endpoint that is truly missing is refused about 1.25 s of waiting later (plus the extra `netstat` runs). Only the "not listed" result is retried, and every check still runs on what the retry finds. The refusal line reports how many snapshots were taken and how many rows mentioned the port.
+- **auth:** strict mode no longer refuses a real browser on Linux: the executable-path read now works with Ubuntu 24.04's `lsof`, which prints no descriptor field unless asked.
+- **extension:** a connect whose failure diagnosis throws synchronously now settles with the generic connect failure instead of hanging.
+- **admin:** the registration readout shows the uninstall command once a client is registered, and the grant-lifetime and port readouts show an example you can paste into a shell.
+- **tools:** the manual for `type` and `press` says which fields are reported as not sensitive (cross-origin iframes, closed shadow roots, `contenteditable`).
+
+### Notes
+
+- Not detected by the activity redaction, and stored as typed: `browser.evaluate` expressions, plain text fields, `browser.press` on a field that is not marked sensitive, URLs with query strings, fields inside cross-origin iframes, closed shadow roots and `contenteditable` elements, a field whose focus changes between the check and the typing, and text typed while a bridge timeout or a closed socket hides the report.
+- Payloads in the trail are readable by other agents (`browser.activity`) and by bridge clients. The 0600 file mode does little on Windows.
+- The peer check does not tell apart two programs that run as the same user: a confined process of your own user that can reach loopback passes the same-user check, and the name check if its binary carries a browser's name. Strict mode closes that by path.
+- On Windows the lookup also counts a socket that `netstat` lists only as bound (foreign port 0) when no row to the server exists. If one process has a row to the server and another has a bound-only row for the same endpoint, the row to the server decides; the lookup does not refuse as ambiguous.
+- A `config.json` that cannot be parsed falls back to the defaults, which turns strict mode and your allowed ids off.
+- On Windows the first CIM call after boot, while WMI starts, can take longer than the 5 s lookup bound (8 s and over 10 s on a GitHub runner). The `tasklist` fallback still checks the owner, but it reads no executable path, so in strict mode that first connect is refused; connect again.
+- The public `key` gives a stable extension id, not proof of identity: an unpacked extension loaded by hand with the same key gets the same id.
+- Minimum Chrome is 118. The end-to-end suite passed on Windows against Chrome for Testing 118.0.5993.70 and the current stable Chrome, with the pinned Origin accepted under enforcement.
+- See [Upgrading to 1.0](https://github.com/jobshimo/browser-link#upgrading-to-10) in the README for the full list.
+
 ## [0.52.0](https://github.com/jobshimo/browser-link/compare/v0.51.0...v0.52.0) (2026-11-10)
 
 This release pins the extension's id. After updating, reload the extension once in `chrome://extensions`. Chrome treats it as a new extension, so its stored settings (idle timeout, flow recording, language) start fresh. From now on the id is the same on every install and no longer depends on the folder the extension is loaded from.
