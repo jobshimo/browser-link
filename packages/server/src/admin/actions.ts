@@ -10,6 +10,7 @@ import { setCdpDirectEnabled, setCdpDirectGrantTtl } from '../commands/config.js
 import { installInstructionsFor, uninstallInstructionsFor } from '../commands/instructions.js';
 import { installFor } from '../commands/install.js';
 import type { ClientId } from '../installers/index.js';
+import type { Language } from '../commands/welcome.js';
 import type { AdminActionResult, AdminItem } from '../messages.js';
 import { adminItems, adminLanguage, buildAdminState, type AdminInput } from './descriptor.js';
 import { ADMIN_I18N } from './i18n.js';
@@ -28,6 +29,9 @@ export interface AdminActionRequest {
   id: string;
   value?: string | number | boolean;
   confirm?: boolean;
+  /** Language of this answer (previews, errors, output, state); by default
+   * the configured one. */
+  language?: Language;
 }
 
 /** The existing write helpers, injectable so tests can spy on each one. */
@@ -65,9 +69,9 @@ export interface AdminActionDeps {
   /** Fresh facts for the state; called before and after the action. */
   input: () => Promise<AdminInput>;
   /** `runDoctor` + `formatDoctor`, split into lines. Slow: runs only on the button. */
-  doctor: () => Promise<string[]>;
+  doctor: (language: Language) => Promise<string[]>;
   /** A forced update check, formatted into lines (network). */
-  checkUpdates: () => Promise<string[]>;
+  checkUpdates: (language: Language) => Promise<string[]>;
   helpers?: Partial<AdminHelpers>;
 }
 
@@ -103,8 +107,13 @@ function checkValue(item: AdminItem, value: AdminActionRequest['value']): boolea
   return true;
 }
 
-function preview(item: AdminItem, value: AdminActionRequest['value'], input: AdminInput): string {
-  const t = ADMIN_I18N[adminLanguage(input.config)];
+function preview(
+  item: AdminItem,
+  value: AdminActionRequest['value'],
+  input: AdminInput,
+  language: Language,
+): string {
+  const t = ADMIN_I18N[language];
   const tool = suffix(item.id, 'tools.');
   if (tool !== null) return value === true ? t.previewToolOn(tool) : t.previewToolOff(tool);
   if (item.kind === 'toggle') return t.previewToggle(item.label, value === true);
@@ -128,15 +137,14 @@ function preview(item: AdminItem, value: AdminActionRequest['value'], input: Adm
 async function apply(
   item: AdminItem,
   value: AdminActionRequest['value'],
-  input: AdminInput,
+  language: Language,
   deps: AdminActionDeps,
   h: AdminHelpers,
 ): Promise<string[]> {
-  const language = adminLanguage(input.config);
   const on = value === true;
   const { id } = item;
-  if (id === 'doctor') return deps.doctor();
-  if (id === 'updates.check') return deps.checkUpdates();
+  if (id === 'doctor') return deps.doctor(language);
+  if (id === 'updates.check') return deps.checkUpdates(language);
   if (id === 'language') {
     h.saveConfig({ language: value === 'es' ? 'es' : 'en' });
     return [];
@@ -187,8 +195,9 @@ export async function applyAdminAction(
 ): Promise<AdminActionResult> {
   try {
     const input = await deps.input();
-    const t = ADMIN_I18N[adminLanguage(input.config)];
-    const item = adminItems(buildAdminState(input)).find((i) => i.id === req.id);
+    const language = req.language ?? adminLanguage(input.config);
+    const t = ADMIN_I18N[language];
+    const item = adminItems(buildAdminState(input, language)).find((i) => i.id === req.id);
     if (!item) return { ok: false, error: t.unknownAction(req.id) };
     if (item.kind === 'readout' || item.kind === 'link') {
       return { ok: false, error: t.notAnAction(item.id) };
@@ -199,12 +208,15 @@ export async function applyAdminAction(
         ok: true,
         applied: false,
         needsConfirm: true,
-        preview: preview(item, req.value, input),
+        preview: preview(item, req.value, input, language),
       };
     }
     const helpers = { ...DEFAULT_ADMIN_HELPERS, ...deps.helpers };
-    const output = await apply(item, req.value, input, deps, helpers);
-    const state = buildAdminState(await deps.input());
+    const output = await apply(item, req.value, language, deps, helpers);
+    // Without a requested language the fresh state follows the configured one,
+    // which the `language` item may just have changed.
+    const fresh = await deps.input();
+    const state = buildAdminState(fresh, req.language ?? adminLanguage(fresh.config));
     return {
       ok: true,
       applied: true,

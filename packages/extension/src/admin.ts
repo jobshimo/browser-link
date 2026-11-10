@@ -10,6 +10,11 @@
  * `adminDescribe`, over any connected tab's socket); admin-view.ts turns it
  * into rows and owns the confirm flow, so this file is only DOM wiring. Text
  * always goes in through textContent: labels arrive off a socket.
+ *
+ * Language: the window follows the interface language (header selector,
+ * ui-language.ts) and sends it with every request, so the server renders the
+ * rows, previews and errors in it. A server older than 0.51.0 ignores the
+ * field and answers in its own configured language.
  */
 import type {
   AdminActionResult,
@@ -18,8 +23,8 @@ import type {
   AdminUiStrings,
 } from '@browser-link/shared';
 import {
-  FALLBACK_ADMIN_UI,
   adminUi,
+  fallbackAdminUi,
   buildAdminRows,
   describeAdminError,
   initialConfirmState,
@@ -28,6 +33,9 @@ import {
   type AdminRow,
   type ConfirmState,
 } from './admin-view.js';
+import { startUiLanguage } from './ui-language.js';
+
+const lang = await startUiLanguage();
 
 // chrome.runtime.sendMessage returns `Promise<any>`; re-bind through
 // `unknown` so the final `as T` is an explicit, auditable narrowing.
@@ -43,7 +51,7 @@ function $(id: string): HTMLElement {
 }
 
 let adminConfirm: ConfirmState = initialConfirmState();
-let adminStrings: AdminUiStrings = FALLBACK_ADMIN_UI;
+let adminStrings: AdminUiStrings = fallbackAdminUi(lang.language);
 let adminBusy = false;
 
 function renderAdminEmpty(message: string): void {
@@ -179,7 +187,10 @@ function renderAdminConfirm(): void {
 async function refreshAdmin(): Promise<void> {
   let reply: AdminStateMessage | undefined;
   try {
-    reply = await send<AdminStateMessage | undefined>({ action: 'adminDescribe' });
+    reply = await send<AdminStateMessage | undefined>({
+      action: 'adminDescribe',
+      language: lang.language,
+    });
   } catch {
     // Service worker asleep or mid-restart: same empty state as no socket.
     renderAdminEmpty(adminStrings.notConnected);
@@ -193,9 +204,8 @@ async function refreshAdmin(): Promise<void> {
     renderAdminEmpty(describeAdminError(reply.error, adminStrings));
     return;
   }
-  adminStrings = adminUi(reply.state);
-  document.documentElement.lang = adminStrings.language;
-  renderAdminRows(buildAdminRows(reply.state));
+  adminStrings = adminUi(reply.state, lang.language);
+  renderAdminRows(buildAdminRows(reply.state, lang.t));
   renderAdminConfirm();
 }
 
@@ -213,6 +223,7 @@ async function runAdminAction(request: AdminRequest): Promise<void> {
     const reply = await send<AdminActionResultMessage | undefined>({
       action: 'adminAction',
       ...request,
+      language: lang.language,
     });
     result = reply?.result ?? { ok: false, error: 'not-connected' };
   } catch (err) {
@@ -236,6 +247,15 @@ document.getElementById('admin-confirm-no')?.addEventListener('click', () => {
   adminConfirm = reduceConfirm(adminConfirm, { type: 'cancel' });
   renderAdminConfirm();
   void refreshAdmin();
+});
+
+// A switch asks the server again, in the new language: the rows are the
+// server's text. Until it answers, the fallback words are in that language too.
+lang.onChange(() => {
+  adminStrings = fallbackAdminUi(lang.language);
+  refreshAdmin().catch(() => {
+    renderAdminEmpty(adminStrings.notConnected);
+  });
 });
 
 refreshAdmin().catch(() => {

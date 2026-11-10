@@ -67,6 +67,21 @@ describe('createPrimaryAdminHandlers', () => {
     expect(value(result.state as AdminState, 'status.update')).toBe('up to date');
   });
 
+  test('describe and action render in the requested language', async () => {
+    const admin = createPrimaryAdminHandlers({
+      version: '0.42.0',
+      tabsConnected: () => 0,
+      connectedExtensionVersion: () => null,
+      checkUpdates: () => Promise.resolve({ current: '0.42.0', latest: null, isNewer: false }),
+      doctor: () => Promise.resolve(['ok']),
+    });
+    expect((await admin.describe({ language: 'es' })).ui.language).toBe('es');
+    expect((await admin.describe()).ui.language).toBe('en');
+    const result = await admin.action({ id: 'doctor', language: 'es' });
+    if (!result.ok || !result.applied) throw new Error('not applied');
+    expect(result.state?.ui.language).toBe('es');
+  });
+
   test('doctor runs only on its button', async () => {
     const doctor = vi.fn(() => Promise.resolve(['all good']));
     const admin = createPrimaryAdminHandlers({

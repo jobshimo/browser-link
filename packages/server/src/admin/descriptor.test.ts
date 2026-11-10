@@ -76,6 +76,31 @@ describe('buildAdminState — envelope', () => {
     expect(es.ui.language).toBe('es');
     expect(es.ui.confirm).toBe('Confirmar');
   });
+
+  test('a requested language renders the whole state in it, whatever config.language says', () => {
+    const es = buildAdminState(input({ config: { language: 'en' } }), 'es');
+    expect(es.ui.language).toBe('es');
+    expect(es.ui.confirm).toBe('Confirmar');
+    expect(section(es, 'status').title).toBe(
+      section(buildAdminState(input({ config: { language: 'es' } })), 'status').title,
+    );
+    const en = buildAdminState(input({ config: { language: 'es' } }), 'en');
+    expect(en.ui.language).toBe('en');
+    expect(en.ui.confirm).toBe('Confirm');
+  });
+
+  test('the language item keeps the console setting as its value, labelled as such', () => {
+    const en = buildAdminState(input({ config: { language: 'es' } }), 'en');
+    expect(item(section(en, 'setup'), 'language')).toMatchObject({
+      label: 'Console language',
+      value: 'es',
+    });
+    const es = buildAdminState(input({ config: { language: 'en' } }), 'es');
+    expect(item(section(es, 'setup'), 'language')).toMatchObject({
+      label: 'Idioma de la consola',
+      value: 'en',
+    });
+  });
 });
 
 describe('buildAdminState — status section', () => {

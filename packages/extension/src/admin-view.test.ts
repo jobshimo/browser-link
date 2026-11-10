@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import type { AdminActionResult, AdminState } from '@browser-link/shared';
+import { messages } from './i18n.js';
 import {
-  FALLBACK_ADMIN_UI,
+  fallbackAdminUi,
   adminUi,
   buildAdminRows,
   describeAdminError,
@@ -9,6 +10,9 @@ import {
   nextAction,
   reduceConfirm,
 } from './admin-view.js';
+
+const EN = messages('en');
+const ES = messages('es');
 
 const UI_ES = {
   language: 'es' as const,
@@ -119,7 +123,7 @@ function state(overrides: Partial<AdminState> = {}): AdminState {
 }
 
 describe('buildAdminRows', () => {
-  const rows = buildAdminRows(state());
+  const rows = buildAdminRows(state(), EN);
   const row = (id: string) => {
     const found = rows.find((r) => r.itemId === id);
     if (!found) throw new Error(`no row ${id}`);
@@ -180,7 +184,7 @@ describe('buildAdminRows', () => {
   test('a toggle without a boolean value is disabled rather than guessed', () => {
     const s = state();
     s.sections[1]!.items[0] = { ...s.sections[1]!.items[0]!, value: 'yes' };
-    const toggle = buildAdminRows(s).find((r) => r.itemId === 'multiAgent');
+    const toggle = buildAdminRows(s, EN).find((r) => r.itemId === 'multiAgent');
     expect(toggle?.disabled).toBe(true);
   });
 
@@ -199,7 +203,7 @@ describe('buildAdminRows', () => {
   test('a select without options is disabled', () => {
     const s = state();
     s.sections[1]!.items[1] = { ...s.sections[1]!.items[1]!, options: [] };
-    expect(buildAdminRows(s).find((r) => r.itemId === 'language')?.disabled).toBe(true);
+    expect(buildAdminRows(s, EN).find((r) => r.itemId === 'language')?.disabled).toBe(true);
   });
 
   test('a button has a button control and no value text', () => {
@@ -221,30 +225,30 @@ describe('buildAdminRows', () => {
   });
 
   test('a malformed state yields no rows instead of throwing', () => {
-    expect(buildAdminRows({} as AdminState)).toEqual([]);
-    expect(buildAdminRows(null)).toEqual([]);
+    expect(buildAdminRows({} as AdminState, EN)).toEqual([]);
+    expect(buildAdminRows(null, EN)).toEqual([]);
   });
 });
 
 describe('adminUi', () => {
   test('the server strings win when present', () => {
-    expect(adminUi(state())).toEqual(UI_ES);
+    expect(adminUi(state(), 'en')).toEqual(UI_ES);
   });
 
   test('English fallback when the state or its ui block is missing', () => {
-    expect(adminUi(null)).toEqual(FALLBACK_ADMIN_UI);
-    expect(adminUi({ ...state(), ui: undefined } as unknown as AdminState)).toEqual(
-      FALLBACK_ADMIN_UI,
+    expect(adminUi(null, 'en')).toEqual(fallbackAdminUi('en'));
+    expect(adminUi({ ...state(), ui: undefined } as unknown as AdminState, 'en')).toEqual(
+      fallbackAdminUi('en'),
     );
-    expect(FALLBACK_ADMIN_UI.notConnected).toBe('Connect a tab to administer the server');
-    expect(FALLBACK_ADMIN_UI.language).toBe('en');
+    expect(fallbackAdminUi('en').notConnected).toBe('Connect a tab to administer the server');
+    expect(fallbackAdminUi('en').language).toBe('en');
   });
 });
 
 describe('describeAdminError', () => {
   test('not-connected becomes the notConnected text', () => {
     expect(describeAdminError('not-connected', UI_ES)).toBe(UI_ES.notConnected);
-    expect(describeAdminError('not-connected', FALLBACK_ADMIN_UI)).toBe(
+    expect(describeAdminError('not-connected', fallbackAdminUi('en'))).toBe(
       'Connect a tab to administer the server',
     );
   });
@@ -388,5 +392,20 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
         ui: UI_ES,
       }),
     ).toEqual({ phase: 'error', message: UI_ES.notConnected });
+  });
+});
+
+describe('admin window in Spanish', () => {
+  test('the fallback strings follow the interface language', () => {
+    const ui = fallbackAdminUi('es');
+    expect(ui.language).toBe('es');
+    expect(ui.notConnected).toBe('Conecte una pestaña para administrar el servidor');
+    expect(ui.confirm).toBe('Confirmar');
+    expect(adminUi(null, 'es')).toEqual(ui);
+  });
+
+  test('a boolean readout reads in the interface language', () => {
+    const rows = buildAdminRows(state(), ES);
+    expect(rows.find((r) => r.itemId === 'server.multiAgent')?.valueText).toBe('activado');
   });
 });

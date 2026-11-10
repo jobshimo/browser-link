@@ -1,5 +1,5 @@
 /**
- * Render model for the popup's Admin section.
+ * Render model for the Admin window.
  *
  * The server describes its administration state and actions as data, with
  * every label already localised (`AdminState`). This module turns that data
@@ -16,18 +16,23 @@ import type {
   AdminState,
   AdminUiStrings,
 } from '@browser-link/shared';
+import { messages, type Language, type Messages } from './i18n.js';
 
 /** Used when the server sent no `ui` block, or when no server answered at all
- * (no tab connected), so the popup still has words to show. */
-export const FALLBACK_ADMIN_UI: AdminUiStrings = {
-  language: 'en',
-  confirm: 'Confirm',
-  cancel: 'Cancel',
-  apply: 'Apply',
-  notConnected: 'Connect a tab to administer the server',
-  restartRequired: 'Restart the server to apply this change',
-  changed: 'Changed',
-};
+ * (no tab connected), so the window still has words to show, in the
+ * interface language. */
+export function fallbackAdminUi(language: Language): AdminUiStrings {
+  const t = messages(language);
+  return {
+    language,
+    confirm: t.adminConfirm,
+    cancel: t.cancel,
+    apply: t.adminApply,
+    notConnected: t.adminNotConnected,
+    restartRequired: t.adminRestartRequired,
+    changed: t.adminChanged,
+  };
+}
 
 export type AdminControl = 'none' | 'toggle' | 'select' | 'button' | 'link';
 
@@ -62,9 +67,9 @@ export interface AdminRequest {
 
 const EMPTY_VALUE = '—';
 
-function stringifyValue(value: AdminItem['value']): string {
+function stringifyValue(value: AdminItem['value'], t: Messages): string {
   if (value === undefined || value === null || value === '') return EMPTY_VALUE;
-  if (typeof value === 'boolean') return value ? 'on' : 'off';
+  if (typeof value === 'boolean') return value ? t.adminOn : t.adminOff;
   return String(value);
 }
 
@@ -78,14 +83,14 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
-function rowFor(section: AdminSection, item: AdminItem): AdminRow {
+function rowFor(section: AdminSection, item: AdminItem, t: Messages): AdminRow {
   const row: AdminRow = {
     sectionId: section.id,
     sectionTitle: section.title,
     itemId: item.id,
     kind: item.kind,
     label: item.label,
-    valueText: stringifyValue(item.value),
+    valueText: stringifyValue(item.value, t),
     control: 'none',
   };
   if (item.description !== undefined) row.description = item.description;
@@ -137,7 +142,7 @@ function rowFor(section: AdminSection, item: AdminItem): AdminRow {
 
 /** Flatten the server state into rows, section then item order. A malformed
  * state yields no rows: the popup shows an empty section, never a crash. */
-export function buildAdminRows(state: AdminState | null | undefined): AdminRow[] {
+export function buildAdminRows(state: AdminState | null | undefined, t: Messages): AdminRow[] {
   if (!state || !Array.isArray(state.sections)) return [];
   const rows: AdminRow[] = [];
   // The state arrives off a socket as JSON: entries are typed loosely here so
@@ -148,15 +153,15 @@ export function buildAdminRows(state: AdminState | null | undefined): AdminRow[]
     const items = section.items as (AdminItem | null | undefined)[];
     for (const item of items) {
       if (!item || typeof item.id !== 'string') continue;
-      rows.push(rowFor(section, item));
+      rows.push(rowFor(section, item, t));
     }
   }
   return rows;
 }
 
-/** The server's UI strings, or the English fallback. */
-export function adminUi(state: AdminState | null | undefined): AdminUiStrings {
-  return state?.ui ?? FALLBACK_ADMIN_UI;
+/** The server's UI strings, or the fallback in the interface language. */
+export function adminUi(state: AdminState | null | undefined, language: Language): AdminUiStrings {
+  return state?.ui ?? fallbackAdminUi(language);
 }
 
 /** `not-connected` is the background's own code for "no open socket"; it

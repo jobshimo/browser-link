@@ -1,6 +1,7 @@
 import type {
   ActivityPurgeResultMessage,
   AdminActionResultMessage,
+  AdminRequestLanguage,
   AdminStateMessage,
   ActivityResultMessage,
   BridgeRepairResultMessage,
@@ -528,8 +529,16 @@ type RuntimeMessage =
   | { action: 'activityQuery'; query?: Record<string, unknown> }
   | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean }
   // Tab-independent: administration acts on the server, not on one tab.
-  | { action: 'adminDescribe' }
-  | { action: 'adminAction'; id: string; value?: string | number | boolean; confirm?: boolean };
+  // `language`: the Admin window's interface language, forwarded so the
+  // server answers in it (see AdminDescribeMessage).
+  | { action: 'adminDescribe'; language?: unknown }
+  | {
+      action: 'adminAction';
+      id: string;
+      value?: string | number | boolean;
+      confirm?: boolean;
+      language?: unknown;
+    };
 
 function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   if (typeof msg !== 'object' || msg === null) return false;
@@ -726,9 +735,15 @@ async function adminRoundTrip(
   });
 }
 
-function adminDescribe(): Promise<AdminReply> {
+/** The window's language when it is one the server speaks; otherwise
+ * nothing, and the server uses its configured language. */
+function adminLanguageField(language: unknown): { language?: AdminRequestLanguage } {
+  return language === 'en' || language === 'es' ? { language } : {};
+}
+
+function adminDescribe(language: unknown): Promise<AdminReply> {
   return adminRoundTrip(
-    (request_id) => ({ kind: 'admin.describe', request_id }),
+    (request_id) => ({ kind: 'admin.describe', request_id, ...adminLanguageField(language) }),
     ADMIN_TIMEOUT_MS,
     (request_id, error) => ({ kind: 'admin.state', request_id, ok: false, error }),
   );
@@ -738,6 +753,7 @@ function adminAction(input: {
   id: string;
   value?: string | number | boolean;
   confirm?: boolean;
+  language?: unknown;
 }): Promise<AdminReply> {
   return adminRoundTrip(
     (request_id) => ({
@@ -746,6 +762,7 @@ function adminAction(input: {
       id: input.id,
       ...(input.value !== undefined ? { value: input.value } : {}),
       ...(input.confirm === true ? { confirm: true } : {}),
+      ...adminLanguageField(input.language),
     }),
     input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,
     (request_id, error) => ({
@@ -4277,7 +4294,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     return true;
   }
   if (msg.action === 'adminDescribe') {
-    void adminDescribe().then(sendResponse);
+    void adminDescribe(msg.language).then(sendResponse);
     return true;
   }
   if (msg.action === 'adminAction') {

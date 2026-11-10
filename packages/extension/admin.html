@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>browser-link — Admin</title>
+    <title data-i18n="adminDocTitle">browser-link — Admin</title>
     <style>
       /* Same slate-blue system as popup.html, with the Activity window's dark
        * variant: this window, like Activity, stays open on screen. Only the
@@ -100,6 +100,39 @@
       .subtitle {
         font-size: 11.5px;
         color: var(--text-muted);
+      }
+
+      /* Interface language selector: the last element of the header row, far
+       * right. */
+      .lang-switch {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 2px;
+        margin-left: auto;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-soft);
+      }
+
+      .lang-switch button {
+        width: auto;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        color: var(--text-muted);
+        background: transparent;
+      }
+
+      .lang-switch button[aria-pressed='true'] {
+        color: #ffffff;
+        background: linear-gradient(160deg, var(--brand-from) 0%, var(--brand-to) 100%);
+      }
+
+      .lang-switch button:focus-visible {
+        outline: 2px solid var(--brand-from);
+        outline-offset: 1px;
       }
 
       main {
@@ -263,8 +296,37 @@
     <header>
       <div class="mark" aria-hidden="true"></div>
       <div class="titles">
-        <h1>Admin</h1>
-        <span class="subtitle">browser-link server settings · same as the console</span>
+        <h1 data-i18n="adminTitle">Admin</h1>
+        <span class="subtitle" data-i18n="adminSubtitle">
+          browser-link server settings · same as the console
+        </span>
+      </div>
+      <div
+        class="lang-switch"
+        role="group"
+        data-i18n-aria-label="langSwitchLabel"
+        aria-label="Interface language"
+      >
+        <button
+          type="button"
+          data-lang="en"
+          lang="en"
+          aria-pressed="true"
+          translate="no"
+          title="English"
+        >
+          EN
+        </button>
+        <button
+          type="button"
+          data-lang="es"
+          lang="es"
+          aria-pressed="false"
+          translate="no"
+          title="Español"
+        >
+          ES
+        </button>
       </div>
     </header>
 
@@ -276,8 +338,12 @@
       <div id="admin-confirm" class="admin-confirm" hidden>
         <div id="admin-confirm-preview" class="admin-confirm-preview"></div>
         <div class="dialog-actions">
-          <button id="admin-confirm-yes" class="primary" type="button">Confirm</button>
-          <button id="admin-confirm-no" class="danger" type="button">Cancel</button>
+          <button id="admin-confirm-yes" class="primary" type="button" data-i18n="adminConfirm">
+            Confirm
+          </button>
+          <button id="admin-confirm-no" class="danger" type="button" data-i18n="cancel">
+            Cancel
+          </button>
         </div>
       </div>
       <div id="admin-status" class="admin-status" hidden></div>

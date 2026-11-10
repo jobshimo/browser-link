@@ -689,6 +689,41 @@ describe('admin.describe / admin.action (admin panel S3)', () => {
     ).toEqual({ kind: 'admin.state', request_id: 'r1', ok: true, state: STATE });
   });
 
+  test('admin.describe hands a valid requested language to the handler', async () => {
+    const seen: unknown[] = [];
+    const describe = (opts?: { language?: 'en' | 'es' }) => {
+      seen.push(opts);
+      return Promise.resolve(STATE);
+    };
+    await handleAdminMessage(
+      { kind: 'admin.describe', request_id: 'a', language: 'es' },
+      handlers({ describe }),
+    );
+    await handleAdminMessage({ kind: 'admin.describe', request_id: 'b' }, handlers({ describe }));
+    await handleAdminMessage(
+      { kind: 'admin.describe', request_id: 'c', language: 'fr' } as never,
+      handlers({ describe }),
+    );
+    expect(seen).toEqual([{ language: 'es' }, {}, {}]);
+  });
+
+  test('admin.action forwards a valid requested language and drops an invalid one', async () => {
+    const seen: unknown[] = [];
+    const action: AdminHandlers['action'] = (req) => {
+      seen.push(req);
+      return Promise.resolve({ ok: true, applied: true });
+    };
+    await handleAdminMessage(
+      { kind: 'admin.action', request_id: 'a', id: 'doctor', language: 'es' },
+      handlers({ action }),
+    );
+    await handleAdminMessage(
+      { kind: 'admin.action', request_id: 'b', id: 'doctor', language: 'xx' } as never,
+      handlers({ action }),
+    );
+    expect(seen).toEqual([{ id: 'doctor', language: 'es' }, { id: 'doctor' }]);
+  });
+
   test('a describe that throws becomes ok:false, never a rejection', async () => {
     const reply = await handleAdminMessage(
       { kind: 'admin.describe', request_id: 'r2' },
