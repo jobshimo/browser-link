@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.51.0](https://github.com/jobshimo/browser-link/compare/v0.50.0...v0.51.0) (2026-11-10)
+
+The extension is now available in English and Spanish. Nothing breaks for existing users: an older extension that does not send a language gets the server's configured language, as before.
+
+### Features
+
+- **extension:** an `EN | ES` selector at the far right of the header of the popup, the Activity window and the Admin window. The choice is stored, applies live and is shared by all open windows. On first run it follows the browser language.
+- **extension:** messages from the service worker are translated too.
+- **extension:** the product notice in the popup follows the selector.
+- **admin:** the Admin window follows the extension's language. The server renders its texts in the language each request asks for; nothing is written to disk.
+- **admin:** the panel's language item is now labelled "Console language" and only changes the console.
+
+### Bug Fixes
+
+- **admin:** Spanish in the admin texts is now neutral Spanish.
+
+### Notes
+
+- Tool errors returned to agents stay in English.
+
 ## [0.50.0](https://github.com/jobshimo/browser-link/compare/v0.49.0...v0.50.0) (2026-11-09)
 
 A real-Chrome end-to-end net now runs on every pull request and gates the release. The extension declares its minimum Chrome, and two environment overrides allow an isolated second instance. No tool or wire-format changes.
