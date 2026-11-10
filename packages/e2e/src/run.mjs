@@ -2,6 +2,8 @@
 // isolated headless Chrome, the BUILT server over MCP stdio, a tab connected
 // without a human, and nine tool calls whose effects are asserted, so the
 // extension half of every call (background.ts perform* handlers) runs for real.
+// Then the interface language: switch EN | ES in the popup, open Activity and
+// Admin windows follow without reload, and the choice survives a reopen.
 //
 // Isolation: free ports passed through BROWSER_LINK_WS_PORT / _IPC_PORT, a
 // patched temp copy of the extension, temp profile, data dir and HOME. The
@@ -265,6 +267,151 @@ async function main() {
     },
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
+
+  await languageChecks(cdp, extId);
+}
+
+/** The interface language through the real built extension (EN | ES in the
+ * header): one line per check, `i18n.<check> ok ms`. */
+const I18N = {
+  en: {
+    footer: 'manual · per-tab · loopback only',
+    notice: 'Read notice',
+    activity: 'Activity',
+    status: 'Status',
+  },
+  es: {
+    footer: 'manual · por pestaña · solo loopback',
+    notice: 'Ver aviso',
+    activity: 'Actividad',
+    status: 'Estado',
+  },
+};
+
+async function openPage(cdp, extId, page) {
+  const { targetId } = await cdp.send('Target.createTarget', {
+    url: `chrome-extension://${extId}/${page}`,
+  });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  // Ready once ui-language.ts has applied a language to <html>.
+  await evaluateUntil(
+    cdp,
+    `document.documentElement.lang !== '' && document.readyState === 'complete'`,
+    sessionId,
+    15_000,
+  );
+  return { targetId, sessionId };
+}
+
+/** Evaluate until `expression` is truthy; a timeout is this check's failure. */
+async function expectSoon(cdp, name, expression, sessionId, why) {
+  try {
+    return await evaluateUntil(cdp, expression, sessionId, 10_000);
+  } catch {
+    let seen = '';
+    try {
+      seen = JSON.stringify(
+        await cdp.evaluate(
+          `document.documentElement.lang + ' | ' + (document.querySelector('header')?.innerText ?? '')`,
+          sessionId,
+        ),
+      );
+    } catch {
+      // page gone
+    }
+    throw new StepFailure(name, `${why}; page shows ${seen}`);
+  }
+}
+
+async function check(name, run) {
+  const t = now();
+  await run(name);
+  if (EXPECT_FAIL === name) throw new StepFailure(name, 'forced failure (E2E_EXPECT_FAIL)');
+  console.log(`${name} ok ${String(Math.round(now() - t))}`);
+}
+
+async function languageChecks(cdp, extId) {
+  const popup = await openPage(cdp, extId, 'popup.html');
+  const activity = await openPage(cdp, extId, 'activity.html');
+  const admin = await openPage(cdp, extId, 'admin.html');
+  const footer = `document.querySelector('[data-i18n="popupFooter"]').textContent.trim()`;
+  let from;
+  let to;
+
+  await check('i18n.default', async (name) => {
+    from = await cdp.evaluate('document.documentElement.lang', popup.sessionId);
+    if (from !== 'en' && from !== 'es') throw new StepFailure(name, `html lang is ${String(from)}`);
+    to = from === 'en' ? 'es' : 'en';
+    await expectSoon(
+      cdp,
+      name,
+      `${footer} === ${JSON.stringify(I18N[from].footer)}`,
+      popup.sessionId,
+      `footer not in ${from}`,
+    );
+    // Marks that only survive if these pages are never reloaded.
+    for (const s of [activity.sessionId, admin.sessionId])
+      await cdp.evaluate('window.__e2eNoReload = 1', s);
+    // The Admin rows come from the server, in the window's language.
+    await expectSoon(
+      cdp,
+      name,
+      `document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[from].status)}`,
+      admin.sessionId,
+      `admin status section not in ${from}`,
+    );
+  });
+
+  await check('i18n.switch', async (name) => {
+    await cdp.evaluate(
+      `document.querySelector('.lang-switch button[data-lang="${to}"]').click()`,
+      popup.sessionId,
+    );
+    await expectSoon(
+      cdp,
+      name,
+      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)} && document.querySelector('.lang-switch button[data-lang="${to}"]').getAttribute('aria-pressed') === 'true' && document.getElementById('notice-open').textContent === ${JSON.stringify(I18N[to].notice)}`,
+      popup.sessionId,
+      `popup did not switch to ${to}`,
+    );
+    // Selector on the title's row, far right, and the header neither wraps nor overflows.
+    const layout = await cdp.evaluate(
+      `(() => { const h = document.querySelector('header'); const s = h.lastElementChild.getBoundingClientRect(); const t = document.getElementById('app-name').getBoundingClientRect(); const hb = h.getBoundingClientRect(); return { last: h.lastElementChild.className, overflow: h.scrollWidth > h.clientWidth, sameRow: s.top < t.bottom && s.bottom > t.top, right: hb.right - s.right }; })()`,
+      popup.sessionId,
+    );
+    if (layout.last !== 'lang-switch' || layout.overflow || !layout.sameRow || layout.right > 1) {
+      throw new StepFailure(name, `header layout ${JSON.stringify(layout)}`);
+    }
+  });
+
+  await check('i18n.live-windows', async (name) => {
+    await expectSoon(
+      cdp,
+      name,
+      `window.__e2eNoReload === 1 && document.documentElement.lang === '${to}' && document.querySelector('h1').textContent.trim() === ${JSON.stringify(I18N[to].activity)}`,
+      activity.sessionId,
+      'Activity did not follow without reload',
+    );
+    await expectSoon(
+      cdp,
+      name,
+      `window.__e2eNoReload === 1 && document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[to].status)}`,
+      admin.sessionId,
+      'Admin did not follow without reload',
+    );
+  });
+
+  await check('i18n.persisted', async (name) => {
+    await cdp.send('Target.closeTarget', { targetId: popup.targetId });
+    const again = await openPage(cdp, extId, 'popup.html');
+    await expectSoon(
+      cdp,
+      name,
+      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)}`,
+      again.sessionId,
+      'the choice did not survive reopening the popup',
+    );
+  });
 }
 
 async function teardown() {
