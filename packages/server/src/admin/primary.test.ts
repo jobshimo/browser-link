@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from '../map/paths.js';
+import * as toolsCommand from '../commands/tools.js';
+import * as configCommand from '../commands/config.js';
+import * as installCommand from '../commands/install.js';
+import { routeRequestMessage } from '../bridge/ws-bridge.js';
 import { createPrimaryAdminHandlers } from './primary.js';
 import type { AdminState } from '../messages.js';
 
@@ -80,6 +84,49 @@ describe('createPrimaryAdminHandlers', () => {
     const result = await admin.action({ id: 'doctor', language: 'es' });
     if (!result.ok || !result.applied) throw new Error('not applied');
     expect(result.state?.ui.language).toBe('es');
+  });
+
+  test('the bridge router refuses the elevating settings with confirm:true and writes nothing', async () => {
+    // Mocked so no case can reach the real client configs in the home folder.
+    const cli = [
+      vi.spyOn(toolsCommand, 'enableTools').mockReturnValue(''),
+      vi.spyOn(toolsCommand, 'disableTools').mockReturnValue(''),
+      vi.spyOn(configCommand, 'setCdpDirectEnabled').mockReturnValue(''),
+      vi.spyOn(configCommand, 'setCdpDirectGrantTtl').mockReturnValue(''),
+      vi.spyOn(installCommand, 'installFor').mockImplementation(() => {
+        throw new Error('installFor called');
+      }),
+    ];
+    const admin = createPrimaryAdminHandlers({
+      version: '0.42.0',
+      tabsConnected: () => 1,
+      connectedExtensionVersion: () => null,
+      checkUpdates: () => Promise.resolve({ current: '0.42.0', latest: null, isNewer: false }),
+      doctor: () => Promise.resolve(['ok']),
+    });
+    const cases: Array<[string, string | boolean]> = [
+      ['cdpDirectEnabled', true],
+      ['cdpDirectGrantTtlMinutes', '240'],
+      ['tools.browser.evaluate', false],
+      ['client.register.claude', true],
+    ];
+    try {
+      for (const [id, value] of cases) {
+        const reply = await routeRequestMessage(
+          { kind: 'admin.action', request_id: id, id, value, confirm: true },
+          admin,
+        );
+        expect(reply).toMatchObject({
+          kind: 'admin.action.result',
+          request_id: id,
+          result: { ok: false },
+        });
+      }
+      for (const spy of cli) expect(spy).not.toHaveBeenCalled();
+      expect(existsSync(join(dataDir, 'config.json'))).toBe(false);
+    } finally {
+      for (const spy of cli) spy.mockRestore();
+    }
   });
 
   test('doctor runs only on its button', async () => {

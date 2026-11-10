@@ -63,7 +63,7 @@ export interface AdminI18n {
   updatesCheck: string;
   instructionsInstall: (client: string) => string;
   instructionsUninstall: (client: string) => string;
-  register: (client: string) => string;
+  registration: (client: string) => string;
   registered: string;
   notRegistered: string;
   stop: string;
@@ -80,13 +80,10 @@ export interface AdminI18n {
   unknownAction: (id: string) => string;
   notAnAction: (id: string) => string;
   invalidValue: (id: string) => string;
-  previewToolOn: (name: string) => string;
-  previewToolOff: (name: string) => string;
   previewToggle: (label: string, on: boolean) => string;
   previewSelect: (label: string, option: string) => string;
   previewInstall: (client: string) => string;
   previewUninstall: (client: string) => string;
-  previewRegister: (client: string) => string;
 }
 
 const v = (version: string | null): string => (version === null ? 'unversioned' : `v${version}`);
@@ -168,7 +165,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updatesCheck: 'Check for updates',
     instructionsInstall: (client) => `Install instructions block — ${client}`,
     instructionsUninstall: (client) => `Remove instructions block — ${client}`,
-    register: (client) => `Register with ${client}`,
+    registration: (client) => `MCP registration — ${client}`,
     registered: 'registered',
     notRegistered: 'not registered',
     stop: 'Stop the server / free the port',
@@ -184,14 +181,11 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     unknownAction: (id) => `Unknown admin action: ${id}`,
     notAnAction: (id) => `${id} is read-only`,
     invalidValue: (id) => `Invalid value for ${id}`,
-    previewToolOn: (name) => `Enable tool ${name} for every agent`,
-    previewToolOff: (name) => `Disable tool ${name} for every agent`,
     previewToggle: (label, on) => `Turn ${on ? 'on' : 'off'}: ${label}`,
     previewSelect: (label, option) => `Set ${label} to ${option}`,
     previewInstall: (client) => `Write the browser-link instructions block into ${client}'s file`,
     previewUninstall: (client) =>
       `Remove the browser-link instructions block from ${client}'s file`,
-    previewRegister: (client) => `Register browser-link in ${client}'s MCP config`,
   },
   es: {
     ui: {
@@ -277,7 +271,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     updatesCheck: 'Buscar actualizaciones',
     instructionsInstall: (client) => `Instalar el bloque de instrucciones — ${client}`,
     instructionsUninstall: (client) => `Quitar el bloque de instrucciones — ${client}`,
-    register: (client) => `Registrar en ${client}`,
+    registration: (client) => `Registro MCP — ${client}`,
     registered: 'registrado',
     notRegistered: 'sin registrar',
     stop: 'Detener el servidor / liberar el puerto',
@@ -294,14 +288,11 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     unknownAction: (id) => `Acción de administración desconocida: ${id}`,
     notAnAction: (id) => `${id} es de solo lectura`,
     invalidValue: (id) => `Valor inválido para ${id}`,
-    previewToolOn: (name) => `Habilitar la tool ${name} para todos los agentes`,
-    previewToolOff: (name) => `Deshabilitar la tool ${name} para todos los agentes`,
     previewToggle: (label, on) => `${on ? 'Activar' : 'Desactivar'}: ${label}`,
     previewSelect: (label, option) => `Cambiar ${label} a ${option}`,
     previewInstall: (client) =>
       `Escribir el bloque de instrucciones de browser-link en el archivo de ${client}`,
     previewUninstall: (client) =>
       `Quitar el bloque de instrucciones de browser-link del archivo de ${client}`,
-    previewRegister: (client) => `Registrar browser-link en la configuración MCP de ${client}`,
   },
 };
