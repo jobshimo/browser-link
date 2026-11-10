@@ -49,9 +49,9 @@ function readString(args: unknown, key: string): string | null {
 }
 
 /** `browser.flow` has no single payload argument — its substance is the step
- * list. Summarising it as `"5 steps: find → click → type"` keeps one trail row
- * readable where inlining the whole JSON would not, and the per-step detail is
- * already recorded by the steps' own rows. */
+ * list. Its row stores the step KINDS only (`"5 steps: find → click → type"`):
+ * the steps run inside the flow runner and get no rows of their own, so
+ * nothing a `type` step typed reaches the trail. */
 function summariseFlow(args: unknown): string | null {
   if (typeof args !== 'object' || args === null) return null;
   const steps = (args as { steps?: unknown }).steps;
@@ -64,6 +64,18 @@ function summariseFlow(args: unknown): string | null {
   if (kinds.length === 0) return `${steps.length} steps`;
   return `${steps.length} steps: ${kinds.join(' → ')}`;
 }
+
+/**
+ * What the trail stores in `payload` instead of the typed text or key of a
+ * `browser.type` / `browser.press` whose executor reported
+ * `sensitive_field: true` (a password field, or an `autocomplete` token
+ * the page uses for passwords, one-time codes or card numbers). Fixed, so a
+ * reader can tell "redacted at record time" from "payloads were off" (null).
+ */
+export const SENSITIVE_PAYLOAD_MARKER = '[sensitive field]';
+
+/** The tools whose result can carry `sensitive_field`. */
+const FIELD_INPUT_TOOLS: ReadonlySet<string> = new Set(['browser.type', 'browser.press']);
 
 export function extractSelector(tool: string, args: unknown): string | null {
   const key = SELECTOR_ARG[tool];
@@ -81,8 +93,8 @@ export function extractTabId(args: unknown): string | null {
   return readString(args, 'tab_id');
 }
 
-/** Flow id, for the two tools that address an existing flow by id. Steps
- * dispatched INSIDE a flow are stamped by the flow runner, not here. */
+/** Flow id, for the tools that address an existing flow by id
+ * (`flow_status`, `flow_cancel`). */
 export function extractFlowId(args: unknown): string | null {
   return readString(args, 'flow_id');
 }
@@ -112,10 +124,12 @@ export interface BuildRowInput {
   durationMs: number;
   error?: unknown;
   /** False when `activity.record-payloads` is off: the row is still written,
-   * with its shape intact, minus the free text. */
+   * with its shape intact, minus the free text. A sensitive field stores
+   * `SENSITIVE_PAYLOAD_MARKER` either way. */
   recordPayloads: boolean;
   /** The resolved tool response, when the call did not throw. Read only to
-   * classify `flag` and to measure `resultBytes`; never stored. */
+   * classify `flag`, to measure `resultBytes` and to see whether a
+   * `type` / `press` acted on a sensitive field; never stored. */
   result?: unknown;
   /** IPC session uuid of the caller; `'primary'` when absent. */
   agentId?: string | null;
@@ -143,6 +157,34 @@ const RESULT_TOOLS: ReadonlySet<string> = new Set([
   'browser.flow',
   'browser.download',
 ]);
+
+/** The data object of a resolved result: the raw object, or the JSON in the
+ * first text block of a non-error MCP envelope. Null for anything else. */
+function resultData(result: unknown): unknown {
+  if (!isMcpResponse(result)) return result;
+  if ((result as { isError?: unknown }).isError === true) return null;
+  const text = firstText(result);
+  if (text === null) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** True only when a `type` / `press` executor said the field it acted on is
+ * one the page declares sensitive. An executor that reports nothing (an
+ * older extension, a failed probe, a thrown call) is false: the row is
+ * stored as before. */
+export function reportsSensitiveField(tool: string, result: unknown): boolean {
+  if (!FIELD_INPUT_TOOLS.has(tool)) return false;
+  const data = resultData(result);
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { sensitive_field?: unknown }).sensitive_field === true
+  );
+}
 
 /** Thrown (or `isError`) messages, through the default rules of the shared
  * error-category table (`errors/categories.ts`, the same table the map
@@ -246,7 +288,11 @@ export function buildRow({
     agent: agentNameFor(caller),
     agentPid: caller?.pid ?? null,
     selector: extractSelector(tool, args),
-    payload: recordPayloads ? extractPayload(tool, args) : null,
+    payload: reportsSensitiveField(tool, result)
+      ? SENSITIVE_PAYLOAD_MARKER
+      : recordPayloads
+        ? extractPayload(tool, args)
+        : null,
     outcome: error === undefined ? 'ok' : 'error',
     error: error === undefined ? null : errorMessage(error),
     durationMs,

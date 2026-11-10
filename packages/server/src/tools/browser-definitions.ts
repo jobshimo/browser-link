@@ -944,6 +944,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
       gotchas: [
         '`ref` follows the same rules as browser.click: `reresolved: true` after a re-found node, `ref-stale: <ref> not found in document <doc_id>` when it cannot be found (take a fresh snapshot), `observer-unavailable` when the page observer is not in the tab.',
         'Pass clear:true when you need to replace the current value instead of appending to it.',
+        '`sensitive_field: true` in the result means the focused field is one the page declares sensitive (`<input type="password">`, or `autocomplete` containing current-password, new-password, one-time-code, cc-number or cc-csc) and the activity trail stores `[sensitive field]` instead of the typed text; `false` means the page marks nothing (a plain field is recorded as before). Absent when an older extension does not report it. Only what the page declares counts: a field named or labelled "password" with no such type or token is not detected.',
         'CLOSED shadow roots and cross-origin iframes are unreachable, same as browser.click.',
         'For Enter/Tab/Escape/arrow keys after typing (submitting a form, confirming an autocomplete suggestion), use browser.press — dispatchEvent-based synthetic KeyboardEvent via browser.evaluate is NOT trusted input and many rich editors and autocompletes ignore it.',
         'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
@@ -999,6 +1000,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Named keys are case-insensitive ("arrowup" works); single printable characters are case-SENSITIVE. Shift IS auto-added for characters that require it on a US layout — uppercase letters, shifted punctuation like "@" or "{" — so to type an uppercase letter just pass key:"A". Do NOT pass key:"a" with modifiers:["Shift"] expecting an "A": that inserts a lowercase "a" with shiftKey reported as held, a combination no physical keyboard produces.',
         'CLOSED shadow roots and cross-origin iframes are unreachable for the optional `selector`, same as browser.click.',
         'The result carries a compact `settle` object (same shape as browser.click) unless `settle_ms:0`.',
+        '`sensitive_field: true` in the result means the focused field is one the page declares sensitive (`<input type="password">`, or `autocomplete` containing current-password, new-password, one-time-code, cc-number or cc-csc) and the activity trail stores `[sensitive field]` instead of the key; `false` means the page marks nothing. It describes the element that has focus when the key is sent (the `selector`/`ref` target, or whatever was focused). Absent when an older extension does not report it.',
         'Optional `expect` asserts the effect of the key, e.g. Enter submitting a form: { url_changed: true }. ' +
           EXPECT_GOTCHA,
       ],
@@ -1533,7 +1535,11 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
             'Only actions by this agent label. The `agents` field of any response lists what exists.',
         },
         tool: { type: 'string', description: 'Only this tool, e.g. "browser.click".' },
-        flow_id: { type: 'string', description: 'Only steps belonging to this flow.' },
+        flow_id: {
+          type: 'string',
+          description:
+            'Only the flow_status / flow_cancel calls that addressed this flow (steps inside a flow get no rows of their own).',
+        },
         outcome: {
           type: 'string',
           enum: ['ok', 'error'],
@@ -1565,6 +1571,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Pass latest_id back as since_id to page efficiently instead of re-reading the whole trail.',
         'Recording can be turned off by the user (`activity.enabled`), in which case this returns an empty trail rather than an error — an empty result does not prove nothing happened.',
         'The trail is local. It is never uploaded, and `browser-link activity export --redact` is what the user runs before sharing it.',
+        'A browser.type / browser.press on a field the page declares sensitive (the `sensitive_field: true` result field) is stored with payload `[sensitive field]`, whether payload recording is on or off.',
         'The summary counts flagged calls that resolved "ok" too (a find with matched:false, a flow that stopped on timeout, an unsettled click): a low error count does not mean nothing failed.',
       ],
     },

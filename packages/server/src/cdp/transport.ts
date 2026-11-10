@@ -27,6 +27,9 @@ import {
   buildFindJs,
   buildElementRectJs,
   buildFocusJs,
+  buildFocusedFieldJs,
+  isFocusedField,
+  type FocusedField,
   buildSnapshotJs,
   buildStateJs,
   buildTypeResolveJs,
@@ -672,16 +675,18 @@ async function performType(
         return { ok: false, error: `Element not found: ${selector}` };
       }
     }
+    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await client.send('Input.insertText', { text });
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: TypeStepResult = { typed: text.length };
+    const result: TypeStepResult & Partial<FocusedField> = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
+    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -734,15 +739,17 @@ async function performPress(
         return { ok: false, error: `Element not found: ${params.selector}` };
       }
     }
+    const field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
     await dispatchKeyEvent(client, def, modifiers);
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: PressStepResult = { key, modifiers: modifierNames };
+    const result: PressStepResult & Partial<FocusedField> = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
     if (reresolved) result.reresolved = true;
+    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };

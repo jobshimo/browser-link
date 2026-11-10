@@ -26,7 +26,7 @@
  *
  * So `payload` DOES carry page-derived and agent-supplied text — the string
  * that was typed, the expression that was evaluated, the URL navigated to.
- * Three properties keep that honest:
+ * Four properties keep that honest:
  *
  *   1. It never leaves the machine on its own. Nothing uploads it.
  *   2. Recording it is a config switch (`activity.record-payloads`), so a
@@ -36,6 +36,12 @@
  *      the way in. The owner keeps the full trail; what they hand to someone
  *      else is a decision made at export time, once, deliberately — rather
  *      than a decision made silently at record time and impossible to undo.
+ *   4. The one exception is decided by the PAGE, not by a guess: a
+ *      `browser.type` / `browser.press` whose executor reports
+ *      `sensitive_field: true` (a password input, or an `autocomplete`
+ *      password / one-time-code / card token) stores `[sensitive field]`
+ *      instead of the text or key, whatever `record-payloads` says. Rows
+ *      stored before that rule existed are left exactly as they were.
  */
 
 /** Outcome of a dispatched tool. `error` is the failure branch of the same
@@ -110,15 +116,16 @@ export interface ActivityRecord {
   selector: string | null;
   /** Agent-supplied or page-derived text: typed string, evaluate expression,
    * navigate URL. Null when the tool has none, or when payload recording is
-   * off. See the PRIVACY CONTRACT above. */
+   * off; `[sensitive field]` for input to a field the page marks sensitive.
+   * See the PRIVACY CONTRACT above. */
   payload: string | null;
   outcome: ActivityOutcome;
   /** Error message when `outcome` is `error`. Truncated, never a stack. */
   error: string | null;
   /** Wall-clock duration of the dispatch, milliseconds. */
   durationMs: number;
-  /** Set when this call was a step inside a `browser.flow`, so the window can
-   * group a 40-step flow under one heading instead of flooding the timeline. */
+  /** The flow a `browser.flow_status` / `browser.flow_cancel` call addressed.
+   * Steps inside a flow get no rows of their own. */
   flowId: string | null;
   /** Friction classification (see `ActivityFlag`), or null for a clean call
    * and for every row recorded before the column existed. Optional so a
