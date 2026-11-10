@@ -166,6 +166,63 @@ describe('buildAdminRows', () => {
     expect(row('downloadsDir').control).toBe('none');
   });
 
+  test('a console-only setting renders as its value and command, with no control', () => {
+    // The shape the server sends for cdp-direct, a tool and a client registration.
+    const consoleOnly = buildAdminRows(
+      state({
+        sections: [
+          {
+            id: 'setup',
+            title: 'Setup',
+            items: [
+              {
+                id: 'cdpDirectEnabled',
+                kind: 'readout',
+                label: 'cdp-direct enabled',
+                value: 'off',
+                writesDisk: false,
+                hint: 'browser-link config set cdp-direct.enabled true',
+              },
+              {
+                id: 'tools.browser.evaluate',
+                kind: 'readout',
+                label: 'Tool browser.evaluate',
+                value: 'on',
+                writesDisk: false,
+                hint: 'browser-link tools disable browser.evaluate',
+              },
+            ],
+          },
+          {
+            id: 'diagnose',
+            title: 'Diagnose',
+            items: [
+              {
+                id: 'client.register.claude',
+                kind: 'readout',
+                label: 'MCP registration — Claude Code',
+                value: 'registered',
+                writesDisk: false,
+                hint: 'browser-link install --client claude',
+              },
+            ],
+          },
+        ],
+      }),
+      EN,
+    );
+    expect(consoleOnly.map((r) => [r.itemId, r.control, r.valueText, r.hint])).toEqual([
+      ['cdpDirectEnabled', 'none', 'off', 'browser-link config set cdp-direct.enabled true'],
+      ['tools.browser.evaluate', 'none', 'on', 'browser-link tools disable browser.evaluate'],
+      ['client.register.claude', 'none', 'registered', 'browser-link install --client claude'],
+    ]);
+    for (const r of consoleOnly) {
+      expect(r.checked).toBeUndefined();
+      expect(r.options).toBeUndefined();
+      expect(r.disabled).toBeUndefined();
+    }
+  });
+
   test('a toggle carries its description and restart flag and reads its boolean', () => {
     expect(row('multiAgent')).toEqual({
       sectionId: 'setup',

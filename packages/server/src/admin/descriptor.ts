@@ -7,7 +7,7 @@ import type { ClientInstructionsStatus } from '../manual/status.js';
 import type { ClientId } from '../installers/index.js';
 import type { DoctorServerStatus } from '../commands/doctor.js';
 import type { Language } from '../commands/welcome.js';
-import type { AdminItem, AdminOption, AdminSection, AdminState } from '../messages.js';
+import type { AdminItem, AdminSection, AdminState } from '../messages.js';
 import { ADMIN_I18N, type AdminI18n } from './i18n.js';
 
 /**
@@ -19,15 +19,30 @@ import { ADMIN_I18N, type AdminI18n } from './i18n.js';
  *
  * Process-ending operations (`stop`/free-port, self-update) are never
  * actions: they would end the very primary that answers the popup, so they
- * are readouts carrying the console command instead.
+ * are readouts carrying the console command instead. So are the settings
+ * that widen what an agent may do (the tool set, cdp-direct and its grant
+ * lifetime, MCP client registration): anything that can reach the bridge
+ * could otherwise grant them, so only the console changes them.
  */
 
 export const REPO_URL = 'https://github.com/jobshimo/browser-link';
 export const STOP_COMMAND = 'browser-link stop';
 export const SELF_UPDATE_COMMAND = 'npm install -g @jobshimo/browser-link@latest';
+const CDP_DIRECT_GRANT_TTL_COMMAND = 'browser-link config set cdp-direct.grant-ttl <minutes|never>';
 
-/** Common lifetimes for the cdp-direct grant select; `0` = never expires. */
-const GRANT_TTL_CHOICES = [15, 30, 60, 240, 1440, 0] as const;
+/** The console command that flips a tool (`browser-link tools enable|disable`). */
+function toolCommand(name: string, enabled: boolean): string {
+  return `browser-link tools ${enabled ? 'disable' : 'enable'} ${name}`;
+}
+
+/** The console command that flips cdp-direct (`config set cdp-direct.enabled`). */
+function cdpDirectEnabledCommand(enabled: boolean): string {
+  return `browser-link config set cdp-direct.enabled ${enabled ? 'false' : 'true'}`;
+}
+
+function registerCommand(client: ClientId): string {
+  return `browser-link install --client ${client}`;
+}
 
 export interface AdminClient {
   id: ClientId;
@@ -175,16 +190,11 @@ function statusSection(input: AdminInput, t: AdminI18n): AdminSection {
   return { id: 'status', title: t.sections.status, items };
 }
 
-function grantTtlOptions(current: number, t: AdminI18n): AdminOption[] {
-  const values: number[] = [...GRANT_TTL_CHOICES];
-  if (!values.includes(current)) values.unshift(current);
-  return values.map((n) => ({ value: String(n), label: n === 0 ? t.never : t.minutes(n) }));
-}
-
 function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
   const { config } = input;
   const disabled = new Set(config.disabledTools ?? []);
   const grantTtl = config.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES;
+  const cdpDirectEnabled = config.cdpDirectEnabled === true;
   const items: AdminItem[] = [
     {
       id: 'language',
@@ -197,7 +207,12 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       ],
       writesDisk: true,
     },
-    ...input.toolNames.map((name) => toggle(`tools.${name}`, t.tool(name), !disabled.has(name))),
+    ...input.toolNames.map((name) => {
+      const enabled = !disabled.has(name);
+      return readout(`tools.${name}`, t.tool(name), enabled ? t.on : t.off, {
+        hint: toolCommand(name, enabled),
+      });
+    }),
     toggle('multiAgent', t.multiAgent, config.multiAgent !== false, true),
     toggle('autoReelect', t.autoReelect, config.autoReelect === true, true),
     toggle(
@@ -206,18 +221,18 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       config.instructionsAutoRefresh !== false,
       true,
     ),
-    toggle('cdpDirectEnabled', t.cdpDirectEnabled, config.cdpDirectEnabled === true),
+    readout('cdpDirectEnabled', t.cdpDirectEnabled, cdpDirectEnabled ? t.on : t.off, {
+      hint: cdpDirectEnabledCommand(cdpDirectEnabled),
+    }),
     readout('cdpDirectPort', t.cdpDirectPort, config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT, {
       hint: 'browser-link config set cdp-direct.port <port>',
     }),
-    {
-      id: 'cdpDirectGrantTtlMinutes',
-      kind: 'select',
-      label: t.cdpDirectGrantTtl,
-      value: String(grantTtl),
-      options: grantTtlOptions(grantTtl, t),
-      writesDisk: true,
-    },
+    readout(
+      'cdpDirectGrantTtlMinutes',
+      t.cdpDirectGrantTtl,
+      grantTtl === 0 ? t.never : t.minutes(grantTtl),
+      { hint: CDP_DIRECT_GRANT_TTL_COMMAND },
+    ),
     // Read once when the primary wires the trail, so a change needs a restart.
     toggle('activityEnabled', t.activityEnabled, config.activityEnabled !== false, true),
     toggle(
@@ -255,8 +270,8 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
   return { id: 'setup', title: t.sections.setup, items };
 }
 
-function button(id: string, label: string, writesDisk: boolean, description?: string): AdminItem {
-  return { id, kind: 'button', label, writesDisk, ...(description ? { description } : {}) };
+function button(id: string, label: string, writesDisk: boolean): AdminItem {
+  return { id, kind: 'button', label, writesDisk };
 }
 
 function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
@@ -277,11 +292,11 @@ function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
   for (const c of input.clients) {
     if (!c.installed) continue;
     items.push(
-      button(
+      readout(
         `client.register.${c.id}`,
-        t.register(c.displayName),
-        true,
+        t.registration(c.displayName),
         c.registered ? t.registered : t.notRegistered,
+        { hint: registerCommand(c.id) },
       ),
     );
   }

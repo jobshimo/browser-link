@@ -4,9 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from '../map/paths.js';
 import { loadConfig } from '../config.js';
-import { applyAdminAction, DEFAULT_ADMIN_HELPERS, type AdminActionDeps } from './actions.js';
+import * as toolsCommand from '../commands/tools.js';
+import * as configCommand from '../commands/config.js';
+import * as installCommand from '../commands/install.js';
+import {
+  applyAdminAction,
+  DEFAULT_ADMIN_HELPERS,
+  type AdminActionDeps,
+  type AdminHelpers,
+} from './actions.js';
 import type { AdminInput } from './descriptor.js';
-import type { AdminItem, AdminState } from '../messages.js';
 
 /* S2: the admin action allowlist. Config writes go to a throwaway data dir
  * (the one place config.ts asks "where do I live?"), and every writer runs
@@ -56,10 +63,6 @@ function deps(over: Partial<AdminActionDeps> = {}): AdminActionDeps {
   };
 }
 
-function itemOf(state: AdminState | undefined, id: string): AdminItem | undefined {
-  return state?.sections.flatMap((s) => s.items).find((i) => i.id === id);
-}
-
 describe('applyAdminAction — allowlist', () => {
   test('an unknown id is an error', async () => {
     expect(await applyAdminAction({ id: 'nope', confirm: true }, deps())).toEqual({
@@ -69,13 +72,11 @@ describe('applyAdminAction — allowlist', () => {
   });
 
   test('a tool outside the catalogue is an unknown id, never a disabledTools entry', async () => {
-    const disableTools = vi.fn(DEFAULT_ADMIN_HELPERS.disableTools);
     const result = await applyAdminAction(
       { id: 'tools.browser.nope', value: false, confirm: true },
-      deps({ helpers: { disableTools } }),
+      deps(),
     );
     expect(result).toEqual({ ok: false, error: 'Unknown admin action: tools.browser.nope' });
-    expect(disableTools).not.toHaveBeenCalled();
     expect(loadConfig().disabledTools ?? []).toEqual([]);
   });
 
@@ -102,12 +103,10 @@ describe('applyAdminAction — allowlist', () => {
       error: 'Acción de administración desconocida: nope',
     });
     const result = await applyAdminAction(
-      { id: 'tools.browser.evaluate', value: false, language: 'es' },
+      { id: 'multiAgent', value: false, language: 'es' },
       deps(),
     );
-    expect(result).toMatchObject({
-      preview: 'Deshabilitar la tool browser.evaluate para todos los agentes',
-    });
+    expect(result).toMatchObject({ preview: 'Desactivar: Modo multi-agente' });
     expect(loadConfig().language).toBeUndefined();
   });
 
@@ -133,21 +132,71 @@ describe('applyAdminAction — allowlist', () => {
   });
 });
 
+/** Every injectable helper wrapped in a spy, plus spies on the CLI writers the
+ * console keeps for the elevating settings (tools, cdp-direct, registration). */
+function spyEverything() {
+  const helpers = Object.fromEntries(
+    Object.entries(DEFAULT_ADMIN_HELPERS).map(([k, fn]) => [k, vi.fn(fn as never)]),
+  ) as unknown as AdminHelpers;
+  const cli = [
+    vi.spyOn(toolsCommand, 'enableTools'),
+    vi.spyOn(toolsCommand, 'disableTools'),
+    vi.spyOn(configCommand, 'setCdpDirectEnabled'),
+    vi.spyOn(configCommand, 'setCdpDirectGrantTtl'),
+    vi.spyOn(installCommand, 'installFor'),
+  ];
+  const doctor = vi.fn(() => Promise.resolve(['doctor']));
+  const checkUpdates = vi.fn(() => Promise.resolve(['updates']));
+  const all = [...Object.values(helpers), ...cli, doctor, checkUpdates] as Array<{
+    mock: { calls: unknown[] };
+  }>;
+  return {
+    deps: deps({ helpers, doctor, checkUpdates }),
+    calls: () => all.reduce((n, spy) => n + spy.mock.calls.length, 0),
+    restore: () => {
+      for (const spy of cli) spy.mockRestore();
+    },
+  };
+}
+
+describe('applyAdminAction — elevating settings are console-only (arch ask-3 condition 2)', () => {
+  const cases: Array<[string, string | boolean]> = [
+    ['cdpDirectEnabled', true],
+    ['cdpDirectGrantTtlMinutes', '240'],
+    ['tools.browser.evaluate', false],
+    ['client.register.claude', true],
+  ];
+  for (const [id, value] of cases) {
+    test(`${id} with confirm:true is refused and calls no helper`, async () => {
+      const spies = spyEverything();
+      const before = loadConfig();
+      try {
+        const result = await applyAdminAction({ id, value, confirm: true }, spies.deps);
+        expect(result).toEqual({ ok: false, error: `${id} is read-only` });
+        expect(spies.calls()).toBe(0);
+        expect(loadConfig()).toEqual(before);
+      } finally {
+        spies.restore();
+      }
+    });
+  }
+});
+
 describe('applyAdminAction — confirm step', () => {
   test('a disk write without confirm returns a localised one-line preview and writes nothing', async () => {
-    const disableTools = vi.fn(DEFAULT_ADMIN_HELPERS.disableTools);
+    const disableMultiAgent = vi.fn(DEFAULT_ADMIN_HELPERS.disableMultiAgent);
     const result = await applyAdminAction(
-      { id: 'tools.browser.evaluate', value: false },
-      deps({ helpers: { disableTools } }),
+      { id: 'multiAgent', value: false },
+      deps({ helpers: { disableMultiAgent } }),
     );
     expect(result).toEqual({
       ok: true,
       applied: false,
       needsConfirm: true,
-      preview: 'Disable tool browser.evaluate for every agent',
+      preview: 'Turn off: Multi-agent mode',
     });
-    expect(disableTools).not.toHaveBeenCalled();
-    expect(loadConfig().disabledTools ?? []).toEqual([]);
+    expect(disableMultiAgent).not.toHaveBeenCalled();
+    expect(loadConfig().multiAgent).toBe(true);
   });
 
   test('previews for the other writers', async () => {
@@ -155,51 +204,25 @@ describe('applyAdminAction — confirm step', () => {
       const r = await applyAdminAction({ id, ...(value !== undefined ? { value } : {}) }, deps());
       return r.ok && !r.applied ? r.preview : undefined;
     };
-    expect(await preview('multiAgent', false)).toBe('Turn off: Multi-agent mode');
     expect(await preview('language', 'es')).toBe('Set Console language to Español');
     expect(await preview('instructions.install.claude')).toBe(
       "Write the browser-link instructions block into Claude Code's file",
     );
-    expect(await preview('client.register.claude')).toBe(
-      "Register browser-link in Claude Code's MCP config",
+    expect(await preview('instructions.uninstall.claude')).toBe(
+      "Remove the browser-link instructions block from Claude Code's file",
     );
   });
 
   test('es preview', async () => {
     DEFAULT_ADMIN_HELPERS.saveConfig({ language: 'es' });
-    const r = await applyAdminAction({ id: 'tools.browser.evaluate', value: false }, deps());
+    const r = await applyAdminAction({ id: 'instructions.install.claude' }, deps());
     expect(r).toMatchObject({
-      preview: 'Deshabilitar la tool browser.evaluate para todos los agentes',
+      preview: 'Escribir el bloque de instrucciones de browser-link en el archivo de Claude Code',
     });
   });
 });
 
 describe('applyAdminAction — apply through the existing helpers', () => {
-  test('disabling a tool goes through disableTools and returns the fresh state', async () => {
-    const disableTools = vi.fn(DEFAULT_ADMIN_HELPERS.disableTools);
-    const result = await applyAdminAction(
-      { id: 'tools.browser.evaluate', value: false, confirm: true },
-      deps({ helpers: { disableTools } }),
-    );
-    expect(disableTools).toHaveBeenCalledWith(['browser.evaluate'], 'en');
-    expect(loadConfig().disabledTools).toEqual(['browser.evaluate']);
-    expect(result).toMatchObject({ ok: true, applied: true });
-    if (!result.ok || !result.applied) throw new Error('not applied');
-    expect(result.requiresRestart).toBeUndefined();
-    expect(itemOf(result.state, 'tools.browser.evaluate')?.value).toBe(false);
-  });
-
-  test('enabling a tool goes through enableTools', async () => {
-    DEFAULT_ADMIN_HELPERS.saveConfig({ disabledTools: ['browser.evaluate'] });
-    const enableTools = vi.fn(DEFAULT_ADMIN_HELPERS.enableTools);
-    await applyAdminAction(
-      { id: 'tools.browser.evaluate', value: true, confirm: true },
-      deps({ helpers: { enableTools } }),
-    );
-    expect(enableTools).toHaveBeenCalledWith(['browser.evaluate'], 'en');
-    expect(loadConfig().disabledTools ?? []).toEqual([]);
-  });
-
   test('multi-agent goes through the multi-agent helpers and requires a restart', async () => {
     const disableMultiAgent = vi.fn(DEFAULT_ADMIN_HELPERS.disableMultiAgent);
     const result = await applyAdminAction(
@@ -242,24 +265,6 @@ describe('applyAdminAction — apply through the existing helpers', () => {
     });
   });
 
-  test('cdp-direct goes through the config command setters', async () => {
-    const setCdpDirectEnabled = vi.fn(DEFAULT_ADMIN_HELPERS.setCdpDirectEnabled);
-    const setCdpDirectGrantTtl = vi.fn(DEFAULT_ADMIN_HELPERS.setCdpDirectGrantTtl);
-    const helpers = { setCdpDirectEnabled, setCdpDirectGrantTtl };
-    await applyAdminAction(
-      { id: 'cdpDirectEnabled', value: true, confirm: true },
-      deps({ helpers }),
-    );
-    await applyAdminAction(
-      { id: 'cdpDirectGrantTtlMinutes', value: '240', confirm: true },
-      deps({ helpers }),
-    );
-    expect(setCdpDirectEnabled).toHaveBeenCalledWith('true', 'en');
-    expect(setCdpDirectGrantTtl).toHaveBeenCalledWith('240', 'en');
-    expect(loadConfig().cdpDirectEnabled).toBe(true);
-    expect(loadConfig().cdpDirectGrantTtlMinutes).toBe(240);
-  });
-
   test('activity toggles write their config key', async () => {
     const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
     await applyAdminAction(
@@ -268,6 +273,13 @@ describe('applyAdminAction — apply through the existing helpers', () => {
     );
     expect(saveConfig).toHaveBeenCalledWith({ activityRecordPayloads: false });
     expect(loadConfig().activityRecordPayloads).toBe(false);
+    expect(
+      await applyAdminAction(
+        { id: 'activityEnabled', value: false, confirm: true },
+        deps({ helpers: { saveConfig } }),
+      ),
+    ).toMatchObject({ ok: true, applied: true, requiresRestart: true });
+    expect(loadConfig().activityEnabled).toBe(false);
   });
 
   test('the language select saves and the fresh state comes back in that language', async () => {
@@ -309,21 +321,6 @@ describe('applyAdminAction — apply through the existing helpers', () => {
       ),
     ).toEqual({ ok: false, error: 'refused' });
   });
-
-  test('client registration goes through installFor', async () => {
-    const installFor = vi.fn(() => ({
-      client: 'claude' as const,
-      displayName: 'Claude Code',
-      installedClient: true,
-      message: 'Registered.',
-    }));
-    const result = await applyAdminAction(
-      { id: 'client.register.claude', confirm: true },
-      deps({ helpers: { installFor } }),
-    );
-    expect(installFor).toHaveBeenCalledWith('claude');
-    expect(result).toMatchObject({ ok: true, applied: true, output: ['Registered.'] });
-  });
 });
 
 describe('applyAdminAction — validation', () => {
@@ -341,12 +338,6 @@ describe('applyAdminAction — validation', () => {
       ok: false,
       error: 'Invalid value for language',
     });
-    expect(
-      await applyAdminAction(
-        { id: 'cdpDirectGrantTtlMinutes', value: '99999', confirm: true },
-        deps(),
-      ),
-    ).toEqual({ ok: false, error: 'Invalid value for cdpDirectGrantTtlMinutes' });
     expect(loadConfig().language).toBeUndefined();
   });
 
