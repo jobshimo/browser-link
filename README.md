@@ -2060,14 +2060,16 @@ refused too.
   equal. `tasklist /V` is the fallback when PowerShell is missing or
   locked down; it compares the owners the same way.
 
-The handshake is refused in these cases (`verifyClient` in
-`packages/server/src/bridge/ws-bridge.ts`):
+The handshake is refused in these cases (`evaluateHandshake` in
+`packages/server/src/bridge/handshake.ts`, the gate the WebSocket upgrade
+and `GET /handshake-check` share; the extension popup shows the reason):
 
 | Status | Reason                                                                                                                                                                     |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 403    | `Origin not allowed` — an `Origin` header is present and does not start with `chrome-extension://` (a missing `Origin` is left to the peer check)                          |
 | 403    | `Cannot identify peer` — the socket exposes no remote address or port                                                                                                      |
-| 403    | `Peer process unknown` — the lookup found no single owning process, or could not read its OS user; the log line names the cause                                            |
+| 403    | `Peer process unknown` — the lookup found no single owning process; the log line names the cause                                                                           |
+| 403    | `Cannot read peer owner` — the OS user of the owning process, or of the server, could not be read                                                                          |
 | 403    | `Peer runs as another OS user` — the owning process belongs to a different OS user than the server                                                                         |
 | 403    | `Peer is not a Chromium-based browser` — the binary is not on the allowlist                                                                                                |
 | 403    | `Peer executable path not allowed` — strict mode only: the executable path is not listed in `peerExecutablePaths`, or could not be read                                    |

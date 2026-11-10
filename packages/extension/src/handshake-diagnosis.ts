@@ -21,7 +21,10 @@ export const HANDSHAKE_REFUSAL_REASONS = [
   'origin-not-allowed',
   'peer-unidentified',
   'peer-unknown',
+  'peer-owner-unreadable',
+  'peer-other-user',
   'peer-not-browser',
+  'peer-path-not-allowed',
   'process-lookup-failed',
 ] as const;
 

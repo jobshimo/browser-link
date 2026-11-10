@@ -1122,7 +1122,7 @@ describe('startWsBridge handshake gate and message loop', () => {
     const { url } = await bridge(async () => ({ ok: false, cause: 'owner-unreadable' }));
     expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
       status: 403,
-      message: 'Peer process unknown',
+      message: 'Cannot read peer owner',
     });
     expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
       '(cause: owner-unreadable)',
@@ -1190,6 +1190,17 @@ describe('startWsBridge handshake gate and message loop', () => {
         status: 403,
         message: 'Peer executable path not allowed',
       });
+    });
+
+    test('a lookup that could not read the executable path is refused with 403', async () => {
+      const { url } = await bridge(async () => ({ ok: false, cause: 'path-unreadable' }));
+      expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+        status: 403,
+        message: 'Peer executable path not allowed',
+      });
+      expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
+        '(cause: path-unreadable)',
+      );
     });
   });
 
@@ -1276,8 +1287,12 @@ describe('GET /handshake-check — the handshake verdict a WebSocket cannot read
   const CHROMIUM = getAllowedBrowsers()[0] ?? 'chrome';
   const EXT = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
   let wss: WebSocketServer | null = null;
+  // The gate reads config.json (strict mode) on every check.
+  let dataDir: string;
 
   beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-handshake-check-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -1285,6 +1300,8 @@ describe('GET /handshake-check — the handshake verdict a WebSocket cannot read
     if (wss) await new Promise<void>((resolve) => wss?.close(() => resolve()));
     wss = null;
     vi.restoreAllMocks();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
   });
 
   async function bridgePort(
@@ -1461,6 +1478,16 @@ describe('GET /handshake-check — the handshake verdict a WebSocket cannot read
       'peer-unknown',
     ],
     [
+      'a peer of another OS user',
+      async (): Promise<PeerLookupResult> => ({ ok: false, cause: 'owner-mismatch' }),
+      'peer-other-user',
+    ],
+    [
+      'a peer whose owner cannot be read',
+      async (): Promise<PeerLookupResult> => ({ ok: false, cause: 'owner-unreadable' }),
+      'peer-owner-unreadable',
+    ],
+    [
       'a peer lookup that throws',
       async (): Promise<PeerLookupResult> => {
         throw new Error('lookup exploded');
@@ -1471,6 +1498,22 @@ describe('GET /handshake-check — the handshake verdict a WebSocket cannot read
     const port = await bridgePort(lookup);
     const reply = await check(port, { origin: EXT });
     expect(JSON.parse(reply.body)).toEqual({ accepted: false, reason });
+  });
+
+  test('strict mode applies here too: an unlisted executable path gets peer-path-not-allowed', async () => {
+    writeFileSync(
+      join(dataDir, 'config.json'),
+      JSON.stringify({ peerExecutablePaths: [process.execPath] }),
+      'utf8',
+    );
+    const lookup = vi.fn(async (): Promise<PeerLookupResult> => ({
+      ok: true,
+      peer: { pid: 4321, binaryName: CHROMIUM, executablePath: join(dataDir, 'chrome') },
+    }));
+    const port = await bridgePort(lookup);
+    const reply = await check(port, { origin: EXT });
+    expect(JSON.parse(reply.body)).toEqual({ accepted: false, reason: 'peer-path-not-allowed' });
+    expect(lookup.mock.calls[0]?.[2]).toMatchObject({ withExecutablePath: true });
   });
 
   test('answers only on a loopback Host, like /version', async () => {
@@ -1502,6 +1545,7 @@ describe('handshakeRefusal — one reason code per refusal the gate can give', (
       ['origin-not-allowed', { status: 403, message: 'Origin not allowed' }],
       ['peer-unidentified', { status: 403, message: 'Cannot identify peer' }],
       ['peer-unknown', { status: 403, message: 'Peer process unknown' }],
+      ['peer-owner-unreadable', { status: 403, message: 'Cannot read peer owner' }],
       ['peer-other-user', { status: 403, message: 'Peer runs as another OS user' }],
       ['peer-not-browser', { status: 403, message: 'Peer is not a Chromium-based browser' }],
       ['peer-path-not-allowed', { status: 403, message: 'Peer executable path not allowed' }],

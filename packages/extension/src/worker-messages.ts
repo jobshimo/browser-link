@@ -76,8 +76,14 @@ function refusalReason(t: Messages, reason: string): string {
       return t.handshakeReasonPeerUnidentified;
     case 'peer-unknown':
       return t.handshakeReasonPeerUnknown;
+    case 'peer-owner-unreadable':
+      return t.handshakeReasonPeerOwnerUnreadable;
+    case 'peer-other-user':
+      return t.handshakeReasonPeerOtherUser;
     case 'peer-not-browser':
       return t.handshakeReasonPeerNotBrowser;
+    case 'peer-path-not-allowed':
+      return t.handshakeReasonPeerPathNotAllowed;
     case 'process-lookup-failed':
       return t.handshakeReasonLookupFailed;
     default:
