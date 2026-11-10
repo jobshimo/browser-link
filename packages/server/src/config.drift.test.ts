@@ -10,6 +10,7 @@ import {
 } from './config.js';
 import { BRIDGE_PORT, DEFAULT_BRIDGE_PORT } from './bridge/protocol.js';
 import { WS_PORT } from './bridge/ws-bridge.js';
+import { HANDSHAKE_CHECK_PATH, HANDSHAKE_REFUSAL_REASONS } from './bridge/handshake.js';
 
 /*
  * DRIFT GUARD for the idle-TTL clamp — `config.ts`'s `clampIdleTtlMinutes`
@@ -219,5 +220,29 @@ describe('wire protocol drift guard: packages/shared/src/index.ts', () => {
     const header = read(SERVER_MESSAGES).split(BEGIN)[0];
     expect(header).toContain('Copied from packages/shared/src/index.ts');
     expect(header).toContain('config.drift.test.ts');
+  });
+});
+
+/*
+ * DRIFT GUARD for the handshake check (0.52.0). The server's
+ * `bridge/handshake.ts` owns the path and the refusal reason codes; the
+ * extension's `handshake-diagnosis.ts` keeps a copy (it cannot import the
+ * server). Disagreeing copies would turn every refusal into the unknown
+ * reason, or ask a path nobody answers.
+ */
+describe('handshake check drift guard: packages/extension/src/handshake-diagnosis.ts', () => {
+  const EXT_DIAGNOSIS = join(here, '..', '..', 'extension', 'src', 'handshake-diagnosis.ts');
+  const text = read(EXT_DIAGNOSIS);
+
+  test('the extension asks the path the bridge answers', () => {
+    const m = /^export const HANDSHAKE_CHECK_PATH = '([^']+)';$/m.exec(text);
+    expect(m?.[1]).toBe(HANDSHAKE_CHECK_PATH);
+  });
+
+  test('the extension knows exactly the reason codes the bridge refuses with, in order', () => {
+    const m = /export const HANDSHAKE_REFUSAL_REASONS = \[([^\]]*)\] as const;/.exec(text);
+    if (!m) throw new Error('could not find HANDSHAKE_REFUSAL_REASONS in the extension');
+    const codes = [...m[1].matchAll(/'([^']+)'/g)].map((c) => c[1]);
+    expect(codes).toEqual([...HANDSHAKE_REFUSAL_REASONS]);
   });
 });

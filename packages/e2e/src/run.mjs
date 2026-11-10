@@ -31,6 +31,8 @@ import {
   killPid,
   launchChrome,
   now,
+  originProbe,
+  pinnedExtensionId,
   portOwners,
   removeDir,
   resolveChrome,
@@ -133,6 +135,12 @@ async function main() {
   state.cdp = await Cdp.open(version.webSocketDebuggerUrl);
   const { cdp } = state;
   const { id: extId } = await cdp.send('Extensions.loadUnpacked', { path: extDir });
+  // The manifest `key` pins the id; the patched temp copy must keep it.
+  const pinnedId = await pinnedExtensionId();
+  if (extId !== pinnedId) {
+    throw new StepFailure('extension.id', `Chrome assigned ${extId}, the server pins ${pinnedId}`);
+  }
+  console.log(`extension.id ok ${extId}`);
   const sw = await waitServiceWorker(cdp, extId, 15_000);
 
   // 2. The server, stdio MCP, isolated.
@@ -193,6 +201,34 @@ async function main() {
   );
   if (!connected.ok) throw new StepFailure('connect', JSON.stringify(connected));
   await cdp.send('Target.closeTarget', { targetId: popupTarget });
+
+  // The worker reads the bridge's handshake verdict cross-origin (what the
+  // popup falls back on when an upgrade is refused): accepted here.
+  const verdict = await cdp.evaluate(
+    `fetch('http://127.0.0.1:${String(wsPort)}/handshake-check', { cache: 'no-store' }).then((r) => r.text())`,
+    swSession,
+  );
+  if (verdict !== '{"accepted":true}') throw new StepFailure('handshake-check', verdict);
+  console.log(`handshake-check ok ${verdict}`);
+
+  // Informational: the Origin the worker's WebSocket and fetch announce.
+  const { port: probePort, seen, close: closeProbe } = await originProbe();
+  try {
+    await cdp.evaluate(
+      `(async () => {
+        await new Promise((res) => {
+          const ws = new WebSocket('ws://127.0.0.1:${String(probePort)}');
+          ws.onclose = () => res(true);
+        });
+        try { await fetch('http://127.0.0.1:${String(probePort)}/', { cache: 'no-store' }); } catch {}
+        return true;
+      })()`,
+      swSession,
+    );
+  } finally {
+    closeProbe();
+  }
+  console.log(`worker.origin websocket=${String(seen.websocket)} fetch=${String(seen.fetch)}`);
 
   // 5. The nine calls.
   const tl = now();
@@ -267,6 +303,13 @@ async function main() {
     },
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
+
+  // 0.52.0 logs a lockout notice for every accepted handshake whose Origin
+  // is not exactly the pinned extension's (a missing Origin included): none
+  // here means the worker's bridge socket announced chrome-extension://<id>.
+  const notice = serverStderr.split('\n').find((l) => l.includes('1.0.0 will refuse'));
+  if (notice !== undefined) throw new StepFailure('bridge.origin', notice);
+  console.log(`bridge.origin ok chrome-extension://${extId} (no lockout notice logged)`);
 
   await languageChecks(cdp, extId);
 }

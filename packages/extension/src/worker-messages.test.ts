@@ -84,6 +84,74 @@ describe('workerFailure', () => {
   });
 });
 
+describe('a refused handshake (ws-handshake-refused): refused, and why, in both languages', () => {
+  const refused = (reason: string): WorkerMessage =>
+    ({ code: 'ws-handshake-refused', values: { reason } }) as WorkerMessage;
+
+  test.each([
+    [
+      'origin-not-allowed',
+      "The browser-link server refused the connection: it does not accept this extension's id. Reload the extension from the installed browser-link version.",
+      'El servidor de browser-link rechazó la conexión: no acepta el id de esta extensión. Vuelva a cargar la extensión desde la versión de browser-link instalada.',
+    ],
+    [
+      'peer-unidentified',
+      'The browser-link server refused the connection: it could not see which program opened the connection.',
+      'El servidor de browser-link rechazó la conexión: no pudo ver qué programa abrió la conexión.',
+    ],
+    [
+      'peer-unknown',
+      'The browser-link server refused the connection: it could not identify the program that opened the connection.',
+      'El servidor de browser-link rechazó la conexión: no pudo identificar el programa que abrió la conexión.',
+    ],
+    [
+      'peer-not-browser',
+      'The browser-link server refused the connection: the program that opened the connection is not a supported Chromium-based browser.',
+      'El servidor de browser-link rechazó la conexión: el programa que abrió la conexión no es un navegador compatible basado en Chromium.',
+    ],
+    [
+      'process-lookup-failed',
+      'The browser-link server refused the connection: checking the program that opened the connection failed.',
+      'El servidor de browser-link rechazó la conexión: falló la comprobación del programa que abrió la conexión.',
+    ],
+    [
+      'other',
+      'The browser-link server refused the connection: this extension version does not know the reason. Update the extension.',
+      'El servidor de browser-link rechazó la conexión: esta versión de la extensión no conoce el motivo. Actualice la extensión.',
+    ],
+  ])('%s', (reason, en, es) => {
+    const failure = workerFailure(refused(reason));
+    expect(failure).toEqual({
+      ok: false,
+      error: en,
+      code: 'ws-handshake-refused',
+      values: { reason },
+    });
+    expect(
+      renderWorkerText(EN, { text: failure.error, code: failure.code, values: failure.values }),
+    ).toBe(en);
+    expect(
+      renderWorkerText(ES, { text: failure.error, code: failure.code, values: failure.values }),
+    ).toBe(es);
+  });
+
+  test('a reason code a newer worker sends renders as the unknown reason', () => {
+    expect(
+      renderWorkerText(ES, {
+        text: 'x',
+        code: 'ws-handshake-refused',
+        values: { reason: 'from-the-future' },
+      }),
+    ).toBe(
+      'El servidor de browser-link rechazó la conexión: esta versión de la extensión no conoce el motivo. Actualice la extensión.',
+    );
+  });
+
+  test('without a reason value it falls back to the carried text', () => {
+    expect(renderWorkerText(ES, { text: 'carried', code: 'ws-handshake-refused' })).toBe('carried');
+  });
+});
+
 describe('renderWorkerText', () => {
   test('a coded message renders in the window language', () => {
     expect(renderWorkerText(ES, { text: 'Name is required.', code: 'name-required' })).toBe(
