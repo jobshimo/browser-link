@@ -417,13 +417,33 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
   });
 
-  test('win32: a peer that vanished before the CIM call is a parse-miss', async () => {
+  test('win32: a peer that vanished before the CIM call is peer-row-missing', async () => {
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
       54321,
       win({ netstat: NETSTAT, powershell: cim(selfRow()) }),
     );
-    expect(res).toEqual({ ok: false, cause: 'parse-miss' });
+    expect(res).toEqual({ ok: false, cause: 'peer-row-missing' });
+  });
+
+  test('win32: a CIM reply without the server row is server-row-missing', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({ netstat: NETSTAT, powershell: cim(row()) }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'server-row-missing' });
+  });
+
+  test('win32: a CIM reply that is not the expected JSON array is cim-unparsable', async () => {
+    for (const out of ['', 'WARNING: something\r\n', JSON.stringify(row())]) {
+      const res = await lookupPeerProcessDetailed(
+        '127.0.0.1',
+        54321,
+        win({ netstat: NETSTAT, powershell: out }),
+      );
+      expect(res).toEqual({ ok: false, cause: 'cim-unparsable' });
+    }
   });
 
   // --- condition 2: compared with the server's owner, by the same method ---
@@ -574,7 +594,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(calls.map((c) => c.file)).toEqual(['netstat']);
   });
 
-  test('win32: a port owned by two different pids is a parse-miss', async () => {
+  test('win32: a port owned by two different pids is endpoint-ambiguous', async () => {
     const calls: Call[] = [];
     const twoOwners = `${NETSTAT}\r\n  TCP    127.0.0.1:54321        127.0.0.1:17600        ESTABLISHED     777`;
     const res = await lookupPeerProcessDetailed(
@@ -582,7 +602,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       54321,
       win({ netstat: twoOwners, powershell: cim(row(), selfRow()) }, calls),
     );
-    expect(res).toEqual({ ok: false, cause: 'parse-miss' });
+    expect(res).toEqual({ ok: false, cause: 'endpoint-ambiguous' });
     expect(calls.map((c) => c.file)).toEqual(['netstat']);
   });
 
@@ -713,8 +733,17 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(res).toEqual({ ok: false, cause: 'command-failed:2' });
   });
 
-  test('parse-miss (no row for the local endpoint)', async () => {
+  test('endpoint-not-listed (netstat has no row for the local endpoint)', async () => {
     const res = await lookupPeerProcessDetailed('127.0.0.1', 11111, win({ netstat: NETSTAT }));
+    expect(res).toEqual({ ok: false, cause: 'endpoint-not-listed' });
+  });
+
+  test('parse-miss (lsof printed no single owner of the local endpoint)', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      11111,
+      unix('linux', { lsof: lsofFor(501) }),
+    );
     expect(res).toEqual({ ok: false, cause: 'parse-miss' });
   });
 
