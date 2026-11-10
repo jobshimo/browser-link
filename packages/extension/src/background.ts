@@ -139,7 +139,8 @@ import {
   repairOutcome,
   type RepairOutcome,
 } from './repair-policy.js';
-import { workerFailure } from './worker-messages.js';
+import { workerFailure, type WorkerMessage } from './worker-messages.js';
+import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -147,6 +148,7 @@ import { computeVersionCheck, type VersionCheck } from './version-status.js';
  * resolve in Chrome. The server's `config.drift.test.ts` keeps it equal. */
 const BRIDGE_PORT = 17529;
 const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
+const HANDSHAKE_CHECK_URL = `http://127.0.0.1:${BRIDGE_PORT}${HANDSHAKE_CHECK_PATH}`;
 const CDP_VERSION = '1.3';
 const CONSOLE_BUFFER_MAX = 200;
 const NETWORK_BUFFER_MAX = 200;
@@ -3717,8 +3719,15 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     // lives in the close handler alone — this one only settles a
     // pre-registration connect failure with the friendlier diagnosis (for
     // a post-registration drop `settle` is already spent and this no-ops).
+    // The WebSocket API hides why an upgrade was refused, so the bridge's
+    // plain-HTTP side is asked; the close handler leaves the settling to it.
+    let connectFailure: Promise<WorkerMessage> | undefined;
     ws.addEventListener('error', () => {
-      settle(workerFailure({ code: 'ws-connect-failed' }));
+      if (settled || connectFailure !== undefined) return;
+      connectFailure = diagnoseConnectFailure(HANDSHAKE_CHECK_URL);
+      void connectFailure.then((message) => {
+        settle(workerFailure(message));
+      });
     });
 
     ws.addEventListener('close', (ev: CloseEvent) => {
@@ -3744,7 +3753,9 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
       void cleanup(tabId).catch(() => {
         // Best effort — already-detached state is fine.
       });
-      settle(workerFailure({ code: 'ws-closed-before-registration' }));
+      if (connectFailure === undefined) {
+        settle(workerFailure({ code: 'ws-closed-before-registration' }));
+      }
       if (involuntary) reconnectScheduler.schedule(tabId);
     });
   });

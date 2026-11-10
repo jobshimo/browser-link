@@ -23,7 +23,6 @@ import {
   query as queryActivity,
   stats as activityStats,
 } from '../activity/queries.js';
-import { isAllowedBrowser } from '../auth/allowlist.js';
 import { lookupPeerProcessDetailed, type PeerLookupResult } from '../auth/process-identity.js';
 import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
@@ -33,6 +32,13 @@ import { loadConfig } from '../config.js';
 import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import { BRIDGE_PORT } from './protocol.js';
+import {
+  createHandshakeCheckHandler,
+  evaluateHandshake,
+  handshakeRefusal,
+  isHandshakeCheckRequest,
+  lockoutNotice,
+} from './handshake.js';
 
 export const WS_HOST = '127.0.0.1';
 export const WS_PORT = BRIDGE_PORT;
@@ -121,17 +127,6 @@ function safeParse(raw: string): ExtensionToServer | null {
 
 function send(ws: WebSocket, msg: ServerToExtension): void {
   ws.send(JSON.stringify(msg));
-}
-
-/**
- * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
- * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
- * IPv4 form lsof / netstat understand.
- */
-function normaliseLoopback(addr: string): string {
-  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
-  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
-  return addr;
 }
 
 /** Sentinel error used by the caller to detect a port-in-use and decide
@@ -224,22 +219,11 @@ export function buildTabRegisteredPayload(
  * error happens.
  *
  * The bridge owns its HTTP server: WebSocket upgrades go to the
- * `WebSocketServer` (same Chromium-only `verifyClient`), `GET /version`
- * answers the election probe and every other plain request is a 404.
- * Closing the returned `WebSocketServer` also closes the HTTP server. */
-/**
- * Whether a WebSocket handshake's `Origin` may open the bridge. A web page
- * running inside Chrome passes the peer-process check (the owning process is
- * Chromium) but always announces its own http(s) origin; only the extension's
- * own context (`chrome-extension://<id>`) is allowed, and a missing `Origin`
- * (non-browser clients) is left to the peer-process check. Pure; exported for
- * tests. Since 0.42.0.
- */
-export function isAllowedHandshakeOrigin(origin: string | undefined): boolean {
-  if (origin === undefined || origin === '') return true;
-  return origin.startsWith('chrome-extension://');
-}
-
+ * `WebSocketServer` (gate: `handshake.ts` `evaluateHandshake`), `GET
+ * /handshake-check` answers that gate's verdict on the asking request,
+ * `GET /version` answers the election probe and every other plain request
+ * is a 404. Closing the returned `WebSocketServer` also closes the HTTP
+ * server. */
 export function startWsBridge(
   tabs: Map<string, TabSession>,
   pendingRequests: Map<string, PendingRequest>,
@@ -249,52 +233,31 @@ export function startWsBridge(
   const { host, port, version } = resolveBridgeOptions(options);
   const lookupPeerProcess = options.lookupPeerProcess ?? lookupPeerProcessDetailed;
   return new Promise((resolve, reject) => {
+    const answerHandshakeCheck = createHandshakeCheckHandler(lookupPeerProcess);
     const httpServer = createServer((req, res) => {
+      if (isHandshakeCheckRequest(req)) {
+        void answerHandshakeCheck(req, res);
+        return;
+      }
       handleBridgeHttpRequest(req, res, version, options.isRepairing);
     });
     const wss = new WebSocketServer({
       server: httpServer,
-      // Refuse the upgrade unless the OS confirms the peer is a Chromium-based
-      // browser. The check happens before any application bytes are exchanged.
+      // Refuse the upgrade unless the gate accepts its Origin and the OS
+      // confirms the peer is a Chromium-based browser. The check happens
+      // before any application bytes are exchanged.
       verifyClient: (info, cb) => {
-        // ws fills info.origin from the Origin header (undefined when absent).
-        const origin: string | undefined = info.origin;
-        if (!isAllowedHandshakeOrigin(origin)) {
-          log(`Rejected WS handshake from origin ${origin}: only the extension may connect.`);
-          cb(false, 403, 'Origin not allowed');
-          return;
-        }
-        const remoteAddress = normaliseLoopback(info.req.socket.remoteAddress ?? '');
-        const remotePort = info.req.socket.remotePort;
-        if (!remoteAddress || remotePort == null) {
-          log('Rejected WS handshake: peer address/port not exposed by socket.');
-          cb(false, 403, 'Cannot identify peer');
-          return;
-        }
-        lookupPeerProcess(remoteAddress, remotePort)
-          .then((lookup) => {
-            if (!lookup.ok) {
-              log(
-                `Rejected WS handshake from ${remoteAddress}:${remotePort}: could not identify owning process (cause: ${lookup.cause}).`,
-              );
-              cb(false, 403, 'Peer process unknown');
-              return;
-            }
-            const peer = lookup.peer;
-            if (!isAllowedBrowser(peer.binaryName)) {
-              log(
-                `Rejected WS handshake from PID ${peer.pid} (${peer.binaryName}): not a Chromium-based browser.`,
-              );
-              cb(false, 403, 'Peer is not a Chromium-based browser');
-              return;
-            }
-            cb(true);
-          })
-          .catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`Rejected WS handshake: process lookup failed (${msg}).`);
-            cb(false, 500, 'Process lookup failed');
-          });
+        void evaluateHandshake(info.req, lookupPeerProcess).then((verdict) => {
+          if (!verdict.accepted) {
+            log(verdict.logLine);
+            const { status, message } = handshakeRefusal(verdict.reason);
+            cb(false, status, message);
+            return;
+          }
+          const notice = lockoutNotice(info.req.headers.origin);
+          if (notice !== undefined) log(notice);
+          cb(true);
+        });
       },
     });
 

@@ -14,6 +14,7 @@
  *
  * Pure: no `chrome.*`, no DOM.
  */
+import type { HandshakeRefusalReason } from './handshake-diagnosis.js';
 import { messages, type Messages } from './i18n.js';
 
 export type WorkerMessageValues = Readonly<Record<string, string | number>>;
@@ -46,6 +47,7 @@ export type WorkerMessage =
         'debugger-attach-failed' | 'cdp-enable-failed' | 'recording-start-failed' | 'repair-failed';
       values: { detail: string };
     }
+  | { code: 'ws-handshake-refused'; values: { reason: HandshakeRefusalReason } }
   | { code: 'repair-server-too-old'; values?: { version: string } }
   | { code: 'repair-reconnected'; values: { reconnected: number; total: number } };
 
@@ -62,6 +64,25 @@ export interface CarriedMessage {
 
 function valuesOf(values: unknown): Readonly<Record<string, unknown>> {
   return typeof values === 'object' && values !== null ? (values as Record<string, unknown>) : {};
+}
+
+/** Why the bridge refused a handshake, in `t`'s language; a code this
+ * version does not know reads as the unknown reason. */
+function refusalReason(t: Messages, reason: string): string {
+  switch (reason) {
+    case 'origin-not-allowed':
+      return t.handshakeReasonOriginNotAllowed;
+    case 'peer-unidentified':
+      return t.handshakeReasonPeerUnidentified;
+    case 'peer-unknown':
+      return t.handshakeReasonPeerUnknown;
+    case 'peer-not-browser':
+      return t.handshakeReasonPeerNotBrowser;
+    case 'process-lookup-failed':
+      return t.handshakeReasonLookupFailed;
+    default:
+      return t.handshakeReasonOther;
+  }
 }
 
 /** The message in `t`'s language, or undefined when the code is unknown or a
@@ -89,6 +110,10 @@ function render(t: Messages, code: unknown, rawValues: unknown): string | undefi
       return t.workerWsConnectFailed;
     case 'ws-closed-before-registration':
       return t.workerWsClosedBeforeRegistration;
+    case 'ws-handshake-refused': {
+      const reason = text('reason');
+      return reason === undefined ? undefined : t.workerHandshakeRefused(refusalReason(t, reason));
+    }
     case 'recording-disabled':
       return t.workerRecordingDisabled;
     case 'tab-not-connected':

@@ -118,6 +118,10 @@ the four-step setup:
 3. **Install the Chrome extension.** The UI prints the absolute path to the
    bundled assets and the OS-specific steps (`chrome://extensions` →
    Developer mode → Load unpacked).
+   Since 0.52.0 the extension carries a fixed public key, so its id is the
+   same on every install. Updating to that version changes the id once:
+   reload the extension in `chrome://extensions`; its stored settings start
+   fresh.
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
    The extension speaks English and Spanish (see

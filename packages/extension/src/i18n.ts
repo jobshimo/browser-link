@@ -134,6 +134,19 @@ const EN = {
   workerNameRequired: 'Name is required.',
   workerNoSteps: 'No steps were captured.',
   workerServerTimeout: 'Timed out waiting for the server.',
+  workerHandshakeRefused: (reason: string): string =>
+    `The browser-link server refused the connection: ${reason}`,
+  // Not dead: an extension cannot be refused for its Origin before 1.0.0,
+  // which accepts only the exact pinned id; from then on an extension with
+  // another id (an old install) gets this reason.
+  handshakeReasonOriginNotAllowed:
+    "it does not accept this extension's id. Reload the extension from the installed browser-link version.",
+  handshakeReasonPeerUnidentified: 'it could not see which program opened the connection.',
+  handshakeReasonPeerUnknown: 'it could not identify the program that opened the connection.',
+  handshakeReasonPeerNotBrowser:
+    'the program that opened the connection is not a supported Chromium-based browser.',
+  handshakeReasonLookupFailed: 'checking the program that opened the connection failed.',
+  handshakeReasonOther: 'this extension version does not know the reason. Update the extension.',
   repairServerTooOld: (version: string | undefined): string =>
     `server ${version ?? '(unknown version)'} cannot repair itself: run \`browser-link stop\` and restart your agent`,
   repairNoServer: 'no server is running: start browser-link from your agent or a console',
@@ -358,6 +371,16 @@ const ES: Messages = {
   workerNameRequired: 'El nombre es obligatorio.',
   workerNoSteps: 'No se capturó ningún paso.',
   workerServerTimeout: 'Se agotó el tiempo de espera del servidor.',
+  workerHandshakeRefused: (reason: string): string =>
+    `El servidor de browser-link rechazó la conexión: ${reason}`,
+  handshakeReasonOriginNotAllowed:
+    'no acepta el id de esta extensión. Vuelva a cargar la extensión desde la versión de browser-link instalada.',
+  handshakeReasonPeerUnidentified: 'no pudo ver qué programa abrió la conexión.',
+  handshakeReasonPeerUnknown: 'no pudo identificar el programa que abrió la conexión.',
+  handshakeReasonPeerNotBrowser:
+    'el programa que abrió la conexión no es un navegador compatible basado en Chromium.',
+  handshakeReasonLookupFailed: 'falló la comprobación del programa que abrió la conexión.',
+  handshakeReasonOther: 'esta versión de la extensión no conoce el motivo. Actualice la extensión.',
   repairServerTooOld: (version: string | undefined): string =>
     `el servidor ${version ?? '(versión desconocida)'} no puede repararse solo: ejecute \`browser-link stop\` y reinicie su agente`,
   repairNoServer:

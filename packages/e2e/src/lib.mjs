@@ -5,15 +5,17 @@
 // Derived from packages/plan/lab/2026-11-09-e2e-net/lib.mjs.
 import { spawn, execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const E2E_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO = resolve(E2E_DIR, '../..');
 export const EXT_DIST = join(REPO, 'packages/extension/dist');
 export const SERVER_CLI = join(REPO, 'packages/server/dist/cli.js');
+const SERVER_EXTENSION_ID = join(REPO, 'packages/server/dist/auth/extension-id.js');
 export const PAGE_FILE = join(E2E_DIR, 'pages/index.html');
 /** The ports the owner's own browser-link uses; the harness never binds them. */
 export const DEFAULT_PORTS = [17529, 17530];
@@ -69,6 +71,31 @@ export async function freePort() {
     });
     if (!DEFAULT_PORTS.includes(port)) return port;
   }
+}
+
+/** The id the server pins (one constant, read from the built server). */
+export async function pinnedExtensionId() {
+  const { PINNED_EXTENSION_ID } = await import(pathToFileURL(SERVER_EXTENSION_ID).href);
+  return PINNED_EXTENSION_ID;
+}
+
+/** A loopback listener that records the `Origin` header a WebSocket upgrade
+ * and a plain fetch carry, then closes them: what the extension's worker
+ * announces, observed without touching the bridge. */
+export async function originProbe() {
+  const seen = { websocket: undefined, fetch: undefined, fetchSite: undefined };
+  const server = createHttpServer((req, res) => {
+    seen.fetch = req.headers.origin ?? '(none)';
+    seen.fetchSite = req.headers['sec-fetch-site'] ?? '(none)';
+    res.writeHead(204);
+    res.end();
+  });
+  server.on('upgrade', (req, socket) => {
+    seen.websocket = req.headers.origin ?? '(none)';
+    socket.destroy();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { port: server.address().port, seen, close: () => server.close() };
 }
 
 /** Copy the built extension to a temp dir and point its WS bridge at `wsPort`. */
