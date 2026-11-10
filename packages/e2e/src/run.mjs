@@ -1,6 +1,6 @@
 // Real-Chrome end-to-end net (`pnpm test:e2e`): the BUILT extension in an
 // isolated headless Chrome, the BUILT server over MCP stdio, a tab connected
-// without a human, and nine tool calls whose effects are asserted, so the
+// without a human, and tool calls whose effects are asserted, so the
 // extension half of every call (background.ts perform* handlers) runs for real.
 // Then the interface language: switch EN | ES in the popup, open Activity and
 // Admin windows follow without reload, and the choice survives a reopen.
@@ -73,9 +73,10 @@ function json(res) {
 }
 
 /** One MCP tool call: must succeed, then `check(body, text)` must return true
- * (or a string saying what is wrong). Prints `tool ok ms`. */
-async function call(tool, args, check, { print = true } = {}) {
-  const short = tool.replace(/^browser\./, '');
+ * (or a string saying what is wrong). Prints `tool ok ms`, or `label ok ms`
+ * when a second check of the same tool needs its own name. */
+async function call(tool, args, check, { print = true, label = tool } = {}) {
+  const short = label.replace(/^browser\./, '');
   const t = now();
   let res;
   try {
@@ -90,7 +91,7 @@ async function call(tool, args, check, { print = true } = {}) {
   let verdict = check ? check(json(res), text(res)) : true;
   if (print && EXPECT_FAIL === short) verdict = 'forced failure (E2E_EXPECT_FAIL)';
   if (verdict !== true) throw new StepFailure(short, `${String(verdict)} (${String(ms)} ms)`);
-  if (print) console.log(`${tool} ok ${String(ms)}`);
+  if (print) console.log(`${label} ok ${String(ms)}`);
   return res;
 }
 
@@ -232,7 +233,7 @@ async function main() {
     `worker.origin websocket=${String(seen.websocket)} fetch=${String(seen.fetch)} sec-fetch-site=${String(seen.fetchSite)}`,
   );
 
-  // 5. The nine calls.
+  // 5. The calls.
   const tl = now();
   let tab;
   while (!tab) {
@@ -262,7 +263,26 @@ async function main() {
     (_b, t) => /[a-z0-9]{1,16}:e\d+/.test(t) || 'no ref returned',
   );
   const ref = /[a-z0-9]{1,16}:e\d+/.exec(text(found))[0];
-  await call('browser.type', { tab_id: T, selector: '#name', text: 'alpha' });
+  await call(
+    'browser.type',
+    { tab_id: T, selector: '#name', text: 'alpha' },
+    (b) => b?.sensitive_field === false || `sensitive_field is ${String(b?.sensitive_field)}`,
+  );
+  // S2: a password field is reported, and the trail stores the marker, not the text.
+  await call(
+    'browser.type',
+    { tab_id: T, selector: '#pw', text: 'e2e-secret' },
+    (b) => b?.sensitive_field === true || `sensitive_field is ${String(b?.sensitive_field)}`,
+    { label: 'browser.type.sensitive' },
+  );
+  await call(
+    'browser.activity',
+    { tool: 'browser.type', limit: 1 },
+    (b, t) =>
+      (b?.records?.[0]?.payload === '[sensitive field]' && !t.includes('e2e-secret')) ||
+      `stored payload is ${JSON.stringify(b?.records?.[0]?.payload)}`,
+    { label: 'browser.activity.sensitive' },
+  );
   await call('browser.click', { tab_id: T, ref, expect: { text_appears: 'Added: alpha' } }, met);
   await call(
     'browser.wait_for',
