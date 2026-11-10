@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeActivityDb, getActivityDb, MAX_ACTIVITY_ROWS, pruneIfDue } from './db.js';
@@ -66,6 +66,32 @@ describe('bootstrap', () => {
     // A fresh handle after close is a different object but the same file.
     expect(getActivityDb()).toBeDefined();
   });
+});
+
+describe('file mode (S2: owner-only on POSIX)', () => {
+  const mode = (path: string): number => statSync(path).mode & 0o777;
+
+  test.skipIf(process.platform === 'win32')(
+    'a new activity.db and its WAL are created 0600 (skipped on win32: no POSIX modes)',
+    () => {
+      record(row());
+      expect(mode(join(dataDir, 'activity.db'))).toBe(0o600);
+      expect(mode(join(dataDir, 'activity.db-wal'))).toBe(0o600);
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'an existing world-readable activity.db owned by this process is tightened, rows untouched (skipped on win32: no POSIX modes)',
+    () => {
+      record(row({ payload: 'kept as stored' }));
+      closeActivityDb();
+      chmodSync(join(dataDir, 'activity.db'), 0o644);
+      const before = query().records;
+      expect(mode(join(dataDir, 'activity.db'))).toBe(0o600);
+      expect(before).toHaveLength(1);
+      expect(before[0]!.payload).toBe('kept as stored');
+    },
+  );
 });
 
 describe('record', () => {
