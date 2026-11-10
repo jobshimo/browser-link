@@ -6,6 +6,7 @@ import {
   buildExpectProbeJs,
   buildFindJs,
   buildFocusJs,
+  buildFocusedFieldJs,
   buildSettleJs,
   buildSnapshotJs,
   buildStateJs,
@@ -673,6 +674,73 @@ describe('buildFocusJs', () => {
   test('false when the selector matches nothing', () => {
     const focused = evalExpr<boolean>(buildFocusJs({ selector: '#does-not-exist' }));
     expect(focused).toBe(false);
+  });
+});
+
+describe('buildFocusedFieldJs (S2: fields the page declares sensitive)', () => {
+  type FocusedField = { sensitive_field: boolean };
+
+  function focusIn(root: HTMLElement | ShadowRoot, html: string, id: string): HTMLElement {
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    root.appendChild(holder);
+    const el = root.querySelector<HTMLElement>(`#${id}`)!;
+    el.focus();
+    return el;
+  }
+
+  test('a focused <input type="password"> is sensitive', () => {
+    focusIn(document.body, '<input id="pw" type="password">', 'pw');
+    expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: true });
+  });
+
+  test.each(['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'])(
+    'autocomplete="%s" is sensitive, alone or among other tokens',
+    (token) => {
+      focusIn(document.body, `<input id="a" type="text" autocomplete="${token}">`, 'a');
+      expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: true });
+      document.body.innerHTML = '';
+      focusIn(
+        document.body,
+        `<input id="b" type="text" autocomplete="section-pay billing ${token.toUpperCase()}">`,
+        'b',
+      );
+      expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: true });
+    },
+  );
+
+  test('a plain text field is not sensitive, whatever its name, id or label says', () => {
+    focusIn(
+      document.body,
+      '<label for="password">Password</label><input id="password" name="password" type="text" autocomplete="username">',
+      'password',
+    );
+    expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: false });
+  });
+
+  test('nothing focused is not sensitive', () => {
+    expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: false });
+  });
+
+  test('descends through an open shadow root to the focused field', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    focusIn(shadow, '<input id="pw" type="password">', 'pw');
+    expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: true });
+  });
+
+  test('descends into a same-origin iframe to the focused field', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const inner = frame.contentDocument!;
+    const pw = inner.createElement('input');
+    pw.type = 'password';
+    inner.body.appendChild(pw);
+    frame.focus();
+    pw.focus();
+    expect(document.activeElement).toBe(frame);
+    expect(evalExpr<FocusedField>(buildFocusedFieldJs())).toEqual({ sensitive_field: true });
   });
 });
 

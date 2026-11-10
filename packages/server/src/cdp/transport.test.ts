@@ -6,7 +6,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
 import { clearGrant, saveGrant } from './grant.js';
-import { CDP_DIRECT_DISABLED_ERROR } from './gate.js';
+import { CDP_DIRECT_DISABLED_ERROR, checkCdpDirectGate } from './gate.js';
 import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
 import { resetDetachedFlowsForTest } from './detached-flows.js';
 import {
@@ -15,8 +15,12 @@ import {
   buildObserverChangesJs,
   buildObserverMarkJs,
 } from './inpage/observer.js';
-import { buildSettleJs } from './inpage/builders.js';
+import { buildFocusedFieldJs, buildSettleJs } from './inpage/builders.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
+import { closeActivityDb } from '../activity/db.js';
+import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
+import { query, record } from '../activity/queries.js';
+import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 
 /* Fake single-target CDP-over-WS server: a real ephemeral WebSocketServer
  * (no real Chrome required) that answers whatever commands the test wires
@@ -1373,5 +1377,155 @@ describe('callCdpTool — find by semantic key (spec v4 §6.3, S3)', () => {
     expect(seen.length).toBe(1);
     expect(seen[0]).toContain('"path":[{"tag":"body","index":1}]');
     expect(seen[0]).toContain('function semanticKeyOf');
+  });
+});
+
+/*
+ * S2 on the cdp-direct executor: `type` / `press` report whether the field
+ * they act on is one the page declares sensitive, read with
+ * `buildFocusedFieldJs` after the target is focused, and the trail row of
+ * such a call stores the marker instead of the typed text or key.
+ */
+describe('callCdpTool — sensitive fields (S2)', () => {
+  /** A page whose focused field answers `field`; resolve/focus succeed. */
+  function fieldPage(field: unknown, seen: string[] = []): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === buildFocusedFieldJs()) {
+          seen.push('field');
+          if (field instanceof CdpError) return field;
+          return { result: { value: field } };
+        }
+        if (expression.includes("reason: 'invalid-selector'"))
+          return { result: { value: { ok: true } } };
+        return { result: { value: true } };
+      },
+      'Input.insertText': () => {
+        seen.push('insertText');
+        return {};
+      },
+    };
+  }
+
+  test('type and press report sensitive_field: true on a sensitive field, read before the input', async () => {
+    const seen: string[] = [];
+    const { port, targetId } = await startFakeTarget(fieldPage({ sensitive_field: true }, seen));
+    grantAccess(port);
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'type', {
+        selector: '#pw',
+        text: 'hunter2',
+        settle_ms: 0,
+      }),
+    ).toEqual({ typed: 7, selector: '#pw', sensitive_field: true });
+    expect(seen).toEqual(['field', 'insertText']);
+    expect(await callCdpTool(`cdp:${targetId}`, 'press', { key: 'h', settle_ms: 0 })).toEqual({
+      key: 'h',
+      modifiers: [],
+      sensitive_field: true,
+    });
+  });
+
+  test('a plain field reports sensitive_field: false', async () => {
+    const { port, targetId } = await startFakeTarget(fieldPage({ sensitive_field: false }));
+    grantAccess(port);
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'type', {
+        selector: '#name',
+        text: 'alpha',
+        settle_ms: 0,
+      }),
+    ).toEqual({ typed: 5, selector: '#name', sensitive_field: false });
+  });
+
+  test('a field check that fails or answers nothing usable leaves the field out and the action succeeds', async () => {
+    for (const field of [new CdpError('Execution context was destroyed'), true, undefined]) {
+      const { port, targetId } = await startFakeTarget(fieldPage(field));
+      grantAccess(port);
+      expect(
+        await callCdpTool(`cdp:${targetId}`, 'type', {
+          selector: '#pw',
+          text: 'hunter2',
+          settle_ms: 0,
+        }),
+      ).toEqual({ typed: 7, selector: '#pw' });
+      expect(await callCdpTool(`cdp:${targetId}`, 'press', { key: 'Enter', settle_ms: 0 })).toEqual(
+        {
+          key: 'Enter',
+          modifiers: [],
+        },
+      );
+      resetConnectionsForTest();
+      await new Promise<void>((resolve) => wss?.close(() => resolve()));
+      wss = null;
+    }
+  });
+
+  describe('end to end through the dispatcher into the activity database', () => {
+    afterEach(() => {
+      closeActivityDb();
+    });
+
+    function dispatchDeps(recordActivityPayloads: boolean): BrowserToolDeps {
+      return {
+        listTabs: () => [],
+        callBrowserTool: async () => {
+          throw new Error('the extension transport must not be used for a cdp: tab');
+        },
+        callCdpTool,
+        cdpGate: () => checkCdpDirectGate(),
+        recordActivity: (row) => {
+          record(row);
+        },
+        recordActivityPayloads,
+      };
+    }
+
+    const CALLER = { agent_id: 'agent-cdp-s2', pid: 9, binary: 'node' };
+
+    function storedPayloads(): (string | null)[] {
+      return query({ agentId: CALLER.agent_id }).records.map((r) => r.payload);
+    }
+
+    test.each([
+      ['browser.type', { selector: '#pw', text: 'hunter2', settle_ms: 0 }, 'hunter2'],
+      ['browser.press', { selector: '#pw', key: 'h', settle_ms: 0 }, 'h'],
+    ] as const)(
+      '%s on a sensitive field: result flags it, the stored row has the marker (payloads on and off)',
+      async (tool, args, secret) => {
+        const { port, targetId } = await startFakeTarget(fieldPage({ sensitive_field: true }));
+        grantAccess(port);
+        const tabArgs = { tab_id: `cdp:${targetId}`, ...args };
+        for (const recordPayloads of [true, false]) {
+          const result = (await handleBrowserTool(
+            tool,
+            tabArgs,
+            dispatchDeps(recordPayloads),
+            CALLER,
+          )) as {
+            sensitive_field?: boolean;
+          };
+          expect(result.sensitive_field).toBe(true);
+        }
+        const payloads = storedPayloads();
+        expect(payloads).toEqual([SENSITIVE_PAYLOAD_MARKER, SENSITIVE_PAYLOAD_MARKER]);
+        expect(payloads).not.toContain(secret);
+        expect(
+          query({ agentId: CALLER.agent_id }).records.every((r) => r.transport === 'cdp'),
+        ).toBe(true);
+      },
+    );
+
+    test('a plain field on cdp-direct is stored as today', async () => {
+      const { port, targetId } = await startFakeTarget(fieldPage({ sensitive_field: false }));
+      grantAccess(port);
+      const args = { tab_id: `cdp:${targetId}`, selector: '#name', text: 'alpha', settle_ms: 0 };
+      const on = await handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER);
+      expect(on).toEqual({ typed: 5, selector: '#name', sensitive_field: false });
+      await handleBrowserTool('browser.type', args, dispatchDeps(false), CALLER);
+      // Newest first.
+      expect(storedPayloads()).toEqual([null, 'alpha']);
+    });
   });
 });

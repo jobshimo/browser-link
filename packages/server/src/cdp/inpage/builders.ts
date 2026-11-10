@@ -832,6 +832,108 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
 }
 
 /**
+ * The innermost focused element, as a JS source fragment defining
+ * `deepActiveElement()`: it descends through `document.activeElement` past
+ * open shadow roots and same-origin iframes, where the browser keeps focus
+ * one level at a time (a shadow host or an `<iframe>` being "active" is not
+ * the element that receives `Input.insertText` or a key event). Closed shadow
+ * roots and cross-origin iframes stop the walk at their host, the same scope
+ * limit as `deepQueryFirst`. Shared by `buildStateJs` and
+ * `buildFocusedFieldJs`.
+ */
+export const DEEP_ACTIVE_ELEMENT_JS = `
+  function deepActiveElement() {
+    let el = document.activeElement;
+    let guard = 0;
+    while (el && guard < 20) {
+      guard++;
+      if (el.shadowRoot && el.shadowRoot.activeElement) {
+        el = el.shadowRoot.activeElement;
+        continue;
+      }
+      if (el.tagName === 'IFRAME') {
+        let innerDoc = null;
+        try {
+          innerDoc = el.contentDocument;
+        } catch (_) {
+          innerDoc = null;
+        }
+        if (innerDoc && innerDoc.activeElement && innerDoc.activeElement !== innerDoc.body) {
+          el = innerDoc.activeElement;
+          continue;
+        }
+      }
+      break;
+    }
+    return el;
+  }
+`;
+
+/**
+ * The `autocomplete` tokens that mark a field sensitive (S2). Only what the
+ * page itself declares counts — never a guess from a name, id, label or
+ * selector — so an unmarked field is reported as not sensitive.
+ */
+export const SENSITIVE_AUTOCOMPLETE_TOKENS: readonly string[] = [
+  'current-password',
+  'new-password',
+  'one-time-code',
+  'cc-number',
+  'cc-csc',
+];
+
+/** What `buildFocusedFieldJs` evaluates to. */
+export interface FocusedField {
+  sensitive_field: boolean;
+}
+
+/**
+ * Build the focused-field probe `browser.type` / `browser.press` evaluate
+ * AFTER focusing their target and BEFORE dispatching input: the text and key
+ * events go to the focused element, so that is the field the call acts on —
+ * whether it was focused by `selector`, by `ref`, or (press, or a flow `type`
+ * step with no target) left focused by the page. Evaluates to
+ * `{ sensitive_field: true }` when that element is an
+ * `<input type="password">` or its `autocomplete` attribute holds one of
+ * `SENSITIVE_AUTOCOMPLETE_TOKENS` (case-insensitive, among any other
+ * tokens), `{ sensitive_field: false }` otherwise, including when nothing
+ * is focused. Never throws: a probe that cannot read the page says false.
+ */
+export function buildFocusedFieldJs(): string {
+  const tokensJson = JSON.stringify(SENSITIVE_AUTOCOMPLETE_TOKENS);
+  return `
+(() => {
+  ${DEEP_ACTIVE_ELEMENT_JS}
+  const sensitiveTokens = ${tokensJson};
+  try {
+    const el = deepActiveElement();
+    if (!el || !el.tagName) return { sensitive_field: false };
+    if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password') {
+      return { sensitive_field: true };
+    }
+    const tokens = String(el.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      if (sensitiveTokens.indexOf(tokens[i]) !== -1) return { sensitive_field: true };
+    }
+    return { sensitive_field: false };
+  } catch (_) {
+    return { sensitive_field: false };
+  }
+})()`;
+}
+
+/** True when an evaluation answered with the `FocusedField` shape. Anything
+ * else (a failed probe, an older page script) means the executor reports no
+ * field type, and the trail stores the row as it always has. */
+export function isFocusedField(value: unknown): value is FocusedField {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { sensitive_field?: unknown }).sensitive_field === 'boolean'
+  );
+}
+
+/**
  * Build the `wait_for` selector probe: one poll tick of `browser.wait_for`
  * in selector mode, evaluating to a boolean. The element is resolved with
  * `deepQueryFirst` — the same deep search scope `find` / `click` / `type`
@@ -1177,31 +1279,7 @@ export function buildStateJs(): string {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
-  function deepActiveElement() {
-    let el = document.activeElement;
-    let guard = 0;
-    while (el && guard < 20) {
-      guard++;
-      if (el.shadowRoot && el.shadowRoot.activeElement) {
-        el = el.shadowRoot.activeElement;
-        continue;
-      }
-      if (el.tagName === 'IFRAME') {
-        let innerDoc = null;
-        try {
-          innerDoc = el.contentDocument;
-        } catch (_) {
-          innerDoc = null;
-        }
-        if (innerDoc && innerDoc.activeElement && innerDoc.activeElement !== innerDoc.body) {
-          el = innerDoc.activeElement;
-          continue;
-        }
-      }
-      break;
-    }
-    return el;
-  }
+  ${DEEP_ACTIVE_ELEMENT_JS}
   function dialogLabel(el) {
     const aria = el.getAttribute('aria-label');
     if (aria) return aria;

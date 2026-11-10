@@ -8,6 +8,7 @@ import {
   extractPayload,
   extractSelector,
   extractTabId,
+  SENSITIVE_PAYLOAD_MARKER,
   serializedBytes,
   transportFor,
 } from './extract.js';
@@ -173,6 +174,88 @@ describe('buildRow', () => {
     expect(row.selector).toBe('#pw');
     expect(row.tool).toBe('browser.type');
     expect(row.agent).toBe('claude-code');
+  });
+});
+
+describe('buildRow — fields the page declares sensitive (S2)', () => {
+  const base = { caller, durationMs: 5 };
+  const typeArgs = { tab_id: 'tab_1', selector: '#pw', text: 'hunter2' };
+  const pressArgs = { tab_id: 'tab_1', selector: '#pw', key: 'x' };
+
+  test.each([
+    ['browser.type', typeArgs, { typed: 7, selector: '#pw', sensitive_field: true }],
+    ['browser.press', pressArgs, { key: 'x', modifiers: [], sensitive_field: true }],
+  ] as const)(
+    '%s on a sensitive field stores the marker, payloads on or off',
+    (tool, args, result) => {
+      for (const recordPayloads of [true, false]) {
+        const raw = buildRow({ ...base, tool, args, result, recordPayloads });
+        expect(raw.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        // The same result inside an MCP envelope reads the same.
+        const wrapped = buildRow({ ...base, tool, args, result: mcp(result), recordPayloads });
+        expect(wrapped.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(raw.selector).toBe('#pw');
+      }
+    },
+  );
+
+  test('sensitive_field: false is stored as today', () => {
+    const result = { typed: 7, selector: '#pw', sensitive_field: false };
+    expect(
+      buildRow({ ...base, tool: 'browser.type', args: typeArgs, result, recordPayloads: true })
+        .payload,
+    ).toBe('hunter2');
+    expect(
+      buildRow({ ...base, tool: 'browser.type', args: typeArgs, result, recordPayloads: false })
+        .payload,
+    ).toBeNull();
+  });
+
+  test('an executor that reports no field type is stored as today, without error', () => {
+    for (const result of [{ typed: 7, selector: '#pw' }, undefined, mcp('not an object'), 42]) {
+      const on = buildRow({
+        ...base,
+        tool: 'browser.type',
+        args: typeArgs,
+        result,
+        recordPayloads: true,
+      });
+      expect(on.payload).toBe('hunter2');
+      expect(on.outcome).toBe('ok');
+      const off = buildRow({
+        ...base,
+        tool: 'browser.type',
+        args: typeArgs,
+        result,
+        recordPayloads: false,
+      });
+      expect(off.payload).toBeNull();
+    }
+  });
+
+  test('only type and press read the flag: another tool keeps its payload', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.navigate',
+      args: { tab_id: 'tab_1', url: 'https://x.com/' },
+      result: { sensitive_field: true },
+      recordPayloads: true,
+    });
+    expect(row.payload).toBe('https://x.com/');
+  });
+
+  test('a flow stores step kinds only: the text of a type step never reaches the row', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.flow',
+      args: {
+        tab_id: 'tab_1',
+        steps: [{ type: { selector: '#pw', text: 'hunter2' } }, { press: { key: 'Enter' } }],
+      },
+      recordPayloads: true,
+    });
+    expect(row.payload).toBe('2 steps: type → press');
+    expect(JSON.stringify(row)).not.toContain('hunter2');
   });
 });
 
