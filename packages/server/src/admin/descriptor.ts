@@ -28,7 +28,6 @@ import { ADMIN_I18N, type AdminI18n } from './i18n.js';
 export const REPO_URL = 'https://github.com/jobshimo/browser-link';
 export const STOP_COMMAND = 'browser-link stop';
 export const SELF_UPDATE_COMMAND = 'npm install -g @jobshimo/browser-link@latest';
-const CDP_DIRECT_GRANT_TTL_COMMAND = 'browser-link config set cdp-direct.grant-ttl <minutes|never>';
 
 /** The console command that flips a tool (`browser-link tools enable|disable`). */
 function toolCommand(name: string, enabled: boolean): string {
@@ -40,8 +39,12 @@ function cdpDirectEnabledCommand(enabled: boolean): string {
   return `browser-link config set cdp-direct.enabled ${enabled ? 'false' : 'true'}`;
 }
 
-function registerCommand(client: ClientId): string {
-  return `browser-link install --client ${client}`;
+/** The console command that registers a client, or removes it once registered
+ * (`browser-link install|uninstall --client <id>`). */
+function registrationHint(client: ClientId, registered: boolean, t: AdminI18n): string {
+  return registered
+    ? t.registeredHint(`browser-link uninstall --client ${client}`)
+    : `browser-link install --client ${client}`;
 }
 
 export interface AdminClient {
@@ -225,13 +228,19 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       hint: cdpDirectEnabledCommand(cdpDirectEnabled),
     }),
     readout('cdpDirectPort', t.cdpDirectPort, config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT, {
-      hint: 'browser-link config set cdp-direct.port <port>',
+      hint: t.cdpDirectPortHint(
+        `browser-link config set cdp-direct.port ${String(config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT)}`,
+      ),
     }),
     readout(
       'cdpDirectGrantTtlMinutes',
       t.cdpDirectGrantTtl,
       grantTtl === 0 ? t.never : t.minutes(grantTtl),
-      { hint: CDP_DIRECT_GRANT_TTL_COMMAND },
+      {
+        hint: t.cdpDirectGrantTtlHint(
+          `browser-link config set cdp-direct.grant-ttl ${grantTtl === 0 ? 'never' : String(grantTtl)}`,
+        ),
+      },
     ),
     // Read once when the primary wires the trail, so a change needs a restart.
     toggle('activityEnabled', t.activityEnabled, config.activityEnabled !== false, true),
@@ -296,7 +305,7 @@ function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
         `client.register.${c.id}`,
         t.registration(c.displayName),
         c.registered ? t.registered : t.notRegistered,
-        { hint: registerCommand(c.id) },
+        { hint: registrationHint(c.id, c.registered, t) },
       ),
     );
   }

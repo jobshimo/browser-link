@@ -228,7 +228,7 @@ describe('buildAdminState — setup section', () => {
     ]);
     expect(item(sec, 'cdpDirectPort')).toMatchObject({
       value: 9222,
-      hint: 'browser-link config set cdp-direct.port <port>',
+      hint: 'A port number, for example: browser-link config set cdp-direct.port 9222',
     });
     expect(item(sec, 'downloadsDir')).toMatchObject({
       value: '/data/downloads',
@@ -268,7 +268,7 @@ describe('buildAdminState — setup section', () => {
       label: 'cdp-direct grant lifetime',
       value: '60 min',
       writesDisk: false,
-      hint: 'browser-link config set cdp-direct.grant-ttl <minutes|never>',
+      hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl 60',
     });
   });
 
@@ -281,7 +281,14 @@ describe('buildAdminState — setup section', () => {
       value: 'on',
       hint: 'browser-link config set cdp-direct.enabled false',
     });
-    expect(item(sec, 'cdpDirectGrantTtlMinutes').value).toBe('never expires');
+    expect(item(sec, 'cdpDirectGrantTtlMinutes')).toMatchObject({
+      value: 'never expires',
+      hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl never',
+    });
+    const port = section(buildAdminState(input({ config: { cdpDirectPort: 9333 } })), 'setup');
+    expect(item(port, 'cdpDirectPort').hint).toBe(
+      'A port number, for example: browser-link config set cdp-direct.port 9333',
+    );
     const seven = section(
       buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 7 } })),
       'setup',
@@ -310,7 +317,10 @@ describe('buildAdminState — setup section', () => {
     expect(item(sec, 'cdpDirectGrantTtlMinutes')).toMatchObject({
       label: 'Duración del permiso de cdp-direct',
       value: '60 min',
-      hint: 'browser-link config set cdp-direct.grant-ttl <minutes|never>',
+      hint: 'Un número entero de minutos o never, por ejemplo: browser-link config set cdp-direct.grant-ttl 60',
+    });
+    expect(item(sec, 'cdpDirectPort')).toMatchObject({
+      hint: 'Un número de puerto, por ejemplo: browser-link config set cdp-direct.port 9222',
     });
     const never = section(
       buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 0 } }), 'es'),
@@ -354,7 +364,7 @@ describe('buildAdminState — diagnose section', () => {
     expect(item(sec, 'client.register.claude').writesDisk).toBe(false);
   });
 
-  test('client registration is a readout carrying the install command, only for installed clients', () => {
+  test('client registration is a readout carrying the install or removal command, only for installed clients', () => {
     const sec = section(
       buildAdminState(
         input({
@@ -373,7 +383,7 @@ describe('buildAdminState — diagnose section', () => {
       label: 'MCP registration — Claude Code',
       value: 'registered',
       writesDisk: false,
-      hint: 'browser-link install --client claude',
+      hint: 'Already registered; to remove it: browser-link uninstall --client claude',
     });
     expect(item(sec, 'client.register.copilot')).toMatchObject({
       value: 'not registered',
@@ -420,7 +430,7 @@ describe('buildAdminState — diagnose section', () => {
     expect(item(es, 'client.register.claude')).toMatchObject({
       label: 'Registro MCP — Claude Code',
       value: 'registrado',
-      hint: 'browser-link install --client claude',
+      hint: 'Ya está registrado; para quitarlo: browser-link uninstall --client claude',
     });
   });
 });
