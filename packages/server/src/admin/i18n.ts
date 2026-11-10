@@ -48,6 +48,9 @@ export interface AdminI18n {
   cdpDirectEnabled: string;
   cdpDirectPort: string;
   cdpDirectGrantTtl: string;
+  /** Prose around a pasteable example command carrying the current value. */
+  cdpDirectPortHint: (command: string) => string;
+  cdpDirectGrantTtlHint: (command: string) => string;
   minutes: (n: number) => string;
   never: string;
   activityEnabled: string;
@@ -66,6 +69,7 @@ export interface AdminI18n {
   registration: (client: string) => string;
   registered: string;
   notRegistered: string;
+  registeredHint: (command: string) => string;
   stop: string;
   stopDescription: string;
   selfUpdate: string;
@@ -149,6 +153,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     cdpDirectEnabled: 'cdp-direct enabled',
     cdpDirectPort: 'cdp-direct port',
     cdpDirectGrantTtl: 'cdp-direct grant lifetime',
+    cdpDirectPortHint: (command) => `A port number, for example: ${command}`,
+    cdpDirectGrantTtlHint: (command) =>
+      `A whole number of minutes or never, for example: ${command}`,
     minutes: (n) => `${n} min`,
     never: 'never expires',
     activityEnabled: 'Record the activity trail',
@@ -168,6 +175,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     registration: (client) => `MCP registration — ${client}`,
     registered: 'registered',
     notRegistered: 'not registered',
+    registeredHint: (command) => `Already registered; to remove it: ${command}`,
     stop: 'Stop the server / free the port',
     stopDescription: 'Ends the running server, so it is only available from a terminal.',
     selfUpdate: 'Update browser-link',
@@ -255,6 +263,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     cdpDirectEnabled: 'cdp-direct activado',
     cdpDirectPort: 'Puerto de cdp-direct',
     cdpDirectGrantTtl: 'Duración del permiso de cdp-direct',
+    cdpDirectPortHint: (command) => `Un número de puerto, por ejemplo: ${command}`,
+    cdpDirectGrantTtlHint: (command) =>
+      `Un número entero de minutos o never, por ejemplo: ${command}`,
     minutes: (n) => `${n} min`,
     never: 'no vence',
     activityEnabled: 'Guardar el registro de actividad',
@@ -274,6 +285,7 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     registration: (client) => `Registro MCP — ${client}`,
     registered: 'registrado',
     notRegistered: 'sin registrar',
+    registeredHint: (command) => `Ya está registrado; para quitarlo: ${command}`,
     stop: 'Detener el servidor / liberar el puerto',
     stopDescription: 'Termina el servidor en marcha, por eso solo se hace desde una terminal.',
     selfUpdate: 'Actualizar browser-link',

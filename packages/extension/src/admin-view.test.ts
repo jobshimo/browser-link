@@ -203,7 +203,7 @@ describe('buildAdminRows', () => {
                 label: 'MCP registration — Claude Code',
                 value: 'registered',
                 writesDisk: false,
-                hint: 'browser-link install --client claude',
+                hint: 'Already registered; to remove it: browser-link uninstall --client claude',
               },
             ],
           },
@@ -214,7 +214,12 @@ describe('buildAdminRows', () => {
     expect(consoleOnly.map((r) => [r.itemId, r.control, r.valueText, r.hint])).toEqual([
       ['cdpDirectEnabled', 'none', 'off', 'browser-link config set cdp-direct.enabled true'],
       ['tools.browser.evaluate', 'none', 'on', 'browser-link tools disable browser.evaluate'],
-      ['client.register.claude', 'none', 'registered', 'browser-link install --client claude'],
+      [
+        'client.register.claude',
+        'none',
+        'registered',
+        'Already registered; to remove it: browser-link uninstall --client claude',
+      ],
     ]);
     for (const r of consoleOnly) {
       expect(r.checked).toBeUndefined();
