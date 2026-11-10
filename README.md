@@ -49,6 +49,7 @@
 
 - [What it is](#what-it-is)
 - [Quick start](#quick-start)
+- [Upgrading to 1.0](#upgrading-to-10)
 - [How it works](#how-it-works)
 - [Use cases](#use-cases)
 - [What the agent can do](#what-the-agent-can-do)
@@ -118,10 +119,10 @@ the four-step setup:
 3. **Install the Chrome extension.** The UI prints the absolute path to the
    bundled assets and the OS-specific steps (`chrome://extensions` →
    Developer mode → Load unpacked).
-   Since 0.52.0 the extension carries a fixed public key, so its id is the
-   same on every install. Updating to that version changes the id once:
-   reload the extension in `chrome://extensions`; its stored settings start
-   fresh.
+   The extension carries a fixed public key, so its id is the same on every
+   install, and the server accepts only that id (see
+   [Upgrading to 1.0](#upgrading-to-10)). After updating the server, reload the
+   extension in `chrome://extensions`.
 4. **Connect a tab.** Click the browser-link icon in your Chrome toolbar
    and press **Connect this tab** on the tab you want the agent to see.
    The extension speaks English and Spanish (see
@@ -263,6 +264,148 @@ In cmd, the same with a macro:
 `doskey browser-link=node "<npm root -g>\@jobshimo\browser-link\dist\cli.js" $*`.
 The function only changes your terminal: the MCP server your client starts
 pays the shim once per session, not once per call.
+
+## Upgrading to 1.0
+
+1.0.0 is the hardening release. Most of it is stricter checks on who may talk to
+the bridge, so a few things that worked before are now refused. If you come from
+0.52 or older, do this once:
+
+1. **Update the server:** `npm install -g @jobshimo/browser-link@latest`, then
+   restart your MCP client.
+2. **Reload the extension** in `chrome://extensions`, from the extension folder
+   of the version you just installed (the console's setup step prints its path),
+   so the extension and the server are the same version. A 0.51 or older
+   extension, or any extension without the pinned id, is refused, and its popup
+   says so ("it does not accept this extension's id. Reload the extension from
+   the installed browser-link version."). If the id changes, Chrome treats it as
+   a new extension and its stored settings (idle timeout, flow recording,
+   language) start fresh.
+3. **Run the browser as the same OS user as the server.** A browser that runs as
+   another user of the machine is refused (see below).
+4. **If you used the Admin window to change tools, cdp-direct or MCP client
+   registration, use the console instead** (commands below).
+
+Stored activity rows are not changed by the update.
+
+### What now stops a connection
+
+Since 1.0.0 the bridge accepts a connection only if every check passes. The
+extension popup shows the reason when one fails, and the server log names the
+cause of every refusal:
+
+| Check  | Refused when                                                                                                          | Popup says (short)                               |
+| ------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Origin | The `Origin` is missing, or is not exactly `chrome-extension://celegobaahdoaigibmjmekhopegfkhpe` or an id you allowed | it does not accept this extension's id           |
+| Owner  | The browser process runs as another OS user than the server, or its owner cannot be read                              | runs as another user / could not read which user |
+| Name   | The process is not a Chrome, Chromium, Edge, Brave or Vivaldi binary                                                  | not a supported Chromium-based browser           |
+| Path   | Strict mode only (below): the executable path is not in your list, or cannot be read                                  | the path is not in `peerExecutablePaths`         |
+
+Three more reasons can appear: the program that opened the connection could not
+be seen, it could not be identified, or checking it failed. A connection with no
+`Origin` (a script, for example) is refused before any process
+lookup runs.
+
+**Allowing another extension id (experts only).** To connect your own build of
+the extension, add its id to `allowedExtensionIds` in `config.json`, in the data
+folder (see [Where your data lives](#where-your-data-lives)):
+
+```json
+{ "allowedExtensionIds": ["abcdefghijklmnopabcdefghijklmnop"] }
+```
+
+An id is exactly 32 characters, each a letter from `a` to `p`. Any other entry
+(a prefix, a wildcard, a full `chrome-extension://` origin) is dropped with a
+warning in the server log. The pinned id is always allowed. You edit this key by
+hand: it cannot be set from the Admin window, the console, the bridge or an MCP
+tool. `browser-link doctor` lists the ids in effect.
+
+**Strict mode by executable path (experts only).** `peerExecutablePaths` in
+`config.json` makes the server also require the browser's full path to be in a
+list you wrote (see [Security model](#security-model)). Before turning it on:
+
+- A list with no valid absolute path refuses **every** browser. A mistyped list
+  never turns the check off.
+- A `config.json` the server cannot parse falls back to the defaults, with a
+  warning in the log. That turns strict mode off, drops your allowed ids and
+  clears the tool deny list. Keep the file valid.
+
+**Known gap.** The peer check does not tell apart two programs that both run as
+your user. A process that runs as you but is confined away from your files, while
+it can still open a loopback connection (a Flatpak or Snap app with network
+access, a macOS App Sandbox app with `network.client`, a Windows low-integrity
+process), passes the same-user check, and it passes the name check if its binary
+carries a browser's name. Strict mode closes that gap by path. Malware already
+inside your browser is outside this model too (see
+[Security model](#security-model)).
+
+### The Admin window no longer changes what an agent may do
+
+Anything that can reach the bridge could have made these changes from the Admin
+window, so in 1.0.0 the window shows each one as a **readout** (the current value
+and the console command) and the server refuses the write. The console does all
+of them:
+
+| What                          | Command                                                                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Disable or enable an MCP tool | `browser-link tools disable <tool>` / `browser-link tools enable <tool>`                                       |
+| cdp-direct on or off          | `browser-link config set cdp-direct.enabled true` / `browser-link config set cdp-direct.enabled false`         |
+| cdp-direct grant lifetime     | `browser-link config set cdp-direct.grant-ttl <minutes>` (a whole number of minutes, or `never`)               |
+| Register with an MCP client   | `browser-link install --client <claude\|opencode\|copilot>`; to remove: `browser-link uninstall --client <id>` |
+
+Still available from the Admin window: console language, multi-agent,
+auto-reelect, the instructions auto-refresh, the activity trail switches,
+`doctor`, the update check, and installing or removing the instructions block per
+client. The cdp-direct port and the downloads folder were already readouts.
+
+### The activity trail
+
+- **Password fields are no longer stored.** When `browser.type` or
+  `browser.press` acts on a field the page declares sensitive (an
+  `<input type="password">`, or an `autocomplete` attribute containing
+  `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`),
+  the row stores `[sensitive field]` instead of the text or key, whether
+  `activity.record-payloads` is on or off. The tool result carries
+  `sensitive_field: true` or `false`. A call that fails on such a field stores
+  the marker too.
+- **Rows already stored are untouched.** Text typed before 1.0.0 stays in
+  `activity.db`. To remove it, purge the trail (see [Purging](#purging)):
+  `browser-link activity clear --from 2000-01-01 --yes` deletes every row and
+  then reclaims the disk space. Plain `browser-link activity clear --yes` also
+  deletes every row but does not shrink the file, so deleted text can stay in
+  free pages.
+- **What is not detected.** Only a field the page itself marks is detected. These
+  are stored as before:
+  - `browser.evaluate` expressions;
+  - plain text fields, even one named or labelled "password";
+  - `browser.press` on a field that is not marked sensitive (each key is stored);
+  - URLs with query strings (`navigate`, `download`) and `find` text;
+  - fields inside cross-origin iframes, closed shadow roots and `contenteditable`
+    elements (reported as not sensitive);
+  - a field whose focus changes between the check and the typing;
+  - a bridge timeout or a socket that closes while typing: no report arrives, so
+    the text is stored.
+- **Who can read payloads.** Other agents read them through `browser.activity`,
+  and bridge clients can read them too. `activity.record-payloads false` is how
+  you keep text out of the trail.
+- **File mode.** On Linux and macOS the activity database is created readable by
+  its owner only (mode 0600), and an existing one is tightened. On Windows that
+  mode does little: access follows the permissions of the data folder.
+
+### The pinned extension id
+
+The extension's manifest carries a fixed public `key`, which gives every install
+the id `celegobaahdoaigibmjmekhopegfkhpe`. A public key gives a **stable id, not
+proof of identity**: an unpacked extension loaded by hand with the same key gets
+the same id. The Origin check keeps out pages, scripts and other extensions; the
+process checks keep out other users. Neither authenticates the extension itself.
+
+### Chrome version
+
+The minimum is Chrome 118 (the manifest declares it). The end-to-end suite passed
+on Windows against Chrome for Testing 118.0.5993.70 and against the current
+stable Chrome, including a check that the pinned Origin is accepted while the
+server enforces it.
 
 ## How it works
 
@@ -1513,7 +1656,12 @@ The same thing from the terminal:
 browser-link activity stats                          # rows, size, oldest, newest
 browser-link activity clear --to 2026-07-31          # counts first, asks for --yes
 browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
+browser-link activity clear --from 2000-01-01 --yes  # every row, then reclaim the space
 ```
+
+A date range (`--from` / `--to`) vacuums the file, so the deleted text is gone
+from disk. `browser-link activity clear --yes` (the whole trail) and
+`--older-than` delete the rows but do not vacuum.
 
 ### Friction report (v0.43.0)
 
@@ -1571,14 +1719,25 @@ expression `browser.evaluate` ran, the URL `browser.navigate` went to. That is
 deliberate — a trail that cannot tell you what an agent typed answers none of
 the questions people open it for.
 
-Two things keep that honest:
+Three things keep that honest:
 
 - **Nothing uploads it.** The trail is a SQLite file in your data dir
   (`activity.db`, beside `map.db`), read over loopback and never sent anywhere.
-- **Redaction happens on the way out, not on the way in.** You keep the full
-  trail; `--redact` is what you run when handing it to someone else. That way
-  the decision is made deliberately, once, at export — instead of silently at
-  record time where it cannot be undone.
+- **Redaction happens on the way out, with one exception decided by the page.**
+  You keep the full trail; `--redact` is what you run when handing it to
+  someone else. The exception: since 1.0.0, when `browser.type` or
+  `browser.press` acts on a field the page itself declares sensitive (a
+  password input, or an `autocomplete` of `current-password`, `new-password`,
+  `one-time-code`, `cc-number` or `cc-csc`), the row stores
+  `[sensitive field]` instead of the text, with `record-payloads` on or off.
+  Rows stored earlier are not changed.
+- **It is not complete.** Detection relies on what the page declares, so
+  `evaluate` expressions, plain text fields, `press` on unmarked fields, URLs
+  with query strings, fields in cross-origin iframes, closed shadow roots and
+  `contenteditable`, and text typed when a bridge timeout or a closed socket
+  hides the report are stored as typed. Other agents (`browser.activity`) and
+  bridge clients can read the payloads. The full list is under
+  [Upgrading to 1.0](#upgrading-to-10).
 
 If you would rather not record the text at all:
 
@@ -1621,29 +1780,35 @@ stays on screen while you change settings. The window asks the running server
 over the extension's existing connection, so it needs at least one connected
 tab; without one it says so.
 
-From the Admin window you can switch the console language, enable or disable each MCP tool,
-toggle multi-agent, auto-reelect, the instructions auto-refresh, cdp-direct
-and its grant lifetime, and the activity trail; run `doctor` and an update
-check; install or remove the instructions block per client; and register
-browser-link with a detected client. The rules:
+From the Admin window you can switch the console language; toggle multi-agent,
+auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
+and an update check; and install or remove the instructions block per client.
+Since 1.0.0 it only **shows** the settings that widen what an agent may do: each
+MCP tool, cdp-direct on or off, its grant lifetime and MCP client registration
+appear as a value plus the console command that changes it
+(`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
+`browser-link config set cdp-direct.grant-ttl <minutes>`,
+`browser-link install --client <id>`), and the server refuses a write for them
+if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
-  one-line preview ("Disable tool browser.evaluate for every agent") and
+  one-line preview (for example "Turn off: Record the activity trail") and
   applies it only after you confirm. `doctor` and the update check only read,
   so they run straight away.
 - **Same write path as the CLI.** The server applies a change through the
-  helpers `browser-link tools`, `multi-agent`, `config set` and
-  `instructions` use, with their validation, and accepts only the entries
-  it described: an unknown action, tool or value is refused.
+  helpers `browser-link multi-agent`, `config set` and `instructions` use,
+  with their validation, and accepts only the entries it described: an unknown
+  action or value is refused.
 - **Some changes need a restart.** Multi-agent, auto-reelect, the
   instructions auto-refresh and the activity settings are read when the
   server starts; the panel says "restart required".
 - **Never from the popup:** stopping the server (`browser-link stop`) and
   updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
   server that answers the popup, so they appear as the console commands to
-  run. The cdp-direct port and the downloads folder are shown with their
-  `browser-link config set` command; idle disconnect and flow recording keep
-  their own popup controls.
+  run. The same goes for the tool set, cdp-direct (on or off, grant lifetime and
+  port), MCP client registration and the downloads folder, shown with their
+  console command; idle disconnect and flow recording keep their own popup
+  controls.
 
 ### Agent instructions
 
@@ -2125,7 +2290,9 @@ MCP tool writes it.
 browser executables (for example
 `["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"]`). The peer's
 executable path must then equal one of them (case-insensitive on Windows,
-exact elsewhere), and a path that cannot be read is refused. Absent or
+exact elsewhere), and a path that cannot be read is refused (on Windows
+the `tasklist` fallback reports no path, so with strict mode on, a machine
+where PowerShell is blocked refuses every browser). Absent or
 empty means no path check. A list with no valid absolute path refuses
 every peer. It is edited by hand only: no console command, admin panel
 item, bridge message or MCP tool writes it. Update the list when your
