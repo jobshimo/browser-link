@@ -16,8 +16,8 @@ import type { WorkerMessage } from './worker-messages.js';
 export interface ConnectFailureDeps {
   isSettled: () => boolean;
   settle: (message: WorkerMessage) => void;
-  /** Asks the bridge why; never meant to reject, but a rejection reads as
-   * the generic connect failure. */
+  /** Asks the bridge why; never meant to fail, but a rejection or a
+   * synchronous throw reads as the generic connect failure. */
   diagnose: () => Promise<WorkerMessage>;
 }
 
@@ -32,8 +32,10 @@ export function createConnectFailureTracker(deps: ConnectFailureDeps): ConnectFa
     onError: () => {
       if (deps.isSettled() || diagnosis !== 'none') return;
       diagnosis = 'pending';
-      void deps
-        .diagnose()
+      // A synchronous throw becomes a rejection, so the attempt still settles.
+      void new Promise<WorkerMessage>((resolve) => {
+        resolve(deps.diagnose());
+      })
         .catch((): WorkerMessage => ({ code: 'ws-connect-failed' }))
         .then((message) => {
           diagnosis = 'done';
