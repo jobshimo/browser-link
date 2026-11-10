@@ -289,6 +289,38 @@ describe('runDoctor — concurrency (S1)', () => {
   });
 });
 
+describe('formatDoctor — process binding: same OS user, names, strict mode', () => {
+  const security = (peerExecutablePaths?: string[]): DoctorReport['security'] => ({
+    allowedBrowsers: ['chrome.exe', 'msedge.exe'],
+    ...(peerExecutablePaths === undefined ? {} : { peerExecutablePaths }),
+  });
+
+  test('says the check covers the same OS user plus the browser name', () => {
+    const out = formatDoctor(makeReport({ security: security() }));
+    expect(out).toContain('your OS user');
+    expect(out).toContain('2 known browser binaries');
+    expect(formatDoctor(makeReport({ security: security() }), 'es')).toContain('tu usuario del SO');
+  });
+
+  test('strict path mode off when peerExecutablePaths is absent', () => {
+    expect(formatDoctor(makeReport({ security: security() }))).toContain(
+      'Strict path mode (peerExecutablePaths): off',
+    );
+  });
+
+  test('strict path mode on lists the paths in effect', () => {
+    const out = formatDoctor(makeReport({ security: security(['C:\\a\\chrome.exe']) }));
+    expect(out).toContain('Strict path mode (peerExecutablePaths): on, 1 path');
+    expect(out).toContain('C:\\a\\chrome.exe');
+  });
+
+  test('strict path mode on with no valid path says every peer is refused', () => {
+    const out = formatDoctor(makeReport({ security: security([]) }), 'es');
+    expect(out).toContain('Modo estricto por ruta (peerExecutablePaths): activado');
+    expect(out).toContain('se rechaza todo');
+  });
+});
+
 describe('checkPort — a stalled event loop is not a closed port (S1)', () => {
   test('a connect that completed during a synchronous stall still counts as listening', async () => {
     const server = createServer();

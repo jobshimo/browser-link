@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { platform } from 'node:os';
+import { dirname, join, posix, win32 } from 'node:path';
 import { getDataDir } from './map/paths.js';
 import { sanitizeDisabledTools } from './permissions.js';
 
@@ -168,6 +169,20 @@ export interface BrowserLinkConfig {
    * a hand-edited value outside [1, 64] reads as the default.
    */
   downloadsMaxMb?: number;
+  /**
+   * Opt-in strict mode of the bridge's peer check, for experts. Absent or
+   * empty: no path check (the peer must still run as the same OS user and
+   * carry an allowlisted browser name). Non-empty: the peer's executable
+   * path must also equal one of these absolute paths (case-insensitive on
+   * Windows, exact elsewhere), and a path that cannot be read is refused.
+   *
+   * Hand-edited in config.json only: no CLI command, admin panel item,
+   * bridge message or MCP tool writes it. After `loadConfig`, `undefined`
+   * means off and an array means on; entries that are not absolute strings
+   * are dropped but strict mode stays on, so a mistyped list refuses every
+   * peer instead of silently turning the check off.
+   */
+  peerExecutablePaths?: string[];
 }
 
 /** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
@@ -211,6 +226,23 @@ export function sanitizeDownloadsMaxMb(raw: unknown): number {
     return raw;
   }
   return DEFAULT_DOWNLOADS_MAX_MB;
+}
+
+/** Read-side sanitizer for `peerExecutablePaths` (config.json is
+ * untrusted): absent, null or an empty array is `undefined` (strict mode
+ * off); any other value turns strict mode on and keeps only the entries
+ * that are absolute paths for `os`. A non-array value keeps nothing. */
+export function sanitizePeerExecutablePaths(
+  raw: unknown,
+  os: NodeJS.Platform = platform(),
+): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) return [];
+  if (raw.length === 0) return undefined;
+  const paths = os === 'win32' ? win32 : posix;
+  return (raw as unknown[]).filter(
+    (p): p is string => typeof p === 'string' && p.length > 0 && paths.isAbsolute(p),
+  );
 }
 
 /** Defensive safety net for a `cdp-direct.grant-ttl` value THE USER NEVER
@@ -331,8 +363,12 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // a corrupted config.json the same way sanitizeCdpPort does for the port.
   const idleTtlMinutes =
     cfg.idleTtlMinutes === undefined ? undefined : clampIdleTtlMinutes(cfg.idleTtlMinutes);
+  // Present only when strict mode is on, so `undefined` keeps meaning off.
+  const peerExecutablePaths = sanitizePeerExecutablePaths(cfg.peerExecutablePaths);
+  const { peerExecutablePaths: _raw, ...rest } = cfg;
   return {
-    ...cfg,
+    ...rest,
+    ...(peerExecutablePaths !== undefined ? { peerExecutablePaths } : {}),
     multiAgent,
     autoReelect,
     cdpDirectEnabled,

@@ -2044,16 +2044,21 @@ changes to the stable set below ship only in a major release.
 The WebSocket bridge binds to `127.0.0.1:17529` — loopback only, never
 on a public interface. On top of that, before accepting any WebSocket
 handshake the server asks the operating-system kernel **which process**
-opened the incoming TCP connection. If the owning binary is not a known
-Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi) the
-handshake is refused with HTTP 403 before any application bytes are
-exchanged.
+opened the incoming TCP connection. The peer check covers two things: the
+process must run as **the same OS user** as the server, and its binary
+name must be a known Chromium-based browser (Chrome, Chromium, Edge,
+Brave, Vivaldi). Otherwise the handshake is refused with HTTP 403 before
+any application bytes are exchanged. An owner that cannot be read is
+refused too.
 
-- **macOS / Linux** → `lsof -nP -F pcn -iTCP@<host>:<port> -sTCP:ESTABLISHED`
+- **macOS / Linux** → `lsof -nP -F pcun -iTCP@<host>:<port> -sTCP:ESTABLISHED`;
+  the process uid must equal the server's uid
   (`packages/server/src/auth/process-identity.ts`).
-- **Windows** → `netstat -ano` locates the owning PID; the process name
-  is then resolved via PowerShell `Get-Process`, with `tasklist` as the
-  fallback when PowerShell is missing, locked down, or slow.
+- **Windows** → `netstat -ano` locates the owning PID; one PowerShell CIM
+  call (`Win32_Process` + `GetOwner`) then reads the image name and the
+  owner of that PID and of the server itself, and the two owners must be
+  equal. `tasklist /V` is the fallback when PowerShell is missing or
+  locked down; it compares the owners the same way.
 
 The handshake is refused in these cases (`verifyClient` in
 `packages/server/src/bridge/ws-bridge.ts`):
@@ -2062,8 +2067,10 @@ The handshake is refused in these cases (`verifyClient` in
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 403    | `Origin not allowed` — an `Origin` header is present and does not start with `chrome-extension://` (a missing `Origin` is left to the peer check)                          |
 | 403    | `Cannot identify peer` — the socket exposes no remote address or port                                                                                                      |
-| 403    | `Peer process unknown` — the lookup returned no owning process                                                                                                             |
+| 403    | `Peer process unknown` — the lookup found no single owning process, or could not read its OS user; the log line names the cause                                            |
+| 403    | `Peer runs as another OS user` — the owning process belongs to a different OS user than the server                                                                         |
 | 403    | `Peer is not a Chromium-based browser` — the binary is not on the allowlist                                                                                                |
+| 403    | `Peer executable path not allowed` — strict mode only: the executable path is not listed in `peerExecutablePaths`, or could not be read                                    |
 | 500    | `Process lookup failed` — the lookup promise rejected. `lookupPeerProcess` itself catches lookup errors and returns no process, which gives the 403 `Peer process unknown` |
 
 The allowlist per OS lives in `packages/server/src/auth/allowlist.ts`.
@@ -2078,10 +2085,30 @@ Concretely this means:
   `chrome.debugger` from another extension, dylib injection, gdb attach…)
   passes the check. But that attacker already controls the browser
   directly — the bridge gives them nothing they did not already have.
+- ✘ Known gap: a process that runs as **your own OS user** but is confined
+  from your files while it can still reach loopback (a Flatpak or Snap app
+  with network access and no home access, a macOS App Sandbox app with
+  `network.client`, a Windows low-integrity process) passes the same-user
+  check, and it passes the name check if its binary carries a browser's
+  name. The strict mode below closes this gap by executable path.
 
 No tokens to paste, no manifests to register, no manual step beyond
 clicking "Connect this tab" in the extension popup. `browser-link doctor`
-lists the current allowlist on your OS.
+lists the current allowlist on your OS and whether strict mode is on.
+
+**Strict mode (experts only).** Add `"peerExecutablePaths"` to
+`config.json` in the data folder, as an array of absolute paths to your
+browser executables (for example
+`["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"]`). The peer's
+executable path must then equal one of them (case-insensitive on Windows,
+exact elsewhere), and a path that cannot be read is refused. Absent or
+empty means no path check. A list with no valid absolute path refuses
+every peer. It is edited by hand only: no console command, admin panel
+item, bridge message or MCP tool writes it. Update the list when your
+browser moves (a channel switch or a reinstall elsewhere), or it stops
+connecting. The socket can belong to a helper process (on macOS, `Google
+Chrome Helper`), so list the path the refusal line in the server log
+names.
 
 **The Stop button is part of this model, not a convenience.** The human is
 the only actor guaranteed to be present while an agent drives your

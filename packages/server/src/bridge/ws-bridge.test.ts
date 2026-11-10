@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -51,7 +51,7 @@ import { VERSION } from '../version.js';
 import { connect as netConnect, type AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { getAllowedBrowsers } from '../auth/allowlist.js';
-import type { PeerLookupResult } from '../auth/process-identity.js';
+import type { PeerLookupRequest, PeerLookupResult } from '../auth/process-identity.js';
 
 /* Wire-level coverage for the two settings-push paths in ws-bridge.ts.
  *
@@ -1025,7 +1025,13 @@ describe('startWsBridge handshake gate and message loop', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  async function bridge(lookup: (address: string, port: number) => Promise<PeerLookupResult>) {
+  async function bridge(
+    lookup: (
+      address: string,
+      port: number,
+      request?: PeerLookupRequest,
+    ) => Promise<PeerLookupResult>,
+  ) {
     const tabs = new Map<string, TabSession>();
     wss = await startWsBridge(tabs, new Map(), new BridgeEventLog(), {
       port: 0,
@@ -1099,6 +1105,82 @@ describe('startWsBridge handshake gate and message loop', () => {
       message: 'Peer process unknown',
     });
     expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('(cause: timeout)');
+  });
+
+  test('a peer owned by another OS user is refused with 403 and its own reason', async () => {
+    const { url } = await bridge(async () => ({ ok: false, cause: 'owner-mismatch' }));
+    expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+      status: 403,
+      message: 'Peer runs as another OS user',
+    });
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
+      'runs as another OS user (cause: owner-mismatch)',
+    );
+  });
+
+  test('a peer whose owner cannot be read is refused with 403 naming the cause', async () => {
+    const { url } = await bridge(async () => ({ ok: false, cause: 'owner-unreadable' }));
+    expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+      status: 403,
+      message: 'Peer process unknown',
+    });
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
+      '(cause: owner-unreadable)',
+    );
+  });
+
+  test('strict mode off (no peerExecutablePaths): the path is not asked for', async () => {
+    const lookup = vi.fn(chromiumPeer);
+    const { url } = await bridge(lookup);
+    expect('ws' in (await connect(url, 'chrome-extension://abcdefghijklmnop'))).toBe(true);
+    expect(lookup.mock.calls[0]?.[2]).toEqual({ withExecutablePath: false });
+  });
+
+  describe('strict mode (peerExecutablePaths in config.json)', () => {
+    const allowed = process.execPath;
+    const strictPeer = (executablePath?: string) =>
+      vi.fn(async (): Promise<PeerLookupResult> => ({
+        ok: true,
+        peer: {
+          pid: 4321,
+          binaryName: CHROMIUM,
+          ...(executablePath === undefined ? {} : { executablePath }),
+        },
+      }));
+
+    beforeEach(() => {
+      writeFileSync(
+        join(dataDir, 'config.json'),
+        JSON.stringify({ peerExecutablePaths: [allowed] }),
+        'utf8',
+      );
+    });
+
+    test('a listed executable path connects, and the path was asked for', async () => {
+      const lookup = strictPeer(allowed);
+      const { url } = await bridge(lookup);
+      expect('ws' in (await connect(url, 'chrome-extension://abcdefghijklmnop'))).toBe(true);
+      expect(lookup.mock.calls[0]?.[2]).toEqual({ withExecutablePath: true });
+    });
+
+    test('an executable path that is not listed is refused with 403', async () => {
+      const { url } = await bridge(strictPeer(join(dataDir, 'chrome')));
+      expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+        status: 403,
+        message: 'Peer executable path not allowed',
+      });
+      expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain(
+        'is not in peerExecutablePaths',
+      );
+    });
+
+    test('a peer whose executable path was not read is refused with 403', async () => {
+      const { url } = await bridge(strictPeer());
+      expect(await connect(url, 'chrome-extension://abcdefghijklmnop')).toEqual({
+        status: 403,
+        message: 'Peer executable path not allowed',
+      });
+    });
   });
 
   test('a peer lookup that throws is refused with 500', async () => {
@@ -1410,7 +1492,9 @@ describe('handshakeRefusal — one reason code per refusal the gate can give', (
       ['origin-not-allowed', { status: 403, message: 'Origin not allowed' }],
       ['peer-unidentified', { status: 403, message: 'Cannot identify peer' }],
       ['peer-unknown', { status: 403, message: 'Peer process unknown' }],
+      ['peer-other-user', { status: 403, message: 'Peer runs as another OS user' }],
       ['peer-not-browser', { status: 403, message: 'Peer is not a Chromium-based browser' }],
+      ['peer-path-not-allowed', { status: 403, message: 'Peer executable path not allowed' }],
       ['process-lookup-failed', { status: 500, message: 'Process lookup failed' }],
     ]);
   });

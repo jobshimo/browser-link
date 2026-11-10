@@ -24,7 +24,11 @@ import {
   query as queryActivity,
   stats as activityStats,
 } from '../activity/queries.js';
-import { lookupPeerProcessDetailed, type PeerLookupResult } from '../auth/process-identity.js';
+import {
+  lookupPeerProcessDetailed,
+  type PeerLookupRequest,
+  type PeerLookupResult,
+} from '../auth/process-identity.js';
 import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
@@ -182,10 +186,15 @@ export interface WsBridgeOptions {
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
-  /** Who owns the other end of a handshake's TCP connection. Default
-   * `lookupPeerProcessDetailed` (the OS lookup); injectable so tests can
-   * drive the real handshake gate from a Node process. */
-  lookupPeerProcess?: (address: string, port: number) => Promise<PeerLookupResult>;
+  /** Who owns the other end of a handshake's TCP connection, refused unless
+   * it runs as this server's OS user. Default `lookupPeerProcessDetailed`
+   * (the OS lookup); injectable so tests can drive the real handshake gate
+   * from a Node process. */
+  lookupPeerProcess?: (
+    address: string,
+    port: number,
+    request: PeerLookupRequest,
+  ) => Promise<PeerLookupResult>;
 }
 
 /** What the primary hands the bridge to answer `admin.describe` and
@@ -246,7 +255,10 @@ export function startWsBridge(
   options: WsBridgeOptions = {},
 ): Promise<WebSocketServer> {
   const { host, port, version } = resolveBridgeOptions(options);
-  const lookupPeerProcess = options.lookupPeerProcess ?? lookupPeerProcessDetailed;
+  const lookupPeerProcess =
+    options.lookupPeerProcess ??
+    ((address: string, peerPort: number, request: PeerLookupRequest) =>
+      lookupPeerProcessDetailed(address, peerPort, {}, request));
   return new Promise((resolve, reject) => {
     const answerHandshakeCheck = createHandshakeCheckHandler(lookupPeerProcess);
     const httpServer = createServer((req, res) => {
@@ -259,8 +271,10 @@ export function startWsBridge(
     const wss = new WebSocketServer({
       server: httpServer,
       // Refuse the upgrade unless the gate accepts its Origin and the OS
-      // confirms the peer is a Chromium-based browser. The check happens
-      // before any application bytes are exchanged.
+      // confirms the peer runs as this server's OS user and is a
+      // Chromium-based browser (and, in the opt-in strict mode, runs from a
+      // listed executable path). The check happens before any application
+      // bytes are exchanged.
       verifyClient: (info, cb) => {
         void evaluateHandshake(info.req, lookupPeerProcess).then((verdict) => {
           if (!verdict.accepted) {

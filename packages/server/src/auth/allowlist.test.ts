@@ -1,5 +1,43 @@
 import { describe, expect, test } from 'vitest';
-import { getAllowedBrowsers, isAllowedBrowser } from './allowlist.js';
+import { getAllowedBrowsers, isAllowedBrowser, isAllowedExecutablePath } from './allowlist.js';
+
+describe('isAllowedExecutablePath (opt-in strict mode)', () => {
+  const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+  test('Windows compares case-insensitively', () => {
+    expect(isAllowedExecutablePath(CHROME.toUpperCase(), [CHROME], 'win32')).toBe(true);
+    expect(isAllowedExecutablePath(CHROME, [CHROME.toLowerCase()], 'win32')).toBe(true);
+  });
+
+  test('macOS and Linux compare exactly', () => {
+    expect(
+      isAllowedExecutablePath('/opt/google/chrome/chrome', ['/opt/google/chrome/chrome'], 'linux'),
+    ).toBe(true);
+    expect(
+      isAllowedExecutablePath('/opt/google/chrome/Chrome', ['/opt/google/chrome/chrome'], 'linux'),
+    ).toBe(false);
+    expect(
+      isAllowedExecutablePath(
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        ['/applications/google chrome.app/contents/macos/google chrome'],
+        'darwin',
+      ),
+    ).toBe(false);
+  });
+
+  test('a path that is not listed is refused', () => {
+    expect(isAllowedExecutablePath('C:\\Users\\me\\chrome.exe', [CHROME], 'win32')).toBe(false);
+  });
+
+  test('an unreadable path is refused', () => {
+    expect(isAllowedExecutablePath(undefined, [CHROME], 'win32')).toBe(false);
+    expect(isAllowedExecutablePath('', [''], 'win32')).toBe(false);
+  });
+
+  test('an empty list allows nothing', () => {
+    expect(isAllowedExecutablePath(CHROME, [], 'win32')).toBe(false);
+  });
+});
 
 describe('isAllowedBrowser', () => {
   test('accepts Google Chrome variants on macOS', () => {
