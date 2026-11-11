@@ -12,7 +12,26 @@ const execFileAsync = promisify(execFile);
 // executable path, so strict mode refuses that one handshake; the next one,
 // with WMI up, passes. A bound long enough for that first call was not kept:
 // it varied past 10 s and would hold every hung lookup that long.
-const LOOKUP_TIMEOUT_MS = 5000;
+export const LOOKUP_TIMEOUT_MS = 5000;
+
+/**
+ * The total time one lookup may take across all its commands, when its
+ * caller asks for a bound (`PeerLookupRequest.totalTimeoutMs`; the peer gate
+ * always does). The longest sequence that can still end in an accept is two
+ * full command bounds: on Windows a CIM call that times out (the first one
+ * after boot) followed by the tasklist fallback, with netstat taking a few
+ * tens of milliseconds out of the second; on macOS and Linux the two lsof
+ * calls of strict mode. A lookup cut short by it fails with `deadline`.
+ */
+export const PEER_LOOKUP_DEADLINE_MS = 2 * LOOKUP_TIMEOUT_MS;
+
+/**
+ * The most output one lookup command may print. Node's execFile default
+ * (1 MiB) holds about 12 000 rows of `netstat -ano`, which a busy machine
+ * (browsers, containers, a dev server under load) can exceed. 16 MiB holds
+ * about 200 000 rows. An overflow fails with `output-too-large`.
+ */
+export const LOOKUP_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 /**
  * Waits between `netstat` snapshots when the peer's endpoint is not listed
@@ -90,6 +109,11 @@ export async function lookupPeerProcess(
  * - `path-unreadable`: the executable path was asked for (strict mode) and
  *   could not be read.
  * - `unsupported-platform`: no lookup exists for this OS.
+ * - `output-too-large`: a command printed more than LOOKUP_MAX_OUTPUT_BYTES.
+ * - `deadline`: the lookup's total budget (`totalTimeoutMs`) ran out before
+ *   it could decide; set by the lookup itself or by the peer-lookup limiter.
+ * - `lookup-busy`: the peer-lookup limiter had no free slot within its
+ *   wait, so the lookup never ran.
  */
 export type PeerLookupCause =
   | 'timeout'
@@ -106,7 +130,10 @@ export type PeerLookupCause =
   | 'owner-unreadable'
   | 'owner-mismatch'
   | 'path-unreadable'
-  | 'unsupported-platform';
+  | 'unsupported-platform'
+  | 'output-too-large'
+  | 'deadline'
+  | 'lookup-busy';
 
 /** `detail`: counts that help diagnose a refusal in the field (never an
  * address, a name or any other content). */
@@ -118,13 +145,16 @@ export interface PeerLookupDeps {
   execFile?: (
     file: string,
     args: readonly string[],
-    options: { timeout: number },
+    options: { timeout: number; maxBuffer: number },
   ) => Promise<{ stdout: string }>;
   platform?: NodeJS.Platform;
   /** This server's POSIX uid. Default `process.getuid()`. */
   getuid?: () => number | undefined;
   /** Waits between netstat snapshots. Default a real timer. */
   sleep?: (ms: number) => Promise<void>;
+  /** A monotonic clock in ms, read only when the request carries a total
+   * budget. Default `performance.now()`. */
+  now?: () => number;
 }
 
 /** What the caller needs beyond identity. */
@@ -136,6 +166,11 @@ export interface PeerLookupRequest {
    * count, so a row for the same local port to anything else (a stale
    * TIME_WAIT, a reused ephemeral port) cannot make the owner ambiguous. */
   serverEndpoint?: Endpoint;
+  /** The most this whole lookup may take, every command and wait included.
+   * Each command is bounded by what is left of it (never by more than
+   * LOOKUP_TIMEOUT_MS); once it is spent the lookup fails with `deadline`.
+   * Absent, each command keeps only its own LOOKUP_TIMEOUT_MS bound. */
+  totalTimeoutMs?: number;
 }
 
 export interface Endpoint {
@@ -159,6 +194,8 @@ export function classifyLookupError(err: unknown): PeerLookupCause {
   const e = (err ?? {}) as { killed?: boolean; signal?: unknown; code?: unknown };
   if (e.killed === true && e.signal != null) return 'timeout';
   if (e.code === 'ENOENT') return 'command-missing';
+  // Node kills the command and rejects with this code past `maxBuffer`.
+  if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'output-too-large';
   if (typeof e.code === 'number') return `command-failed:${e.code}`;
   return 'command-failed:unknown';
 }
@@ -176,7 +213,11 @@ export async function lookupPeerProcessDetailed(
   request: PeerLookupRequest = {},
 ): Promise<PeerLookupResult> {
   const os = deps.platform ?? platform();
-  const run = deps.execFile ?? defaultExecFile;
+  const exec = deps.execFile ?? defaultExecFile;
+  const run =
+    request.totalTimeoutMs === undefined
+      ? exec
+      : withTotalBudget(exec, deps.now ?? defaultNow, request.totalTimeoutMs);
   const withPath = request.withExecutablePath === true;
   let result: PeerProcess;
   try {
@@ -208,8 +249,34 @@ const defaultExecFile: ExecFile = async (file, args, options) => {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+const defaultNow = (): number => performance.now();
+
 function run(exec: ExecFile, file: string, args: readonly string[]): Promise<{ stdout: string }> {
-  return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS });
+  return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS, maxBuffer: LOOKUP_MAX_OUTPUT_BYTES });
+}
+
+/**
+ * Bound every command of one lookup by what is left of `budgetMs`: its
+ * timeout is the smaller of its own bound and that remainder, a command
+ * with nothing left is not started, and a command killed at the remainder
+ * (not at its own bound) ends the lookup with `deadline`. The Windows
+ * fallback never catches a `LookupFailure`, so nothing runs after that.
+ */
+function withTotalBudget(exec: ExecFile, now: () => number, budgetMs: number): ExecFile {
+  const deadline = now() + budgetMs;
+  const spent = (): LookupFailure =>
+    new LookupFailure('deadline', `total budget ${String(budgetMs)} ms`);
+  return async (file, args, options) => {
+    const left = Math.floor(deadline - now());
+    if (!(left > 0)) throw spent();
+    const timeout = Math.min(options.timeout, left);
+    try {
+      return await exec(file, args, { ...options, timeout });
+    } catch (err) {
+      if (timeout < options.timeout && classifyLookupError(err) === 'timeout') throw spent();
+      throw err;
+    }
+  };
 }
 
 /** Refuse a pid that is malformed or is this very process. */
@@ -476,7 +543,13 @@ async function windowsIdentity(exec: ExecFile, pid: number): Promise<WindowsIden
 }
 
 /** The fallback: two `tasklist /V` calls (peer and server), run together.
- * The fallback's failure is the one reported: it is the last thing tried. */
+ * The fallback's failure is the one reported: it is the last thing tried.
+ *
+ * tasklist prints in the console's OEM code page and its output is decoded
+ * as UTF-8, so a byte sequence that is not valid UTF-8 becomes U+FFFD and
+ * two different account names can decode to the same text. An owner holding
+ * U+FFFD is unreadable, never compared; without one the decoding lost
+ * nothing, so equal text means equal bytes. */
 async function tasklistIdentity(exec: ExecFile, pid: number): Promise<WindowsIdentity> {
   const query = (p: number) =>
     run(exec, 'tasklist', ['/V', '/FO', 'CSV', '/NH', '/FI', `PID eq ${p}`]);
@@ -484,8 +557,16 @@ async function tasklistIdentity(exec: ExecFile, pid: number): Promise<WindowsIde
   const peer = parseTasklistVerbose(peerOut.stdout);
   const server = parseTasklistVerbose(serverOut.stdout);
   if (!peer || !server) throw new LookupFailure('parse-miss');
-  assertSameOwner(peer.owner, server.owner);
+  assertSameOwner(losslessOwner(peer.owner), losslessOwner(server.owner));
   return { binaryName: peer.binaryName, executablePath: null };
+}
+
+/** What a UTF-8 decoder puts in place of bytes it could not read. */
+const REPLACEMENT_CHARACTER = '�';
+
+/** The owner as read, or null when its decoding lost bytes. */
+function losslessOwner(owner: string | null): string | null {
+  return owner === null || owner.includes(REPLACEMENT_CHARACTER) ? null : owner;
 }
 
 /**

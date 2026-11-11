@@ -1,6 +1,18 @@
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { lookupPeerProcess, type PeerProcess } from '../auth/process-identity.js';
+import {
+  lookupConnectionPeer,
+  normaliseLoopback,
+  type ConnectionPeer,
+} from '../auth/peer-connection.js';
+import type { PeerLookupLimiter } from '../auth/peer-lookup-limiter.js';
+import {
+  lookupPeerProcessDetailed,
+  type PeerLookupCause,
+  type PeerLookupRequest,
+  type PeerLookupResult,
+  type PeerProcess,
+} from '../auth/process-identity.js';
 import { SERVER_INSTRUCTIONS } from '../tools/server-instructions.js';
 import { VERSION } from '../version.js';
 import {
@@ -55,11 +67,16 @@ const NODE_PROCESS_NAMES: ReadonlySet<string> = new Set([
   'browser-link.exe',
 ]);
 
-/** Same loopback normalisation as server.ts uses for the WS bridge. */
-function normaliseLoopback(addr: string): string {
-  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
-  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
-  return addr;
+/** Why a lookup refused, as the tail of an IPC refusal line. The same wording
+ * as the WebSocket gate's lines (`handshake.ts`). */
+function describeLookupFailure(cause: PeerLookupCause, detail: string | undefined): string {
+  if (cause === 'owner-mismatch') {
+    return 'the owning process runs as another OS user (cause: owner-mismatch).';
+  }
+  if (cause === 'owner-unreadable') {
+    return 'the owner of the owning process could not be read (cause: owner-unreadable).';
+  }
+  return `could not identify owning process (cause: ${cause}${detail === undefined ? '' : `; ${detail}`}).`;
 }
 
 interface ProxySession {
@@ -81,10 +98,19 @@ export interface IpcServerOptions {
    * free port; the chosen port is exposed via boundPort() after start(). */
   port?: number;
   /** Override the kernel-level peer process lookup. Production callers never
-   * set this — defaults to the real lsof/netstat-backed lookup. Tests inject
-   * a deterministic stub so they don't depend on those tools being available
-   * or fast enough on CI runners. */
-  peerLookup?: (host: string, port: number) => Promise<PeerProcess | null>;
+   * set this — defaults to the real lsof/netstat-backed detailed lookup.
+   * Tests inject a deterministic stub so they don't depend on those tools
+   * being available or fast enough on CI runners. It answers a lookup result
+   * (a refusal carries its cause) or, as shorthand for an accepted one, the
+   * bare peer. */
+  peerLookup?: (
+    host: string,
+    port: number,
+    request: PeerLookupRequest,
+  ) => Promise<PeerLookupResult | PeerProcess>;
+  /** The limiter every peer lookup goes through. Default the one shared with
+   * the WebSocket gate; tests pass their own. */
+  peerLookupLimiter?: PeerLookupLimiter;
   /**
    * Called when a `settings.push` frame arrives (from `browser-link config
    * set idle-ttl` / `config set flow-recording`'s one-shot IPC client).
@@ -222,37 +248,49 @@ export class IpcServer {
       const safe = /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unknown';
       console.error(`${IPC_LOG_PREFIX} Proxy socket error: ${JSON.stringify(safe)}`);
     });
-    const remoteAddr = normaliseLoopback(socket.remoteAddress ?? '');
-    const remotePort = socket.remotePort;
-
-    if (!remoteAddr || remotePort == null) {
+    // Kernel-level process binding, shared with the WS gate: we ask the OS
+    // which process owns the peer's TCP port (same OS user required), through
+    // the shared limiter, and reject anything that does not look like a
+    // Node-family binary. No strict mode by path here: that is the WS port's.
+    let found: ConnectionPeer;
+    try {
+      found = await lookupConnectionPeer(
+        socket,
+        (host, port, request) => this.lookupPeer(host, port, request),
+        {},
+        this.options.peerLookupLimiter,
+      );
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).replace(/\n|\r/g, ' ');
+      const from = `${normaliseLoopback(socket.remoteAddress ?? '')}:${String(socket.remotePort)}`;
+      console.error(
+        `${IPC_LOG_PREFIX} Rejected IPC connection from ${from}: process lookup failed (${reason}).`,
+      );
+      socket.destroy();
+      return;
+    }
+    if (!found.identified) {
       console.error(
         `${IPC_LOG_PREFIX} Rejected IPC connection: peer address/port not exposed by socket.`,
       );
       socket.destroy();
       return;
     }
-
-    // Kernel-level process binding. Same trick as the WS bridge: we ask the
-    // OS which process owns the peer's TCP port, and reject anything that
-    // does not look like a Node-family binary.
-    // Only OS rows whose remote end is this IPC server's own endpoint count.
-    const localAddr = normaliseLoopback(socket.localAddress ?? '');
-    const localPort = socket.localPort;
-    const lookup =
-      this.options.peerLookup ??
-      ((host: string, port: number) =>
-        lookupPeerProcess(
-          host,
-          port,
-          {},
-          localAddr && localPort != null
-            ? { serverEndpoint: { host: localAddr, port: localPort } }
-            : {},
-        ));
-    const peer = await lookup(remoteAddr, remotePort).catch(() => null);
-    if (!peer || !NODE_PROCESS_NAMES.has(peer.binaryName.toLowerCase())) {
-      const binary = (peer?.binaryName ?? 'unknown').replace(/\n|\r/g, ' ');
+    const { host: remoteAddr, port: remotePort } = found.remote;
+    if (!found.result.ok) {
+      const why = describeLookupFailure(found.result.cause, found.result.detail).replace(
+        /\n|\r/g,
+        ' ',
+      );
+      console.error(
+        `${IPC_LOG_PREFIX} Rejected IPC connection from ${remoteAddr}:${remotePort}: ${why}`,
+      );
+      socket.destroy();
+      return;
+    }
+    const peer = found.result.peer;
+    if (!NODE_PROCESS_NAMES.has(peer.binaryName.toLowerCase())) {
+      const binary = peer.binaryName.replace(/\n|\r/g, ' ');
       console.error(
         `${IPC_LOG_PREFIX} Rejected IPC connection from ${remoteAddr}:${remotePort}: not a known Node process (${binary}).`,
       );
@@ -348,6 +386,25 @@ export class IpcServer {
         }
       }
     });
+  }
+
+  /** The detailed lookup: the injected one (a bare peer read as accepted) or
+   * the real one. */
+  private async lookupPeer(
+    host: string,
+    port: number,
+    request: PeerLookupRequest,
+  ): Promise<PeerLookupResult> {
+    if (this.options.peerLookup === undefined) {
+      return lookupPeerProcessDetailed(host, port, {}, request);
+    }
+    const answer: unknown = await this.options.peerLookup(host, port, request);
+    if (typeof answer !== 'object' || answer === null) {
+      throw new Error('the peer lookup returned no answer');
+    }
+    return 'ok' in answer
+      ? (answer as PeerLookupResult)
+      : { ok: true, peer: answer as PeerProcess };
   }
 
   private heartbeat(sid: string): void {

@@ -1,4 +1,5 @@
 import { createInterface, type Interface } from 'node:readline';
+import { PEER_GATE_MAX_MS } from '../auth/peer-lookup-limiter.js';
 import { IpcClient } from './ipc-client.js';
 import { readToken } from './token.js';
 
@@ -14,6 +15,28 @@ import { readToken } from './token.js';
 function log(msg: string): void {
   console.error(`[browser-link proxy] ${msg}`);
 }
+
+/** The hello round trip itself, on top of the primary's peer check: Windows
+ * under load can take >200 ms for a local socket round trip, and a ceiling
+ * too tight makes reconnects flap. */
+const HELLO_ROUND_TRIP_MS = 800;
+
+/**
+ * How long one reconnect attempt waits for the hello-ack. The primary reads
+ * the hello only after its peer check decides, so an attempt must outlast
+ * that check (its slot wait plus the lookup's total deadline,
+ * `PEER_GATE_MAX_MS`); a shorter one gives up on a primary that is still
+ * verifying it and would accept it.
+ */
+export const RECONNECT_HANDSHAKE_TIMEOUT_MS = PEER_GATE_MAX_MS + HELLO_ROUND_TRIP_MS;
+
+/** Default wait between reconnect attempts. */
+export const DEFAULT_REELECT_INTERVAL_MS = 200;
+
+/** Default reelect window: two full attempts, so one attempt that runs out
+ * its handshake budget still leaves room for another. */
+export const DEFAULT_REELECT_TIMEOUT_MS =
+  2 * (DEFAULT_REELECT_INTERVAL_MS + RECONNECT_HANDSHAKE_TIMEOUT_MS);
 
 export interface ProxyOptions {
   input?: NodeJS.ReadableStream;
@@ -35,9 +58,10 @@ export interface ProxyOptions {
    * the MCP client doesn't hang. Default: false. */
   autoReelect?: boolean;
   /** Total budget (ms) to wait for a new primary before giving up.
-   * Default: 5000. */
+   * Default: DEFAULT_REELECT_TIMEOUT_MS (two full reconnect attempts). */
   reelectTimeoutMs?: number;
-  /** Per-attempt interval (ms) between reconnect tries. Default: 200. */
+  /** Per-attempt interval (ms) between reconnect tries. Default:
+   * DEFAULT_REELECT_INTERVAL_MS. */
   reelectIntervalMs?: number;
   /** Hook for tests: called whenever the proxy starts a reconnect
    * attempt cycle. Production callers ignore. */
@@ -66,8 +90,8 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
   const autoReelect = opts.autoReelect === true;
-  const reelectTimeoutMs = opts.reelectTimeoutMs ?? 5000;
-  const reelectIntervalMs = opts.reelectIntervalMs ?? 200;
+  const reelectTimeoutMs = opts.reelectTimeoutMs ?? DEFAULT_REELECT_TIMEOUT_MS;
+  const reelectIntervalMs = opts.reelectIntervalMs ?? DEFAULT_REELECT_INTERVAL_MS;
 
   const initialToken = opts.token ?? readToken();
   if (!initialToken) {
@@ -256,7 +280,7 @@ export async function runProxy(opts: ProxyOptions = {}): Promise<ProxyHandle> {
 }
 
 /** Repeatedly try to connect to the IPC port until success or budget
- * expires. Re-reads the token on every attempt because a new primary
+ * expires; the loop gives up no later than the budget. Re-reads the token on every attempt because a new primary
  * rotates it on startup. Returns the connected client, or null on
  * timeout. */
 async function reconnectLoop(
@@ -266,16 +290,21 @@ async function reconnectLoop(
   intervalMs: number,
 ): Promise<IpcClient | null> {
   const deadline = Date.now() + totalBudgetMs;
-  // Generous handshake budget — Windows under load can take >200ms for a
-  // local socket round-trip and a too-tight ceiling makes reconnects flap.
-  const handshakeTimeoutMs = Math.min(1500, Math.max(800, intervalMs * 4));
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+  // Neither the wait nor an attempt runs past the window: an attempt gets
+  // the full handshake budget, or only what is left of the window.
+  const left = (): number => deadline - Date.now();
+  while (left() > 0) {
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, left())));
+    if (left() <= 0) break;
     const token = readToken();
     if (!token) continue;
     const c = new IpcClient();
     try {
-      await c.connect(token, { host, port, handshakeTimeoutMs });
+      await c.connect(token, {
+        host,
+        port,
+        handshakeTimeoutMs: Math.min(RECONNECT_HANDSHAKE_TIMEOUT_MS, left()),
+      });
       return c;
     } catch {
       try {

@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'vitest';
+import { execFile as execFileCb } from 'node:child_process';
 import { userInfo } from 'node:os';
 import {
   buildCimIdentityScript,
   classifyLookupError,
   decodeLsofString,
   isValidPid,
+  LOOKUP_MAX_OUTPUT_BYTES,
   lookupPeerProcess,
   lookupPeerProcessDetailed,
   NETSTAT_RETRY_DELAYS_MS,
+  PEER_LOOKUP_DEADLINE_MS,
   NETSTAT_SNAPSHOTS,
   type PeerLookupDeps,
   parseCimIdentity,
@@ -1055,5 +1058,237 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(
       await lookupPeerProcess('127.0.0.1', 64836, unix('linux', { lsof: lsofFor(0) })),
     ).toBeNull();
+  });
+
+  // --- S5.1: an explicit output limit, and an overflow as its own cause ---
+
+  /** Records the options every command was run with. */
+  function recordingExecFile(
+    answers: Record<string, Answer>,
+    seen: Array<{ file: string; timeout: number; maxBuffer?: number }>,
+  ): ExecFile {
+    const inner = fakeExecFile(answers);
+    return (file, args, options) => {
+      seen.push({ file, ...options });
+      return inner(file, args, options);
+    };
+  }
+  const overflow = () =>
+    Object.assign(new RangeError('stdout maxBuffer length exceeded'), {
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    });
+
+  test('every lookup command runs with an explicit output limit that fits a big connection table', async () => {
+    const seen: Array<{ file: string; timeout: number; maxBuffer?: number }> = [];
+    await lookupPeerProcessDetailed('127.0.0.1', 54321, {
+      ...win({}),
+      execFile: recordingExecFile(
+        {
+          netstat: NETSTAT,
+          powershell: exitWith(1),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        seen,
+      ),
+    });
+    await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      {
+        ...unix('linux', {}),
+        execFile: recordingExecFile({ lsof: lsofFor(501) }, seen),
+      },
+      { withExecutablePath: true },
+    );
+    expect(seen.map((s) => s.file)).toEqual([
+      'netstat',
+      'powershell',
+      'tasklist',
+      'tasklist',
+      'lsof',
+      'lsof',
+    ]);
+    for (const s of seen) expect(s.maxBuffer).toBe(LOOKUP_MAX_OUTPUT_BYTES);
+    // 100 000 IPv6 rows of a real `netstat -ano` table.
+    const row = `  TCP    [::ffff:127.0.0.1]:54321   [::ffff:127.0.0.1]:17529   ESTABLISHED     ${PEER}\r\n`;
+    expect(LOOKUP_MAX_OUTPUT_BYTES).toBeGreaterThan(100_000 * row.length);
+  });
+
+  test('a netstat table over the output limit is refused as output-too-large', async () => {
+    const res = await lookupPeerProcessDetailed('127.0.0.1', 54321, win({ netstat: overflow() }));
+    expect(res).toEqual({ ok: false, cause: 'output-too-large' });
+  });
+
+  test('an lsof output over the limit is refused as output-too-large', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      64836,
+      unix('linux', { lsof: overflow() }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'output-too-large' });
+  });
+
+  // --- S5.4: a total deadline across all the commands of one lookup ---
+
+  /** A clock that the fake commands and waits advance. */
+  function clocked(
+    answers: Record<string, Answer>,
+    costs: Record<string, number>,
+    calls: Call[],
+  ): PeerLookupDeps {
+    let t = 0;
+    const inner = fakeExecFile(answers, calls);
+    return {
+      platform: 'win32',
+      now: () => t,
+      sleep: (ms) => {
+        t += ms;
+        return Promise.resolve();
+      },
+      execFile: (file, args, options) => {
+        // A command that times out costs its whole timeout.
+        t += Math.min(costs[file] ?? 0, options.timeout);
+        return inner(file, args, options);
+      },
+    };
+  }
+
+  test('with a total budget, each command gets only what is left of it and the end is a deadline refusal', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      clocked(
+        {
+          netstat: NETSTAT,
+          powershell: timedOut(),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        { netstat: 100, powershell: Number.POSITIVE_INFINITY },
+        calls,
+      ),
+      { totalTimeoutMs: 5050 },
+    );
+    expect(res).toMatchObject({ ok: false, cause: 'deadline' });
+    // The CIM call was cut at the deadline: no tasklist fallback runs after it.
+    expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['netstat', 5000],
+      ['powershell', 4950],
+    ]);
+  });
+
+  test('a budget spent on netstat retries refuses as deadline before the next command', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      11111,
+      clocked({ netstat: NETSTAT }, { netstat: 100 }, calls),
+      { totalTimeoutMs: 300 },
+    );
+    expect(res).toMatchObject({ ok: false, cause: 'deadline' });
+    expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['netstat', 300],
+      ['netstat', 150],
+    ]);
+  });
+
+  test('a budget that covers the CIM timeout still lets the tasklist fallback accept (existing boot-time path)', async () => {
+    const calls: Call[] = [];
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      clocked(
+        {
+          netstat: NETSTAT,
+          powershell: timedOut(),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        { netstat: 100, powershell: Number.POSITIVE_INFINITY, tasklist: 300 },
+        calls,
+      ),
+      { totalTimeoutMs: PEER_LOOKUP_DEADLINE_MS },
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+    expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['netstat', 5000],
+      ['powershell', 5000],
+      ['tasklist', 4900],
+      ['tasklist', 4600],
+    ]);
+  });
+
+  test('without a total budget every command keeps the full per-command bound', async () => {
+    const calls: Call[] = [];
+    await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      clocked(
+        {
+          netstat: NETSTAT,
+          powershell: timedOut(),
+          tasklist: tasklistBy({ [PEER]: 'PC\\me', [SELF]: 'PC\\me' }),
+        },
+        { netstat: 100, powershell: Number.POSITIVE_INFINITY },
+        calls,
+      ),
+    );
+    expect(calls.map((c) => c.timeout)).toEqual([5000, 5000, 5000, 5000]);
+  });
+
+  // --- S5.5: the tasklist fallback never equates two account names ---
+
+  test('win32: tasklist owners that decode only with loss refuse as owner-unreadable, even when equal after decoding', async () => {
+    // "PC\\José" and "PC\\Josè" printed in an OEM code page and decoded as
+    // UTF-8 both become "PC\\Jos�".
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: exitWith(1),
+        tasklist: tasklistBy({ [PEER]: 'PC\\Jos�', [SELF]: 'PC\\Jos�' }),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: a lossy peer owner against a readable server owner is owner-unreadable', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: exitWith(1),
+        tasklist: tasklistBy({ [PEER]: 'PC\\Jos�', [SELF]: 'PC\\me' }),
+      }),
+    );
+    expect(res).toEqual({ ok: false, cause: 'owner-unreadable' });
+  });
+
+  test('win32: a non-ASCII owner decoded without loss is still accepted by the tasklist fallback', async () => {
+    const res = await lookupPeerProcessDetailed(
+      '127.0.0.1',
+      54321,
+      win({
+        netstat: NETSTAT,
+        powershell: exitWith(1),
+        tasklist: tasklistBy({ [PEER]: 'PC\\José', [SELF]: 'PC\\José' }),
+      }),
+    );
+    expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
+  });
+});
+
+describe('classifyLookupError: a real output overflow', () => {
+  test('the error Node raises past maxBuffer is output-too-large', async () => {
+    const err = await new Promise<unknown>((resolve) => {
+      execFileCb(
+        process.execPath,
+        ['-e', 'process.stdout.write("x".repeat(1000))'],
+        { maxBuffer: 10, timeout: 10_000 },
+        (e) => resolve(e),
+      );
+    });
+    expect(classifyLookupError(err)).toBe('output-too-large');
   });
 });
