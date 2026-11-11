@@ -119,10 +119,15 @@ export interface RunServerDeps {
   start: (cfg: BrowserLinkConfig) => Promise<void>;
 }
 
-/** Shown on every tool call of a refusing server once config.json can be
- * read again: this process decided at start, so only a restart reads it. */
+/** Shown on every tool call of a refusing server once config.json parses
+ * again: this process decided at start, so only a restart reads it. */
 export const CONFIG_READABLE_AGAIN_MESSAGE =
   'browser-link started while its config file could not be read, and that file can be read again now. Restart your MCP client so browser-link starts with it.';
+
+/** The same, when the file has since been deleted: a restart starts with the
+ * default settings, so it must not say the file can be read. */
+export const CONFIG_MISSING_NOW_MESSAGE =
+  'browser-link started while its config file could not be read, and that file is gone now. Restart your MCP client so browser-link starts with the default settings.';
 
 /** Every tool, unfiltered: while config.json is unreadable the deny list is
  * unknown, and every call is refused anyway. Listing them lets the agent
@@ -161,7 +166,11 @@ export async function serveConfigRefusal(
   mcpServer.server.setRequestHandler(CallToolRequestSchema, (req) =>
     Promise.resolve(
       (configRefusalFor(req.params.name, logLine) ??
-        toolError(CONFIG_READABLE_AGAIN_MESSAGE)) as never,
+        toolError(
+          readConfig().state === 'missing'
+            ? CONFIG_MISSING_NOW_MESSAGE
+            : CONFIG_READABLE_AGAIN_MESSAGE,
+        )) as never,
     ),
   );
   await mcpServer.connect(transport);

@@ -128,12 +128,13 @@ export function App({
       : openingScreen({ skipWelcome, noticeAcknowledged }),
   );
 
-  /* Every console write goes through here: while config.json is unreadable
-   * nothing is written and the unreadable-config screen is shown instead.
-   * Returns whether the write happened. */
+  /* Shows the unreadable-config screen for `problem`. */
   const showConfigProblem = (problem: UnreadableConfig): void => {
     setScreen({ kind: 'config-unreadable', problem: { path: problem.path, error: problem.error } });
   };
+  /* The console's writes to config.json: while it is unreadable nothing is
+   * written and the unreadable-config screen is shown instead. Returns
+   * whether the write happened. */
   const save = (patch: Partial<BrowserLinkConfig>): boolean => {
     try {
       saveConfig(patch);

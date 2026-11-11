@@ -529,11 +529,12 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
   }
   // Shown only when it fails, so a readable or missing file prints exactly
   // what it printed before.
-  const configUnreadable = r.config?.state === 'unreadable';
-  if (r.config?.state === 'unreadable') {
+  const unreadableConfig = r.config?.state === 'unreadable' ? r.config : null;
+  const configUnreadable = unreadableConfig !== null;
+  if (unreadableConfig) {
     lines.push('');
-    lines.push(`${t.configHeader}  ${red(t.configUnreadable(r.config.path))}`);
-    lines.push(`  ${t.configError} ${red(r.config.error)}`);
+    lines.push(`${t.configHeader}  ${red(t.configUnreadable(unreadableConfig.path))}`);
+    lines.push(`  ${t.configError} ${red(unreadableConfig.error)}`);
     lines.push(t.configRefusing);
     lines.push(t.configWaysOut);
   }

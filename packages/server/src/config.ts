@@ -593,6 +593,47 @@ function describeJsonValue(value: unknown): string {
   return `a ${typeof value}`;
 }
 
+/** Read errors that can pass by themselves: another process (an antivirus
+ * scan, a sync client, an editor saving) holds the file for a moment, or the
+ * process is briefly out of file handles. */
+const TRANSIENT_READ_CODES: ReadonlySet<string> = new Set([
+  'EBUSY',
+  'EPERM',
+  'EACCES',
+  'EMFILE',
+  'ENFILE',
+]);
+
+/** How a transient read error is retried. `readPersisted` is synchronous
+ * (many callers depend on that), so the wait blocks the thread. 5 tries with
+ * 4 waits of 50 ms is at most about 200 ms: enough for a scanner or an editor
+ * to let go, short enough that a permanently denied file (also EACCES) only
+ * costs a fifth of a second before it is reported. Exported so tests inject
+ * the read and the wait instead of sleeping. */
+export const configReadRetry = {
+  attempts: 5,
+  waitMs: 50,
+  readFile: (path: string): Buffer => readFileSync(path),
+  sleep: (ms: number): void => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  },
+};
+
+/** The file's bytes. A transient error is retried; ENOENT, ENOTDIR and every
+ * other error are thrown at once. After the last try the last error is thrown. */
+function readBytesWithRetry(path: string): Buffer {
+  const { attempts, waitMs, readFile, sleep } = configReadRetry;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return readFile(path);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (attempt >= attempts || code === undefined || !TRANSIENT_READ_CODES.has(code)) throw err;
+      sleep(waitMs);
+    }
+  }
+}
+
 type PersistedRead =
   | { readonly state: 'missing' }
   | { readonly state: 'ok'; readonly persisted: BrowserLinkConfig }
@@ -603,7 +644,7 @@ type PersistedRead =
 function readPersisted(path: string): PersistedRead {
   let raw: string;
   try {
-    const bytes = readFileSync(path);
+    const bytes = readBytesWithRetry(path);
     // UTF-16 (a BOM of FF FE or FE FF) would only fail later as a baffling
     // parse error; say what is wrong and how to fix it.
     if (

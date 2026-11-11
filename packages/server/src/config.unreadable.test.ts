@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import * as paths from './map/paths.js';
 import {
   ConfigUnreadableError,
+  configReadRetry,
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_DOWNLOADS_MAX_MB,
   DEFAULT_GRANT_TTL_MINUTES,
@@ -334,5 +335,64 @@ describe('a UTF-8 byte order mark is not an error; UTF-16 is explained (S6.0)', 
       parseError = (err as Error).message;
     }
     expect(readConfig()).toEqual({ state: 'unreadable', path: configPath, error: parseError });
+  });
+});
+
+describe('a read that can pass by itself is retried, a bad file is not (S6.8)', () => {
+  const real = { ...configReadRetry };
+  afterEach(() => {
+    Object.assign(configReadRetry, real);
+  });
+
+  function failing(code: string, failures: number, calls: { n: number }) {
+    configReadRetry.sleep = vi.fn();
+    configReadRetry.readFile = (path: string) => {
+      calls.n++;
+      if (calls.n <= failures) throw Object.assign(new Error(`${code}: busy`), { code });
+      return real.readFile(path);
+    };
+  }
+
+  test('a transient error followed by a good read loads as ok', () => {
+    writeFileSync(configPath, JSON.stringify({ multiAgent: false }), 'utf8');
+    const calls = { n: 0 };
+    failing('EBUSY', 2, calls);
+    expect(readConfig().state).toBe('ok');
+    expect(calls.n).toBe(3);
+    expect(configReadRetry.sleep).toHaveBeenCalledTimes(2);
+  });
+
+  test.each(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE'])(
+    '%s on every try ends unreadable after exactly the bounded number of tries',
+    (code) => {
+      writeFileSync(configPath, '{}', 'utf8');
+      const calls = { n: 0 };
+      failing(code, Infinity, calls);
+      const result = readConfig();
+      expect(result.state).toBe('unreadable');
+      expect(calls.n).toBe(configReadRetry.attempts);
+      expect(configReadRetry.sleep).toHaveBeenCalledTimes(configReadRetry.attempts - 1);
+    },
+  );
+
+  test('the total wait is small', () => {
+    expect((real.attempts - 1) * real.waitMs).toBeLessThanOrEqual(250);
+  });
+
+  test('a file that does not parse is read once', () => {
+    writeFileSync(configPath, BROKEN, 'utf8');
+    const calls = { n: 0 };
+    failing('EBUSY', 0, calls);
+    expect(readConfig().state).toBe('unreadable');
+    expect(calls.n).toBe(1);
+    expect(configReadRetry.sleep).not.toHaveBeenCalled();
+  });
+
+  test.each(['ENOENT', 'ENOTDIR'])('%s is "missing" and read once', (code) => {
+    const calls = { n: 0 };
+    failing(code, Infinity, calls);
+    expect(readConfig().state).toBe('missing');
+    expect(calls.n).toBe(1);
+    expect(configReadRetry.sleep).not.toHaveBeenCalled();
   });
 });

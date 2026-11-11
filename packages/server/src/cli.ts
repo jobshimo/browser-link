@@ -504,12 +504,14 @@ export async function dispatch(argv: string[]): Promise<void> {
   // command that depends on the config reads it itself and reports the file
   // (`start` serves the refusal, `doctor` names it, `config restore-defaults`
   // repairs it).
-  const { loadConfig } = await import('./config.js');
+  const { loadConfig, ConfigUnreadableError } = await import('./config.js');
   let language: Language = 'en';
   try {
     language = loadConfig().language ?? 'en';
-  } catch {
-    // Unreadable config.json: English.
+  } catch (err) {
+    // Only an unreadable config.json falls back to English; any other error
+    // surfaces as it did before the unreadable state existed.
+    if (!(err instanceof ConfigUnreadableError)) throw err;
   }
   const t = CLI_I18N[language];
 

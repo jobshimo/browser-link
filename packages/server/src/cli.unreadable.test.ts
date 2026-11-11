@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readConfig, unreadableConfigMessage, type UnreadableConfig } from './config.js';
+import * as paths from './map/paths.js';
 import { dispatch } from './cli.js';
 
 /* The real CLI dispatch (no module mocks) with an unreadable config.json in
@@ -86,5 +87,16 @@ describe('cli dispatch with a missing or valid config.json (unchanged)', () => {
     writeFileSync(configPath, '{"language":"es"}', 'utf8');
     await dispatch(['help']);
     expect(logs.join('\n')).toContain('puente entre cualquier cliente MCP');
+  });
+});
+
+describe('the language fallback catches only an unreadable config (S6.9)', () => {
+  test('another error from loadConfig surfaces instead of becoming English', async () => {
+    const boom = new Error('boom');
+    const spy = vi.spyOn(paths, 'getDataDir').mockImplementation(() => {
+      throw boom;
+    });
+    await expect(dispatch(['help'])).rejects.toBe(boom);
+    spy.mockRestore();
   });
 });

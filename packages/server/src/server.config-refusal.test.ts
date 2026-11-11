@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -33,6 +33,7 @@ vi.mock('./bridge/proxy.js', () => ({
 import { BROWSER_TOOL_DEFINITIONS } from './tools/browser-definitions.js';
 import { MAP_TOOL_DEFINITIONS } from './map/tools.js';
 import {
+  CONFIG_MISSING_NOW_MESSAGE,
   CONFIG_READABLE_AGAIN_MESSAGE,
   configRefusalFor,
   runServer,
@@ -127,6 +128,19 @@ describe('serveConfigRefusal: the MCP server while config.json is unreadable', (
       content: [{ type: 'text', text: `Error: ${CONFIG_READABLE_AGAIN_MESSAGE}` }],
       isError: true,
     });
+  });
+
+  test('once the file is gone, calls say it is missing now, not that it can be read', async () => {
+    writeConfig('nope');
+    const c = await connectedRefusal(problem());
+    unlinkSync(join(dataDir, 'config.json'));
+    const result = await c.callTool({ name: 'browser.list_tabs', arguments: {} });
+    expect(result).toEqual({
+      content: [{ type: 'text', text: `Error: ${CONFIG_MISSING_NOW_MESSAGE}` }],
+      isError: true,
+    });
+    expect(CONFIG_MISSING_NOW_MESSAGE).not.toContain('can be read');
+    expect(CONFIG_MISSING_NOW_MESSAGE).toContain('Restart your MCP client');
   });
 });
 
