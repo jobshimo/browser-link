@@ -136,6 +136,11 @@ Uso:
                                 Duración por defecto de un permiso otorgado con
                                 "browser-link cdp allow" cuando no se pasa --minutes (default
                                 60, 1-1440, o "never" — reduce la postura de seguridad).
+  browser-link config restore-defaults [--yes]
+                                Solo cuando config.json no se puede leer (browser-link se
+                                niega a funcionar): guarda una copia al lado
+                                (config.json.unreadable-<fecha y hora>) y escribe la
+                                configuración por defecto. Sin --yes solo muestra qué haría.
   browser-link cdp allow [--minutes N]
                                 Otorga un permiso de tiempo limitado para que los agentes usen
                                 cdp-direct (ver la sección "cdp-direct mode" del README). Solo
@@ -285,6 +290,11 @@ Usage:
                                 Default lifetime of a grant recorded by "browser-link cdp allow"
                                 when --minutes is not passed (default 60, 1-1440, or "never" —
                                 reduces the security posture).
+  browser-link config restore-defaults [--yes]
+                                Only when config.json cannot be read (browser-link refuses
+                                to work): keep a copy next to it
+                                (config.json.unreadable-<date and time>) and write the
+                                default settings. Without --yes, only shows what it would do.
   browser-link cdp allow [--minutes N]
                                 Record a time-boxed grant letting agents use cdp-direct (see the
                                 README's "cdp-direct mode" section). Only you can run this — no
@@ -488,11 +498,19 @@ export async function dispatch(argv: string[]): Promise<void> {
     return;
   }
 
-  // Every other command reads the config first, as it always has (help and
-  // the unknown-command error are localised; a corrupt config warns once).
+  // Every other command reads the config first, as it always has, for the
+  // language of help and errors. Only the language is taken here: an
+  // unreadable config.json has none to give, so English is used, and every
+  // command that depends on the config reads it itself and reports the file
+  // (`start` serves the refusal, `doctor` names it, `config restore-defaults`
+  // repairs it).
   const { loadConfig } = await import('./config.js');
-  const cfg = loadConfig();
-  const language: Language = cfg.language ?? 'en';
+  let language: Language = 'en';
+  try {
+    language = loadConfig().language ?? 'en';
+  } catch {
+    // Unreadable config.json: English.
+  }
   const t = CLI_I18N[language];
 
   switch (cmd) {

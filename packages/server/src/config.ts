@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { platform } from 'node:os';
 import { dirname, join, posix, win32 } from 'node:path';
 import { isExtensionId } from './auth/extension-id.js';
@@ -509,55 +517,248 @@ function normaliseForWrite(cfg: BrowserLinkConfig): BrowserLinkConfig {
   return next;
 }
 
-export function loadConfig(): BrowserLinkConfig {
-  const path = configFile();
-  if (!existsSync(path)) return withDefaults({});
-  try {
-    const raw = readFileSync(path, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return withDefaults(parsed);
-    return withDefaults({});
-  } catch (err) {
-    // Surface corruption rather than silently masking it: the file is
-    // small and user-owned, so a one-line stderr warning is the right
-    // signal. We still fall back to defaults so the CLI keeps working.
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[browser-link] could not read config at ${path}: ${message}. Using defaults.`);
-    return withDefaults({});
+/** The console language when config.json does not name one. */
+export const DEFAULT_LANGUAGE: 'en' | 'es' = 'en';
+
+/**
+ * What reading config.json found. `missing` (no file) reads as the defaults,
+ * as it always has. `unreadable` (the file exists but cannot be read, does
+ * not parse as JSON, or is not a JSON object) carries no config at all, so
+ * no caller can take it for the defaults: browser-link refuses to work
+ * until the file is fixed or `browser-link config restore-defaults` runs.
+ */
+export type ConfigReadResult =
+  | { readonly state: 'ok'; readonly path: string; readonly config: BrowserLinkConfig }
+  | { readonly state: 'missing'; readonly path: string; readonly config: BrowserLinkConfig }
+  | { readonly state: 'unreadable'; readonly path: string; readonly error: string };
+
+/** The file and the reason it could not be read. */
+export interface UnreadableConfig {
+  readonly path: string;
+  readonly error: string;
+}
+
+/** The one text every refusal shows (tool calls, the handshake log, CLI
+ * commands, the Admin window, doctor): the file, the error, the two ways
+ * out. One line, so it reads the same in a log. */
+export function unreadableConfigMessage(problem: UnreadableConfig): string {
+  return (
+    `browser-link refuses to work: its config file ${problem.path} cannot be read (${problem.error}). ` +
+    'It will not guess your settings (disabled tools, allowed extension ids, strict mode) from a broken file. ' +
+    'Two ways out: fix the file by hand so it holds one JSON object, or run ' +
+    '`browser-link config restore-defaults` to keep a copy of it and start again from the default settings.'
+  );
+}
+
+/** Thrown by `loadConfig` and `saveConfig` while config.json is unreadable.
+ * Its message is `unreadableConfigMessage`. */
+export class ConfigUnreadableError extends Error {
+  readonly path: string;
+  readonly error: string;
+
+  constructor(problem: UnreadableConfig) {
+    super(unreadableConfigMessage(problem));
+    this.name = 'ConfigUnreadableError';
+    this.path = problem.path;
+    this.error = problem.error;
   }
 }
 
-export function saveConfig(patch: Partial<BrowserLinkConfig>): BrowserLinkConfig {
+/** C0 and C1 controls, DEL and the Unicode line separators: a parse error
+ * may quote the file, and the error ends up in one log line. */
+const UNPRINTABLE_IN_ERROR = new RegExp(
+  '[\\x00-\\x1f\\x7f-\\x9f' + String.fromCharCode(0x2028, 0x2029, 0xfeff) + ']',
+  'g',
+);
+const MAX_ERROR_LENGTH = 300;
+
+function printableError(err: unknown): string {
+  const text = (err instanceof Error ? err.message : String(err)).replace(
+    UNPRINTABLE_IN_ERROR,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+  return text.length > MAX_ERROR_LENGTH ? `${text.slice(0, MAX_ERROR_LENGTH)}…` : text;
+}
+
+/** No file where config.json should be: ENOENT, or ENOTDIR when the data
+ * directory itself is not a directory (both read as "missing" before). */
+function isMissingFileError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+function describeJsonValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  return `a ${typeof value}`;
+}
+
+type PersistedRead =
+  | { readonly state: 'missing' }
+  | { readonly state: 'ok'; readonly persisted: BrowserLinkConfig }
+  | { readonly state: 'unreadable'; readonly error: string };
+
+/** config.json as written on disk (before defaults), or why it is not there
+ * or cannot be used. */
+function readPersisted(path: string): PersistedRead {
+  let raw: string;
+  try {
+    const bytes = readFileSync(path);
+    // UTF-16 (a BOM of FF FE or FE FF) would only fail later as a baffling
+    // parse error; say what is wrong and how to fix it.
+    if (
+      bytes.length >= 2 &&
+      ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))
+    ) {
+      return {
+        state: 'unreadable',
+        error: 'the file is encoded as UTF-16; save it as UTF-8 (a UTF-8 byte order mark is fine)',
+      };
+    }
+    raw = bytes.toString('utf8');
+    // A UTF-8 byte order mark (Windows PowerShell 5, old Notepad) is not part
+    // of the JSON; the next save writes the file without it.
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+  } catch (err) {
+    if (isMissingFileError(err)) return { state: 'missing' };
+    return { state: 'unreadable', error: printableError(err) };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    return { state: 'unreadable', error: printableError(err) };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      state: 'unreadable',
+      error: `expected a JSON object, found ${describeJsonValue(parsed)}`,
+    };
+  }
+  // Untrusted shape: `withDefaults` and the sanitizers decide each field.
+  return { state: 'ok', persisted: parsed };
+}
+
+/** Read config.json and say which of the three states it is in. */
+export function readConfig(): ConfigReadResult {
   const path = configFile();
+  const read = readPersisted(path);
+  if (read.state === 'unreadable') return { state: 'unreadable', path, error: read.error };
+  if (read.state === 'missing') return { state: 'missing', path, config: withDefaults({}) };
+  return { state: 'ok', path, config: withDefaults(read.persisted) };
+}
+
+/** The effective configuration. A missing file is the defaults; an
+ * unreadable one throws `ConfigUnreadableError`, never the defaults. */
+export function loadConfig(): BrowserLinkConfig {
+  const result = readConfig();
+  if (result.state === 'unreadable') throw new ConfigUnreadableError(result);
+  return result.config;
+}
+
+/** The only writer of config.json: a sibling temp file renamed over it, so a
+ * reader in another process (the primary re-reads config on every tool
+ * call) sees either the old file or the new one, never a truncated one. */
+function writeConfigFile(path: string, persisted: BrowserLinkConfig): void {
   mkdirSync(dirname(path), { recursive: true });
-  // Read the persisted form (pre-defaults) so merging the patch doesn't
-  // accidentally promote a default into an explicit field on disk.
-  const persisted = readPersisted();
-  const stripped = normaliseForWrite({ ...persisted, ...patch });
-  // Write a sibling temp file and rename it over config.json: a reader in
-  // another process (the primary re-reads config on every tool call) sees
-  // either the old file or the new one, never a truncated one that would
-  // parse-fail open and briefly empty the tool deny-list.
   const tmp = `${path}.${process.pid}-${Date.now()}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(stripped, null, 2) + '\n', 'utf8');
+    writeFileSync(tmp, JSON.stringify(persisted, null, 2) + '\n', 'utf8');
     renameSync(tmp, path);
   } catch (err) {
     rmSync(tmp, { force: true });
     throw err;
   }
+}
+
+/** Merge `patch` into config.json. Throws `ConfigUnreadableError`, and
+ * writes nothing, while the file is unreadable: a merge would replace it
+ * with only the patched keys and lose the rest for good. */
+export function saveConfig(patch: Partial<BrowserLinkConfig>): BrowserLinkConfig {
+  const path = configFile();
+  // Read the persisted form (pre-defaults) so merging the patch doesn't
+  // accidentally promote a default into an explicit field on disk.
+  const read = readPersisted(path);
+  if (read.state === 'unreadable') throw new ConfigUnreadableError({ path, error: read.error });
+  const persisted = read.state === 'ok' ? read.persisted : {};
+  writeConfigFile(path, normaliseForWrite({ ...persisted, ...patch }));
   return loadConfig();
 }
 
-function readPersisted(): BrowserLinkConfig {
+/**
+ * The value every persisted key has when config.json holds nothing, as the
+ * code reads it: `withDefaults` applied to an empty config, then each
+ * key's sanitizer or "only an explicit false turns it off" rule. A
+ * `Record` over every key, so a new config field does not compile until it
+ * is listed here. `undefined` means "not set" (the extension's own choice,
+ * strict mode off, the default downloads folder).
+ */
+export function defaultSettings(): Readonly<Record<keyof BrowserLinkConfig, unknown>> {
+  const d = withDefaults({});
+  return {
+    peerExecutablePaths: d.peerExecutablePaths,
+    allowedExtensionIds: d.allowedExtensionIds ?? [],
+    disabledTools: sanitizeDisabledTools(d.disabledTools),
+    multiAgent: d.multiAgent,
+    autoReelect: d.autoReelect,
+    cdpDirectEnabled: d.cdpDirectEnabled,
+    cdpDirectPort: d.cdpDirectPort,
+    cdpDirectGrantTtlMinutes: d.cdpDirectGrantTtlMinutes,
+    idleTtlMinutes: d.idleTtlMinutes,
+    idleTtlUpdatedAt: d.idleTtlUpdatedAt,
+    language: d.language ?? DEFAULT_LANGUAGE,
+    flowRecordingEnabled: d.flowRecordingEnabled,
+    flowRecordingUpdatedAt: d.flowRecordingUpdatedAt,
+    activityEnabled: d.activityEnabled !== false,
+    activityRecordPayloads: d.activityRecordPayloads !== false,
+    mapLearningEnabled: d.mapLearningEnabled !== false,
+    downloadsDir: d.downloadsDir,
+    downloadsMaxMb: sanitizeDownloadsMaxMb(d.downloadsMaxMb),
+    instructionsAutoRefresh: d.instructionsAutoRefresh,
+    skipWelcome: d.skipWelcome === true,
+    noticeAcknowledged: d.noticeAcknowledged,
+  };
+}
+
+export type RestoreDefaultsResult =
+  | {
+      readonly restored: true;
+      readonly path: string;
+      /** Why the old file could not be read. */
+      readonly error: string;
+      /** Where the old file was copied, byte for byte. */
+      readonly backupPath: string;
+      /** What is in effect now: `defaultSettings()`. */
+      readonly inEffect: Readonly<Record<keyof BrowserLinkConfig, unknown>>;
+    }
+  | { readonly restored: false; readonly state: 'ok' | 'missing'; readonly path: string };
+
+/** `2026-11-11T10:20:30.123Z` as `2026-11-11T10-20-30-123Z`: no `:`, which
+ * Windows does not allow in a file name. */
+function fileTimestamp(now: Date): string {
+  return now.toISOString().replace(/[:.]/g, '-');
+}
+
+/**
+ * `browser-link config restore-defaults`: only while config.json is
+ * unreadable, copy it to `config.json.unreadable-<timestamp>` next to it,
+ * then write a fresh default config through the same atomic writer as
+ * `saveConfig`. The copy never overwrites an existing file; when it cannot
+ * be made, nothing is written. A readable or missing file is left as it is.
+ */
+export function restoreDefaultConfig(now: Date = new Date()): RestoreDefaultsResult {
   const path = configFile();
-  if (!existsSync(path)) return {};
+  const read = readPersisted(path);
+  if (read.state !== 'unreadable') return { restored: false, state: read.state, path };
+  const backupPath = `${path}.unreadable-${fileTimestamp(now)}`;
   try {
-    const raw = readFileSync(path, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return parsed;
-    return {};
-  } catch {
-    return {};
+    copyFileSync(path, backupPath, constants.COPYFILE_EXCL);
+  } catch (err) {
+    throw new Error(
+      `Could not keep a copy of ${path} at ${backupPath} (${printableError(err)}). Nothing was changed.`,
+      { cause: err },
+    );
   }
+  writeConfigFile(path, normaliseForWrite({}));
+  return { restored: true, path, error: read.error, backupPath, inEffect: defaultSettings() };
 }

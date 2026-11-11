@@ -4,7 +4,7 @@ import { allowedExtensionIds } from '../auth/extension-id.js';
 import { lookupConnectionPeer, type ConnectionPeer } from '../auth/peer-connection.js';
 import { sharedPeerLookupLimiter, type PeerLookupLimiter } from '../auth/peer-lookup-limiter.js';
 import type { PeerLookupRequest, PeerLookupResult } from '../auth/process-identity.js';
-import { loadConfig } from '../config.js';
+import { readConfig, unreadableConfigMessage, type UnreadableConfig } from '../config.js';
 import { isLoopbackHost } from '../lifecycle/version-endpoint.js';
 
 /**
@@ -94,6 +94,24 @@ export type HandshakeRefusal = {
 
 export type HandshakeVerdict = { accepted: true } | HandshakeRefusal;
 
+/** The reason an unreadable config.json refuses with. The extension keeps a
+ * byte-guarded copy of the reason codes, so no new code is added; of the
+ * existing ones this is the only one that does not send the user to a wrong
+ * remedy (`origin-not-allowed` says "reload the extension"). The log line
+ * carries the real cause. */
+export const CONFIG_UNREADABLE_REASON: HandshakeRefusalReason = 'process-lookup-failed';
+
+/** The refusal while config.json cannot be read: the extension ids it
+ * allows and its strict-mode paths are unknown, so no connection can be
+ * judged. Decided before any process lookup. */
+function refuseUnreadableConfig(problem: UnreadableConfig): HandshakeRefusal {
+  return {
+    accepted: false,
+    reason: CONFIG_UNREADABLE_REASON,
+    logLine: `Rejected WS handshake: ${unreadableConfigMessage(problem)}`,
+  };
+}
+
 /** The gate's verdict on the `Origin` alone, decided before any process
  * lookup: a refusal naming the origin and the ids allowed to connect, or
  * undefined when the origin is allowed. */
@@ -132,8 +150,11 @@ export async function evaluateHandshake(
   limiter: PeerLookupLimiter = sharedPeerLookupLimiter,
 ): Promise<HandshakeVerdict> {
   // Read on every handshake, like every other config key the primary
-  // honours without a restart.
-  const config = loadConfig();
+  // honours without a restart. An unreadable file refuses every connection
+  // before the Origin is judged: the ids it would allow are unknown.
+  const read = readConfig();
+  if (read.state === 'unreadable') return refuseUnreadableConfig(read);
+  const config = read.config;
   const originRefusal = refuseOrigin(req.headers.origin, config.allowedExtensionIds ?? []);
   if (originRefusal !== undefined) return originRefusal;
   // `undefined` means strict mode is off.
@@ -262,7 +283,11 @@ export function createHandshakeCheckHandler(
       'access-control-allow-origin': origin,
       vary: 'Origin',
     };
-    const originRefusal = refuseOrigin(origin, loadConfig().allowedExtensionIds ?? []);
+    const read = readConfig();
+    const originRefusal =
+      read.state === 'unreadable'
+        ? refuseUnreadableConfig(read)
+        : refuseOrigin(origin, read.config.allowedExtensionIds ?? []);
     if (originRefusal !== undefined) {
       res.writeHead(200, headers);
       res.end(JSON.stringify({ accepted: false, reason: originRefusal.reason }));

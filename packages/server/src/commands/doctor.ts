@@ -8,7 +8,7 @@ import { getDbPath } from '../map/paths.js';
 import { listApps } from '../map/queries.js';
 import { resolveExtensionPath } from './extension.js';
 import type { Language } from './welcome.js';
-import { loadConfig, type BrowserLinkConfig } from '../config.js';
+import { readConfig, type BrowserLinkConfig } from '../config.js';
 import { IPC_HOST, IPC_PORT, BRIDGE_PORT } from '../bridge/protocol.js';
 import { getInstructionsInstaller, type InstructionsState } from '../agent-instructions/index.js';
 import { probeVersion, type VersionProbe } from '../lifecycle/election.js';
@@ -61,7 +61,11 @@ export function checkPort(host: string, port: number, timeoutMs = 500): Promise<
 export interface DoctorReport {
   ws: { listening: boolean; detail: string; host: string; port: number };
   ipc: { listening: boolean; detail: string; host: string; port: number };
-  multiAgent: { enabled: boolean; autoReelect: boolean };
+  /** `null` while config.json cannot be read: the mode is unknown. */
+  multiAgent: { enabled: boolean | null; autoReelect: boolean | null };
+  /** Since 1.0.1: the state of config.json. Only `unreadable` is shown, as a
+   * failed check; optional so older report builders still fit. */
+  config?: DoctorConfigStatus;
   clients: {
     id: string;
     displayName: string;
@@ -97,6 +101,9 @@ export interface DoctorReport {
   /** Since 0.41.0: every live browser-link bridge process. */
   processes?: DoctorProcess[];
 }
+
+export type DoctorConfigStatus =
+  { state: 'ok' | 'missing'; path: string } | { state: 'unreadable'; path: string; error: string };
 
 export interface DoctorServerStatus {
   running: { version: string; pid: number; startedAt: string } | null;
@@ -137,7 +144,10 @@ function toDoctorProcess(p: ProcessEntry): DoctorProcess {
 }
 
 /** The part of the report read from local files: synchronous and cheap. */
-type DoctorLocal = Pick<DoctorReport, 'multiAgent' | 'clients' | 'extension' | 'map' | 'security'>;
+type DoctorLocal = Pick<
+  DoctorReport,
+  'multiAgent' | 'clients' | 'extension' | 'map' | 'security' | 'config'
+>;
 
 function collectLocal(): DoctorLocal {
   const clients = INSTALLERS.map((i) => {
@@ -173,13 +183,27 @@ function collectLocal(): DoctorLocal {
       apps = -1;
     }
   }
-  const cfg = loadConfig();
+  const read = readConfig();
+  if (read.state === 'unreadable') {
+    // No setting is known: the multi-agent mode is unknown, and the gate
+    // accepts no extension at all while the file stays unreadable.
+    return {
+      multiAgent: { enabled: null, autoReelect: null },
+      clients,
+      extension: { path: extPath },
+      map: { dbPath, exists: dbExists, sizeBytes, apps },
+      security: { allowedBrowsers: getAllowedBrowsers(), allowedExtensionIds: [] },
+      config: { state: 'unreadable', path: read.path, error: read.error },
+    };
+  }
+  const cfg = read.config;
   return {
     multiAgent: { enabled: cfg.multiAgent === true, autoReelect: cfg.autoReelect === true },
     clients,
     extension: { path: extPath },
     map: { dbPath, exists: dbExists, sizeBytes, apps },
     security: securityReport(cfg),
+    config: { state: read.state, path: read.path },
   };
 }
 
@@ -316,6 +340,13 @@ interface DoctorI18n {
   processesHeader: string;
   processesNone: string;
   processStarted: (iso: string) => string;
+  configHeader: string;
+  configUnreadable: (path: string) => string;
+  configError: string;
+  configRefusing: string;
+  configWaysOut: string;
+  configGateRefusesAll: string;
+  configUnknown: string;
 }
 
 const DOCTOR_I18N: Record<Language, DoctorI18n> = {
@@ -381,6 +412,15 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processesHeader: 'Live browser-link processes:',
     processesNone: 'none',
     processStarted: (iso) => `(started ${iso})`,
+    configHeader: 'Config file:',
+    configUnreadable: (path) => `✗ cannot be read: ${path}`,
+    configError: 'error:',
+    configRefusing:
+      '  browser-link refuses to work until it is fixed: no tool call runs and no browser connects.',
+    configWaysOut:
+      '  Two ways out: fix the file by hand so it holds one JSON object, or run `browser-link config restore-defaults`.',
+    configGateRefusesAll: '  ✗ every WS connection is refused while config.json cannot be read.',
+    configUnknown: 'unknown (config.json cannot be read)',
   },
   es: {
     title: 'browser-link doctor',
@@ -446,6 +486,15 @@ const DOCTOR_I18N: Record<Language, DoctorI18n> = {
     processesHeader: 'Procesos browser-link vivos:',
     processesNone: 'ninguno',
     processStarted: (iso) => `(arrancó ${iso})`,
+    configHeader: 'Archivo de config:',
+    configUnreadable: (path) => `✗ no se puede leer: ${path}`,
+    configError: 'error:',
+    configRefusing:
+      '  browser-link se niega a funcionar hasta que se arregle: no corre ninguna llamada a tools y no se conecta ningún navegador.',
+    configWaysOut:
+      '  Dos salidas: arreglá el archivo a mano para que tenga un objeto JSON, o corré `browser-link config restore-defaults`.',
+    configGateRefusesAll: '  ✗ se rechaza toda conexión WS mientras no se pueda leer config.json.',
+    configUnknown: 'desconocido (no se puede leer config.json)',
   },
 };
 
@@ -477,6 +526,16 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
         lines.push(`  PID ${p.pid}  ${p.command}${started}`);
       }
     }
+  }
+  // Shown only when it fails, so a readable or missing file prints exactly
+  // what it printed before.
+  const configUnreadable = r.config?.state === 'unreadable';
+  if (r.config?.state === 'unreadable') {
+    lines.push('');
+    lines.push(`${t.configHeader}  ${red(t.configUnreadable(r.config.path))}`);
+    lines.push(`  ${t.configError} ${red(r.config.error)}`);
+    lines.push(t.configRefusing);
+    lines.push(t.configWaysOut);
   }
   lines.push('');
   lines.push(t.clientsHeader);
@@ -563,23 +622,29 @@ export function formatDoctor(r: DoctorReport, language: Language = 'en'): string
       `    (${r.security.allowedBrowsers.slice(0, 4).join(', ')}${r.security.allowedBrowsers.length > 4 ? ', …' : ''})`,
     );
   }
-  lines.push(t.extensionIdsHeader);
-  for (const id of r.security.allowedExtensionIds) {
-    lines.push(
-      `    ${id} (${id === PINNED_EXTENSION_ID ? t.extensionIdPinned : 'allowedExtensionIds'})`,
-    );
-  }
-  const strictPaths = r.security.peerExecutablePaths;
-  if (strictPaths === undefined) {
-    lines.push(t.strictPathsOff);
+  if (configUnreadable) {
+    lines.push(red(t.configGateRefusesAll));
   } else {
-    lines.push(t.strictPathsOn(strictPaths.length));
-    for (const p of strictPaths) lines.push(`    ${p}`);
+    lines.push(t.extensionIdsHeader);
+    for (const id of r.security.allowedExtensionIds) {
+      lines.push(
+        `    ${id} (${id === PINNED_EXTENSION_ID ? t.extensionIdPinned : 'allowedExtensionIds'})`,
+      );
+    }
+    const strictPaths = r.security.peerExecutablePaths;
+    if (strictPaths === undefined) {
+      lines.push(t.strictPathsOff);
+    } else {
+      lines.push(t.strictPathsOn(strictPaths.length));
+      for (const p of strictPaths) lines.push(`    ${p}`);
+    }
   }
+  const onOff = (value: boolean | null): string =>
+    value === null ? t.configUnknown : value ? t.on : t.off;
   lines.push('');
   lines.push(t.multiAgentHeader);
-  lines.push(`${t.multiAgentMode}${r.multiAgent.enabled ? t.on : t.off}`);
-  lines.push(`${t.autoReelect}${r.multiAgent.autoReelect ? t.on : t.off}`);
+  lines.push(`${t.multiAgentMode}${onOff(r.multiAgent.enabled)}`);
+  lines.push(`${t.autoReelect}${onOff(r.multiAgent.autoReelect)}`);
   lines.push(`${t.ipcLine}${r.ipc.listening ? t.ipcListening : t.ipcFree}`);
   return lines.join('\n');
 }

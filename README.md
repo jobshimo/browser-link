@@ -224,6 +224,7 @@ browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("n
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
+browser-link config restore-defaults --yes # only when config.json cannot be read: keep a copy, write the defaults
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
 browser-link cdp revoke                    # revoke the current cdp-direct grant
@@ -348,9 +349,15 @@ list you wrote (see [Security model](#security-model)). Before turning it on:
 
 - A list with no valid absolute path refuses **every** browser. A mistyped list
   never turns the check off.
-- A `config.json` the server cannot parse falls back to the defaults, with a
-  warning in the log. That turns strict mode off, drops your allowed ids and
-  clears the tool deny list. Keep the file valid.
+- A `config.json` the server cannot read (it does not parse, or it is not one
+  JSON object) never falls back to the defaults: browser-link refuses to work
+  until it is fixed. No new browser connection is accepted, every tool call
+  answers with the file, the error and the two ways out, and no command or
+  screen writes over the file. Fix it by hand, or run
+  `browser-link config restore-defaults --yes`: it keeps a copy next to it
+  (`config.json.unreadable-<date and time>`), writes the default settings and
+  lists every setting you have to re-enter from that copy. A missing
+  `config.json` is the defaults, as before.
 
 **Known gap.** The peer check does not tell apart two programs that both run as
 your user. A process that runs as you but is confined away from your files, while

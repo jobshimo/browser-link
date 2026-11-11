@@ -9,7 +9,18 @@ import { learnFromDispatch } from './map/learning.js';
 import { record } from './activity/queries.js';
 import { type BrowserToolDeps, type TabSnapshot } from './tools/browser-dispatch.js';
 import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-instructions.js';
-import { loadConfig } from './config.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import {
+  ConfigUnreadableError,
+  loadConfig,
+  readConfig,
+  unreadableConfigMessage,
+  type BrowserLinkConfig,
+  type UnreadableConfig,
+} from './config.js';
+import { BROWSER_TOOL_DEFINITIONS } from './tools/browser-definitions.js';
+import { MAP_TOOL_DEFINITIONS } from './map/tools.js';
+import { toolError } from './tools/responses.js';
 import { VERSION } from './version.js';
 import { resolveDownloadsDir, writeDownloadFile } from './downloads.js';
 import { getDataDir } from './map/paths.js';
@@ -82,7 +93,82 @@ function buildListTabs(tabs: Map<string, TabSession>): () => TabSnapshot[] {
  * and another primary is already running — becomes a thin proxy that
  * forwards MCP stdio frames to the primary over IPC.
  */
-export async function runServer(): Promise<void> {
+export async function runServer(overrides: Partial<RunServerDeps> = {}): Promise<void> {
+  const deps: RunServerDeps = {
+    serveConfigRefusal: (problem) => serveConfigRefusal(problem),
+    start: startWithConfig,
+    ...overrides,
+  };
+  // An unreadable config.json holds no settings this process could honour
+  // (deny list, extension ids, strict mode, multi-agent): it binds nothing
+  // and only answers the MCP client, so the agent reads why.
+  const read = readConfig();
+  if (read.state === 'unreadable') {
+    await deps.serveConfigRefusal(read);
+    return;
+  }
+  await deps.start(read.config);
+}
+
+/** What `runServer` does once config.json is read; injectable so tests
+ * never bind this machine's ports. */
+export interface RunServerDeps {
+  /** Serve the refusal while config.json is unreadable (`serveConfigRefusal`). */
+  serveConfigRefusal: (problem: UnreadableConfig) => Promise<unknown>;
+  /** Bind, elect or proxy with the effective config. */
+  start: (cfg: BrowserLinkConfig) => Promise<void>;
+}
+
+/** Shown on every tool call of a refusing server once config.json can be
+ * read again: this process decided at start, so only a restart reads it. */
+export const CONFIG_READABLE_AGAIN_MESSAGE =
+  'browser-link started while its config file could not be read, and that file can be read again now. Restart your MCP client so browser-link starts with it.';
+
+/** Every tool, unfiltered: while config.json is unreadable the deny list is
+ * unknown, and every call is refused anyway. Listing them lets the agent
+ * call one and read the refusal. */
+function allToolsList(): { tools: { name: string }[] } {
+  return { tools: [...BROWSER_TOOL_DEFINITIONS, ...MAP_TOOL_DEFINITIONS] };
+}
+
+/** The tool result for a call while config.json is unreadable, logged; null
+ * when the file can be read (missing or valid), and the call goes on. */
+export function configRefusalFor(toolName: string, logLine: (msg: string) => void = log) {
+  const read = readConfig();
+  if (read.state !== 'unreadable') return null;
+  const message = unreadableConfigMessage(read);
+  logLine(`Refused ${toolName}: ${message}`);
+  return toolError(message);
+}
+
+/**
+ * The MCP server of a process started while config.json is unreadable. It
+ * binds no port (no browser connection, no IPC, no election), lists every
+ * tool and refuses every call with the message; its instructions are the
+ * message too. Stays up until the MCP client closes it.
+ */
+export async function serveConfigRefusal(
+  problem: UnreadableConfig,
+  transport: Transport = new StdioServerTransport(),
+  logLine: (msg: string) => void = log,
+): Promise<McpServer> {
+  const message = unreadableConfigMessage(problem);
+  logLine(message);
+  const mcpServer = createMcpServer(message);
+  mcpServer.server.setRequestHandler(ListToolsRequestSchema, () =>
+    Promise.resolve(allToolsList() as never),
+  );
+  mcpServer.server.setRequestHandler(CallToolRequestSchema, (req) =>
+    Promise.resolve(
+      (configRefusalFor(req.params.name, logLine) ??
+        toolError(CONFIG_READABLE_AGAIN_MESSAGE)) as never,
+    ),
+  );
+  await mcpServer.connect(transport);
+  return mcpServer;
+}
+
+function startWithConfig(cfg: BrowserLinkConfig): Promise<void> {
   // The bridge stays alive when the MCP client closes its stdio. The
   // connected Chrome tabs keep talking to the WS bridge until the user
   // explicitly disconnects them from the extension popup, or the WS
@@ -90,8 +176,7 @@ export async function runServer(): Promise<void> {
   // BRIDGE_PORT after a crash, `startServer` falls back to proxy mode (when
   // multi-agent is on) or surfaces a clean EADDRINUSE error pointing
   // the user at `browser-link stop`.
-  const cfg = loadConfig();
-  await startServer({
+  return startServer({
     bind: () => runPrimary(cfg),
     runProxy: runProxyMode,
     multiAgent: cfg.multiAgent === true,
@@ -208,7 +293,7 @@ async function electPrimary(deps: StartServerDeps): Promise<boolean> {
   }
 }
 
-async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
+async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   const tabs = new Map<string, TabSession>();
   const pendingRequests = new Map<string, PendingRequest>();
   const events = new BridgeEventLog();
@@ -305,17 +390,11 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   // Read once at wiring time, not per call: a trail that switched itself on
   // and off mid-session would have gaps nothing explains. Both default ON —
-  // only an explicit `false` disables. A config read that throws must not stop
-  // the server booting, so it degrades to the defaults.
-  let activityEnabled = true;
-  let recordActivityPayloads = true;
-  try {
-    const cfg = loadConfig();
-    activityEnabled = cfg.activityEnabled !== false;
-    recordActivityPayloads = cfg.activityRecordPayloads !== false;
-  } catch {
-    // Defaults stand.
-  }
+  // only an explicit `false` disables. Taken from the config this primary
+  // started with (read by `runServer`), never from a later read that could
+  // find the file unreadable and fall back to the defaults.
+  const activityEnabled = cfg.activityEnabled !== false;
+  const recordActivityPayloads = cfg.activityRecordPayloads !== false;
 
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
@@ -489,7 +568,18 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   const dispatchDeps: DispatchDeps = {
     browserTools: deps,
-    disabledTools: () => loadConfig().disabledTools ?? [],
+    // Throws while config.json is unreadable, so no call runs against an
+    // unknown deny list. The stdio handlers below refuse before reaching it;
+    // the IPC server (proxies) answers the throw as a JSON-RPC error that
+    // carries the same message, logged here.
+    disabledTools: () => {
+      try {
+        return loadConfig().disabledTools ?? [];
+      } catch (err) {
+        if (err instanceof ConfigUnreadableError) log(`Refused a proxied request: ${err.message}`);
+        throw err;
+      }
+    },
   };
 
   // We use `McpServer` (the non-deprecated high-level class) but reach
@@ -502,16 +592,24 @@ async function runPrimary(cfg: ReturnType<typeof loadConfig>): Promise<void> {
 
   // The SDK's request-handler return types include task/streaming variants we
   // never produce. Cast keeps the shared dispatch module SDK-agnostic.
+  // While config.json is unreadable: every tool is listed (the deny list is
+  // unknown) and every call answers the refusal, as a tool result the agent
+  // reads. Both re-read the file, so fixing it applies on the next call.
   mcpServer.server.setRequestHandler(ListToolsRequestSchema, () =>
-    Promise.resolve(handleToolsList(dispatchDeps) as never),
+    Promise.resolve(
+      (readConfig().state === 'unreadable'
+        ? allToolsList()
+        : handleToolsList(dispatchDeps)) as never,
+    ),
   );
   mcpServer.server.setRequestHandler(
     CallToolRequestSchema,
     async (req) =>
-      (await handleToolCall(
-        { name: req.params.name, arguments: req.params.arguments, caller: PRIMARY_CALLER },
-        dispatchDeps,
-      )) as never,
+      (configRefusalFor(req.params.name) ??
+        (await handleToolCall(
+          { name: req.params.name, arguments: req.params.arguments, caller: PRIMARY_CALLER },
+          dispatchDeps,
+        ))) as never,
   );
 
   // Optional: open the IPC bridge for proxy connections, but only when

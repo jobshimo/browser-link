@@ -4,6 +4,7 @@ import {
   AboutView,
   AgentInstructionsView,
   ClientPicker,
+  ConfigUnreadableView,
   DoctorView,
   EmptyClientsView,
   ExtensionView,
@@ -20,7 +21,14 @@ import {
   type MenuAction,
 } from './screens/index.js';
 import type { Language } from '../commands/welcome.js';
-import { saveConfig } from '../config.js';
+import {
+  ConfigUnreadableError,
+  readConfig,
+  saveConfig,
+  type BrowserLinkConfig,
+  type RestoreDefaultsResult,
+  type UnreadableConfig,
+} from '../config.js';
 import { installFor, type InstallReport } from '../commands/install.js';
 import { statusAll } from '../commands/instructions.js';
 import { openUrl } from '../utils/open-url.js';
@@ -31,6 +39,7 @@ import type { AdminInput } from '../admin/descriptor.js';
 const REPO_URL = 'https://github.com/jobshimo/browser-link';
 
 type Screen =
+  | { kind: 'config-unreadable'; problem: UnreadableConfig }
   | { kind: 'notice' }
   | { kind: 'welcome'; hideDismiss: boolean }
   | { kind: 'status' }
@@ -56,6 +65,11 @@ interface AppProps {
   noticeAcknowledged: boolean;
   /** Test seam for the status view's facts; production reads the machine. */
   statusInput?: () => Promise<AdminInput>;
+  /** Set when config.json could not be read at start: the console opens on
+   * the unreadable-config screen instead of the notice. */
+  configProblem?: UnreadableConfig;
+  /** Test seam for that screen's restore; production restores on disk. */
+  restoreConfig?: () => RestoreDefaultsResult;
 }
 
 /* True when at least one of the supported MCP clients is detected on
@@ -88,17 +102,61 @@ function registerClient(id: ClientId): InstallReport {
   }
 }
 
-export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusInput }: AppProps) {
+/* The screen a config opens on: the notice until it is acknowledged, then
+ * the welcome on first run, the status view after it. */
+function openingScreen(cfg: Pick<BrowserLinkConfig, 'skipWelcome' | 'noticeAcknowledged'>): Screen {
+  if (cfg.noticeAcknowledged !== true) return { kind: 'notice' };
+  return cfg.skipWelcome === true ? { kind: 'status' } : { kind: 'welcome', hideDismiss: false };
+}
+
+export function App({
+  initialLanguage,
+  skipWelcome,
+  noticeAcknowledged,
+  statusInput,
+  configProblem,
+  restoreConfig,
+}: AppProps) {
   const { exit } = useApp();
   const [language, setLanguage] = useState<Language>(initialLanguage);
   // The screen the console opens on once the notice is out of the way:
   // the welcome on first run, the status view after it.
-  const firstRunScreen: Screen = skipWelcome
-    ? { kind: 'status' }
-    : { kind: 'welcome', hideDismiss: false };
+  const firstRunScreen = openingScreen({ skipWelcome, noticeAcknowledged: true });
   const [screen, setScreen] = useState<Screen>(
-    noticeAcknowledged ? firstRunScreen : { kind: 'notice' },
+    configProblem
+      ? { kind: 'config-unreadable', problem: configProblem }
+      : openingScreen({ skipWelcome, noticeAcknowledged }),
   );
+
+  /* Every console write goes through here: while config.json is unreadable
+   * nothing is written and the unreadable-config screen is shown instead.
+   * Returns whether the write happened. */
+  const showConfigProblem = (problem: UnreadableConfig): void => {
+    setScreen({ kind: 'config-unreadable', problem: { path: problem.path, error: problem.error } });
+  };
+  const save = (patch: Partial<BrowserLinkConfig>): boolean => {
+    try {
+      saveConfig(patch);
+      return true;
+    } catch (error) {
+      if (!(error instanceof ConfigUnreadableError)) throw error;
+      showConfigProblem(error);
+      return false;
+    }
+  };
+  /* The screens that read config.json when they open: an unreadable file
+   * shows its screen instead of the defaults. */
+  const openConfigScreen = (next: Screen): void => {
+    const read = readConfig();
+    if (read.state === 'unreadable') showConfigProblem(read);
+    else setScreen(next);
+  };
+  /* After the unreadable-config screen: wherever the file now says. */
+  const continueAfterConfig = (): void => {
+    const read = readConfig();
+    if (read.state === 'unreadable') showConfigProblem(read);
+    else setScreen(openingScreen(read.config));
+  };
 
   // Ctrl+C exits through Ink itself: start.ts renders with exitOnCtrlC, which
   // consumes the keystroke before any useInput handler could see it.
@@ -137,8 +195,8 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
         kind: 'agent-instructions',
         initialCursorClient: firstOutdated?.client,
       });
-    } else if (action === 'permissions') setScreen({ kind: 'permissions' });
-    else if (action === 'multiAgent') setScreen({ kind: 'multi-agent' });
+    } else if (action === 'permissions') openConfigScreen({ kind: 'permissions' });
+    else if (action === 'multiAgent') openConfigScreen({ kind: 'multi-agent' });
     else if (action === 'extension') setScreen({ kind: 'extension' });
     else if (action === 'doctor') setScreen({ kind: 'doctor' });
     else if (action === 'updates') setScreen({ kind: 'updates' });
@@ -151,13 +209,24 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
   };
 
   switch (screen.kind) {
+    case 'config-unreadable':
+      return (
+        <ConfigUnreadableView
+          language={language}
+          problem={screen.problem}
+          onContinue={continueAfterConfig}
+          onQuit={exit}
+          onSwapLang={swapLang}
+          {...(restoreConfig ? { restore: restoreConfig } : {})}
+        />
+      );
+
     case 'notice':
       return (
         <NoticeScreen
           language={language}
           onAcknowledge={() => {
-            saveConfig({ noticeAcknowledged: true });
-            setScreen(firstRunScreen);
+            if (save({ noticeAcknowledged: true })) setScreen(firstRunScreen);
           }}
         />
       );
@@ -173,8 +242,7 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
             else toStatus();
           }}
           onDismiss={() => {
-            saveConfig({ skipWelcome: true, language });
-            toStatus();
+            if (save({ skipWelcome: true, language })) toStatus();
           }}
           onSwapLang={swapLang}
           onQuit={exit}
@@ -231,10 +299,22 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
       return <InstallResultView language={language} report={screen.report} onBack={backToMenu} />;
 
     case 'permissions':
-      return <PermissionsView language={language} onBack={backToMenu} />;
+      return (
+        <PermissionsView
+          language={language}
+          onBack={backToMenu}
+          onConfigUnreadable={showConfigProblem}
+        />
+      );
 
     case 'multi-agent':
-      return <MultiAgentView language={language} onBack={backToMenu} />;
+      return (
+        <MultiAgentView
+          language={language}
+          onBack={backToMenu}
+          onConfigUnreadable={showConfigProblem}
+        />
+      );
 
     case 'extension':
       return <ExtensionView language={language} onBack={backToMenu} />;
@@ -253,8 +333,7 @@ export function App({ initialLanguage, skipWelcome, noticeAcknowledged, statusIn
         <LanguageView
           language={language}
           onPick={(next) => {
-            setLanguage(next);
-            saveConfig({ language: next });
+            if (save({ language: next })) setLanguage(next);
           }}
           onBack={backToMenu}
         />

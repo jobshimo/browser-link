@@ -1,4 +1,5 @@
 export { NoticeScreen } from './notice.js';
+export { ConfigUnreadableView } from './config-unreadable.js';
 export { WelcomeScreen } from './welcome.js';
 export { MainMenu, type MenuAction } from './menu.js';
 export { ClientPicker } from './client-picker.js';
