@@ -18,9 +18,12 @@ const ALLOWED_BY_OS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
     'Google Chrome Helper (GPU)',
     'Google Chrome Helper (Plugin)',
     'Google Chrome Helper (Alerts)',
+    // Network-service helper: owns the socket in Chrome 157 on macOS.
+    'Google Chrome Helper (Aperitif)',
     'Chromium',
     'Chromium Helper',
     'Chromium Helper (Renderer)',
+    'Chromium Helper (Aperitif)',
     'Microsoft Edge',
     'Microsoft Edge Helper',
     'Microsoft Edge Helper (Renderer)',
