@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.1](https://github.com/jobshimo/browser-link/compare/v1.0.0...v1.0.1) (2026-11-13)
+
+### Bug Fixes
+
+- **auth:** on macOS the bridge refused Google Chrome 157 with "the program that opened the connection is not a supported Chromium-based browser". In that version the socket belongs to the network-service helper, `Google Chrome Helper (Aperitif)`, which was not in the list of accepted browser names. It is now, together with `Chromium Helper (Aperitif)`. The match is still exact. Remedy: update the server; the extension needs no change.
+
 ## [1.0.0](https://github.com/jobshimo/browser-link/compare/v0.52.0...v1.0.0) (2026-11-10)
 
 This is the hardening release. After updating the server, reload the extension in `chrome://extensions` (a 0.51 or older extension is now refused, and its popup says why), run the browser as the same OS user as the server, and use the console for the three settings that left the Admin window. The README section [Upgrading to 1.0](https://github.com/jobshimo/browser-link#upgrading-to-10) has the details. From this release on, versioning follows semver.

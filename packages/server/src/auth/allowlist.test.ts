@@ -46,6 +46,20 @@ describe('isAllowedBrowser', () => {
     expect(isAllowedBrowser('Google Chrome Helper (Renderer)', 'darwin')).toBe(true);
   });
 
+  // Chrome 157 on macOS runs its network service in a helper with this name,
+  // and that helper owns the bridge socket (lsof -F pc, confirmed on a Mac).
+  test('accepts the macOS network-service helper of Chrome and Chromium', () => {
+    expect(isAllowedBrowser('Google Chrome Helper (Aperitif)', 'darwin')).toBe(true);
+    expect(isAllowedBrowser('Chromium Helper (Aperitif)', 'darwin')).toBe(true);
+  });
+
+  test('keeps the macOS helper match exact', () => {
+    expect(isAllowedBrowser('Google Chrome Helper (Fake)', 'darwin')).toBe(false);
+    expect(isAllowedBrowser('Google Chrome Helper (Aperitif) ', 'darwin')).toBe(false);
+    expect(isAllowedBrowser('Google Chrome Helper (Aperitif)', 'linux')).toBe(false);
+    expect(isAllowedBrowser('Google Chrome Helper (Aperitif)', 'win32')).toBe(false);
+  });
+
   test('accepts other Chromium-based browsers on macOS', () => {
     expect(isAllowedBrowser('Chromium', 'darwin')).toBe(true);
     expect(isAllowedBrowser('Microsoft Edge', 'darwin')).toBe(true);
