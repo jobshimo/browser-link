@@ -452,6 +452,24 @@ describe('isExecutableFilename', () => {
     'trailing.exe.',
     'trailing.exe ',
     'trailing.exe. . ',
+    // The types a review found missing (compiled help, disk images, ClickOnce,
+    // gadgets, patches, shell links, PowerShell consoles, Excel add-ins).
+    'help.chm',
+    'disk.iso',
+    'disk.img',
+    'disk.vhd',
+    'disk.vhdx',
+    'app.application',
+    'app.appref-ms',
+    'w.gadget',
+    'patch.msp',
+    'transform.mst',
+    'explorer.scf',
+    'types.ps1xml',
+    'console.psc1',
+    'x.settingcontent-ms',
+    'addin.xll',
+    'lib.library-ms',
   ])('%s is executable', (name) => {
     expect(isExecutableFilename(name)).toBe(true);
   });

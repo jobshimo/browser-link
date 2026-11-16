@@ -222,6 +222,7 @@ const EXECUTABLE_EXTENSIONS = new Set([
   'msixbundle',
   'appinstaller',
   'application',
+  'appref-ms',
   'xbap',
   'gadget',
   // Windows scripts and script hosts
@@ -254,6 +255,13 @@ const EXECUTABLE_EXTENSIONS = new Set([
   'library-ms',
   'search-ms',
   'searchconnector-ms',
+  // Compiled help (runs script) and disk images Windows mounts on a
+  // double-click, which bypass the Mark-of-the-Web of what is inside
+  'chm',
+  'iso',
+  'img',
+  'vhd',
+  'vhdx',
   // Java, Office macro add-ins
   'jar',
   'jnlp',
