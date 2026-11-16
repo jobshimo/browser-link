@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   TabClaimRegistry,
+  followFlowFinishedEvents,
   formatClaimConflict,
   type AgentCaller,
   type ClaimEvent,
@@ -242,5 +243,122 @@ describe('TabClaimRegistry default time source', () => {
     if (!r.ok) return;
     expect(r.claim.claimed_at).toBe(123_456_789);
     spy.mockRestore();
+  });
+});
+
+describe('TabClaimRegistry flow holds (owner decision D1)', () => {
+  const MIN = 60_000;
+  let now: number;
+  let events: ClaimEvent[];
+  let registry: TabClaimRegistry;
+
+  beforeEach(() => {
+    now = 1_000_000;
+    events = [];
+    registry = new TabClaimRegistry({ nowMs: () => now, onEvent: (e) => events.push(e) });
+  });
+
+  test('pruneStale keeps a claim a running flow holds, and drops it once the clock runs out after the release', () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    now += 20 * MIN;
+    expect(registry.pruneStale()).toEqual([]);
+    registry.releaseFlowHold('f1');
+    now += 10 * MIN - 1;
+    expect(registry.pruneStale()).toEqual([]);
+    now += 1;
+    expect(registry.pruneStale().map((c) => c.tab_id)).toEqual(['tab_1']);
+    expect(events.at(-1)).toMatchObject({ kind: 'tab-released', reason: 'ttl' });
+  });
+
+  test("a hold covers only its own agent's claim", () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', B.agent_id, 'f1', 30 * MIN);
+    now += 10 * MIN;
+    expect(registry.getClaim('tab_1')).toBeNull();
+    expect(registry.ensureActionAllowed('tab_1', B).ok).toBe(true);
+  });
+
+  test('another agent is refused while the hold lasts and allowed once the claim really expires', () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    now += 15 * MIN;
+    expect(registry.ensureActionAllowed('tab_1', B)).toMatchObject({
+      ok: false,
+      reason: 'conflict',
+    });
+    registry.releaseFlowHold('f1');
+    now += 10 * MIN;
+    expect(registry.ensureActionAllowed('tab_1', B)).toMatchObject({ ok: true, created: true });
+  });
+
+  test('a late release dates the last step from the flow start, never later than now', () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    now += 25 * MIN;
+    registry.releaseFlowHold('f1', 18 * MIN);
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000 + 18 * MIN);
+    registry.claim('tab_2', A);
+    registry.holdForFlow('tab_2', A.agent_id, 'f2', 30 * MIN);
+    registry.releaseFlowHold('f2', 99 * MIN);
+    expect(registry.getClaim('tab_2')?.last_activity_at).toBe(now);
+  });
+
+  test('a release never moves the clock backwards', () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    now += 5 * MIN;
+    registry.ensureActionAllowed('tab_1', A);
+    registry.releaseFlowHold('f1', 1 * MIN);
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(now);
+  });
+
+  test('past its bound a hold stops holding and the clock counts from the bound', () => {
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    now += 30 * MIN;
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000 + 30 * MIN);
+    now += 10 * MIN;
+    expect(registry.getClaim('tab_1')).toBeNull();
+    // A summary arriving after the bound changes nothing.
+    registry.releaseFlowHold('f1', 35 * MIN);
+    expect(registry.getClaim('tab_1')).toBeNull();
+  });
+
+  test('releasing an unknown flow is a no-op', () => {
+    registry.claim('tab_1', A);
+    now += 5 * MIN;
+    registry.releaseFlowHold('nope');
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000);
+  });
+
+  test('a hold registered before the claim exists covers the claim the flow then makes', () => {
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * MIN);
+    registry.ensureActionAllowed('tab_1', A);
+    now += 20 * MIN;
+    expect(registry.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+  });
+});
+
+describe('followFlowFinishedEvents', () => {
+  test('releases the hold named by a flow-finished event, dated by its duration, and nothing else', () => {
+    let now = 1_000_000;
+    const registry = new TabClaimRegistry({ nowMs: () => now });
+    let listener: ((e: { kind: string; data: Record<string, unknown> }) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const off = followFlowFinishedEvents(registry, (fn) => {
+      listener = fn;
+      return unsubscribe;
+    });
+    registry.claim('tab_1', A);
+    registry.holdForFlow('tab_1', A.agent_id, 'f1', 30 * 60_000);
+    now += 20 * 60_000;
+    listener!({ kind: 'tab-created', data: { flow_id: 'f1' } });
+    listener!({ kind: 'flow-finished', data: { flow_id: 42 } });
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000);
+    listener!({ kind: 'flow-finished', data: { flow_id: 'f1', duration_ms: 12 * 60_000 } });
+    expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000 + 12 * 60_000);
+    off();
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 });

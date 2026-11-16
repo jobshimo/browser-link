@@ -9,6 +9,8 @@
  * `settle.ts` already established for the click/type/press settle wait.
  */
 
+import { MAX_DETACHED_FLOW_MS } from './flow-registry.js';
+
 /** chrome.storage key the setting is persisted under, in `chrome.storage.local`
  * (a per-device preference, not something that should sync across machines
  * the way a bookmark would — mirrors the local-only intent of the existing
@@ -78,10 +80,64 @@ export function shouldDisconnectForIdle(
   lastActivityAt: number,
   now: number,
   idleTtlMinutes: number,
+  /** Owner decision D1: the bound (`idleHoldUntil`) of every flow running
+   * on the tab. A flow before its bound keeps the tab connected; one past
+   * it counts as activity at that bound. */
+  flowHoldsUntil: readonly number[] = [],
 ): boolean {
   if (idleTtlMinutes === IDLE_TTL_NEVER) return false;
+  let lastActiveAt = lastActivityAt;
+  for (const holdUntil of flowHoldsUntil) {
+    if (now < holdUntil) return false;
+    lastActiveAt = Math.max(lastActiveAt, holdUntil);
+  }
   const ttlMs = idleTtlMinutes * 60_000;
-  return now - lastActivityAt >= ttlMs;
+  return now - lastActiveAt >= ttlMs;
+}
+
+/** A flow running on a tab, as the idle sweep sees it. */
+export interface IdleFlowHold {
+  tabId: number;
+  /** See `idleHoldUntil`. */
+  holdUntil: number;
+}
+
+/**
+ * Until when a running flow holds its tab's idle clock: the flow's own
+ * maximum duration, never longer. A detached flow ends at its ceiling
+ * (`expiresAt`, `MAX_DETACHED_FLOW_MS` after it started); a foreground one
+ * at the deadline the server sent with it. A server that sent no deadline
+ * gets the longest any flow may run.
+ */
+export function idleHoldUntil(
+  flow: { detached: boolean; startedAt: number; expiresAt?: number },
+  foregroundDeadlineAt: number | undefined,
+): number {
+  const longest = flow.startedAt + MAX_DETACHED_FLOW_MS;
+  if (flow.detached) return flow.expiresAt ?? longest;
+  return foregroundDeadlineAt ?? longest;
+}
+
+/** When a flow ends, its last step is the tab's last activity: the idle
+ * window restarts from it, not from the request that launched the flow. */
+export function activityAfterFlowEnded(lastActivityAt: number, endedAt: number): number {
+  return Math.max(lastActivityAt, endedAt);
+}
+
+/** The tabs one sweep tick disconnects, from `[tabId, lastActivityAt]`
+ * pairs and the flows running now. */
+export function tabsToDisconnectForIdle(
+  tabs: Iterable<readonly [number, number]>,
+  holds: readonly IdleFlowHold[],
+  now: number,
+  idleTtlMinutes: number,
+): number[] {
+  const idle: number[] = [];
+  for (const [tabId, lastActivityAt] of tabs) {
+    const tabHolds = holds.filter((h) => h.tabId === tabId).map((h) => h.holdUntil);
+    if (shouldDisconnectForIdle(lastActivityAt, now, idleTtlMinutes, tabHolds)) idle.push(tabId);
+  }
+  return idle;
 }
 
 /**

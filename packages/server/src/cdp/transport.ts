@@ -67,6 +67,7 @@ import {
   detachedFlowForTab,
   detachedFlowStatus,
   finishDetachedFlow,
+  MAX_DETACHED_FLOW_MS,
   registerDetachedFlow,
   reportDetachedProgress,
   shouldStopDetachedFlow,
@@ -147,15 +148,58 @@ let cleanupTimer: NodeJS.Timeout | null = null;
 function ensureCleanupTimer(): void {
   if (cleanupTimer) return;
   cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [targetId, conn] of connections) {
-      if (now - conn.lastUsedAt > idleCleanupMs) {
-        connections.delete(targetId);
-        void closeConnection(conn.client, targetId);
-      }
-    }
+    sweepIdleConnections(Date.now());
   }, idleSweepIntervalMs);
   cleanupTimer.unref();
+}
+
+/**
+ * Running flows holding a connection's idle clock, keyed by targetId (owner
+ * decision D1). A flow's steps use the client directly and never pass
+ * through `getConnection`, so without a hold the sweep would close the
+ * socket under a flow nobody else touches. Each hold carries the flow's own
+ * maximum end (`until`): past it the hold no longer counts.
+ */
+const flowHolds = new Map<string, Set<{ until: number }>>();
+
+/** Hold `targetId`'s connection open while a flow runs, at most until
+ * `until`. The returned release restarts the idle window from the flow's
+ * last step (now, or the bound if the flow outlived it). */
+function holdConnectionForFlow(targetId: string, until: number): () => void {
+  const hold = { until };
+  let holds = flowHolds.get(targetId);
+  if (!holds) {
+    holds = new Set();
+    flowHolds.set(targetId, holds);
+  }
+  holds.add(hold);
+  const owner = holds;
+  return () => {
+    owner.delete(hold);
+    if (owner.size === 0 && flowHolds.get(targetId) === owner) flowHolds.delete(targetId);
+    const conn = connections.get(targetId);
+    const lastStepAt = Math.min(Date.now(), hold.until);
+    if (conn && lastStepAt > conn.lastUsedAt) conn.lastUsedAt = lastStepAt;
+  };
+}
+
+/** Close every connection unused for longer than the idle window at `now`.
+ * A connection a running flow holds is skipped; one whose flow outlived its
+ * bound counts as used at that bound. */
+function sweepIdleConnections(now: number): void {
+  for (const [targetId, conn] of connections) {
+    let lastActiveAt = conn.lastUsedAt;
+    let held = false;
+    for (const hold of flowHolds.get(targetId) ?? []) {
+      if (now < hold.until) held = true;
+      else lastActiveAt = Math.max(lastActiveAt, hold.until);
+    }
+    if (held) continue;
+    if (now - lastActiveAt > idleCleanupMs) {
+      connections.delete(targetId);
+      void closeConnection(conn.client, targetId);
+    }
+  }
 }
 
 /**
@@ -348,6 +392,7 @@ export function resetConnectionsForTest(): void {
   for (const conn of connections.values()) conn.client.close();
   connections.clear();
   inFlight.clear();
+  flowHolds.clear();
   if (cleanupTimer) {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
@@ -363,6 +408,12 @@ export function resetConnectionsForTest(): void {
 export function setIdleCleanupConfigForTest(idleMs: number, sweepIntervalMs: number): void {
   idleCleanupMs = idleMs;
   idleSweepIntervalMs = sweepIntervalMs;
+}
+
+/** Test-only: run one idle sweep as if the clock read `now`, so a test can
+ * step past the real 5-minute window without waiting for it. */
+export function sweepIdleConnectionsForTest(now: number): void {
+  sweepIdleConnections(now);
 }
 
 // === CDP primitives ========================================================
@@ -1302,11 +1353,23 @@ export async function callCdpTool(
           deadlineAt === undefined ? undefined : () => shouldCancel() || Date.now() >= deadlineAt,
           hidePasswordValues,
         );
-        const ran = await runFlow(
-          rawSteps as FlowStep[],
-          deadlineAt === undefined ? deps : { ...deps, deadlineAt },
-          { dryRun },
-        );
+        // Owner decision D1: the idle sweep must not cut a running flow. A
+        // dry run only probes and needs no hold. Bounded by the flow's own
+        // deadline; without one (a caller that sent none) by the longest
+        // any flow may run.
+        const release = dryRun
+          ? undefined
+          : holdConnectionForFlow(targetId, deadlineAt ?? Date.now() + MAX_DETACHED_FLOW_MS);
+        let ran: FlowResult;
+        try {
+          ran = await runFlow(
+            rawSteps as FlowStep[],
+            deadlineAt === undefined ? deps : { ...deps, deadlineAt },
+            { dryRun },
+          );
+        } finally {
+          release?.();
+        }
         return withValuesHiddenNote(ran, hidePasswordValues);
       }
 
@@ -1320,6 +1383,8 @@ export async function callCdpTool(
         );
       }
       const flow = registerDetachedFlow({ flowId, tabId, steps: rawSteps.length });
+      // Owner decision D1, bounded by the detached ceiling.
+      const release = holdConnectionForFlow(targetId, flow.expiresAt);
       // The gate branch cancels THROUGH the registry rather than short-
       // circuiting past it: `stopped_by: 'grant-revoked'` is the only thing
       // that tells the agent a human pulled the grant, as opposed to
@@ -1347,6 +1412,7 @@ export async function callCdpTool(
           // recorded below from a null result. There is no caller left to
           // rethrow to.
         } finally {
+          release();
           finishDetachedFlow(flow.flowId, result);
         }
       })();

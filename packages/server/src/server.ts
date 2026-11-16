@@ -30,7 +30,11 @@ import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dis
 import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/proxy.js';
 import { BridgeEventLog } from './bridge/events.js';
-import { TabClaimRegistry, type AgentCaller } from './tools/tab-claims.js';
+import {
+  TabClaimRegistry,
+  followFlowFinishedEvents,
+  type AgentCaller,
+} from './tools/tab-claims.js';
 import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
@@ -396,6 +400,11 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   // directly. Same event kind, same payload shape, same "exactly one per
   // flow, never one per iteration" rule as the extension path.
   setCdpFlowEventSink((data) => events.add('flow-finished', data));
+
+  // Owner decision D1: a detached flow holds its agent's claim until its
+  // `flow-finished` summary arrives (from either transport), or until its
+  // own 30-minute ceiling.
+  followFlowFinishedEvents(tabClaims, (fn) => events.subscribe(fn));
 
   // Read once at wiring time, not per call: a trail that switched itself on
   // and off mid-session would have gaps nothing explains. Both default ON —

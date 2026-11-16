@@ -104,11 +104,14 @@ import {
   DEFAULT_IDLE_TTL_MINUTES,
   IDLE_TTL_STORAGE_KEY,
   IDLE_TTL_UPDATED_AT_STORAGE_KEY,
+  activityAfterFlowEnded,
   clampIdleTtlMinutes,
+  idleHoldUntil,
   parseIncomingSettings,
   shouldAcceptIncomingSettings,
-  shouldDisconnectForIdle,
   shouldScheduleIdleSweep,
+  tabsToDisconnectForIdle,
+  type IdleFlowHold,
   type IncomingIdleSettings,
 } from './idle-policy.js';
 import {
@@ -892,6 +895,13 @@ chrome.windows.onRemoved.addListener((closedId) => {
  * as `failed` / `worker-terminated` instead of leaving a phantom.
  */
 const flowRegistry = createFlowRegistry();
+
+/** The server's deadline of each running FOREGROUND flow, by flow id: the
+ * bound of its hold on the tab's idle clock (owner decision D1, see
+ * `idleHoldUntil`). A detached flow's bound is its registry `expiresAt`.
+ * In memory with the registry, so it dies with the worker exactly as the
+ * flows it describes do. */
+const foregroundFlowDeadlines = new Map<string, number>();
 
 /** Fallback id for a `browser.flow` that arrived without one (a server
  * older than this extension). `crypto.randomUUID` is available in the MV3
@@ -2694,6 +2704,7 @@ async function handleFlow(
     !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
       ? Date.now() + Math.max(0, p.deadline_ms)
       : undefined;
+  if (deadlineAt !== undefined) foregroundFlowDeadlines.set(flowId, deadlineAt);
   // A `wait_for` poll loop only knows this one flag, so it must also
   // trip at the deadline or a 30s wait would sail past the bridge timeout.
   // The runner itself keeps the two causes apart (`shouldCancel` alone is
@@ -2884,9 +2895,14 @@ const flowHistoryDroppedAt = new Map<number, number>();
  * a storage failure must not turn a completed flow into a failed tool call,
  * and for a detached flow there is no caller left to fail anyway. */
 function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
+  foregroundFlowDeadlines.delete(flowId);
   const entry = flowRegistry.finish(flowId);
   if (!entry) return;
   const endedAt = Date.now();
+  // Owner decision D1: the flow's steps were the tab's activity, so the
+  // idle window restarts from its last step whatever the outcome.
+  const tabState = tabStates.get(entry.tabId);
+  if (tabState) tabState.lastActivityAt = activityAfterFlowEnded(tabState.lastActivityAt, endedAt);
   const droppedAt = flowHistoryDroppedAt.get(entry.tabId);
   // Skip the append entirely for a tab that has already been removed — see
   // `flowHistoryDroppedAt`. Ordering on the chain is not enough on its own,
@@ -4639,7 +4655,8 @@ chrome.debugger.onDetach.addListener((source) => {
  * tool.request landed more than the user's configured `idleTtlMinutes`
  * ago gets disconnected: the WS closes, the debugger detaches, the popup
  * goes back to "Not connected". The user explicitly re-presses Connect to
- * bring it back.
+ * bring it back. A tab with a flow running is never idle, and a finished
+ * flow's last step counts as its last activity (owner decision D1).
  *
  * When the user picked "Never" (idleTtlMinutesCache === 0),
  * `shouldScheduleIdleSweep` short-circuits the tick before it walks
@@ -4654,8 +4671,20 @@ chrome.debugger.onDetach.addListener((source) => {
 setInterval(() => {
   if (!shouldScheduleIdleSweep(idleTtlMinutesCache)) return;
   const now = Date.now();
-  for (const [tabId, state] of tabStates) {
-    if (!shouldDisconnectForIdle(state.lastActivityAt, now, idleTtlMinutesCache)) continue;
+  // Owner decision D1: a tab with a flow running is not idle. Its steps run
+  // here in the worker and never arrive as tool.request, so the registry is
+  // what says the tab is busy, up to each flow's own maximum duration.
+  const holds: IdleFlowHold[] = [];
+  for (const view of flowRegistry.listRunning(now)) {
+    const entry = flowRegistry.get(view.flowId);
+    if (!entry) continue;
+    holds.push({
+      tabId: entry.tabId,
+      holdUntil: idleHoldUntil(entry, foregroundFlowDeadlines.get(entry.flowId)),
+    });
+  }
+  const tabs = [...tabStates].map(([tabId, state]) => [tabId, state.lastActivityAt] as const);
+  for (const tabId of tabsToDisconnectForIdle(tabs, holds, now, idleTtlMinutesCache)) {
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

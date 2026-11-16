@@ -4,12 +4,16 @@ import {
   IDLE_TTL_NEVER,
   MAX_IDLE_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
+  activityAfterFlowEnded,
   clampIdleTtlMinutes,
+  idleHoldUntil,
   parseIncomingSettings,
   shouldAcceptIncomingSettings,
   shouldDisconnectForIdle,
   shouldScheduleIdleSweep,
+  tabsToDisconnectForIdle,
 } from './idle-policy.js';
+import { MAX_DETACHED_FLOW_MS } from './flow-registry.js';
 
 describe('clampIdleTtlMinutes', () => {
   test('0 ("never") passes through unchanged', () => {
@@ -71,6 +75,64 @@ describe('shouldDisconnectForIdle', () => {
   test('a 1-minute setting disconnects after just over a minute of silence', () => {
     const lastActivityAt = NOW - 61_000;
     expect(shouldDisconnectForIdle(lastActivityAt, NOW, 1)).toBe(true);
+  });
+});
+
+/*
+ * Owner decision D1: the idle disconnect may not fire while a flow runs on
+ * the tab; the flow's steps count as activity, so once it ends the window
+ * counts from its last step. A flow's own maximum duration bounds the hold.
+ */
+describe('the idle sweep and running flows (owner decision D1)', () => {
+  const NOW = 1_000_000_000;
+  const MIN = 60_000;
+
+  test('a running flow keeps its tab connected past the TTL', () => {
+    expect(shouldDisconnectForIdle(NOW - 45 * MIN, NOW, 30, [NOW + 1])).toBe(false);
+  });
+
+  test('a flow past its own maximum no longer holds, and the window counts from that bound', () => {
+    expect(shouldDisconnectForIdle(NOW - 45 * MIN, NOW, 30, [NOW - 30 * MIN + 1])).toBe(false);
+    expect(shouldDisconnectForIdle(NOW - 45 * MIN, NOW, 30, [NOW - 30 * MIN])).toBe(true);
+  });
+
+  test('"never" stays never with a flow running', () => {
+    expect(shouldDisconnectForIdle(NOW - 45 * MIN, NOW, IDLE_TTL_NEVER, [NOW - 99 * MIN])).toBe(
+      false,
+    );
+  });
+
+  test('when a flow ends, its last step is the last activity (and never moves it backwards)', () => {
+    const endedAt = NOW - 5 * MIN;
+    const after = activityAfterFlowEnded(NOW - 40 * MIN, endedAt);
+    expect(after).toBe(endedAt);
+    expect(shouldDisconnectForIdle(after, NOW, 30)).toBe(false);
+    expect(shouldDisconnectForIdle(after, endedAt + 30 * MIN, 30)).toBe(true);
+    expect(activityAfterFlowEnded(NOW, endedAt)).toBe(NOW);
+  });
+
+  test("a hold's bound is the flow's own maximum: the detached ceiling or the foreground deadline", () => {
+    const startedAt = NOW;
+    expect(idleHoldUntil({ detached: true, startedAt, expiresAt: NOW + 30 * MIN }, undefined)).toBe(
+      NOW + 30 * MIN,
+    );
+    expect(idleHoldUntil({ detached: false, startedAt }, NOW + 57_000)).toBe(NOW + 57_000);
+    // A server that sent no deadline: the longest any flow may run.
+    expect(idleHoldUntil({ detached: false, startedAt }, undefined)).toBe(
+      NOW + MAX_DETACHED_FLOW_MS,
+    );
+  });
+
+  test('the sweep disconnects only idle tabs with no flow holding them', () => {
+    const tabs: [number, number][] = [
+      [1, NOW - 45 * MIN],
+      [2, NOW - 45 * MIN],
+      [3, NOW - 5 * MIN],
+    ];
+    const holds = [{ tabId: 2, holdUntil: NOW + 10 * MIN }];
+    expect(tabsToDisconnectForIdle(tabs, holds, NOW, 30)).toEqual([1]);
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 30)).toEqual([1, 2]);
+    expect(tabsToDisconnectForIdle(tabs, holds, NOW, IDLE_TTL_NEVER)).toEqual([]);
   });
 });
 

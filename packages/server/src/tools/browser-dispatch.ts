@@ -2633,6 +2633,20 @@ async function dispatchBrowserTool(
         ? Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs)
         : ACTION_TIMEOUT_FLOOR_MS;
       const hide = passwordValuesHidden(deps);
+      // Owner decision D1: the flow's steps run inside the transport, never
+      // through `runAction`, so the claim is held for the flow's life and
+      // its clock restarts from the last step. Bounded by the flow's own
+      // maximum: the call's timeout in the foreground, the detached ceiling
+      // otherwise. A detached flow's hold is released by its `flow-finished`
+      // summary (`followFlowFinishedEvents`, wired in server.ts).
+      if (!dryRun) {
+        deps.tabClaims?.holdForFlow(
+          flowTabId,
+          caller.agent_id,
+          flowId,
+          detached ? MAX_DETACHED_FLOW_TIMEOUT_MS : flowTimeoutMs,
+        );
+      }
       let result: unknown;
       try {
         result = await runAction(
@@ -2653,12 +2667,14 @@ async function dispatchBrowserTool(
           flowTimeoutMs,
         );
       } catch (err) {
+        deps.tabClaims?.releaseFlowHold(flowId);
         // The runner's own deadline normally answers first. This is the
         // backstop for a runner stuck INSIDE one step past the bridge
         // timeout: recover what the registry knows instead of losing it.
         if (!foreground || isCdpTabId(flowTabId) || !isBridgeFlowTimeout(err)) throw err;
         return recoverTimedOutFlow(flowTabId, flowId, err, deps);
       }
+      if (foreground) deps.tabClaims?.releaseFlowHold(flowId);
       result = requireValuesHidden('browser.flow', result, hide);
       // A projection is only useful if it says which mode the flow needs —
       // see the dry-run comment above.

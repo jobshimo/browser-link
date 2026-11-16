@@ -22,6 +22,12 @@
  *     `pruneStale()` (called periodically by the primary).
  *   - Sessions ending (proxy disconnect) drop the agent's claims
  *     immediately via `onAgentDisconnect()`.
+ *   - A running flow holds its agent's claim (owner decision D1): its steps
+ *     run inside the transport and never pass through an action tool, so
+ *     `holdForFlow()` stops the claim's clock for the flow's life and
+ *     `releaseFlowHold()` restarts it from the flow's last step. A hold
+ *     never outlives the flow's own maximum duration: past it the clock
+ *     restarts from that bound, as if a step had run there.
  */
 
 export interface AgentCaller {
@@ -83,8 +89,19 @@ export interface TabClaimRegistryOptions {
 
 const MS_PER_MINUTE = 60_000;
 
+/** One running flow holding its agent's claim on a tab. */
+interface FlowHold {
+  tab_id: string;
+  agent_id: string;
+  started_at: number;
+  /** The flow's own maximum end: the hold is never honoured past it. */
+  until: number;
+}
+
 export class TabClaimRegistry {
   private claims = new Map<string, TabClaim>();
+  /** Keyed by flow_id. */
+  private flowHolds = new Map<string, FlowHold>();
   private readonly defaultTtlMs: number;
   private readonly maxTtlMs: number;
   private readonly now: () => number;
@@ -99,6 +116,7 @@ export class TabClaimRegistry {
 
   /** Snapshot of the current claim for a tab, or null when free or expired. */
   getClaim(tab_id: string): TabClaim | null {
+    this.retireOverdueHolds(this.now());
     const claim = this.claims.get(tab_id);
     if (!claim) return null;
     if (this.isExpired(claim)) {
@@ -176,8 +194,42 @@ export class TabClaimRegistry {
     return released;
   }
 
+  /**
+   * Hold `agent_id`'s claim on `tab_id` while flow `flow_id` runs: the
+   * claim cannot expire until `releaseFlowHold(flow_id)` or until
+   * `maxDurationMs` (the flow's own maximum duration) has passed. Only a
+   * claim of that same agent is held; the hold may be registered before the
+   * claim exists (the flow's action tool creates it).
+   */
+  holdForFlow(tab_id: string, agent_id: string, flow_id: string, maxDurationMs: number): void {
+    const now = this.now();
+    this.flowHolds.set(flow_id, {
+      tab_id,
+      agent_id,
+      started_at: now,
+      until: now + Math.max(0, maxDurationMs),
+    });
+  }
+
+  /**
+   * The flow ended: its claim's clock restarts from the flow's last step.
+   * `ranForMs` is how long the flow ran when the end is reported late (a
+   * detached flow's summary can arrive after the socket came back); without
+   * it the last step is now. Never later than now or than the hold's bound.
+   * An unknown or already-released flow_id is a no-op.
+   */
+  releaseFlowHold(flow_id: string, ranForMs?: number): void {
+    const hold = this.flowHolds.get(flow_id);
+    if (!hold) return;
+    this.flowHolds.delete(flow_id);
+    const now = this.now();
+    const lastStepAt = ranForMs === undefined ? now : hold.started_at + Math.max(0, ranForMs);
+    this.recordFlowActivity(hold, Math.min(lastStepAt, now, hold.until));
+  }
+
   /** Sweep claims past their TTL. Returns the dropped claims. */
   pruneStale(): TabClaim[] {
+    this.retireOverdueHolds(this.now());
     const expired: TabClaim[] = [];
     for (const [tabId, claim] of this.claims) {
       if (this.isExpired(claim)) {
@@ -218,7 +270,36 @@ export class TabClaimRegistry {
   }
 
   private isExpired(claim: TabClaim): boolean {
-    return this.now() - claim.last_activity_at >= claim.ttl_ms;
+    const now = this.now();
+    if (this.isHeldByFlow(claim, now)) return false;
+    return now - claim.last_activity_at >= claim.ttl_ms;
+  }
+
+  private isHeldByFlow(claim: TabClaim, now: number): boolean {
+    for (const hold of this.flowHolds.values()) {
+      if (hold.tab_id === claim.tab_id && hold.agent_id === claim.agent_id && now < hold.until) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** A flow that outlived its own maximum duration stops holding the claim,
+   * and its clock restarts from that bound, as if a step had run there. */
+  private retireOverdueHolds(now: number): void {
+    for (const [flowId, hold] of this.flowHolds) {
+      if (now < hold.until) continue;
+      this.flowHolds.delete(flowId);
+      this.recordFlowActivity(hold, hold.until);
+    }
+  }
+
+  /** A flow step at `at` is activity on its agent's claim. Replaces the
+   * stored claim rather than mutating it: callers hold earlier snapshots. */
+  private recordFlowActivity(hold: FlowHold, at: number): void {
+    const claim = this.claims.get(hold.tab_id);
+    if (!claim || claim.agent_id !== hold.agent_id || at <= claim.last_activity_at) return;
+    this.claims.set(hold.tab_id, { ...claim, last_activity_at: at });
   }
 
   private claimInternal(
@@ -276,6 +357,35 @@ export class TabClaimRegistry {
 
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), hi);
+}
+
+/** The part of a bridge event this module reads. */
+interface FinishedFlowEvent {
+  kind: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Release a detached flow's claim hold when its one-per-flow
+ * `flow-finished` summary reaches the event log: the extension pushes it as
+ * a `bridge.event` (late, on reconnect, when the socket was down; and for a
+ * flow the service worker was killed under), the cdp-direct runner adds it
+ * in-process. Its `duration_ms` dates the last step. Returns the
+ * unsubscribe function.
+ */
+export function followFlowFinishedEvents(
+  registry: TabClaimRegistry,
+  subscribe: (listener: (event: FinishedFlowEvent) => void) => () => void,
+): () => void {
+  return subscribe((event) => {
+    if (event.kind !== 'flow-finished') return;
+    const { flow_id, duration_ms } = event.data;
+    if (typeof flow_id !== 'string') return;
+    registry.releaseFlowHold(
+      flow_id,
+      typeof duration_ms === 'number' && Number.isFinite(duration_ms) ? duration_ms : undefined,
+    );
+  });
 }
 
 /** User-facing error string for action tools when another agent holds the tab. Kept here so the wording is consistent across handlers. */

@@ -7,8 +7,17 @@ import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
 import { clearGrant, saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR, checkCdpDirectGate } from './gate.js';
-import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
-import { resetDetachedFlowsForTest } from './detached-flows.js';
+import {
+  callCdpTool,
+  resetConnectionsForTest,
+  setIdleCleanupConfigForTest,
+  sweepIdleConnectionsForTest,
+} from './transport.js';
+import {
+  cancelDetachedFlow,
+  detachedFlowStatus,
+  resetDetachedFlowsForTest,
+} from './detached-flows.js';
 import {
   OBSERVER_BINDING,
   OBSERVER_GLOBAL,
@@ -598,6 +607,150 @@ describe('callCdpTool — connection cache lifecycle', () => {
     // The idle sweep must have closed and evicted the pooled connection —
     // the next call dials fresh instead of reusing a stale cache entry.
     await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(2);
+  });
+});
+
+/*
+ * Owner decision D1: the cdp connection sweep stays internal, but it may not
+ * cut a running flow, and a flow's steps count as activity. Only `Date` is
+ * faked, so the sweep is stepped through minutes while the fake target's
+ * sockets and the flow's poll loop run on real (millisecond) timers. Each
+ * check reads `connectionCount` through a ping AFTER the sweep it judges: a
+ * ping refreshes the clock, so it cannot hide what the sweep already did.
+ */
+describe('callCdpTool — a running flow holds its connection (owner decision D1)', () => {
+  const MIN = 60_000;
+  const T0 = 1_700_000_000_000;
+  /** What the fake page answers to `Runtime.evaluate`: the flow's wait_for
+   * waits while it is 'false' and is stuck inside its step while 'hang'. */
+  let page: 'false' | 'true' | 'hang';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+    page = 'false';
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function connect(): Promise<string> {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () =>
+        page === 'hang' ? NO_REPLY : { result: { value: page === 'true' } },
+    });
+    grantAccess(port);
+    const tabId = `cdp:${targetId}`;
+    await callCdpTool(tabId, 'ping', {});
+    return tabId;
+  }
+
+  const waitStep = { wait_for: { expression: 'ready', timeout_ms: 30_000, poll_interval_ms: 10 } };
+
+  async function untilEnded(flowId: string): Promise<string> {
+    const deadline = performance.now() + 5_000;
+    let state = detachedFlowStatus(flowId).state;
+    while (state === 'running' && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      state = detachedFlowStatus(flowId).state;
+    }
+    return state;
+  }
+
+  test('the sweep keeps the connection of a running detached flow past the idle window', async () => {
+    const tabId = await connect();
+    await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+    vi.setSystemTime(T0 + 20 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+    expect(detachedFlowStatus('f1').state).toBe('running');
+  });
+
+  test('after a detached flow ends the idle window counts from its last step', async () => {
+    const tabId = await connect();
+    await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+    vi.setSystemTime(T0 + 20 * MIN);
+    page = 'true';
+    expect(await untilEnded('f1')).not.toBe('running');
+    vi.setSystemTime(T0 + 25 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test('a cancelled detached flow restarts the window from when it stopped', async () => {
+    const tabId = await connect();
+    // A loop of short real pauses: unlike a wait_for, it has no per-step
+    // timeout for the fake clock's jump to trip.
+    await callCdpTool(tabId, 'flow', {
+      flow_id: 'f1',
+      detach: true,
+      steps: [{ repeat: { max_iterations: 500, steps: [{ sleep: { ms: 10 } }] } }],
+    });
+    vi.setSystemTime(T0 + 20 * MIN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(detachedFlowStatus('f1').state).toBe('running');
+    // In-process cancel, not `flow_cancel`: that tool call would refresh
+    // the connection's clock by itself.
+    cancelDetachedFlow('f1');
+    expect(await untilEnded('f1')).toBe('cancelled');
+    vi.setSystemTime(T0 + 25 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test.each([
+    ['keeps', 35 * MIN, 1],
+    ['closes', 35 * MIN + 1, 2],
+  ])(
+    'a detached flow stuck inside a step holds the connection no longer than its 30-minute ceiling: the sweep %s it at the ceiling plus the idle window',
+    async (_, at, dials) => {
+      const tabId = await connect();
+      page = 'hang';
+      await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+      // Let the flow send the command it will never get an answer to.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      vi.setSystemTime(T0 + at);
+      sweepIdleConnectionsForTest(Date.now());
+      expect(detachedFlowStatus('f1').state).toBe('running');
+      await callCdpTool(tabId, 'ping', {});
+      expect(connectionCount).toBe(dials);
+    },
+  );
+
+  test('a foreground flow holds the connection while it runs and restarts the window from its end', async () => {
+    const tabId = await connect();
+    const running = callCdpTool(tabId, 'flow', {
+      flow_id: 'f1',
+      deadline_ms: 30 * MIN,
+      steps: [waitStep, { press: { key: 'a', settle_ms: 0 } }],
+    });
+    // Let the flow reach its wait before the clock moves.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    vi.setSystemTime(T0 + 6 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    page = 'true';
+    const result = (await running) as { ok: boolean };
+    expect(result.ok).toBe(true);
+    vi.setSystemTime(T0 + 10 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test('with no flow the sweep closes a connection idle for more than five minutes, as before', async () => {
+    const tabId = await connect();
+    vi.setSystemTime(T0 + 5 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+    vi.setSystemTime(T0 + 10 * MIN + 1);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
     expect(connectionCount).toBe(2);
   });
 });

@@ -26,7 +26,7 @@ import {
 import { VERSION } from '../version.js';
 import { saveConfig } from '../config.js';
 import { BridgeEventLog } from '../bridge/events.js';
-import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
+import { TabClaimRegistry, followFlowFinishedEvents, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
 import { handleToolCall } from '../bridge/dispatch.js';
 
@@ -5523,4 +5523,214 @@ describe('cdp: tabs have parity with extension tabs (D7)', () => {
       expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: URL_, title: 'Clients' });
     },
   );
+});
+
+/*
+ * Owner decision D1: while a flow runs, the tab claim between agents may not
+ * expire; every step counts as activity and the claim's clock runs again
+ * from the flow's last step once it ends. The flow's steps run inside the
+ * transport, never through `runAction`, so before D1 nothing refreshed the
+ * claim while they ran.
+ */
+describe('a running flow holds the tab claim (owner decision D1)', () => {
+  const MIN = 60_000;
+  const T0 = 1_000_000;
+
+  function setup(flow: (params: Record<string, unknown>) => Promise<unknown>): {
+    deps: BrowserToolDeps;
+    claims: TabClaimRegistry;
+    events: BridgeEventLog;
+    clock: { now: number };
+  } {
+    const clock = { now: T0 };
+    const claims = new TabClaimRegistry({ nowMs: () => clock.now });
+    const events = new BridgeEventLog();
+    followFlowFinishedEvents(claims, (fn) => events.subscribe(fn));
+    const deps = makeDeps({
+      tabClaims: claims,
+      callBrowserTool: vi.fn(async (_tabId: string, tool: string, params: unknown) =>
+        tool === 'flow' ? flow(params as Record<string, unknown>) : { ok: true },
+      ),
+    });
+    return { deps, claims, events, clock };
+  }
+
+  const detachedAck = async (): Promise<unknown> => ({
+    detached: true,
+    started_at: T0,
+    steps: 1,
+    expires_at: T0 + 30 * MIN,
+  });
+
+  const clickAsB = (deps: BrowserToolDeps): Promise<unknown> =>
+    handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#x' }, deps, B);
+
+  async function launchDetached(deps: BrowserToolDeps): Promise<string> {
+    const ack = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', detach: true, steps: [{ press: { key: 'a' } }] },
+      deps,
+      A,
+    )) as { flow_id: string };
+    return ack.flow_id;
+  }
+
+  test('the claim is still held after its TTL while a detached flow runs, and another agent is refused', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await launchDetached(deps);
+    clock.now = T0 + 11 * MIN;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+  });
+
+  test('a detached flow that ends restarts the clock from its last step', async () => {
+    const { deps, claims, events, clock } = setup(detachedAck);
+    const flowId = await launchDetached(deps);
+    clock.now = T0 + 25 * MIN;
+    // The summary reaches the server five minutes after the last step (the
+    // socket was down when the flow ended): the clock counts from the step.
+    events.add('flow-finished', {
+      flow_id: flowId,
+      state: 'completed',
+      detached: true,
+      duration_ms: 20 * MIN,
+    });
+    clock.now = T0 + 29 * MIN;
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+    clock.now = T0 + 30 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(B.agent_id);
+  });
+
+  test.each(['cancelled', 'failed', 'expired'])(
+    'a detached flow that ends %s releases the hold the same way',
+    async (state) => {
+      const { deps, claims, events, clock } = setup(detachedAck);
+      const flowId = await launchDetached(deps);
+      clock.now = T0 + 3 * MIN;
+      events.add('flow-finished', { flow_id: flowId, state, detached: true, duration_ms: 3 * MIN });
+      clock.now = T0 + 12 * MIN;
+      await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+      clock.now = T0 + 13 * MIN;
+      expect(claims.getClaim('tab_1')).toBeNull();
+    },
+  );
+
+  test('a detached flow that never reports an end holds the claim no longer than its 30-minute ceiling', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await launchDetached(deps);
+    clock.now = T0 + 39 * MIN;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    clock.now = T0 + 40 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+  });
+
+  /** A foreground flow lasts at most its call timeout (15 s for one press),
+   * so the claim it outlives is a six-second one. */
+  const SHORT_TTL_MS = 6_000;
+
+  async function startForeground(
+    flow: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof setup> & { running: Promise<unknown>; boundMs: number }> {
+    const s = setup(flow);
+    await handleBrowserTool(
+      'browser.claim_tab',
+      { tab_id: 'tab_1', ttl_minutes: SHORT_TTL_MS / MIN },
+      s.deps,
+      A,
+    );
+    const running = handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'a' } }] },
+      s.deps,
+      A,
+    );
+    const call = vi.mocked(s.deps.callBrowserTool);
+    await vi.waitFor(() => expect(call.mock.calls.some((c) => c[1] === 'flow')).toBe(true));
+    const boundMs = call.mock.calls.find((c) => c[1] === 'flow')![3] as number;
+    return { ...s, running, boundMs };
+  }
+
+  test.each([
+    ['completes', { ok: true, steps_completed: 1, results: [{ ok: true }] }],
+    ['fails', { ok: false, steps_completed: 0, failed_step: 0, error: 'boom' }],
+    ['is cancelled', { ok: true, stopped_by: 'cancelled', steps_completed: 0, results: [] }],
+  ])(
+    'a foreground flow holds the claim while it runs and, when it %s, the clock restarts from its end',
+    async (_, outcome) => {
+      let finish: (v: unknown) => void = () => {};
+      const { deps, claims, clock, running } = await startForeground(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      clock.now = T0 + 10_000;
+      await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+      finish(outcome);
+      await running;
+      clock.now = T0 + 10_000 + SHORT_TTL_MS - 1;
+      expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+      clock.now = T0 + 10_000 + SHORT_TTL_MS;
+      expect(claims.getClaim('tab_1')).toBeNull();
+      await expect(clickAsB(deps)).resolves.toBeDefined();
+    },
+  );
+
+  test('a foreground flow whose transport throws releases the hold', async () => {
+    let fail: (e: Error) => void = () => {};
+    const { claims, clock, running } = await startForeground(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    clock.now = T0 + 10_000;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    fail(new Error('tab closed'));
+    await expect(running).rejects.toThrow('tab closed');
+    clock.now = T0 + 10_000 + SHORT_TTL_MS;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a foreground flow that never answers holds the claim no longer than its call timeout', async () => {
+    const { claims, clock, boundMs } = await startForeground(() => new Promise(() => {}));
+    clock.now = T0 + boundMs + SHORT_TTL_MS - 1;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    clock.now = T0 + boundMs + SHORT_TTL_MS;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a detached launch the transport refuses holds nothing', async () => {
+    const { deps, claims, clock } = setup(async () => {
+      throw new Error('flow: a detached flow is already running on this tab (flow_x).');
+    });
+    await expect(launchDetached(deps)).rejects.toThrow(/already running/);
+    clock.now = T0 + 10 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a dry run holds nothing', async () => {
+    const { deps, claims, clock } = setup(async () => ({ ok: true, dry_run: true }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', dry_run: true, steps: [{ press: { key: 'a' } }] },
+      deps,
+      A,
+    );
+    clock.now = T0 + 10 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('with no flow the claim expires after its TTL exactly as before', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#x' }, deps, A);
+    clock.now = T0 + 10 * MIN - 1;
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+    clock.now = T0 + 10 * MIN;
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(B.agent_id);
+  });
 });
