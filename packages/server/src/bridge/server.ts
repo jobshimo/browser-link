@@ -265,6 +265,8 @@ export class IpcServer {
       console.error(`${IPC_LOG_PREFIX} No hello within the deadline; closing connection.`);
       socket.destroy();
     }, this.options.helloTimeoutMs ?? IPC_HELLO_TIMEOUT_MS);
+    // A pending deadline must never keep the process alive.
+    helloTimer.unref();
     const clearHelloTimer = () => {
       if (helloTimer !== null) clearTimeout(helloTimer);
       helloTimer = null;
@@ -416,7 +418,8 @@ export class IpcServer {
         handleLine(line);
       }
       // The unterminated remainder is bounded too, until the hello completes.
-      if (!authenticated && buffer.length > IPC_MAX_PREAUTH_LINE_BYTES) tooLong();
+      if (!authenticated && Buffer.byteLength(buffer, 'utf8') > IPC_MAX_PREAUTH_LINE_BYTES)
+        tooLong();
     });
     socket.on('close', () => {
       clearHelloTimer();

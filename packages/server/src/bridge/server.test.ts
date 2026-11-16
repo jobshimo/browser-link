@@ -516,6 +516,34 @@ describe('IpcServer pre-authentication limits', () => {
     expect(server.sessionCount()).toBe(0);
   });
 
+  test('destroys a socket whose multi-byte unterminated remainder is over the bound in bytes', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    // 3 bytes per char: fewer chars than the bound, more bytes than the bound.
+    const chars = Math.ceil(IPC_MAX_PREAUTH_LINE_BYTES / 3) + 1;
+    expect(chars).toBeLessThan(IPC_MAX_PREAUTH_LINE_BYTES);
+    s.write('€'.repeat(chars));
+    expect(await closedWithin(s, 3000)).toBe(true);
+  });
+
+  test('a hello and a post-auth frame pipelined in one chunk are both handled', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    const hello = encodeFrame({
+      kind: 'hello',
+      version: IPC_PROTOCOL_VERSION,
+      token: server.currentToken(),
+    });
+    const big = encodeFrame({
+      kind: 'mcp.notification',
+      payload: { pad: 'p'.repeat(IPC_MAX_PREAUTH_LINE_BYTES * 2) },
+    } as never);
+    s.write(hello + big + encodeFrame({ kind: 'ping' }));
+    const frames = await readNFrames(s, 2);
+    expect(frames.map((f) => f.kind)).toEqual(['hello-ack', 'pong']);
+    expect(server.sessionCount()).toBe(1);
+  });
+
   test('a legitimate hello well under the bound is still accepted', async () => {
     server = await startEphemeral();
     const s = await dial(server.boundAddress());
