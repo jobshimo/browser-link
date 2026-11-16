@@ -26,6 +26,7 @@ const h = vi.hoisted(() => {
     runToolsCommand: vi.fn(() => 'tools-report'),
     runMultiAgentCommand: vi.fn(() => 'multi-agent-report'),
     runFreePort: vi.fn(() => ({ ok: true, message: 'freed' })),
+    runStopPid: vi.fn((_pid: number, _lang: string) => ({ ok: true, message: 'stopped-pid' })),
     runConfigCommand: vi.fn(async () => 'config-report'),
     runCdpCommand: vi.fn(async () => 'cdp-report'),
     runMapCommand: vi.fn(() => 'map-report'),
@@ -87,7 +88,7 @@ function registerModuleMocks(): void {
   });
   vi.doMock('./commands/free-port.js', () => {
     h.loaded.add('free-port');
-    return { runFreePort: h.spies.runFreePort };
+    return { runFreePort: h.spies.runFreePort, runStopPid: h.spies.runStopPid };
   });
   vi.doMock('./commands/config.js', () => {
     h.loaded.add('config-command');
@@ -535,6 +536,9 @@ describe('cli D9: --help or -h in any position prints help and does nothing else
     const dispatch = await loadDispatch();
     await dispatch(['stop', '--help']);
     expect(logs[0]).toContain('  browser-link stop ');
+    expect(logs[0]).toContain(
+      '  browser-link stop --pid <PID> Show that process as the operating system',
+    );
     expect(logs[0]).not.toContain('browser-link install');
     expect(logs[0]).not.toContain('Environment:');
   });
@@ -602,6 +606,16 @@ describe('cli D9: an unknown, malformed or valueless option refuses and touches 
       argv: ['stop', '--dry-run'],
       handler: 'runFreePort',
       error: 'browser-link stop: unknown option --dry-run',
+    },
+    {
+      argv: ['stop', '--pid'],
+      handler: 'runStopPid',
+      error: 'browser-link stop: option --pid needs a value',
+    },
+    {
+      argv: ['stop', '--pid', '4', '--pid=5'],
+      handler: 'runStopPid',
+      error: 'browser-link stop: option --pid was given more than once',
     },
     { argv: ['start', '-x'], handler: 'runServer', error: 'browser-link start: unknown option -x' },
     {
@@ -936,5 +950,65 @@ describe('cli: instructions install --with-core (S13)', () => {
     await dispatch(['help']);
     expect(logs[0]).toContain('  browser-link instructions install --with-core');
     expect(logs[0]).toContain('la primera llamada al navegador devuelve las reglas');
+  });
+});
+
+/* D14 (owner decision): `stop --pid <PID>` is the explicit command the
+ * take-over and `stop` point to. The command module is mocked: no test here
+ * looks up or kills a process. */
+describe('cli D14: stop --pid <PID>', () => {
+  it.each([[['stop', '--pid', '4242']], [['stop', '--pid=4242']]])(
+    '%j hands exactly that pid to runStopPid and never runs the automatic stop',
+    async (argv) => {
+      const dispatch = await loadDispatch();
+      await dispatch(argv);
+      expect(h.spies.runStopPid.mock.calls).toEqual([[4242, 'en']]);
+      expect(h.spies.runFreePort).not.toHaveBeenCalled();
+      expect(logs).toEqual(['stopped-pid']);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it('a refused or failed stop --pid exits 2 after printing what it found', async () => {
+    h.spies.runStopPid.mockReturnValueOnce({ ok: false, message: 'refused-pid' });
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['stop', '--pid', '7'])).rejects.toEqual(new ExitCalled(2));
+    expect(logs).toEqual(['refused-pid']);
+  });
+
+  it.each(['abc', '0', '-5', '12x', '1.5', '99999999999999999999'])(
+    '--pid %s is not a process number: exit 2, nothing loaded, nothing stopped',
+    async (value) => {
+      const dispatch = await loadDispatch();
+      await expect(dispatch(['stop', '--pid', value])).rejects.toEqual(new ExitCalled(2));
+      expect(h.spies.runStopPid).not.toHaveBeenCalled();
+      expect(h.spies.runFreePort).not.toHaveBeenCalled();
+      expect(commandModulesLoaded()).toEqual([]);
+      expect(logs).toEqual([]);
+      expect(errors).toEqual([
+        `browser-link stop: --pid needs a process number (got ${value})`,
+        'Nothing was done. See: browser-link stop --help',
+      ]);
+    },
+  );
+
+  it('the --pid refusal and the help are in Spanish when the language is es', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['stop', '--pid', 'x'])).rejects.toEqual(new ExitCalled(2));
+    expect(errors).toEqual([
+      'browser-link stop: --pid necesita un número de proceso (se recibió x)',
+      'No se hizo nada. Consulte: browser-link stop --help',
+    ]);
+    logs = [];
+    await dispatch(['stop', '-h']);
+    expect(logs[0]).toContain('  browser-link stop --pid <PID> Muestra ese proceso');
+  });
+
+  it('plain stop still runs the automatic stop, never runStopPid', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['stop']);
+    expect(h.spies.runFreePort.mock.calls).toEqual([['en']]);
+    expect(h.spies.runStopPid).not.toHaveBeenCalled();
   });
 });

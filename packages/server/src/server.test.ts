@@ -50,7 +50,8 @@ describe('startServer — primary election orchestration', () => {
     bindFailures: number;
     probe: Deps['election']['probe'];
     multiAgent?: boolean;
-    findOwnerPid?: () => number | null;
+    /** The OS view of the port holder; default: the lookup failed. */
+    inspectHolder?: Deps['election']['inspectHolder'];
     processStartTime?: (pid: number) => number | null;
     installedCodeMtime?: () => number | null;
   }) {
@@ -68,7 +69,9 @@ describe('startServer — primary election orchestration', () => {
       election: {
         localVersion: '0.48.0',
         probe: opts.probe,
-        findOwnerPid: opts.findOwnerPid ?? (() => null),
+        inspectHolder:
+          opts.inspectHolder ??
+          (async () => ({ kind: 'unknown', reason: 'command-missing' }) as const),
         processStartTime: opts.processStartTime ?? (() => null),
         installedCodeMtime: opts.installedCodeMtime ?? (() => null),
         stepDown,
@@ -78,6 +81,14 @@ describe('startServer — primary election orchestration', () => {
     };
     return { deps, logs, stepDown, runProxy, binds: () => binds };
   }
+
+  /** The OS says `pid` holds the port and runs browser-link. */
+  const verified = (pid: number) => async () =>
+    ({
+      kind: 'process',
+      process: { pid, imageName: 'node', command: 'node /usr/local/bin/browser-link' },
+      isBrowserLink: true,
+    }) as const;
 
   const versionProbe =
     (version: string, pid = 42) =>
@@ -116,7 +127,11 @@ describe('startServer — primary election orchestration', () => {
   test('a newer version finds an older primary: the older one steps down and this one binds', async () => {
     // 1 initial bind + 5 hand-off attempts fail, the first rebind after the
     // step-down succeeds.
-    const h = harness({ bindFailures: 6, probe: versionProbe('0.47.0', 4242) });
+    const h = harness({
+      bindFailures: 6,
+      probe: versionProbe('0.47.0', 4242),
+      inspectHolder: verified(4242),
+    });
     await startServer(h.deps);
     expect(h.stepDown).toHaveBeenCalledExactlyOnceWith(4242);
     expect(h.runProxy).not.toHaveBeenCalled();
@@ -155,7 +170,7 @@ describe('startServer — primary election orchestration', () => {
     const h = harness({
       bindFailures: 6,
       probe: async () => ({ kind: 'no-endpoint' }),
-      findOwnerPid: () => 777,
+      inspectHolder: verified(777),
       processStartTime: () => 1_000,
       installedCodeMtime: () => 2_000,
     });
@@ -169,11 +184,38 @@ describe('startServer — primary election orchestration', () => {
   });
 
   test('take-over whose port never frees: defers to the proxy', async () => {
-    const h = harness({ bindFailures: Infinity, probe: versionProbe('0.47.0'), multiAgent: true });
+    const h = harness({
+      bindFailures: Infinity,
+      probe: versionProbe('0.47.0'),
+      inspectHolder: verified(42),
+      multiAgent: true,
+    });
     await startServer(h.deps);
     expect(h.stepDown).toHaveBeenCalledOnce();
     expect(h.runProxy).toHaveBeenCalledOnce();
     expect(h.logs.at(-1)).toBe('take-over: the port did not free up in time; deferring.');
+  });
+
+  test('D14: an older primary the OS does not confirm is not stepped down; the refusal is logged', async () => {
+    const h = harness({
+      bindFailures: Infinity,
+      probe: versionProbe('0.47.0', 4242),
+      inspectHolder: async () => ({
+        kind: 'process',
+        process: { pid: 5150, imageName: 'python.exe', command: 'python.exe squat.py' },
+        isBrowserLink: false,
+      }),
+      multiAgent: true,
+    });
+    await startServer(h.deps);
+    expect(h.stepDown.mock.calls).toEqual([]);
+    expect(h.runProxy).toHaveBeenCalledOnce();
+    expect(h.binds()).toBe(6);
+    expect(h.logs).toEqual([
+      'Primary election: defer (take-over refused: the server answering on 127.0.0.1:17529 says ' +
+        'it is PID 4242, but the operating system says PID 5150 (python.exe) holds the port. ' +
+        'Nothing was stopped. To stop it: browser-link stop --pid 5150).',
+    ]);
   });
 
   test('a bind failure other than EADDRINUSE propagates unchanged', async () => {

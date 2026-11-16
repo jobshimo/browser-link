@@ -57,7 +57,7 @@ export const COMMAND_LINE: Readonly<Record<string, CommandGrammar>> = {
   doctor: { args: NONE },
   about: { args: NONE },
   updates: { args: NONE },
-  stop: { args: NONE },
+  stop: { args: { options: { pid: 'value' }, maxPositionals: 0 } },
   tools: {
     args: NONE,
     subcommands: {

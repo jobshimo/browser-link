@@ -15,6 +15,7 @@ import {
 } from './election.js';
 import { isAddrInUse, startWsBridge } from '../bridge/ws-bridge.js';
 import { BridgeEventLog } from '../bridge/events.js';
+import type { PortHolder } from './port-holder.js';
 
 /* Version-aware primary election (S1). Pure decision + injected effects:
  * no test here kills a process, and every bridge binds port 0. */
@@ -36,11 +37,22 @@ async function startBridge(version: string): Promise<number> {
   return (wss.address() as AddressInfo).port;
 }
 
+/** The OS says `pid` holds the bridge port and is a browser-link server. */
+function verified(pid: number): () => Promise<PortHolder> {
+  return () =>
+    Promise.resolve({
+      kind: 'process',
+      process: { pid, imageName: 'node', command: 'node /usr/local/bin/browser-link' },
+      isBrowserLink: true,
+    });
+}
+
 function deps(overrides: Partial<ElectionDeps>): ElectionDeps {
   return {
     localVersion: '0.41.0',
     probe: () => Promise.resolve({ kind: 'unreachable' }),
-    findOwnerPid: () => null,
+    // Conservative default: the OS could not be asked.
+    inspectHolder: () => Promise.resolve({ kind: 'unknown', reason: 'command-missing' }),
     processStartTime: () => null,
     installedCodeMtime: () => null,
     stepDown: vi.fn(() => Promise.resolve()),
@@ -53,7 +65,12 @@ describe('old and new primaries: the new one wins', () => {
     const port = await startBridge('0.40.0');
     const stepDown = vi.fn(() => Promise.resolve());
     const outcome = await runElection(
-      deps({ localVersion: '0.41.0', probe: () => probeVersion(port), stepDown }),
+      deps({
+        localVersion: '0.41.0',
+        probe: () => probeVersion(port),
+        inspectHolder: verified(process.pid),
+        stepDown,
+      }),
     );
     expect(outcome.decision).toBe('take-over');
     expect(outcome.pid).toBe(process.pid);
@@ -101,7 +118,7 @@ describe('primary without /version (older than 0.41.0): stale start time', () =>
     const outcome = await runElection(
       deps({
         probe: () => Promise.resolve(noEndpoint),
-        findOwnerPid: () => 4242,
+        inspectHolder: verified(4242),
         processStartTime: (pid) => (pid === 4242 ? 1_000 : null),
         installedCodeMtime: () => 2_000,
         stepDown,
@@ -116,7 +133,7 @@ describe('primary without /version (older than 0.41.0): stale start time', () =>
     const outcome = await runElection(
       deps({
         probe: () => Promise.resolve(noEndpoint),
-        findOwnerPid: () => 4242,
+        inspectHolder: verified(4242),
         processStartTime: () => 3_000,
         installedCodeMtime: () => 2_000,
         stepDown,
@@ -167,6 +184,7 @@ describe('decideElection', () => {
               installedVersion: '0.41.0',
             },
           }),
+        inspectHolder: verified(77),
         stepDown: () => Promise.reject(new Error('access denied')),
       }),
     );
@@ -461,5 +479,173 @@ describe('shutdownOnSignal awaits the IPC server before exiting', () => {
       exit,
     });
     expect(exit).toHaveBeenCalledWith(0);
+  });
+});
+
+/* Owner decision D14: the take-over kills only a process the operating
+ * system shows holding the port and running browser-link. The pid in the
+ * holder's own /version body is a claim, compared and never trusted. */
+describe('take-over kills only an OS-verified browser-link holder (D14)', () => {
+  const olderPrimary =
+    (pid: number): (() => Promise<VersionProbe>) =>
+    () =>
+      Promise.resolve({
+        kind: 'version',
+        info: {
+          name: '@jobshimo/browser-link',
+          version: '0.40.0',
+          pid,
+          startedAt: '2026-11-09T00:00:00.000Z',
+          installedVersion: '0.40.0',
+        },
+      });
+  const holder = (pid: number, imageName: string | null, isBrowserLink: boolean) => () =>
+    Promise.resolve<PortHolder>({
+      kind: 'process',
+      process: { pid, imageName, command: 'node /srv/other.js' },
+      isBrowserLink,
+    });
+
+  test('verified holder that runs browser-link → stepped down exactly once, as before', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({ probe: olderPrimary(111), inspectHolder: verified(111), stepDown }),
+    );
+    expect(outcome).toEqual({
+      decision: 'take-over',
+      pid: 111,
+      reason: 'running primary 0.40.0 is older than 0.41.0',
+    });
+    expect(stepDown.mock.calls).toEqual([[111]]);
+  });
+
+  test('/version says PID 111 but the OS says PID 222 holds the port → nothing killed, holder named', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({ probe: olderPrimary(111), inspectHolder: holder(222, 'python.exe', false), stepDown }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome).toEqual({
+      decision: 'defer',
+      pid: 111,
+      reason:
+        'take-over refused: the server answering on 127.0.0.1:17529 says it is PID 111, but the ' +
+        'operating system says PID 222 (python.exe) holds the port. Nothing was stopped. ' +
+        'To stop it: browser-link stop --pid 222',
+    });
+  });
+
+  test('a mismatch is refused even when the real holder is a browser-link', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({ probe: olderPrimary(111), inspectHolder: verified(222), stepDown }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome.decision).toBe('defer');
+    expect(outcome.reason).toContain('browser-link stop --pid 222');
+  });
+
+  test.each([
+    ['timeout', 'the lookup timed out'],
+    ['command-missing', 'the lookup tool (netstat or lsof) is not installed'],
+  ] as const)('the OS lookup fails (%s) → nothing killed, said so', async (reason, text) => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({
+        probe: olderPrimary(111),
+        inspectHolder: () => Promise.resolve({ kind: 'unknown', reason }),
+        stepDown,
+      }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome).toEqual({
+      decision: 'defer',
+      pid: 111,
+      reason:
+        'take-over refused: could not verify through the operating system which process holds ' +
+        `127.0.0.1:17529 (${text}). The server answering there says it is PID 111, unverified. ` +
+        'Nothing was stopped. Run `browser-link stop` to look again.',
+    });
+  });
+
+  test('the holder is the pid it claims but not a browser-link → nothing killed, named with the command', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({ probe: olderPrimary(111), inspectHolder: holder(111, 'node.exe', false), stepDown }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome.reason).toBe(
+      'take-over refused: PID 111 (node.exe) holds 127.0.0.1:17529, but the operating system ' +
+        'does not show it as a browser-link server. Nothing was stopped. ' +
+        'To stop it: browser-link stop --pid 111',
+    );
+  });
+
+  test('an unnamed holder is refused with "name unknown"', async () => {
+    const outcome = await runElection(
+      deps({ probe: olderPrimary(5), inspectHolder: holder(5, null, false) }),
+    );
+    expect(outcome.reason).toContain('PID 5 (name unknown)');
+  });
+
+  test('the OS lists nobody on the port any more → nothing killed', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({
+        probe: olderPrimary(111),
+        inspectHolder: () => Promise.resolve({ kind: 'free' }),
+        stepDown,
+      }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome.decision).toBe('defer');
+    expect(outcome.reason).toMatch(/lists no process listening on 127\.0\.0\.1:17529/);
+  });
+
+  test('a primary without /version that is not a browser-link is not taken over', async () => {
+    const stepDown = vi.fn(() => Promise.resolve());
+    const outcome = await runElection(
+      deps({
+        probe: () => Promise.resolve({ kind: 'no-endpoint' }),
+        inspectHolder: holder(4242, 'node', false),
+        processStartTime: () => 1_000,
+        installedCodeMtime: () => 2_000,
+        stepDown,
+      }),
+    );
+    expect(stepDown.mock.calls).toEqual([]);
+    expect(outcome.decision).toBe('defer');
+    expect(outcome.reason).toContain('browser-link stop --pid 4242');
+  });
+
+  test('a deferring election never asks the OS who holds the port when it has no use for it', async () => {
+    const inspectHolder = vi.fn(verified(1));
+    await runElection(
+      deps({ probe: () => Promise.resolve({ kind: 'unreachable' }), inspectHolder }),
+    );
+    expect(inspectHolder).not.toHaveBeenCalled();
+  });
+});
+
+/* Reported, unverified claim, checked and NOT fixed here: compareSemver
+ * (utils/semver.ts) reads a dotted pre-release suffix as an extra number,
+ * and the take-over decides "older" with it. This pins what it does today. */
+describe('pre-release ordering of the take-over (today, unchanged)', () => {
+  const at = (version: string): VersionProbe => ({
+    kind: 'version',
+    info: { name: 'x', version, pid: 9, startedAt: 's', installedVersion: null },
+  });
+  const base = { ownerPid: null, ownerStartedAt: null, installedCodeMtime: null };
+
+  test('a starting 1.1.0-beta.1 takes over a running 1.1.0 (it ranks the beta above the release)', () => {
+    expect(decideElection({ ...base, local: '1.1.0-beta.1', probe: at('1.1.0') }).decision).toBe(
+      'take-over',
+    );
+  });
+
+  test('a starting 1.1.0 defers to a running 1.1.0-beta.1', () => {
+    expect(decideElection({ ...base, local: '1.1.0', probe: at('1.1.0-beta.1') }).decision).toBe(
+      'defer',
+    );
   });
 });
