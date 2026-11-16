@@ -12,8 +12,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VERSION } from '../version.js';
-import { BEGIN_PREFIX, END_MARKER, beginMarker } from './content.js';
-import { CorruptBlockError, OutsideHomeError, SymlinkRefusedError } from './errors.js';
+import { BEGIN_PREFIX, END_MARKER, beginMarker, block } from './content.js';
+import {
+  CorruptBlockError,
+  InvalidUtf8Error,
+  OutsideHomeError,
+  SymlinkRefusedError,
+} from './errors.js';
 import { detectAt, installAt, uninstallAt } from './file-ops.js';
 import { renderCore } from '../manual/core.js';
 import { renderTrigger } from '../manual/render.js';
@@ -357,5 +362,78 @@ describe('installAt modes (trigger by default, --with-core keeps the core)', () 
     expect(text.startsWith('# Mine\n')).toBe(true);
     expect(text).not.toContain(renderCore({}));
     expect(detectAt(file).state).toEqual({ kind: 'installed', version: VERSION, mode: 'trigger' });
+  });
+});
+
+describe('D16: refuse and change nothing, keep every byte that is not ours', () => {
+  const bytesOf = (): Buffer => readFileSync(file);
+
+  test('CRLF: refreshing a block three times adds no blank line', () => {
+    const before = '# Mine\r\n\r\n';
+    const after = '\r\nUser tail.\r\n';
+    const stale = `${beginMarker('0.0.1')}\r\nold\r\n${END_MARKER}\r\n`;
+    writeFileSync(file, before + stale + after, 'utf8');
+    installAt(file, 'Test Client');
+    installAt(file, 'Test Client');
+    installAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(before + block(VERSION, '\r\n') + after);
+  });
+
+  test('CRLF: uninstall keeps every byte around the block (previous behaviour)', () => {
+    writeFileSync(file, `# Mine\r\n\r\n${block(VERSION, '\r\n')}\r\nUser tail.\r\n`, 'utf8');
+    uninstallAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe('# Mine\r\n\r\nUser tail.\r\n');
+  });
+
+  test('a file that is not valid UTF-8 is refused by install and uninstall, unchanged', () => {
+    const original = Buffer.concat([
+      Buffer.from('caf', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from(`\n${block('0.0.1')}`, 'utf8'),
+    ]);
+    writeFileSync(file, original);
+    expect(() => installAt(file, 'Test Client')).toThrow(
+      `${file} is not valid UTF-8 (byte 0xE9 at offset 3)`,
+    );
+    expect(() => uninstallAt(file, 'Test Client')).toThrow(InvalidUtf8Error);
+    expect(bytesOf().equals(original)).toBe(true);
+    expect(detectAt(file).state).toEqual({ kind: 'corrupt', reason: 'invalid-utf8' });
+  });
+
+  test('valid UTF-8 with a BOM and accents is kept byte for byte (previous behaviour)', () => {
+    const mine = '﻿# Café ñandú 日本\n';
+    writeFileSync(file, mine, 'utf8');
+    installAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(`${mine}\n${block(VERSION)}`);
+  });
+
+  test('a begin marker with no end marker is refused by install and uninstall, unchanged', () => {
+    const original = `# Mine\n\n${beginMarker('0.0.1')}\nhalf a block\n`;
+    writeFileSync(file, original, 'utf8');
+    let caught: unknown;
+    try {
+      installAt(file, 'Test Client');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(CorruptBlockError);
+    expect((caught as CorruptBlockError).reason).toBe('missing-end-marker');
+    expect((caught as Error).message).toBe(
+      `${file} has a browser-link begin marker on line 3 with no end marker after it. ` +
+        'Refusing to touch it; nothing was changed. Add the end marker ' +
+        `(${END_MARKER}) or remove the begin marker by hand.`,
+    );
+    expect(() => uninstallAt(file, 'Test Client')).toThrow('with no end marker after it');
+    expect(readFileSync(file, 'utf8')).toBe(original);
+    expect(detectAt(file).state).toEqual({ kind: 'corrupt', reason: 'missing-end-marker' });
+  });
+
+  test('a block written by a pre-release version is recognised and refreshed in place', () => {
+    writeFileSync(file, `# Mine\n\n${block('1.1.0-beta.1')}`, 'utf8');
+    expect(detectAt(file).state).toMatchObject({ version: '1.1.0-beta.1' });
+    installAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(`# Mine\n\n${block(VERSION)}`);
+    uninstallAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe('# Mine\n\n');
   });
 });

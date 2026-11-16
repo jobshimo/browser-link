@@ -1,51 +1,53 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  editMcpConfig,
+  expectObjectAt,
+  isJsonObject,
+  loadMcpConfig,
+  type EditOp,
+  type JsonObject,
+  type McpConfigFile,
+} from './json-config.js';
 import type { DetectResult, Installer } from './types.js';
 
 const SERVER_NAME = 'browser-link';
 
-interface ClaudeMcpEntry {
-  type?: string;
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-}
-
-interface ClaudeProjectConfig {
-  mcpServers?: Record<string, ClaudeMcpEntry>;
-  [key: string]: unknown;
-}
-
-interface ClaudeConfig {
-  mcpServers?: Record<string, ClaudeMcpEntry>;
-  projects?: Record<string, ClaudeProjectConfig>;
-  [key: string]: unknown;
-}
-
-function configFile(): string {
+function configFile(): McpConfigFile {
   // Claude Code stores its config at the user's home root on every OS.
   // os.homedir() resolves correctly on Windows (%USERPROFILE%) and *nix.
-  return join(homedir(), '.claude.json');
+  return { path: join(homedir(), '.claude.json'), label: 'Claude' };
 }
 
-function readConfig(path: string): ClaudeConfig {
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as ClaudeConfig;
-  } catch {
-    throw new Error(`Could not parse Claude config at ${path}. Fix the file or delete it.`);
+function objectOrEmpty(value: unknown): JsonObject {
+  return isJsonObject(value) ? value : {};
+}
+
+/** `mcpServers` and `projects` are objects when present; so is every project
+ * and every project's `mcpServers`. */
+function checkShape(cfg: JsonObject): string | null {
+  const top =
+    expectObjectAt(cfg.mcpServers, ['mcpServers']) ?? expectObjectAt(cfg.projects, ['projects']);
+  if (top !== null) return top;
+  for (const [key, project] of Object.entries(objectOrEmpty(cfg.projects))) {
+    const problem =
+      expectObjectAt(project, ['projects', key]) ??
+      expectObjectAt(objectOrEmpty(project).mcpServers, ['projects', key, 'mcpServers']);
+    if (problem !== null) return problem;
   }
+  return null;
 }
 
-function writeConfig(path: string, cfg: ClaudeConfig): void {
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+/** Project keys whose `mcpServers` hold the entry. */
+function projectsWithEntry(cfg: JsonObject): string[] {
+  return Object.entries(objectOrEmpty(cfg.projects))
+    .filter(([, p]) => SERVER_NAME in objectOrEmpty(objectOrEmpty(p).mcpServers))
+    .map(([key]) => key);
 }
 
-function isRegistered(cfg: ClaudeConfig): boolean {
-  if (cfg.mcpServers?.[SERVER_NAME]) return true;
-  const projects = cfg.projects ?? {};
-  return Object.values(projects).some((p) => !!p.mcpServers?.[SERVER_NAME]);
+function isRegistered(cfg: JsonObject): boolean {
+  return !!objectOrEmpty(cfg.mcpServers)[SERVER_NAME] || projectsWithEntry(cfg).length > 0;
 }
 
 export const claudeInstaller: Installer = {
@@ -53,50 +55,56 @@ export const claudeInstaller: Installer = {
   displayName: 'Claude Code',
 
   configPath() {
-    return configFile();
+    return configFile().path;
   },
 
   detect(): DetectResult {
-    const path = configFile();
-    if (!existsSync(path)) {
-      return { installed: false, registered: false, configPath: path };
+    const file = configFile();
+    if (!existsSync(file.path)) {
+      return { installed: false, registered: false, configPath: file.path };
     }
-    const cfg = readConfig(path);
-    return { installed: true, registered: isRegistered(cfg), configPath: path };
+    const { data } = loadMcpConfig(file, checkShape);
+    return { installed: true, registered: isRegistered(data), configPath: file.path };
   },
 
   install(command: string, args: string[]): string {
-    const path = configFile();
-    const cfg = readConfig(path);
-    cfg.mcpServers = cfg.mcpServers ?? {};
-    const existed = SERVER_NAME in cfg.mcpServers;
-    cfg.mcpServers[SERVER_NAME] = { type: 'stdio', command, args };
-    writeConfig(path, cfg);
-    return existed
-      ? `Updated ${SERVER_NAME} entry (user scope) in ${path}.`
-      : `Added ${SERVER_NAME} entry (user scope) to ${path}.`;
+    const file = configFile();
+    return editMcpConfig(file, checkShape, ({ data }) => {
+      const existed = SERVER_NAME in objectOrEmpty(data.mcpServers);
+      return {
+        ops: [
+          {
+            kind: 'set',
+            path: ['mcpServers', SERVER_NAME],
+            value: { type: 'stdio', command, args },
+          },
+        ],
+        message: existed
+          ? `Updated ${SERVER_NAME} entry (user scope) in ${file.path}.`
+          : `Added ${SERVER_NAME} entry (user scope) to ${file.path}.`,
+      };
+    });
   },
 
   uninstall(): string {
-    const path = configFile();
-    if (!existsSync(path)) return `No Claude config at ${path}; nothing to remove.`;
-    const cfg = readConfig(path);
-    let removed = false;
-    if (cfg.mcpServers && SERVER_NAME in cfg.mcpServers) {
-      const { [SERVER_NAME]: _removed, ...rest } = cfg.mcpServers;
-      cfg.mcpServers = rest;
-      removed = true;
-    }
-    const projects = cfg.projects ?? {};
-    for (const proj of Object.values(projects)) {
-      if (proj.mcpServers && SERVER_NAME in proj.mcpServers) {
-        const { [SERVER_NAME]: _removed, ...rest } = proj.mcpServers;
-        proj.mcpServers = rest;
-        removed = true;
+    const file = configFile();
+    if (!existsSync(file.path)) return `No Claude config at ${file.path}; nothing to remove.`;
+    return editMcpConfig(file, checkShape, ({ data }) => {
+      const projects = projectsWithEntry(data);
+      if (!(SERVER_NAME in objectOrEmpty(data.mcpServers)) && projects.length === 0) {
+        return { ops: [], message: `${SERVER_NAME} was not registered in ${file.path}.` };
       }
-    }
-    if (!removed) return `${SERVER_NAME} was not registered in ${path}.`;
-    writeConfig(path, cfg);
-    return `Removed ${SERVER_NAME} entry from ${path} (user + project scopes).`;
+      const ops: EditOp[] = [
+        { kind: 'remove', path: ['mcpServers', SERVER_NAME] },
+        ...projects.map((key): EditOp => ({
+          kind: 'remove',
+          path: ['projects', key, 'mcpServers', SERVER_NAME],
+        })),
+      ];
+      return {
+        ops,
+        message: `Removed ${SERVER_NAME} entry from ${file.path} (user + project scopes).`,
+      };
+    });
   },
 };

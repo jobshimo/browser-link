@@ -1,47 +1,33 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import {
+  editMcpConfig,
+  expectObjectAt,
+  isJsonObject,
+  loadMcpConfig,
+  type EditOp,
+  type JsonObject,
+  type McpConfigFile,
+} from './json-config.js';
 import type { DetectResult, Installer } from './types.js';
 
 const SERVER_NAME = 'browser-link';
 const SCHEMA_URL = 'https://opencode.ai/config.json';
 
-interface OpenCodeMcpEntry {
-  type: 'local' | 'remote';
-  command?: string[];
-  url?: string;
-  enabled?: boolean;
-  environment?: Record<string, string>;
-}
-
-interface OpenCodeConfig {
-  $schema?: string;
-  mcp?: Record<string, OpenCodeMcpEntry>;
-  [key: string]: unknown;
-}
-
-function configFile(): string {
+function configFile(): McpConfigFile {
   // OpenCode uses ~/.config/opencode/opencode.json on every OS, Windows included
   // (verified against an actual install — not %APPDATA% as it might seem).
-  return join(homedir(), '.config', 'opencode', 'opencode.json');
+  return { path: join(homedir(), '.config', 'opencode', 'opencode.json'), label: 'OpenCode' };
 }
 
-function readConfig(path: string): OpenCodeConfig {
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as OpenCodeConfig;
-  } catch {
-    throw new Error(`Could not parse OpenCode config at ${path}. Fix the file or delete it.`);
-  }
+/** `mcp` is an object when present. */
+function checkShape(cfg: JsonObject): string | null {
+  return expectObjectAt(cfg.mcp, ['mcp']);
 }
 
-function writeConfig(path: string, cfg: OpenCodeConfig): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-}
-
-function isRegistered(cfg: OpenCodeConfig): boolean {
-  return !!cfg.mcp?.[SERVER_NAME];
+function hasEntry(cfg: JsonObject): boolean {
+  return isJsonObject(cfg.mcp) && SERVER_NAME in cfg.mcp;
 }
 
 export const opencodeInstaller: Installer = {
@@ -49,41 +35,45 @@ export const opencodeInstaller: Installer = {
   displayName: 'OpenCode',
 
   configPath() {
-    return configFile();
+    return configFile().path;
   },
 
   detect(): DetectResult {
-    const path = configFile();
-    if (!existsSync(path)) {
-      return { installed: false, registered: false, configPath: path };
+    const file = configFile();
+    if (!existsSync(file.path)) {
+      return { installed: false, registered: false, configPath: file.path };
     }
-    const cfg = readConfig(path);
-    return { installed: true, registered: isRegistered(cfg), configPath: path };
+    const { data } = loadMcpConfig(file, checkShape);
+    const registered = isJsonObject(data.mcp) && !!data.mcp[SERVER_NAME];
+    return { installed: true, registered, configPath: file.path };
   },
 
   install(command: string, args: string[]): string {
-    const path = configFile();
-    const cfg = readConfig(path);
-    if (!cfg.$schema) cfg.$schema = SCHEMA_URL;
-    cfg.mcp = cfg.mcp ?? {};
-    const existed = SERVER_NAME in cfg.mcp;
-    cfg.mcp[SERVER_NAME] = { type: 'local', command: [command, ...args] };
-    writeConfig(path, cfg);
-    return existed
-      ? `Updated ${SERVER_NAME} entry in ${path}.`
-      : `Added ${SERVER_NAME} entry to ${path}.`;
+    const file = configFile();
+    return editMcpConfig(file, checkShape, ({ data }) => {
+      const schema: EditOp[] = data.$schema
+        ? []
+        : [{ kind: 'set', path: ['$schema'], value: SCHEMA_URL }];
+      const entry = { type: 'local', command: [command, ...args] };
+      return {
+        ops: [...schema, { kind: 'set', path: ['mcp', SERVER_NAME], value: entry }],
+        message: hasEntry(data)
+          ? `Updated ${SERVER_NAME} entry in ${file.path}.`
+          : `Added ${SERVER_NAME} entry to ${file.path}.`,
+      };
+    });
   },
 
   uninstall(): string {
-    const path = configFile();
-    if (!existsSync(path)) return `No OpenCode config at ${path}; nothing to remove.`;
-    const cfg = readConfig(path);
-    if (!cfg.mcp || !(SERVER_NAME in cfg.mcp)) {
-      return `${SERVER_NAME} was not registered in ${path}.`;
-    }
-    const { [SERVER_NAME]: _removed, ...rest } = cfg.mcp;
-    cfg.mcp = rest;
-    writeConfig(path, cfg);
-    return `Removed ${SERVER_NAME} entry from ${path}.`;
+    const file = configFile();
+    if (!existsSync(file.path)) return `No OpenCode config at ${file.path}; nothing to remove.`;
+    return editMcpConfig(file, checkShape, ({ data }) =>
+      hasEntry(data)
+        ? {
+            ops: [{ kind: 'remove', path: ['mcp', SERVER_NAME] }],
+            message: `Removed ${SERVER_NAME} entry from ${file.path}.`,
+          }
+        : { ops: [], message: `${SERVER_NAME} was not registered in ${file.path}.` },
+    );
   },
 };

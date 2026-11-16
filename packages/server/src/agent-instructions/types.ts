@@ -21,7 +21,10 @@ export type InstructionsState =
   | { kind: 'not-installed' } // file exists, no browser-link block
   | { kind: 'installed'; version: string | null; mode?: InstructionsMode } // file exists, block present; null = legacy unversioned
   | { kind: 'installed-outdated'; version: string | null; mode?: InstructionsMode } // block present, older than current; null = legacy unversioned
-  | { kind: 'corrupt'; reason: 'multiple-begin-markers' }; // file has more than one BEGIN marker — refuse to touch it
+  // The file cannot be edited safely — refuse to touch it: more than one BEGIN
+  // marker, a BEGIN marker with no END marker after it, or bytes that are not
+  // valid UTF-8.
+  | { kind: 'corrupt'; reason: 'multiple-begin-markers' | 'missing-end-marker' | 'invalid-utf8' };
 
 export interface InstructionsDetect {
   /** Absolute path to the markdown file we manage. Returned even when it does not exist. */
