@@ -10,6 +10,7 @@ import {
   buildObserverSemanticKeyJs,
   buildObserverTeardownJs,
 } from './observer.js';
+import { buildFocusJs } from './builders.js';
 
 /**
  * End-to-end tests for the page observer source. Each builder returns a
@@ -892,6 +893,169 @@ describe('page observer: semantic re-resolution', () => {
     const ref = g.refFor(document.getElementById('go')!)!;
     g.teardown();
     expect(g.resolveRefDetailed(ref)).toBeNull();
+  });
+});
+
+/**
+ * Owner decision D3: a ref re-resolves only to a NEW element, one that first
+ * appeared after the original node was gone (a re-render). A look-alike that
+ * already existed while the original was alive is never taken: the ref is
+ * stale and the action fails. A rebind stays marked with `reresolved: true`.
+ */
+describe('page observer: a ref never rebinds to an element that already existed (D3)', () => {
+  const ROW = '<li><button>Delete</button></li>';
+  const rows = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>('#rows button'));
+  const newRow = (): HTMLLIElement => {
+    const li = document.createElement('li');
+    li.innerHTML = '<button>Delete</button>';
+    return li;
+  };
+  const stale = { ok: true, found: false };
+
+  test('deleting one of two identical rows never moves the ref to the surviving row', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [first, survivor] = rows();
+    const ref = instance().refFor(first)!;
+    first.parentElement!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(instance().resolveRef(ref)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual(stale);
+    expect(instance().refFor(survivor)).toBe(tagged(2));
+  });
+
+  test('an action by that ref fails as ref-stale and never reaches the surviving row', () => {
+    document.body.innerHTML =
+      '<ul id="rows"><li><input aria-label="Qty" /></li><li><input aria-label="Qty" /></li></ul>';
+    evalExpr(buildObserverInstallJs());
+    const [first, survivor] = Array.from(document.querySelectorAll('input'));
+    const ref = instance().refFor(first)!;
+    first.parentElement!.remove();
+    expect(evalExpr(buildFocusJs({ ref }))).toEqual({
+      ok: false,
+      reason: 'ref-stale',
+      ref,
+      doc_id: instance().doc_id,
+    });
+    expect(document.activeElement).not.toBe(survivor);
+  });
+
+  test('a look-alike added while the original was alive is refused after the original goes', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    const list = document.getElementById('rows')!;
+    list.appendChild(newRow());
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: original, reresolved: false });
+    original.parentElement!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(evalExpr(buildObserverRefResolveJs(ref))).toEqual(stale);
+  });
+
+  test('a look-alike inserted before the removal in the same batch is refused', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    document.getElementById('rows')!.appendChild(newRow());
+    original.parentElement!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('a look-alike inserted after the removal in the same batch rebinds and is marked', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    original.parentElement!.remove();
+    const added = newRow();
+    document.getElementById('rows')!.appendChild(added);
+    const fresh = added.querySelector('button')!;
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: true });
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: fresh, reresolved: false });
+    expect(instance().refFor(fresh)).toBe(ref);
+  });
+
+  test('an element that first appears long after the removal rebinds and is marked', async () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    original.parentElement!.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    await wait(0);
+    const added = newRow();
+    document.getElementById('rows')!.appendChild(added);
+    await wait(0);
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: added.querySelector('button'),
+      reresolved: true,
+    });
+  });
+
+  test('an atomic replacement of the original rebinds to its replacement and is marked', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    const replacement = newRow();
+    original.parentElement!.replaceWith(replacement);
+    expect(instance().resolveRefDetailed(ref)).toEqual({
+      el: replacement.querySelector('button'),
+      reresolved: true,
+    });
+  });
+
+  test('a wholesale re-render with one new match rebinds; with two new matches it is refused', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const list = document.getElementById('rows')!;
+    const ref = instance().refFor(rows()[0])!;
+    list.innerHTML = ROW;
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: rows()[0], reresolved: true });
+    list.innerHTML = ROW + ROW;
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('two new look-alikes appearing after the removal are refused', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    original.parentElement!.remove();
+    const list = document.getElementById('rows')!;
+    list.appendChild(newRow());
+    list.appendChild(newRow());
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+  });
+
+  test('an old look-alike moved after the removal is still refused', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul><ul id="other">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    const otherList = document.getElementById('other')!;
+    original.parentElement!.remove();
+    otherList.remove();
+    document.body.insertBefore(otherList, document.getElementById('rows'));
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    expect(otherList.querySelector('button')!.isConnected).toBe(true);
+  });
+
+  test('a detached and re-attached original keeps its ref without a rebind', () => {
+    document.body.innerHTML = '<ul id="rows">' + ROW + '</ul>';
+    evalExpr(buildObserverInstallJs());
+    const [original] = rows();
+    const ref = instance().refFor(original)!;
+    const list = document.getElementById('rows')!;
+    const row = original.parentElement!;
+    row.remove();
+    expect(instance().resolveRefDetailed(ref)).toBeNull();
+    list.appendChild(row);
+    expect(instance().resolveRefDetailed(ref)).toEqual({ el: original, reresolved: false });
+    expect(instance().refFor(original)).toBe(ref);
   });
 });
 
