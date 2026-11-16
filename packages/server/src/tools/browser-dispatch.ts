@@ -68,6 +68,7 @@ import { recordFeedback } from '../activity/feedback.js';
 import { summarizeActivity } from '../activity/summary.js';
 import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
+import { findTab, listKnownTabs, withCallTabMemo } from './tab-lookup.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
   formatClaimConflict,
@@ -208,7 +209,8 @@ export interface BrowserToolDeps {
    * throw; null adds no field. */
   getActionHint?(input: ActionHintInput): ActionHint | null;
   /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
-   * merges its result into `listTabs()`'s. Internally gated on
+   * merges its result into `listTabs()`'s, and every tab-details lookup on a
+   * `cdp:` tab reads it (see `tab-lookup.ts`, D7). Internally gated on
    * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
    * whenever cdp-direct is off or ungranted, so an extension-only build (or
    * an install that has simply never enabled the feature) behaves exactly
@@ -1385,9 +1387,7 @@ async function handleListTabs(
   deps: BrowserToolDeps,
   caller: AgentCaller,
 ): Promise<EnrichedTabSnapshot[]> {
-  const extensionTabs = deps.listTabs();
-  const cdpTabs = deps.listCdpTabs ? await deps.listCdpTabs() : [];
-  const allTabs = [...extensionTabs, ...cdpTabs];
+  const allTabs = await listKnownTabs(deps);
 
   // Resolve every tab's map hint in ONE batched call over the DISTINCT
   // origins present, instead of one lookup per tab — see `getMapHints`'
@@ -1430,29 +1430,25 @@ function knowledgeFor(
   return deps.getKnowledge({ origin: at.origin, pathname: at.pathname, build: build ?? null });
 }
 
-/** The tab a call addressed, from the live tab table. */
-function findTab(deps: BrowserToolDeps, tabId: string): TabSnapshot | undefined {
-  return deps.listTabs().find((t) => t.tab_id === tabId);
-}
-
 /**
  * Add `known` (knowledge-loop S6) to a click/type/press/find result when
  * the call named a durable target (a selector, or a find key) that has
  * evidence on this app. Looked up after the call settles and before the
  * learner records it, so it reports the evidence the call was made with.
  * Only the target string reaches the lookup, never typed text or values.
+ * The call already ran, so a failed tab lookup returns the result as is.
  */
-function withKnown(
+async function withKnown(
   deps: BrowserToolDeps,
   tool: string,
   action: string,
   args: unknown,
   result: unknown,
-): unknown {
+): Promise<unknown> {
   if (!deps.getActionHint) return result;
   const target = durableTarget(tool, args);
   if (!target) return result;
-  const tab = findTab(deps, requireTabId(args));
+  const tab = await findTab(deps, requireTabId(args)).catch(() => undefined);
   const at = splitUrl(tab?.url);
   if (!at) return result;
   const known = deps.getActionHint({
@@ -1526,9 +1522,9 @@ function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: Pub
  * The map modules are imported lazily, like the manual: only these calls
  * need them, and a build without a data dir never loads them. */
 
-/** Origin of a connected tab, or null. */
-function tabOrigin(deps: BrowserToolDeps, tabId: string): string | null {
-  const tab = findTab(deps, tabId);
+/** Origin of a connected tab, on either transport, or null. */
+async function tabOrigin(deps: BrowserToolDeps, tabId: string): Promise<string | null> {
+  const tab = await findTab(deps, tabId);
   return tab ? originOf(tab.url) : null;
 }
 
@@ -1587,7 +1583,7 @@ async function resolveFlowSteps(args: unknown, deps: BrowserToolDeps): Promise<F
   };
   if (a.steps === undefined && name !== null) {
     const tabId = requireTabId(args);
-    const origin = tabOrigin(deps, tabId);
+    const origin = await tabOrigin(deps, tabId);
     if (!origin) throw new Error(`browser.flow: tab ${tabId} has no web app to find "${name}" in`);
     const [{ getDb }, { winnerApp, findFlow, listFlows }] = await Promise.all([
       import('../map/db.js'),
@@ -1643,7 +1639,7 @@ async function rememberFlowRun(
       import('../map/queries.js'),
     ]);
     recordSessionFlow(caller.agent_id, {
-      origin: source.origin ?? tabOrigin(deps, tabId),
+      origin: source.origin ?? (await tabOrigin(deps, tabId)),
       name: source.name,
       saved_name: source.saved?.name ?? null,
       steps: source.template,
@@ -1685,7 +1681,7 @@ async function handleWrapUp(
     import('../map/session.js'),
   ]);
   const session = sessionFor(caller.agent_id);
-  const tabs = deps.listTabs();
+  const tabs = await listKnownTabs(deps);
   const origins = [
     ...session.origins,
     ...tabs.map((t) => originOf(t.url)).filter((o): o is string => o !== null && o !== 'null'),
@@ -1742,7 +1738,7 @@ async function handleRead(
     throw new Error('browser.read: id must be an integer');
   }
   const values = valuesArg('browser.read', args);
-  const tab = findTab(deps, tabId);
+  const tab = await findTab(deps, tabId);
   const origin = tab ? originOf(tab.url) : null;
   if (!origin || origin === 'null') {
     throw new Error(`browser.read: tab ${tabId} is not connected or has no web app`);
@@ -2194,7 +2190,7 @@ async function dispatchBrowserTool(
       if (!deps.getKnowledge) return result;
       // The start pack of where it landed: the result's final URL when it
       // has one, else the tab's (re-read after the navigation).
-      const tab = findTab(deps, tabId);
+      const tab = await findTab(deps, tabId).catch(() => undefined);
       const landed = (result as { url?: unknown } | null)?.url;
       const knowledge = knowledgeFor(
         deps,
@@ -2956,6 +2952,8 @@ export async function handleBrowserTool(
   deps: BrowserToolDeps,
   caller: AgentCaller,
 ): Promise<unknown> {
+  // One cdp discovery shared by every tab lookup of this call (D7).
+  deps = withCallTabMemo(deps, name);
   // No sink wired (unit tests, builds without a data dir) — straight through,
   // zero overhead, no timing call.
   if (!deps.recordActivity && !deps.recordOutcome) {
@@ -2963,31 +2961,32 @@ export async function handleBrowserTool(
   }
 
   const startedAt = Date.now();
+  let result: unknown;
   try {
-    const result = await dispatchBrowserTool(name, args, deps, caller);
-    observe(deps, name, args, caller, Date.now() - startedAt, { result, error: undefined });
-    return result;
+    result = await dispatchBrowserTool(name, args, deps, caller);
   } catch (error) {
-    observe(deps, name, args, caller, Date.now() - startedAt, { result: undefined, error });
+    await observe(deps, name, args, caller, Date.now() - startedAt, { result: undefined, error });
     throw error;
   }
+  await observe(deps, name, args, caller, Date.now() - startedAt, { result, error: undefined });
+  return result;
 }
 
 /** Hand one settled call to both observers: the trail and the map learner.
  * The tab is resolved once, AFTER the call, so a `navigate` row shows where
- * it landed. */
-function observe(
+ * it landed. Never throws. */
+async function observe(
   deps: BrowserToolDeps,
   name: string,
   args: unknown,
   caller: AgentCaller,
   durationMs: number,
   settled: { result: unknown; error: unknown },
-): void {
+): Promise<void> {
   let tab: TabSnapshot | undefined;
   try {
     const tabId = extractTabIdArg(args);
-    tab = tabId === null ? undefined : deps.listTabs().find((t) => t.tab_id === tabId);
+    tab = tabId === null ? undefined : await findTab(deps, tabId);
   } catch {
     tab = undefined;
   }

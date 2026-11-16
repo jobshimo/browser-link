@@ -28,6 +28,7 @@ import { saveConfig } from '../config.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
+import { handleToolCall } from '../bridge/dispatch.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
   return {
@@ -5095,4 +5096,431 @@ describe('password values: the hide-password-values setting (D12)', () => {
     await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
     expect(sentParams(deps).hide_password_values).toBe(true);
   });
+});
+
+/* D7 follow-up: one cdp discovery per call phase. A lookup before the tool
+ * runs (read, flow by name) and the lookups after it (known hint, navigate
+ * fallback, trail, learner, session origin) share one memo; it is dropped
+ * once the tool ran on a `cdp:` tab, unless the tool cannot change the page,
+ * so the trail never records a stale url. Counted through `handleToolCall`,
+ * the full path of a real call. */
+describe('cdp: tab discovery is shared by every consumer of one call (D7)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const START = `${ORIGIN}/clients/42`;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-cdp-memo-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression: 'document.title', ok: true })!;
+    setReaderStatus(db, row.id, 'kept', 'page-title');
+    saveFlow({
+      origin: ORIGIN,
+      app_key: app.app_key,
+      name: 'search',
+      steps: [{ click: { selector: '#go' } }],
+    });
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Every tab-details consumer wired; `discover` counts cdp discoveries. The
+   * tab's url is live: `moveTo` changes it, as a navigating call would. */
+  function world(tabId: string, answer: unknown) {
+    const isCdp = tabId.startsWith('cdp:');
+    let url = START;
+    const tab = (): TabSnapshotLike => ({
+      tab_id: tabId,
+      url,
+      title: 'Clients',
+      ...(isCdp ? { transport: 'cdp' as const } : {}),
+    });
+    const discover = vi.fn(async () => (isCdp ? [tab()] : []));
+    const call = vi.fn(async (...args: unknown[]) => {
+      const params = args[2] as { url?: string } | undefined;
+      if (args[1] === 'navigate' && params?.url) url = params.url;
+      if (args[1] === 'flow') url = `${ORIGIN}/results`;
+      return answer;
+    });
+    const recordActivity = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => (isCdp ? [] : [tab()])),
+      listCdpTabs: discover,
+      cdpGate: () => ({ ok: true as const }),
+      callBrowserTool: call as BrowserToolDeps['callBrowserTool'],
+      callCdpTool: call as BrowserToolDeps['callCdpTool'],
+      getActionHint: vi.fn(() => HINT) as unknown as BrowserToolDeps['getActionHint'],
+      getKnowledge: vi.fn(() => null),
+      recordActivity,
+      recordOutcome: vi.fn(),
+    });
+    return { deps, discover, recordActivity };
+  }
+  type TabSnapshotLike = { tab_id: string; url: string; title: string; transport?: 'cdp' };
+
+  async function run(deps: BrowserToolDeps, name: string, args: Record<string, unknown>) {
+    return handleToolCall(
+      { name, arguments: args, caller: TEST_CALLER },
+      { browserTools: deps, disabledTools: () => [] },
+    );
+  }
+
+  const CALLS = [
+    ['browser.click', { selector: '#pay' }, { ok: true }, 1],
+    ['browser.read', { name: 'page-title' }, 'Clients', 1],
+    ['browser.navigate', { url: `${ORIGIN}/clients/7` }, { ok: true }, 1],
+    ['browser.flow', { name: 'search' }, { ok: true, steps_completed: 1, results: [] }, 2],
+  ] as const;
+
+  test.each(CALLS)(
+    '%s on a cdp: tab runs discovery once per phase',
+    async (name, args, answer, expected) => {
+      const { deps, discover } = world('cdp:T1', answer);
+      const res = await run(deps, name, { tab_id: 'cdp:T1', ...args });
+      expect(res.isError).toBeFalsy();
+      expect(discover).toHaveBeenCalledTimes(expected);
+    },
+  );
+
+  test.each(CALLS)(
+    '%s on an extension tab never runs cdp discovery',
+    async (name, args, answer) => {
+      const { deps, discover } = world('tab_1', answer);
+      const res = await run(deps, name, { tab_id: 'tab_1', ...args });
+      expect(res.isError).toBeFalsy();
+      expect(discover).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['extension', 'tab_1'],
+    ['cdp', 'cdp:T1'],
+  ])('the trail of a %s tab records where a navigating call left it', async (_, tabId) => {
+    const flow = world(tabId, { ok: true, steps_completed: 1, results: [] });
+    await run(flow.deps, 'browser.flow', { tab_id: tabId, name: 'search' });
+    expect(flow.recordActivity.mock.calls[0]![0]).toMatchObject({ url: `${ORIGIN}/results` });
+    const nav = world(tabId, { ok: true });
+    await run(nav.deps, 'browser.navigate', { tab_id: tabId, url: `${ORIGIN}/clients/7` });
+    expect(nav.recordActivity.mock.calls[0]![0]).toMatchObject({ url: `${ORIGIN}/clients/7` });
+  });
+
+  test.each([
+    ['fails', () => Promise.reject(new Error('ECONNREFUSED'))],
+    ['times out (discovery answers [])', () => Promise.resolve([])],
+  ])(
+    'when discovery %s after the call, the call succeeds once and the row has no page',
+    async (_, failing) => {
+      const { deps, recordActivity } = world('cdp:T1', { ok: true });
+      const discover = vi.fn(failing);
+      const res = await run({ ...deps, listCdpTabs: discover }, 'browser.click', {
+        tab_id: 'cdp:T1',
+        selector: '#pay',
+      });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ ok: true });
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: null, title: null });
+    },
+  );
+});
+
+/* Owner decision D7: a tab reached through cdp-direct behaves like an
+ * extension tab for read by name, saved flows by name, map hints and the
+ * trail fields. Every test runs on both transports and asserts the same
+ * observable result. */
+describe('cdp: tabs have parity with extension tabs (D7)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const URL_ = `${ORIGIN}/clients/42`;
+  const EXT_TAB = { tab_id: 'tab_1', url: URL_, title: 'Clients' };
+  const CDP_TAB = { tab_id: 'cdp:T1', url: URL_, title: 'Clients', transport: 'cdp' as const };
+  const TABS = [
+    ['extension', EXT_TAB],
+    ['cdp', CDP_TAB],
+  ] as const;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-cdp-parity-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Deps where `tab` is the only tab, on its own transport, and one fake
+   * call answers for both transports. */
+  function depsFor(
+    tab: typeof EXT_TAB | typeof CDP_TAB,
+    call: (...args: unknown[]) => Promise<unknown>,
+    overrides: Partial<BrowserToolDeps> = {},
+  ): BrowserToolDeps {
+    const isCdp = tab.tab_id.startsWith('cdp:');
+    return makeDeps({
+      listTabs: vi.fn(() => (isCdp ? [] : [tab])),
+      listCdpTabs: vi.fn(async () => (isCdp ? [tab] : [])),
+      cdpGate: () => ({ ok: true as const }),
+      callBrowserTool: call as BrowserToolDeps['callBrowserTool'],
+      callCdpTool: call as BrowserToolDeps['callCdpTool'],
+      ...overrides,
+    });
+  }
+
+  function keptReader(expression: string, name: string): number {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression, ok: true })!;
+    setReaderStatus(db, row.id, 'kept', name);
+    return row.id;
+  }
+
+  test.each(TABS)('read by name runs the kept reader on the %s tab', async (_, tab) => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => 'Clients');
+    const value = await handleBrowserTool(
+      'browser.read',
+      { tab_id: tab.tab_id, name: 'page-title' },
+      depsFor(tab, call),
+      TEST_CALLER,
+    );
+    expect(value).toBe('Clients');
+    expect(call).toHaveBeenCalledWith(tab.tab_id, 'evaluate', { expression: 'document.title' });
+    expect(getReader(getMapDb(), id)?.ok_n).toBe(2);
+  });
+
+  test.each(TABS)('a saved flow by name runs on the %s tab', async (_, tab) => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: tab.tab_id, name: 'search', values: { QUERY: 'shrek' } },
+      depsFor(tab, call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: 'shrek' } }]);
+    expect(listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id)[0].use_count).toBe(1);
+    expect(peekSession(TEST_CALLER.agent_id)?.flows[0]).toMatchObject({
+      saved_name: 'search',
+      origin: ORIGIN,
+    });
+  });
+
+  test.each(TABS)('a click with evidence carries known on the %s tab', async (_, tab) => {
+    const RESULT = { ok: true, settle: { settled: true, mutation_count: 1 } };
+    const getActionHint = vi.fn(() => HINT);
+    const out = await handleBrowserTool(
+      'browser.click',
+      { tab_id: tab.tab_id, selector: '#pay' },
+      depsFor(
+        tab,
+        vi.fn(async () => RESULT),
+        {
+          getActionHint: getActionHint as unknown as BrowserToolDeps['getActionHint'],
+        },
+      ),
+      TEST_CALLER,
+    );
+    expect(out).toEqual({ ...RESULT, known: HINT });
+    expect(getActionHint).toHaveBeenCalledWith({
+      origin: ORIGIN,
+      pathname: '/clients/42',
+      build: null,
+      target: '#pay',
+      target_kind: 'selector',
+      action: 'click',
+    });
+  });
+
+  test.each(TABS)(
+    'navigate falls back to the tab url for the start pack on the %s tab',
+    async (_, tab) => {
+      const KNOWLEDGE = { app_key: 'my-app', path: '/clients/:id', pitfalls: [] };
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: tab.tab_id, url: URL_ },
+        depsFor(
+          tab,
+          vi.fn(async () => ({ ok: true })),
+          {
+            getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+          },
+        ),
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ok: true, knowledge: KNOWLEDGE });
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: ORIGIN,
+        pathname: '/clients/42',
+        build: null,
+      });
+    },
+  );
+
+  test.each(TABS)('list_tabs attaches the map hint to the %s tab', async (_, tab) => {
+    const MAP = { app_key: 'my-app', selectors: 2, gotchas: 0, flows: 1 };
+    const getMapHints = vi.fn(() => new Map([[ORIGIN, MAP]]));
+    const tabs = (await handleBrowserTool(
+      'browser.list_tabs',
+      {},
+      depsFor(
+        tab,
+        vi.fn(async () => undefined),
+        {
+          getMapHints: getMapHints as unknown as BrowserToolDeps['getMapHints'],
+        },
+      ),
+      TEST_CALLER,
+    )) as { tab_id: string; map?: unknown }[];
+    expect(tabs).toEqual([expect.objectContaining({ tab_id: tab.tab_id, map: MAP })]);
+  });
+
+  test.each(TABS)(
+    'the trail row and the learner get the url and title of the %s tab',
+    async (_, tab) => {
+      const recordActivity = vi.fn();
+      const recordOutcome = vi.fn();
+      await handleBrowserTool(
+        'browser.click',
+        { tab_id: tab.tab_id, selector: '#pay' },
+        depsFor(
+          tab,
+          vi.fn(async () => ({ ok: true })),
+          { recordActivity, recordOutcome },
+        ),
+        TEST_CALLER,
+      );
+      expect(recordActivity).toHaveBeenCalledTimes(1);
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({
+        tool: 'browser.click',
+        tabId: tab.tab_id,
+        url: URL_,
+        title: 'Clients',
+      });
+      expect(recordOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ tool: 'browser.click', url: URL_, title: 'Clients' }),
+      );
+    },
+  );
+
+  test.each(TABS)('wrap_up step 1 reports the app of the %s tab', async (_, tab) => {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    upsertReader(db, { appId: app.id, expression: 'document.title', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    const step1 = (await handleBrowserTool(
+      'browser.wrap_up',
+      {},
+      depsFor(tab, vi.fn()),
+      TEST_CALLER,
+    )) as { step: number; apps: { origin: string }[] };
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+  });
+
+  /* Existing behaviors that share the lookup, on both transports. */
+
+  test.each([
+    ['extension', 'tab_9'],
+    ['cdp', 'cdp:NOPE'],
+  ])(
+    'an unknown %s tab: read fails before running and the trail row has no page',
+    async (_, tabId) => {
+      keptReader('document.title', 'page-title');
+      const call = vi.fn();
+      const recordActivity = vi.fn();
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [EXT_TAB]),
+        listCdpTabs: vi.fn(async () => [CDP_TAB]),
+        cdpGate: () => ({ ok: true as const }),
+        callBrowserTool: call,
+        callCdpTool: call,
+        recordActivity,
+      });
+      await expect(
+        handleBrowserTool('browser.read', { tab_id: tabId, name: 'page-title' }, deps, TEST_CALLER),
+      ).rejects.toThrow(`browser.read: tab ${tabId} is not connected or has no web app`);
+      expect(call).not.toHaveBeenCalled();
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: null, title: null });
+    },
+  );
+
+  test.each(TABS)(
+    'a %s tab that disconnects during the call leaves a trail row without a page',
+    async (_, tab) => {
+      let connected = true;
+      const recordActivity = vi.fn();
+      const isCdp = tab.tab_id.startsWith('cdp:');
+      const deps = makeDeps({
+        listTabs: vi.fn(() => (!isCdp && connected ? [tab] : [])),
+        listCdpTabs: vi.fn(async () => (isCdp && connected ? [tab] : [])),
+        cdpGate: () => ({ ok: true as const }),
+        callBrowserTool: vi.fn(async () => {
+          connected = false;
+          return { ok: true };
+        }),
+        callCdpTool: vi.fn(async () => {
+          connected = false;
+          return { ok: true };
+        }),
+        recordActivity,
+      });
+      await handleBrowserTool(
+        'browser.click',
+        { tab_id: tab.tab_id, selector: '#pay' },
+        deps,
+        TEST_CALLER,
+      );
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({
+        tabId: tab.tab_id,
+        url: null,
+        title: null,
+      });
+    },
+  );
+
+  test.each(TABS)(
+    'a %s tab claimed by another agent still refuses the click, and the trail keeps its page',
+    async (_, tab) => {
+      const tabClaims = new TabClaimRegistry();
+      tabClaims.claim(tab.tab_id, { agent_id: 'other', pid: 1, binary: 'x' });
+      const call = vi.fn(async () => ({ ok: true }));
+      const recordActivity = vi.fn();
+      await expect(
+        handleBrowserTool(
+          'browser.click',
+          { tab_id: tab.tab_id, selector: '#pay' },
+          depsFor(tab, call, { tabClaims, recordActivity }),
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/is in use by another agent/);
+      expect(call).not.toHaveBeenCalled();
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: URL_, title: 'Clients' });
+    },
+  );
 });
