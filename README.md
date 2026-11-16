@@ -1241,6 +1241,12 @@ where `state` is `running` | `completed` | `cancelled` | `failed` |
   and outcome — never one per iteration, which would blow the 200-entry
   log and evict everything else. The manifest itself is not in the event;
   it is addressed by `flow_id`.
+- **No clock cuts a running flow.** While a flow runs it holds the
+  launching agent's [tab claim](#multi-agent-mode), the extension's
+  [idle disconnect](#idle-disconnect-ttl) and the
+  [cdp-direct connection](#cdp-direct-mode-no-extension), each for at most
+  the flow's own maximum duration; when the flow ends, each clock restarts
+  from its last step.
 
 ##### No auto-resume after a worker restart
 
@@ -1776,18 +1782,48 @@ A plain `browser.click` on a Download button can open Chrome's native
 or the page can press that dialog, so an agent gets stuck. `browser.download`
 never lets it appear:
 
-- `browser.download({ tab_id, selector })` clicks the element, catches the
-  download Chrome starts in `chrome.downloads.onDeterminingFilename` —
-  which Chrome consults _before_ it prompts — and cancels it there. The
-  cancelled download's URL is then fetched like the `url` mode below.
+- `browser.download({ tab_id, selector })` clicks the element and catches
+  the download Chrome starts in `chrome.downloads.onDeterminingFilename` —
+  which Chrome consults _before_ it prompts — by holding it there, so Chrome
+  cannot prompt and the download does not complete. The held download's URL
+  is then fetched like the `url` mode below. Chrome's own download is
+  cancelled and erased only after the file is saved.
 - `browser.download({ tab_id, url })` fetches an http(s), `blob:` or
   `data:` URL in the page, with the page's cookies.
 
 The server writes the bytes into the downloads directory and returns
-`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error? }`.
+`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download? }`.
 Timeouts and failures still report what is known (URL, MIME type, bytes
 received so far). `browser.events` gets `download-started` and
 `download-finished` entries.
+
+**Which download a selector capture takes.** Chrome's download list gives no
+tab, so the capture takes a download only when the clicked tab's own debugger
+session reported it (`Page.downloadWillBegin`) during the wait with the same
+URL, no extension started it, and no other download with that URL appeared in
+the wait. Any other download that appears while it waits is left alone: it is
+not held, paused, cancelled or erased. When a download appeared but none could
+be tied to the tab with certainty, the tool answers
+`ok: false, state: "interrupted"` with an `error` starting "the capture
+failed" and `chrome_download: "left_in_chrome"`; the file is not saved. The
+agent can pass the file's link as `url`, or ask you. When nothing appeared the
+state is `timeout`.
+
+**What happens to Chrome's own download (`chrome_download`, selector mode).**
+The extension holds the captured download until the server says whether the
+file was saved:
+
+| `chrome_download` | What you see in Chrome                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `removed`         | Nothing: the file is saved, and Chrome's copy was cancelled and erased from its list.                                                            |
+| `cancelled`       | The file is saved; Chrome's list still shows the download as cancelled, because the erase failed.                                                |
+| `left_in_chrome`  | The download carries on as if browser-link had not been there; Chrome may ask where to save it. If the file was saved too, you have two copies.  |
+| `unknown`         | The extension could not be told the outcome. It releases the download untouched when its hold expires (the call's `timeout_ms` plus 30 seconds). |
+
+`left_in_chrome` is the answer when the fetch or the write failed (nothing is
+erased), when the capture could not attribute the download, and when a second
+download with the same URL appeared while the first was held (the two cannot
+be told apart, so Chrome's copy is never cancelled).
 
 `browser.download` refuses files over 25 MiB by default. Change the cap with
 `browser-link config set downloads.max-mb <1..64>` (`default` restores
@@ -1818,12 +1854,33 @@ second time in the page sidesteps both — with these limits:
   be fetched again; it comes back `interrupted` with the HTTP error.
 - A `blob:` URL the page revoked right after the click is gone.
 - 25 MiB per file.
-- `chrome.downloads` gives no tab id, so selector mode takes the first
-  download Chrome starts while it waits whose referrer is not another
-  origin. A download from another tab on the same site, or one with no
-  referrer, can still be taken. Only one `browser.download` can wait at a
-  time.
+- `chrome.downloads` gives no tab id, so selector mode never guesses: a
+  download is taken only on the tab's own report, as described above. A
+  download the tab cannot report is never attributable, so the call fails and
+  Chrome keeps it: one that opens in a new tab or window, one started by a
+  cross-origin iframe, one started by a service worker, and the same URL
+  downloaded twice during the wait. For those, pass the link as `url`. Only
+  one `browser.download` can wait at a time.
 - On cdp-direct tabs only `url` mode works.
+
+**The file is written under a temporary name.** The server writes the bytes
+to `.browser-link-<random>.part` in the downloads directory, then links it to
+the final name, so a write that fails halfway leaves no file under that name.
+The temporary file is removed on every path. An existing file is never
+overwritten, whatever the file system: where hard links are not supported
+(FAT, exFAT, some network shares) the server copies the file instead, which
+is not atomic.
+
+**Extension and server of different versions.**
+
+| Extension | Server | Selector mode                                                                                                                                                                                                                                |
+| --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| new       | new    | As described above.                                                                                                                                                                                                                          |
+| new       | older  | The server never settles the held download, so the extension releases it untouched after the hold expires: the file is saved and Chrome carries on with its own copy as well. A download that cannot be attributed is reported as `timeout`. |
+| older     | new    | The older extension cancels and erases Chrome's download before the server fetches it, takes downloads by referrer and timing, and sends no id to settle; no `chrome_download`.                                                              |
+
+`browser.list_tabs` marks an extension older than the server with
+`extension_outdated: true`.
 
 ## Activity trail
 
@@ -2209,6 +2266,20 @@ calling agent currently owns. Claims are advisory — they inform, they
 do not block — so a single-client workflow never has to think about
 them.
 
+The TTL is the agent's own choice (`ttl_minutes`, default 10, at most 60);
+it is not a setting you change. A running `browser.flow` holds the claim of
+the agent that launched it: while the flow runs the claim cannot expire, and
+when the flow ends, however it ends, the TTL restarts from the flow's last
+step. The hold is bounded by the flow's own maximum duration (its time
+budget, at most 60 s, in the foreground; 30 minutes when detached): past it
+the TTL restarts from that bound. A detached flow's hold ends with its
+`flow-finished` event. Only the claim of the flow's own agent is held;
+another agent still gets the usual conflict. A long single call, such as a
+`wait_for`, holds nothing: the TTL counts from the call that started it.
+Claims live in the primary's memory, so after a primary restart no claim and
+no hold survive, and a detached flow still running in the extension is
+unclaimed until an agent acts on its tab.
+
 ### Updating while a server is running
 
 An `npm install -g @jobshimo/browser-link` replaces the files on disk, but
@@ -2219,7 +2290,7 @@ a server that is already running keeps the code it started with. Since
   finds `127.0.0.1:17529` taken, it retries the bind briefly (a hand-off
   may be in progress), then asks the running primary
   `GET http://127.0.0.1:17529/version` (`{ name, version, pid, startedAt,
-installedVersion, repairing }`; answered only when the `Host` header is
+installedVersion, repairing, sessions? }`; answered only when the `Host` header is
   `127.0.0.1`, `localhost` or `[::1]`, with or without a port, else
   `403`, so a web page reaching the port under its own host name never
   reads it). If the primary is older, it is stopped (Unix
@@ -2279,6 +2350,33 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   one. The server hands over only once the new process has really
   started: if starting it fails, even asynchronously, the failure is
   logged and the running server keeps serving.
+- **The console's Updates screen asks before it touches anything.** When a
+  newer version exists, `u` reads what the update would touch and shows it:
+  the running server and its version, how many agent sessions use it, what
+  will be stopped and why, and that other browser-link processes are not
+  stopped. Nothing runs until you answer `y`; `n` or Esc backs out. The count
+  comes from an optional `sessions` field of the primary's `/version` body:
+  its own MCP client while connected, plus the proxies that passed the IPC
+  handshake. A primary that sends none (older than this field) makes the
+  screen say the number cannot be read. The install (`npm install -g` of the
+  chosen version) is stopped after 10 minutes at most, and `c` cancels it
+  sooner. The result lists everything that was stopped, whether
+  it installed, npm's own error lines when it failed (not the log path npm
+  prints last) and the next step. Once an update has finished, `u` does
+  nothing.
+- **A server is stopped only on Windows.** A running primary has loaded the
+  package's native module (better-sqlite3) once it opened its map or activity
+  database, and Windows keeps a loaded module's file locked, so npm cannot
+  replace the package. The update then stops that one server; the agents using
+  it lose browser-link until their MCP client restarts, and the first client
+  to start runs the new version. On macOS and Linux npm replaces files a
+  running process has open, so nothing is stopped: the running server keeps
+  the old version until its MCP client restarts, and the next server to start
+  takes the port over. Proxies hold no database and other browser-link
+  processes (other consoles, agents connected through the server) are never
+  stopped on any system. If one of them still locks the package on Windows,
+  the result says so: close every browser-link console and MCP client, then
+  run `npm install -g @jobshimo/browser-link` yourself in a new terminal.
 
 ### Idle-disconnect TTL
 
@@ -2309,6 +2407,15 @@ Lowering the TTL applies against each tab's **absolute** last-activity
 time, not the moment you changed the setting — a tab that has already
 been idle longer than the new TTL disconnects on the next sweep (within
 about a minute).
+
+**A running flow is not idle.** A flow's steps run inside the extension and
+never arrive as tool calls, so while a flow runs on a tab, that tab is not
+disconnected, whatever the TTL. When the flow ends, however it ends, the idle
+window restarts from its last step. The hold is bounded by the flow's own
+maximum duration (its time budget, at most 60 s, in the foreground; 30
+minutes when detached): past it the window restarts from that bound. A long
+single call, such as a `wait_for`, holds nothing: the window counts from the
+call that started it.
 
 **Precedence — last write wins.** The popup and the CLI both stamp an
 `updatedAt` timestamp on every change. When a tab (re)connects, the
@@ -2425,9 +2532,16 @@ Once both conditions hold, `browser.list_tabs` also returns cdp-direct
 page targets — real Chrome tabs, filtered to exclude `devtools://` and
 `chrome-extension://` pages — with `tab_id` values shaped `cdp:<targetId>`
 and `transport: "cdp"`, alongside your normal extension tabs (which keep
-working exactly as before, unaffected). Claims, the persistent map's
-origin-keyed hints, and every other cross-cutting feature work on a `cdp:`
-tab the same as an extension tab.
+working exactly as before, unaffected). Claims, `browser.read` by name,
+saved flows by name, the persistent map's origin-keyed hints, the `known`
+hint on results, the activity trail's url and title, and every other
+cross-cutting feature work on a `cdp:` tab the same as an extension tab.
+One thing is missing: a `cdp:` tab carries no `build` or `view_sig` in
+`list_tabs`, so its map start pack is chosen by origin and path alone and the
+learner records no build or view signature for it. These features look the
+tab up through the same cdp-direct discovery as `list_tabs`; if that
+discovery fails, the call still answers, without the map hints and with no
+page in its trail row.
 
 ```bash
 browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
@@ -2470,6 +2584,14 @@ process dies the flow dies with it and there is no state left to be wrong
 about. The flip side is that detached-flow state here is per-process — a
 server restart loses the manifests, where the extension's survive in
 `chrome.storage.session` for the browser session.
+
+**The connection clock.** The server keeps one connection per `cdp:` tab it
+drives and closes it after 5 minutes without a call; the next call dials it
+again. That value is internal, not a setting. A running flow holds its tab's
+connection open, bounded by the flow's own maximum duration (its time budget,
+at most 60 s, in the foreground; 30 minutes when detached), and when the flow
+ends the 5 minutes restart from its last step. A long single call, such as a
+`wait_for`, holds nothing.
 
 Claims apply to `cdp:` tab_ids through the same registry extension tabs
 use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add

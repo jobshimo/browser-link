@@ -270,7 +270,9 @@ it prints the draft and creates nothing.
   reports `repairing` during a repair, so the successor waits up to 5 s for
   the port instead of deferring; a failed restart keeps the old server
   serving, and a step-down never targets the starting process or its
-  ancestors. See
+  ancestors. It also carries an optional `sessions`, the agent sessions
+  using the primary. The console's Updates screen shows what an update will
+  do and asks first, and stops a server only on Windows. See
   [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
 - **Admin panel**: the console's status view and the extension popup's
   Admin section render the same server-built sections and labels (English
