@@ -68,7 +68,7 @@ import { recordFeedback } from '../activity/feedback.js';
 import { summarizeActivity } from '../activity/summary.js';
 import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
-import { findTab, listKnownTabs, withCallTabMemo } from './tab-lookup.js';
+import { findTab, listKnownTabs, listTabsForSession, withCallTabMemo } from './tab-lookup.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
   formatClaimConflict,
@@ -1681,7 +1681,7 @@ async function handleWrapUp(
     import('../map/session.js'),
   ]);
   const session = sessionFor(caller.agent_id);
-  const tabs = await listKnownTabs(deps);
+  const tabs = await listTabsForSession(deps, session.origins);
   const origins = [
     ...session.origins,
     ...tabs.map((t) => originOf(t.url)).filter((o): o is string => o !== null && o !== 'null'),
@@ -1957,8 +1957,17 @@ interface DownloadCapture {
  * `unknown` (the extension could not be asked). */
 type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'unknown';
 
-type BrowserDownloadResult = DownloadResult & { chrome_download?: ChromeDownloadOutcome };
+type BrowserDownloadResult = DownloadResult & {
+  chrome_download?: ChromeDownloadOutcome;
+  /** Present when the file was saved but what became of Chrome's own copy is
+   * not known (`chrome_download: 'unknown'`). */
+  chrome_download_note?: string;
+};
 
+/** What the extension's `download_settle` may answer and the server takes at
+ * face value. Anything else, `not_held` (the extension holds no such download:
+ * unknown id, already settled, hold expired) and values a newer extension may
+ * add included, is `unknown`: the server never claims what it was not told. */
 const CHROME_DOWNLOAD_OUTCOMES = new Set(['removed', 'cancelled', 'left_in_chrome']);
 
 /**
@@ -2102,14 +2111,19 @@ async function runDownload(
   // The extension holds Chrome's download until told what happened here:
   // it is cancelled and erased only once the file is written, and released
   // untouched otherwise — also when the fetch throws.
-  let result: BrowserDownloadResult | undefined;
+  let result: BrowserDownloadResult;
   try {
     result = await fetchAndSave(tabId, captured, opts, deadline, deps, caller);
-  } finally {
-    const chromeDownload = await settleHeldDownload(tabId, downloadId, result?.ok === true, deps);
-    if (result) result = withChromeDownload(result, chromeDownload);
+  } catch (err) {
+    const outcome = await settleHeldDownload(tabId, downloadId, false, deps);
+    const note = CHROME_DOWNLOAD_NOTES.failed[outcome];
+    // The same error object keeps its class (`RefusedBeforeRun` is read by
+    // the trail); only its text gains what the settle reported.
+    if (note && err instanceof Error) err.message = `${err.message}; ${note}`;
+    throw err;
   }
-  return result;
+  const outcome = await settleHeldDownload(tabId, downloadId, result.ok, deps);
+  return withChromeDownload(result, outcome);
 }
 
 /** Tell the extension whether the file was written; answer what became of
@@ -2140,21 +2154,41 @@ async function settleHeldDownload(
   }
 }
 
-const CHROME_DOWNLOAD_NOTES: Record<ChromeDownloadOutcome, string> = {
-  removed: '',
-  cancelled: '',
-  left_in_chrome:
-    "Chrome's own download was left untouched and continues in Chrome (Chrome may ask the user where to save it).",
-  unknown:
-    "the extension could not be told the outcome; it releases Chrome's own download untouched when its hold expires.",
+const CHROME_DOWNLOAD_NOTES: {
+  /** Appended to the text of a download that failed. */
+  failed: Record<ChromeDownloadOutcome, string>;
+  /** Added to a download that was saved, when what became of Chrome's own
+   * copy is not known. */
+  saved: Partial<Record<ChromeDownloadOutcome, string>>;
+} = {
+  failed: {
+    removed: '',
+    cancelled: '',
+    left_in_chrome:
+      "Chrome's own download was left untouched and continues in Chrome (Chrome may ask the user where to save it).",
+    unknown:
+      "the extension could not be told the outcome; it releases Chrome's own download untouched when its hold expires.",
+  },
+  saved: {
+    unknown:
+      "The file was saved, but whether Chrome's own copy was removed is not known, so there may be a second copy in Chrome's downloads.",
+  },
 };
 
 function withChromeDownload(
   result: BrowserDownloadResult,
   chromeDownload: ChromeDownloadOutcome,
 ): BrowserDownloadResult {
-  const note = CHROME_DOWNLOAD_NOTES[chromeDownload];
-  if (result.ok || !note) return { ...result, chrome_download: chromeDownload };
+  if (result.ok) {
+    const note = CHROME_DOWNLOAD_NOTES.saved[chromeDownload];
+    return {
+      ...result,
+      chrome_download: chromeDownload,
+      ...(note ? { chrome_download_note: note } : {}),
+    };
+  }
+  const note = CHROME_DOWNLOAD_NOTES.failed[chromeDownload];
+  if (!note) return { ...result, chrome_download: chromeDownload };
   return {
     ...result,
     error: `${result.error ?? 'download did not complete'}; ${note}`,

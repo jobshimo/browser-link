@@ -294,6 +294,60 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
     unmount();
   });
 
+  test('two confirmations in the same tick start one install', async () => {
+    const run = controllableRun();
+    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await tick();
+    stdin.write('u');
+    await tick();
+    stdin.write('y');
+    stdin.write('y');
+    await tick();
+    expect(run.runUpdate).toHaveBeenCalledOnce();
+    unmount();
+  });
+
+  test('leaving the screen during an install aborts it, once', async () => {
+    const run = controllableRun();
+    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await tick();
+    stdin.write('u');
+    await tick();
+    stdin.write('y');
+    await tick();
+    expect(run.signal()?.aborted).toBe(false);
+    const aborted = vi.fn();
+    run.signal()?.addEventListener('abort', aborted);
+    unmount();
+    expect(run.signal()?.aborted).toBe(true);
+    expect(aborted).toHaveBeenCalledOnce();
+  });
+
+  test('leaving the screen aborts nothing when no install is running', async () => {
+    const run = controllableRun();
+    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await tick();
+    stdin.write('u');
+    await tick();
+    unmount();
+    expect(run.runUpdate).not.toHaveBeenCalled();
+    expect(run.signal()).toBeNull();
+  });
+
+  test('leaving the screen after the install finished aborts nothing', async () => {
+    const run = controllableRun();
+    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await tick();
+    stdin.write('u');
+    await tick();
+    stdin.write('y');
+    await tick();
+    run.finish({ ...FAILED, ok: true, outcome: 'installed', message: '✓ Installed.' });
+    await tick();
+    unmount();
+    expect(run.signal()?.aborted).toBe(false);
+  });
+
   test('Spanish: the running screen names the cancel key', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('es', WINDOWS_PLAN, run.runUpdate);

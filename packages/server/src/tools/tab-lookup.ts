@@ -77,6 +77,37 @@ export async function listKnownTabs(source: TabSource): Promise<TabSnapshot[]> {
   return [...extensionTabs, ...cdpTabs];
 }
 
+function originOfUrl(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tabs a wrap-up looks at: every extension tab, plus cdp-direct tabs only
+ * when the session may have used one. cdp discovery is two loopback HTTP
+ * requests, so it runs only for an origin the session recorded that no
+ * extension tab explains (the session records origins, not tab ids). A
+ * discovery that rejects is not an error here: the wrap-up proceeds with the
+ * extension tabs and the origins the session already recorded.
+ */
+export async function listTabsForSession(
+  source: TabSource,
+  sessionOrigins: ReadonlySet<string>,
+): Promise<TabSnapshot[]> {
+  const extensionTabs = source.listTabs();
+  if (!source.listCdpTabs || sessionOrigins.size === 0) return extensionTabs;
+  const explained = new Set(extensionTabs.map((t) => originOfUrl(t.url)));
+  if ([...sessionOrigins].every((origin) => explained.has(origin))) return extensionTabs;
+  try {
+    return [...extensionTabs, ...(await source.listCdpTabs())];
+  } catch {
+    return extensionTabs;
+  }
+}
+
 /**
  * The tab `tabId` names, from the transport it belongs to, or undefined when
  * that transport does not know it (closed, disconnected, cdp-direct off).

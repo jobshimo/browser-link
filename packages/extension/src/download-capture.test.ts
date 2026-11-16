@@ -303,8 +303,18 @@ describe('createDownloadCapture — settle (principle 2)', () => {
     vi.advanceTimersByTime(5000);
     expect(s.calls).toEqual(['addListener', 'suggest 7', 'removeListener']);
     // Released, so Chrome may have completed it: the late "saved" must not cancel or erase.
-    await expect(s.capture.settle(7, true)).resolves.toBe('left_in_chrome');
+    await expect(s.capture.settle(7, true)).resolves.toBe('not_held');
     expect(s.calls).toEqual(['addListener', 'suggest 7', 'removeListener']);
+  });
+
+  test('a second settle of the same id answers not_held and touches nothing', async () => {
+    const { capture, calls, api } = await captured();
+    await expect(capture.settle(7, true)).resolves.toBe('removed');
+    const before = [...calls];
+    await expect(capture.settle(7, true)).resolves.toBe('not_held');
+    await expect(capture.settle(7, false)).resolves.toBe('not_held');
+    expect(calls).toEqual(before);
+    expect(api.cancel).toHaveBeenCalledOnce();
   });
 
   test('another download with the held url appears: the held one is never cancelled', async () => {
@@ -317,7 +327,7 @@ describe('createDownloadCapture — settle (principle 2)', () => {
 
   test('settling an id that was never held touches nothing', async () => {
     const { capture, calls } = setup();
-    await expect(capture.settle(42, true)).resolves.toBe('left_in_chrome');
+    await expect(capture.settle(42, true)).resolves.toBe('not_held');
     expect(calls).toEqual([]);
   });
 

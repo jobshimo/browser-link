@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { findTab, listKnownTabs, withCallTabMemo } from './tab-lookup.js';
+import { findTab, listKnownTabs, listTabsForSession, withCallTabMemo } from './tab-lookup.js';
 
 const EXT = { tab_id: 'tab_1', url: 'https://a.test/', title: 'A' };
 const CDP = { tab_id: 'cdp:T1', url: 'https://b.test/', title: 'B', transport: 'cdp' as const };
@@ -33,6 +33,36 @@ describe('tab lookup over both transports', () => {
   test('listKnownTabs lists extension tabs first, then cdp tabs', async () => {
     expect(await listKnownTabs(source())).toEqual([EXT, CDP]);
     expect(await listKnownTabs(source(false))).toEqual([EXT]);
+  });
+});
+
+describe('listTabsForSession: cdp discovery only when the session may have used a cdp tab', () => {
+  test('a session that used only extension tabs never runs cdp discovery', async () => {
+    const s = source();
+    expect(await listTabsForSession(s, new Set(['https://a.test']))).toEqual([EXT]);
+    expect(s.listCdpTabs).not.toHaveBeenCalled();
+  });
+
+  test('a session that used nothing never runs cdp discovery', async () => {
+    const s = source();
+    expect(await listTabsForSession(s, new Set())).toEqual([EXT]);
+    expect(s.listCdpTabs).not.toHaveBeenCalled();
+  });
+
+  test('an origin no extension tab explains triggers one discovery, and cdp tabs follow', async () => {
+    const s = source();
+    expect(await listTabsForSession(s, new Set(['https://b.test']))).toEqual([EXT, CDP]);
+    expect(s.listCdpTabs).toHaveBeenCalledTimes(1);
+  });
+
+  test('a rejecting discovery does not throw: the wrap-up has the extension tabs', async () => {
+    const s = { ...source(), listCdpTabs: vi.fn(async () => Promise.reject(new Error('down'))) };
+    expect(await listTabsForSession(s, new Set(['https://b.test']))).toEqual([EXT]);
+    expect(s.listCdpTabs).toHaveBeenCalledTimes(1);
+  });
+
+  test('without cdp discovery wired it is the extension tabs', async () => {
+    expect(await listTabsForSession(source(false), new Set(['https://b.test']))).toEqual([EXT]);
   });
 });
 

@@ -15,7 +15,7 @@ import {
   setReaderTemplate,
   upsertReader,
 } from '../map/readers.js';
-import { notePendingWork, peekSession, resetSessions } from '../map/session.js';
+import { noteOrigin, notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -3519,19 +3519,59 @@ describe('browser.download', () => {
           throw new Error('tab closed');
         },
       });
-      await expect(run(deps)).rejects.toThrow(/tab closed/);
+      // The failure text says what the settle reported: the original was left.
+      await expect(run(deps)).rejects.toThrow(
+        /^tab closed; Chrome's own download was left untouched/,
+      );
       expect(order).toEqual(['download', 'evaluate', 'download_settle']);
       expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
     });
 
-    test('the settle cannot reach the extension: chrome_download unknown, the saved file still reported', async () => {
+    test('the fetch hop throws and the settle is lost: the text does not claim it was left untouched', async () => {
+      const { deps } = heldDeps({
+        fetch: () => {
+          throw new Error('tab closed');
+        },
+        settle: () => {
+          throw new Error('Unknown tool: download_settle');
+        },
+      });
+      const error = await run(deps).catch((e: unknown) => e as Error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/^tab closed; /);
+      expect(error.message).not.toMatch(/left untouched and continues/);
+      expect(error.message).toMatch(/could not be told the outcome/);
+    });
+
+    test('the settle cannot reach the extension: chrome_download unknown, and the result says there may be a second copy', async () => {
       const { deps } = heldDeps({
         settle: () => {
           throw new Error('Unknown tool: download_settle');
         },
       });
       const out = await run(deps);
-      expect(out).toMatchObject({ ok: true, state: 'complete', chrome_download: 'unknown' });
+      expect(out).toMatchObject({
+        ok: true,
+        state: 'complete',
+        chrome_download: 'unknown',
+        chrome_download_note:
+          "The file was saved, but whether Chrome's own copy was removed is not known, so there may be a second copy in Chrome's downloads.",
+      });
+    });
+
+    test('the extension no longer holds the download (not_held): unknown, with the same note', async () => {
+      const { deps } = heldDeps({ settle: () => ({ chrome_download: 'not_held' }) });
+      const out = await run(deps);
+      expect(out).toMatchObject({
+        ok: true,
+        chrome_download: 'unknown',
+        chrome_download_note: expect.stringMatching(/second copy in Chrome's downloads/),
+      });
+    });
+
+    test('a removed copy carries no note', async () => {
+      const { deps } = heldDeps({});
+      expect(await run(deps)).not.toHaveProperty('chrome_download_note');
     });
 
     test('a capture that could not be attributed: no fetch, no write, no settle, the capture failed', async () => {
@@ -5596,12 +5636,42 @@ describe('cdp: tabs have parity with extension tabs (D7)', () => {
     const app = resolveLearnerApp(db, ORIGIN);
     upsertReader(db, { appId: app.id, expression: 'document.title', ok: true });
     notePendingWork(TEST_CALLER.agent_id);
+    // The session used this tab: its origin is recorded, as a tool call does.
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
     const step1 = (await handleBrowserTool(
       'browser.wrap_up',
       {},
       depsFor(tab, vi.fn()),
       TEST_CALLER,
     )) as { step: number; apps: { origin: string }[] };
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+  });
+
+  test('wrap_up of a session that used only extension tabs runs no cdp discovery', async () => {
+    const db = getMapDb();
+    upsertReader(db, { appId: resolveLearnerApp(db, ORIGIN).id, expression: '1', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
+    const d = depsFor(EXT_TAB, vi.fn());
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, d, TEST_CALLER)) as {
+      apps: { origin: string }[];
+    };
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+    expect(d.listCdpTabs).not.toHaveBeenCalled();
+  });
+
+  test('wrap_up proceeds with what it has when cdp discovery rejects', async () => {
+    const db = getMapDb();
+    upsertReader(db, { appId: resolveLearnerApp(db, ORIGIN).id, expression: '1', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
+    const d = depsFor(CDP_TAB, vi.fn(), {
+      listCdpTabs: vi.fn(async () => Promise.reject(new Error('down'))),
+    });
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, d, TEST_CALLER)) as {
+      apps: { origin: string }[];
+    };
+    expect(d.listCdpTabs).toHaveBeenCalledTimes(1);
     expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
   });
 

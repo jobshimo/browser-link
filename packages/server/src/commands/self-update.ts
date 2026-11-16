@@ -263,15 +263,15 @@ const I18N: Record<Language, SelfUpdateI18n> = {
     failed: (reason) => `✗ Update failed: ${reason}`,
     noErrorOutput: (code) => `npm exited with code ${code ?? 'unknown'} and printed no error.`,
     timedOut: (minutes) =>
-      `✗ The install did not finish within ${minutes} minutes and was stopped.`,
-    cancelled: '✗ You cancelled the install.',
+      `✗ The install did not finish within ${minutes} minutes. npm was asked to stop.`,
+    cancelled: '✗ You cancelled the install. npm was asked to stop.',
     restartHint: 'Restart your MCP client to pick up the new version.',
     nextAfterStop:
       'Agents connected through the stopped server lost it: restart your MCP clients, and the first one to start runs the new version.',
     nextWithoutStop:
       'A server that was already running keeps the old version until it restarts: restart your MCP clients, and the first one to start takes the port over with the new version.',
     nextInterrupted: (ref) =>
-      `npm was stopped partway, so the installed browser-link may be incomplete. Run \`npm install -g ${ref}\` in a terminal to finish it.`,
+      `npm was asked to stop, but this tool cannot confirm that it ended: it may still be running (on Windows only the shell that launched it may have ended). Check for a leftover npm or node process (Task Manager on Windows, \`ps\` on macOS and Linux). browser-link may be incomplete: once npm is gone, run \`npm install -g ${ref}\` in a terminal to finish it.`,
     nextNotInstalled: 'Nothing was installed.',
     nextFailed: (ref) =>
       `Nothing was installed. Run \`npm install -g ${ref}\` in a terminal to see npm's full output.`,
@@ -297,15 +297,16 @@ const I18N: Record<Language, SelfUpdateI18n> = {
     failed: (reason) => `✗ La actualización falló: ${reason}`,
     noErrorOutput: (code) =>
       `npm terminó con el código ${code ?? 'desconocido'} y no mostró ningún error.`,
-    timedOut: (minutes) => `✗ La instalación no terminó en ${minutes} minutos y se detuvo.`,
-    cancelled: '✗ Cancelaste la instalación.',
+    timedOut: (minutes) =>
+      `✗ La instalación no terminó en ${minutes} minutos. Se le pidió a npm que se detenga.`,
+    cancelled: '✗ Cancelaste la instalación. Se le pidió a npm que se detenga.',
     restartHint: 'Reiniciá tu cliente MCP para que tome la nueva versión.',
     nextAfterStop:
       'Los agentes conectados por el servidor detenido lo perdieron: reiniciá tus clientes MCP, y el primero que arranque corre la versión nueva.',
     nextWithoutStop:
       'Un servidor que ya estaba corriendo sigue con la versión anterior hasta que se reinicie: reiniciá tus clientes MCP, y el primero que arranque toma el puerto con la versión nueva.',
     nextInterrupted: (ref) =>
-      `npm se detuvo a mitad de camino, así que browser-link puede haber quedado incompleto. Corré \`npm install -g ${ref}\` en una terminal para terminarlo.`,
+      `Se le pidió a npm que se detenga, pero esta herramienta no puede confirmar que haya terminado: puede seguir corriendo (en Windows puede haber terminado solo el intérprete que lo lanzó). Fijate si queda algún proceso npm o node (Administrador de tareas en Windows, \`ps\` en macOS y Linux). browser-link puede haber quedado incompleto: cuando npm ya no esté, corré \`npm install -g ${ref}\` en una terminal para terminarlo.`,
     nextNotInstalled: 'No se instaló nada.',
     nextFailed: (ref) =>
       `No se instaló nada. Corré \`npm install -g ${ref}\` en una terminal para ver la salida completa de npm.`,
@@ -518,7 +519,11 @@ export async function runSelfUpdate(
     });
   });
 
-  // Each stop below happens with npm partway through its work: say so.
+  // Each stop below asked npm to stop partway through its work. `child.kill()`
+  // ends only the process we spawned: through the Windows `.cmd` shell
+  // fallback that is `cmd.exe`, and npm's own children (build scripts) are
+  // never reached on any OS. Node offers no tree kill, so nothing here
+  // observed npm end, and the text claims only that it was asked to.
   if (installResult.kind === 'timed-out') {
     return finish('timed-out', t.timedOut(timeoutMs / 60_000), t.nextInterrupted(ref));
   }

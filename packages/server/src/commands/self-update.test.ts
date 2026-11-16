@@ -551,9 +551,12 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     expect(child.kill).toHaveBeenCalledOnce();
     expect(result.ok).toBe(false);
     expect(result.outcome).toBe('timed-out');
-    expect(result.message).toBe('✗ The install did not finish within 10 minutes and was stopped.');
+    // Only what was observed: npm was asked to stop, nobody saw it end.
+    expect(result.message).toBe(
+      '✗ The install did not finish within 10 minutes. npm was asked to stop.',
+    );
     expect(result.nextStep).toBe(
-      'npm was stopped partway, so the installed browser-link may be incomplete. Run `npm install -g @example/pkg@1.2.0` in a terminal to finish it.',
+      'npm was asked to stop, but this tool cannot confirm that it ended: it may still be running (on Windows only the shell that launched it may have ended). Check for a leftover npm or node process (Task Manager on Windows, `ps` on macOS and Linux). browser-link may be incomplete: once npm is gone, run `npm install -g @example/pkg@1.2.0` in a terminal to finish it.',
     );
     expect(events.at(-1)).toEqual({ stage: 'failed', message: result.message });
   });
@@ -577,9 +580,9 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     expect(child.kill).toHaveBeenCalledOnce();
     expect(armed[0].cleared).toBe(true);
     expect(result.outcome).toBe('cancelled');
-    expect(result.message).toBe('✗ Cancelaste la instalación.');
+    expect(result.message).toBe('✗ Cancelaste la instalación. Se le pidió a npm que se detenga.');
     expect(result.nextStep).toBe(
-      'npm se detuvo a mitad de camino, así que browser-link puede haber quedado incompleto. Corré `npm install -g @example/pkg@1.2.0` en una terminal para terminarlo.',
+      'Se le pidió a npm que se detenga, pero esta herramienta no puede confirmar que haya terminado: puede seguir corriendo (en Windows puede haber terminado solo el intérprete que lo lanzó). Fijate si queda algún proceso npm o node (Administrador de tareas en Windows, `ps` en macOS y Linux). browser-link puede haber quedado incompleto: cuando npm ya no esté, corré `npm install -g @example/pkg@1.2.0` en una terminal para terminarlo.',
     );
   });
 

@@ -31,10 +31,15 @@ import { sanitizeDownloadsMaxMb } from './config.js';
  *
  * Chrome's download manager never SAVES anything. In url mode it is not
  * involved at all. In selector mode the extension uses it only to catch the
- * download a click starts: it hooks `chrome.downloads.onDeterminingFilename`,
- * which Chrome consults before prompting, cancels and erases that download
- * there, and hands its URL to the same in-page fetch (see the extension's
- * `download-capture.ts`).
+ * download a click starts, and only a download it can attribute to that click
+ * (owner decision D17). The order is: the extension HOLDS the download
+ * (`chrome.downloads.onDeterminingFilename` is not answered, so Chrome neither
+ * prompts nor saves) and hands its URL to the same in-page fetch; this server
+ * FETCHES the bytes and WRITES the file; then it tells the extension whether
+ * the file was saved (`download_settle`), and only then does the extension
+ * cancel and erase Chrome's own copy. If the fetch or the write fails, or the
+ * answer is lost, Chrome's download is released untouched or its hold expires
+ * (see the extension's `download-capture.ts`).
  */
 
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;

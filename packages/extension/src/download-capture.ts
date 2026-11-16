@@ -111,9 +111,15 @@ export type CaptureOutcome =
  *     was saved).
  *   - `cancelled`: cancelled, but the erase failed: Chrome's list shows it as
  *     cancelled.
- *   - `left_in_chrome`: released untouched; Chrome carries on with it.
+ *   - `left_in_chrome`: this extension held it and released it untouched
+ *     (nothing saved, the cancel failed, or an identical download appeared);
+ *     Chrome carries on with it.
+ *   - `not_held`: this extension holds no such download (unknown id, already
+ *     settled, or its hold expired and it was released). What became of
+ *     Chrome's copy is not known here. An older server reads the value as
+ *     unknown, which is the same answer.
  */
-export type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome';
+export type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
 
 export interface ArmedCapture {
   result: Promise<CaptureOutcome>;
@@ -285,8 +291,10 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
 
     async settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome> {
       const held = takeHold(downloadId);
-      // Released already (hold expired) or never held: it is Chrome's again.
-      if (!held) return 'left_in_chrome';
+      // Not held: an unknown id, one already settled, or a hold that expired
+      // and was released. What became of Chrome's download is not known here,
+      // so this does not claim it was left in Chrome.
+      if (!held) return 'not_held';
       if (!saved || held.ambiguous) {
         releaseSafely(held.release);
         syncListener();

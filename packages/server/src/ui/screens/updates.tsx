@@ -274,9 +274,15 @@ export function UpdatesView({
   };
 
   const startUpdate = (version: string): void => {
+    // Set synchronously: two confirmations delivered in one tick both see the
+    // phase the screen last rendered, so the phase cannot be the guard.
+    if (install.current !== null) return;
     const controller = new AbortController();
     install.current = controller;
     setUpdate({ kind: 'running', stage: 'preflight', message: t.updateRunning });
+    const done = (): void => {
+      if (install.current === controller) install.current = null;
+    };
     runUpdate(
       version,
       language,
@@ -286,12 +292,25 @@ export function UpdatesView({
       controller.signal,
     )
       .then((result) => {
+        done();
         setUpdate({ kind: 'finished', result });
       })
       .catch((err: unknown) => {
+        done();
         setUpdate({ kind: 'finished', result: failedResult(version, err) });
       });
   };
+
+  // Leaving the screen (or the console exiting) with an install running
+  // cancels it through the same signal the `c` key uses: nobody would be
+  // watching it. `install.current` is non-null only while one runs.
+  useEffect(
+    () => () => {
+      const running = install.current;
+      if (running !== null && !running.signal.aborted) running.abort();
+    },
+    [],
+  );
 
   useInput((input, key) => {
     switch (update.kind) {
