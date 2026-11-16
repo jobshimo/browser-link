@@ -260,7 +260,10 @@ for byte, line ends included. The write is atomic and makes no backup copy. A
 config that is a symlink, lies outside your home directory (unless
 `COPILOT_HOME` points there), is not valid UTF-8, does not parse, has the wrong
 shape or repeats the key is refused and left unchanged, with a message saying
-what was found.
+what was found. Without `--client`, both report every client. A client
+that is refused shows `Refused, nothing written: <reason>` and does not stop
+the others; the exit code is 1 when any client was refused. A replaced file
+keeps its permission bits.
 
 `doctor` starts its slow checks together (both port probes, the running
 server's `/version`, the Chrome debugger-flag scan and the live-process
@@ -1908,8 +1911,11 @@ source in the server:
    | OpenCode           | `~/.config/opencode/AGENTS.md`                       |
    | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
 
-   Reinstall overwrites in place and uninstall removes exactly the span we
-   manage. Everything else in the file is kept byte for byte, and a file with
+   Reinstall overwrites in place. Install puts exactly one line end before the
+   block, none into an empty file. Uninstall removes the block and, when the
+   block is last in the file, the one line end install put before it, and
+   nothing else: blank lines and a missing final newline in your text stay as
+   they are. Everything else in the file is kept byte for byte, and a file with
    CRLF line ends keeps them. The write is atomic and makes no backup copy.
    A file that is not valid UTF-8, or that holds a begin marker with no end
    marker after it, is refused and left unchanged; the message says what was
