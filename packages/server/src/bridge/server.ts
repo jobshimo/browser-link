@@ -55,6 +55,18 @@ import type { AgentCaller } from '../tools/tab-claims.js';
  */
 const IPC_LOG_PREFIX = '[browser-link ipc]';
 
+/** How long an accepted IPC socket may take, from accept to a completed
+ * hello (peer lookup included, which can take seconds on Windows), before it
+ * is destroyed. A legitimate proxy sends its hello right after connecting. */
+export const IPC_HELLO_TIMEOUT_MS = 15_000;
+
+/** Longest line, in bytes, accepted from a peer that has not authenticated
+ * yet. The largest legitimate hello is about 100 bytes (version + a 64-hex
+ * token); the bound leaves two orders of magnitude of headroom and keeps an
+ * unauthenticated peer from growing the line buffer. Applies only until the
+ * hello completes. */
+export const IPC_MAX_PREAUTH_LINE_BYTES = 16 * 1024;
+
 /** Binaries we'll accept as legitimate peers. The token is the real auth;
  * this is defence in depth. Names normalised to lowercase before comparison. */
 const NODE_PROCESS_NAMES: ReadonlySet<string> = new Set([
@@ -126,6 +138,9 @@ export interface IpcServerOptions {
    * applies) so a proxied agent reads the same text as the primary's own
    * client. Defaults to `SERVER_INSTRUCTIONS`. */
   instructions?: string;
+  /** Override how long an accepted socket may take to complete the hello
+   * (default `IPC_HELLO_TIMEOUT_MS`). Tests pass a short one. */
+  helloTimeoutMs?: number;
 }
 
 export class IpcServer {
@@ -243,6 +258,17 @@ export class IpcServer {
     // so the connection is dropped and the accept loop keeps serving.
     // Only the error code is logged (a fixed token like ECONNRESET), never the
     // raw message, so peer-influenced text cannot reach the log.
+    // The hello deadline starts at accept, so a peer that connects and then
+    // stays silent (or stalls the lookup) cannot hold the socket forever.
+    let helloTimer: NodeJS.Timeout | null = setTimeout(() => {
+      helloTimer = null;
+      console.error(`${IPC_LOG_PREFIX} No hello within the deadline; closing connection.`);
+      socket.destroy();
+    }, this.options.helloTimeoutMs ?? IPC_HELLO_TIMEOUT_MS);
+    const clearHelloTimer = () => {
+      if (helloTimer !== null) clearTimeout(helloTimer);
+      helloTimer = null;
+    };
     socket.on('error', (err) => {
       const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
       const safe = /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unknown';
@@ -300,10 +326,23 @@ export class IpcServer {
 
     let buffer = '';
     let authenticated = false;
+    // Set once a hello was refused: nothing more is parsed from the socket.
+    const gate = { rejected: false };
+    const isRejected = (): boolean => gate.rejected;
+    /** Refuse the hello: tell the peer why, stop parsing, then drop the socket
+     * once the reason is flushed (destroy, not end: a half-closed socket
+     * would keep delivering and parsing bytes). */
+    const rejectHello = (reason: string) => {
+      gate.rejected = true;
+      buffer = '';
+      socket.write(encodeFrame({ kind: 'hello-reject', reason }), () => {
+        socket.destroy();
+      });
+    };
     let sessionId: string | null = null;
 
     const handleLine = (line: string) => {
-      if (line.length === 0) return;
+      if (gate.rejected || line.length === 0) return;
       const frame = parseFrame(line);
       if (!frame) {
         console.error(`${IPC_LOG_PREFIX} Invalid frame received; closing connection.`);
@@ -318,22 +357,16 @@ export class IpcServer {
           return;
         }
         if (!isCompatibleVersion(frame.version)) {
-          socket.write(
-            encodeFrame({
-              kind: 'hello-reject',
-              reason: `version mismatch: primary ${IPC_PROTOCOL_VERSION}, proxy ${frame.version}`,
-            }),
-          );
-          socket.end();
+          rejectHello(`version mismatch: primary ${IPC_PROTOCOL_VERSION}, proxy ${frame.version}`);
           return;
         }
         if (frame.token !== this.token) {
-          socket.write(encodeFrame({ kind: 'hello-reject', reason: 'invalid token' }));
-          socket.end();
+          rejectHello('invalid token');
           return;
         }
         // Auth ok — register session and start the heartbeat.
         authenticated = true;
+        clearHelloTimer();
         sessionId = randomUUID();
         socket.write(encodeFrame({ kind: 'hello-ack', version: IPC_PROTOCOL_VERSION, sessionId }));
         const sid = sessionId;
@@ -362,16 +395,31 @@ export class IpcServer {
       void this.handleFrame(frame, sessionId, socket);
     };
 
+    const tooLong = () => {
+      console.error(
+        `${IPC_LOG_PREFIX} Unauthenticated line over ${String(IPC_MAX_PREAUTH_LINE_BYTES)} bytes; closing.`,
+      );
+      buffer = '';
+      socket.destroy();
+    };
     socket.on('data', (chunk: Buffer) => {
+      if (gate.rejected) return;
       buffer += chunk.toString('utf8');
       let nl: number;
-      while ((nl = buffer.indexOf('\n')) >= 0) {
+      while (!isRejected() && !socket.destroyed && (nl = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
+        if (!authenticated && Buffer.byteLength(line, 'utf8') > IPC_MAX_PREAUTH_LINE_BYTES) {
+          tooLong();
+          return;
+        }
         handleLine(line);
       }
+      // The unterminated remainder is bounded too, until the hello completes.
+      if (!authenticated && buffer.length > IPC_MAX_PREAUTH_LINE_BYTES) tooLong();
     });
     socket.on('close', () => {
+      clearHelloTimer();
       if (sessionId) {
         const session = this.sessions.get(sessionId);
         if (session) {
