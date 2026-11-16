@@ -1976,8 +1976,11 @@ const CHROME_DOWNLOAD_OUTCOMES = new Set(['removed', 'cancelled', 'left_in_chrom
  *
  *   - url mode: fetch the URL in the page (page credentials) and write it.
  *   - selector mode: the extension arms a `chrome.downloads` capture, clicks
- *     the element, cancels the download Chrome starts BEFORE it can prompt,
- *     and hands back its URL — which is then fetched exactly like url mode.
+ *     the element and HOLDS the download the clicked tab reported (Chrome
+ *     neither prompts nor saves it), and hands back its URL. That URL is
+ *     fetched exactly like url mode and the file written here; only then
+ *     does `download_settle` tell the extension whether it was saved, and
+ *     it cancels and erases Chrome's own copy only if it was.
  *
  * The bytes are always written here, by the server, into the directory the
  * human configured (`downloads.dir`). See `downloads.ts` for why Chrome's

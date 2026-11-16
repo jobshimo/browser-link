@@ -1813,17 +1813,25 @@ state is `timeout`.
 The extension holds the captured download until the server says whether the
 file was saved:
 
-| `chrome_download` | What you see in Chrome                                                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `removed`         | Nothing: the file is saved, and Chrome's copy was cancelled and erased from its list.                                                            |
-| `cancelled`       | The file is saved; Chrome's list still shows the download as cancelled, because the erase failed.                                                |
-| `left_in_chrome`  | The download carries on as if browser-link had not been there; Chrome may ask where to save it. If the file was saved too, you have two copies.  |
-| `unknown`         | The extension could not be told the outcome. It releases the download untouched when its hold expires (the call's `timeout_ms` plus 30 seconds). |
+| `chrome_download` | What you see in Chrome                                                                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `removed`         | Nothing: the file is saved, and Chrome's copy was cancelled and erased from its list.                                                                      |
+| `cancelled`       | The file is saved; Chrome's list still shows the download as cancelled, because the erase failed.                                                          |
+| `left_in_chrome`  | The download carries on as if browser-link had not been there; Chrome may ask where to save it. If the file was saved too, you have two copies.            |
+| `unknown`         | What became of Chrome's copy is not known (see below). A saved file then carries `chrome_download_note`: there may be a second copy in Chrome's downloads. |
 
-`left_in_chrome` is the answer when the fetch or the write failed (nothing is
-erased), when the capture could not attribute the download, and when a second
-download with the same URL appeared while the first was held (the two cannot
-be told apart, so Chrome's copy is never cancelled).
+`left_in_chrome` is the answer when the extension held the download and the
+fetch or the write failed (nothing is erased), when the capture could not
+attribute the download, and when a second download with the same URL appeared
+while the first was held (the two cannot be told apart, so Chrome's copy is
+never cancelled). `unknown` appears when the server's settle message was
+lost, or when the extension no longer held the download (an unknown id, one
+already settled, or a hold that expired and was released: it answers
+`not_held`, which the server reports as `unknown`). The extension releases a
+download it still holds untouched when its hold expires (the call's
+`timeout_ms` plus 30 seconds). The values an agent can see are `removed`,
+`cancelled`, `left_in_chrome` and `unknown`. When a save fails, the error ends
+with what happened to Chrome's own copy.
 
 `browser.download` refuses files over 25 MiB by default. Change the cap with
 `browser-link config set downloads.max-mb <1..64>` (`default` restores
@@ -1873,11 +1881,11 @@ is not atomic.
 
 **Extension and server of different versions.**
 
-| Extension | Server | Selector mode                                                                                                                                                                                                                                |
-| --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| new       | new    | As described above.                                                                                                                                                                                                                          |
-| new       | older  | The server never settles the held download, so the extension releases it untouched after the hold expires: the file is saved and Chrome carries on with its own copy as well. A download that cannot be attributed is reported as `timeout`. |
-| older     | new    | The older extension cancels and erases Chrome's download before the server fetches it, takes downloads by referrer and timing, and sends no id to settle; no `chrome_download`.                                                              |
+| Extension | Server | Selector mode                                                                                                                                                                                                                                                                                 |
+| --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| new       | new    | As described above.                                                                                                                                                                                                                                                                           |
+| new       | older  | The server never settles the held download, so the extension releases it untouched after the hold expires: the file is saved and Chrome carries on with its own copy as well. A download that cannot be attributed is reported as `timeout`. An older server reads `not_held` as unknown too. |
+| older     | new    | The older extension cancels and erases Chrome's download before the server fetches it, takes downloads by referrer and timing, and sends no id to settle; no `chrome_download`.                                                                                                               |
 
 `browser.list_tabs` marks an extension older than the server with
 `extension_outdated: true`.
@@ -2359,11 +2367,16 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   its own MCP client while connected, plus the proxies that passed the IPC
   handshake. A primary that sends none (older than this field) makes the
   screen say the number cannot be read. The install (`npm install -g` of the
-  chosen version) is stopped after 10 minutes at most, and `c` cancels it
-  sooner. The result lists everything that was stopped, whether
-  it installed, npm's own error lines when it failed (not the log path npm
-  prints last) and the next step. Once an update has finished, `u` does
-  nothing.
+  chosen version) is asked to stop after 10 minutes at most, and `c` cancels it
+  sooner; leaving the screen during an install cancels it the same way. A
+  cancel or the time limit only asks npm to stop: the tool cannot confirm that
+  it ended (it can end only the process it started, and on Windows that may be
+  the shell that launched npm), so the result says npm may still be running,
+  to check for a leftover npm or node process (Task Manager on Windows, `ps`
+  on macOS and Linux), and to run `npm install -g` again once it is gone. The
+  result lists everything that was stopped, whether it installed, npm's own
+  error lines when it failed (not the log path npm prints last) and the next
+  step. Once an update has finished, `u` does nothing.
 - **A server is stopped only on Windows.** A running primary has loaded the
   package's native module (better-sqlite3) once it opened its map or activity
   database, and Windows keeps a loaded module's file locked, so npm cannot
