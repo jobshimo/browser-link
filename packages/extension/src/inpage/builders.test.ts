@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  FIND_CUT_HINT,
+  SNAPSHOT_CUT_HINT,
+  SNAPSHOT_NOT_COMPARED_HINT,
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -1419,6 +1422,24 @@ function buildBaselinePage(): void {
 
 const baseline = baselineFixture as Record<string, unknown>;
 
+/**
+ * The pre-ref output each baseline case must still produce. The one case
+ * that is cut (`max_interactive: 2` on a page with 6 entries) also says so
+ * since owner decision D6: the fixture plus the `truncated` report, nothing
+ * else changed. Every uncut case is the fixture as captured.
+ */
+const expectedBaseline = (name: string): unknown =>
+  name === 'snapshot_max_interactive'
+    ? {
+        ...(baseline[name] as Record<string, unknown>),
+        truncated: {
+          interactive: 4,
+          next_offset: { interactive: 2, headings: 1 },
+          hint: SNAPSHOT_CUT_HINT,
+        },
+      }
+    : baseline[name];
+
 function captureBaselineOutputs(): Record<string, unknown> {
   buildBaselinePage();
   const out: Record<string, unknown> = {};
@@ -1447,7 +1468,7 @@ describe('snapshot, find and state without the page observer (baseline pin)', ()
     expect(Object.keys(actual)).toEqual(Object.keys(baseline));
     for (const name of Object.keys(baseline)) {
       // JSON.stringify keeps key order, so this pins field order too.
-      expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+      expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(expectedBaseline(name)));
     }
   });
 });
@@ -1569,7 +1590,7 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
     try {
       const actual = captureBaselineOutputs();
       for (const name of Object.keys(baseline)) {
-        expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+        expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(expectedBaseline(name)));
       }
     } finally {
       g.dead = false;
@@ -1592,7 +1613,9 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
       return value;
     };
     for (const name of Object.keys(baseline)) {
-      expect(JSON.stringify(strip(actual[name])), name).toBe(JSON.stringify(baseline[name]));
+      expect(JSON.stringify(strip(actual[name])), name).toBe(
+        JSON.stringify(expectedBaseline(name)),
+      );
     }
     const capped = actual.snapshot_max_interactive as { interactive: Json[] };
     expect(capped.interactive.length).toBe(2);
@@ -1798,8 +1821,25 @@ describe('buildSnapshotJs — since diff', () => {
   });
 
   test('a snapshot without since keeps its shape and still records for a later since', () => {
+    // Cut by max_interactive, so it says so (owner decision D6) before doc_id.
     const full = evalExpr<Json>(buildSnapshotJs({ max_interactive: 1 }));
     expect(Object.keys(full)).toEqual([
+      'title',
+      'url',
+      'interactive',
+      'headings',
+      'truncated',
+      'doc_id',
+      'snapshot_id',
+    ]);
+    expect((full.interactive as Json[]).length).toBe(1);
+    expect(full.truncated).toEqual({
+      interactive: 1,
+      next_offset: { interactive: 1, headings: 1 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const whole = evalExpr<Json>(buildSnapshotJs({}));
+    expect(Object.keys(whole)).toEqual([
       'title',
       'url',
       'interactive',
@@ -1807,7 +1847,6 @@ describe('buildSnapshotJs — since diff', () => {
       'doc_id',
       'snapshot_id',
     ]);
-    expect((full.interactive as Json[]).length).toBe(1);
     const diff = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
     expect(diff.added).toEqual([]);
     expect(diff.removed).toEqual([]);
@@ -2287,5 +2326,383 @@ describe('find by semantic key and semantic_key on find results', () => {
     const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
     expect(snapshot.interactive.length).toBe(3);
     for (const e of snapshot.interactive) expect(e).not.toHaveProperty('semantic_key');
+  });
+});
+
+/**
+ * Owner decision D6: a result that was cut says so, says how much was left
+ * out, says that more can be asked for and recommends narrowing the scope;
+ * `offset` asks for the rest. A result that was not cut is unchanged.
+ */
+describe('snapshot and find say when they cut (D6)', () => {
+  const pageTitle = 'Cut fixture';
+
+  function addButtons(count: number, label = 'Item'): void {
+    for (let i = 0; i < count; i++) {
+      const btn = document.createElement('button');
+      btn.id = 'b' + i;
+      btn.textContent = label + ' ' + i;
+      document.body.appendChild(btn);
+      makeVisible(btn);
+    }
+  }
+
+  function addHeadings(count: number): void {
+    for (let i = 0; i < count; i++) {
+      const h = document.createElement('h2');
+      h.textContent = 'Heading ' + i;
+      document.body.appendChild(h);
+      makeVisible(h);
+    }
+  }
+
+  /** jsdom has no layout, so no innerText: give the body one. */
+  function setBodyText(text: string): void {
+    Object.defineProperty(document.body, 'innerText', { value: text, configurable: true });
+  }
+
+  const buttonEntry = (i: number, label = 'Item'): Json => ({
+    tag: 'button',
+    role: 'button',
+    selector: '#b' + i,
+    text: label + ' ' + i,
+  });
+  const range = (from: number, to: number): number[] =>
+    Array.from({ length: to - from }, (_, k) => from + k);
+  const headingEntry = (i: number): Json => ({ level: 'H2', text: 'Heading ' + i });
+  const pattern = (length: number): string => 'abcdefghij'.repeat(length / 10);
+
+  beforeEach(() => {
+    document.title = pageTitle;
+  });
+
+  afterEach(() => {
+    delete (document.body as unknown as Record<string, unknown>).innerText;
+  });
+
+  // JSON.stringify keeps key order, so every comparison below pins field order too.
+  const same = (actual: unknown, expected: unknown): void =>
+    expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+
+  test('interactive: 130 elements with the default cap of 120 say 10 were left out', () => {
+    addButtons(130);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(0, 120).map((i) => buttonEntry(i)),
+      headings: [],
+      truncated: {
+        interactive: 10,
+        next_offset: { interactive: 120 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("interactive: exactly 120 elements is not cut and keeps today's shape", () => {
+    addButtons(120);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(0, 120).map((i) => buttonEntry(i)),
+      headings: [],
+    });
+  });
+
+  test('headings: 40 headings say 10 were left out', () => {
+    addButtons(1);
+    addHeadings(40);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0)],
+      headings: range(0, 30).map(headingEntry),
+      truncated: {
+        headings: 10,
+        next_offset: { interactive: 1, headings: 30 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("headings: exactly 30 headings is not cut and keeps today's shape", () => {
+    addButtons(1);
+    addHeadings(30);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0)],
+      headings: range(0, 30).map(headingEntry),
+    });
+  });
+
+  test('text: 10000 characters say 6000 characters were left out', () => {
+    const full = pattern(10000);
+    setBodyText(full);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full.slice(0, 4000),
+      truncated: {
+        text: 6000,
+        next_offset: { text: 4000 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("text: exactly 4000 characters is not cut and keeps today's shape", () => {
+    const full = pattern(4000);
+    setBodyText(full);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full,
+    });
+  });
+
+  test('only_interactive reports only the interactive cut', () => {
+    addButtons(3);
+    addHeadings(40);
+    setBodyText(pattern(10000));
+    same(evalExpr(buildSnapshotJs({ only_interactive: true, max_interactive: 2 })), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0), buttonEntry(1)],
+      truncated: {
+        interactive: 1,
+        next_offset: { interactive: 2 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test('the hint says the result was cut, how to ask for the rest and how to narrow', () => {
+    expect(SNAPSHOT_CUT_HINT).toContain('left out');
+    expect(SNAPSHOT_CUT_HINT).toContain('offset set to truncated.next_offset');
+    expect(SNAPSHOT_CUT_HINT).toContain('within_selector');
+    expect(FIND_CUT_HINT).toContain('left out');
+    expect(FIND_CUT_HINT).toContain('offset set to truncated.next_offset');
+    expect(FIND_CUT_HINT).toContain('exact');
+  });
+
+  test('offset set to next_offset returns the rest of every part and nothing twice', () => {
+    addButtons(130);
+    addHeadings(40);
+    const full = pattern(10000);
+    setBodyText(full);
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    const cut = first.truncated as Json;
+    same(cut, {
+      interactive: 10,
+      headings: 10,
+      text: 6000,
+      next_offset: { interactive: 120, headings: 30, text: 4000 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const second = evalExpr<Json>(
+      buildSnapshotJs({ offset: cut.next_offset as Record<string, number> }),
+    );
+    same(second, {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(120, 130).map((i) => buttonEntry(i)),
+      headings: range(30, 40).map(headingEntry),
+      text: full.slice(4000, 8000),
+      truncated: {
+        text: 2000,
+        next_offset: { interactive: 130, headings: 40, text: 8000 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+    const third = evalExpr<Json>(
+      buildSnapshotJs({ offset: (second.truncated as Json).next_offset as Record<string, number> }),
+    );
+    same(third, {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full.slice(8000),
+    });
+    const selectors = [first, second, third].flatMap((r) =>
+      (r.interactive as Json[]).map((e) => e.selector),
+    );
+    expect(selectors).toEqual(range(0, 130).map((i) => '#b' + i));
+    const texts = [first, second, third].map((r) => (r.text as string | undefined) ?? '');
+    expect(texts.join('')).toBe(full);
+  });
+
+  test('an invalid offset counts as 0', () => {
+    addButtons(3);
+    for (const bad of [-1, 1.5, '2', null]) {
+      const r = evalExpr<Json>(
+        buildSnapshotJs({ offset: { interactive: bad as unknown as number } }),
+      );
+      expect((r.interactive as Json[]).map((e) => e.selector)).toEqual(['#b0', '#b1', '#b2']);
+    }
+  });
+
+  test('find: 8 matches with 5 candidates say 3 were left out', () => {
+    addButtons(8, 'Save');
+    same(evalExpr(buildFindJs({ text: 'Save' })), {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(0, 5).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+      truncated: {
+        candidates: 3,
+        next_offset: { candidates: 5 },
+        hint: FIND_CUT_HINT,
+      },
+    });
+  });
+
+  test("find: exactly 5 matches is not cut and keeps today's shape", () => {
+    addButtons(5, 'Save');
+    same(evalExpr(buildFindJs({ text: 'Save' })), {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(0, 5).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+    });
+  });
+
+  test('find: offset set to next_offset returns the remaining candidates and nothing twice', () => {
+    addButtons(12, 'Save');
+    const first = evalExpr<Json>(buildFindJs({ text: 'Save' }));
+    const next = (first.truncated as Json).next_offset as { candidates: number };
+    const second = evalExpr<Json>(buildFindJs({ text: 'Save', offset: next }));
+    same(second.truncated, {
+      candidates: 2,
+      next_offset: { candidates: 10 },
+      hint: FIND_CUT_HINT,
+    });
+    const third = evalExpr<Json>(
+      buildFindJs({
+        text: 'Save',
+        offset: (second.truncated as Json).next_offset as { candidates: number },
+      }),
+    );
+    same(third, {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(10, 12).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+    });
+    const selectors = [first, second, third].flatMap((r) =>
+      (r.candidates as Json[]).map((c) => c.selector),
+    );
+    expect(selectors).toEqual(range(0, 12).map((i) => '#b' + i));
+  });
+
+  describe('with since (diff)', () => {
+    const win = window as unknown as Record<string, unknown>;
+    let docId = '';
+
+    beforeEach(() => {
+      win[OBSERVER_BINDING] = () => undefined;
+      evalExpr(buildObserverInstallJs());
+      docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    });
+
+    afterEach(() => {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    });
+
+    test('a diff cut by max_interactive keeps overflow, says so and offset returns the rest', () => {
+      addButtons(1);
+      evalExpr(buildSnapshotJs({ only_interactive: true }));
+      const holder = document.createElement('div');
+      document.body.appendChild(holder);
+      for (const id of ['c', 'd', 'e']) {
+        const btn = document.createElement('button');
+        btn.id = id;
+        btn.textContent = id;
+        holder.appendChild(btn);
+        makeVisible(btn);
+      }
+      const since = docId + ':s1';
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since, only_interactive: true, max_interactive: 1 }),
+      );
+      expect((diff.added as Json[]).map((e) => e.selector)).toEqual(['#c']);
+      expect(diff.changed).toEqual([]);
+      expect(diff.overflow).toBe(2);
+      same(diff.truncated, {
+        interactive: 2,
+        next_offset: { interactive: 1 },
+        hint: SNAPSHOT_CUT_HINT,
+      });
+      expect(Object.keys(diff).slice(-2)).toEqual(['overflow', 'truncated']);
+      const rest = evalExpr<Json>(
+        buildSnapshotJs({
+          since,
+          only_interactive: true,
+          max_interactive: 1,
+          offset: { interactive: 1 },
+        }),
+      );
+      expect((rest.added as Json[]).map((e) => e.selector)).toEqual(['#d']);
+      const last = evalExpr<Json>(
+        buildSnapshotJs({
+          since,
+          only_interactive: true,
+          max_interactive: 1,
+          offset: { interactive: 2 },
+        }),
+      );
+      expect((last.added as Json[]).map((e) => e.selector)).toEqual(['#e']);
+      expect('overflow' in last).toBe(false);
+      expect('truncated' in last).toBe(false);
+    });
+
+    test('a diff of a page past 500 entries says how many entries it did not compare', () => {
+      addButtons(510);
+      evalExpr(buildSnapshotJs({ only_interactive: true }));
+      const late = document.createElement('button');
+      late.id = 'late';
+      late.textContent = 'Late';
+      document.body.appendChild(late);
+      makeVisible(late);
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since: docId + ':s1', only_interactive: true }),
+      );
+      expect(diff.added).toEqual([]);
+      expect(diff.removed).toEqual([]);
+      expect(diff.changed).toEqual([]);
+      // 11 entries of this snapshot and 10 of the recorded one past 500.
+      same(diff.truncated, { not_compared: 21, hint: SNAPSHOT_NOT_COMPARED_HINT });
+    });
+
+    test("an uncut diff keeps today's shape", () => {
+      addButtons(2);
+      evalExpr(buildSnapshotJs({}));
+      const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+      expect(Object.keys(diff)).toEqual([
+        'title',
+        'url',
+        'doc_id',
+        'snapshot_id',
+        'since',
+        'added',
+        'removed',
+        'changed',
+      ]);
+    });
   });
 });

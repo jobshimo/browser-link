@@ -525,7 +525,14 @@ type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
 
 async function performFind(
   client: CdpClient,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
+  params: {
+    text?: string;
+    role?: string;
+    exact?: boolean;
+    ref?: string;
+    key?: FindKey;
+    offset?: { candidates?: number };
+  },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
@@ -542,7 +549,7 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       client,
-      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+      buildFindJs({ text, role: params.role, exact: params.exact === true, offset: params.offset }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -1019,6 +1026,7 @@ export async function callCdpTool(
           : undefined,
         max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
         since: typeof p.since === 'string' ? p.since : undefined,
+        offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
       };
       return evaluateInTab(client, buildSnapshotJs(opts));
     }
@@ -1052,6 +1060,7 @@ export async function callCdpTool(
         exact: p.exact === true,
         ref: typeof p.ref === 'string' ? p.ref : undefined,
         key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
+        offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
       });
       if (!outcome.ok) throw new Error(outcome.error);
       return outcome.result;

@@ -223,6 +223,42 @@ describe('callCdpTool — tool dispatch', () => {
     expect(expressions[0]).toContain('"since":"s3"');
     expect(expressions[1]).toContain('"since":null');
   });
+
+  test('snapshot and find forward offset (D6) and answer the truncated report unchanged', async () => {
+    const expressions: string[] = [];
+    const cutSnapshot = {
+      interactive: [],
+      truncated: { interactive: 3, next_offset: { interactive: 123 }, hint: 'h' },
+    };
+    const cutFind = {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: [],
+      truncated: { candidates: 2, next_offset: { candidates: 10 }, hint: 'h' },
+    };
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        expressions.push(expression);
+        return {
+          result: { value: expression.includes('candidateOffset') ? cutFind : cutSnapshot },
+        };
+      },
+    });
+    grantAccess(port);
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'snapshot', {
+        offset: { interactive: 120, headings: 30, text: 4000 },
+      }),
+    ).toEqual(cutSnapshot);
+    expect(expressions[0]).toContain('"offset":{"interactive":120,"headings":30,"text":4000}');
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', {});
+    expect(expressions[1]).toContain('"offset":{"interactive":0,"headings":0,"text":0}');
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'find', { text: 'Save', offset: { candidates: 5 } }),
+    ).toEqual(cutFind);
+    expect(expressions[2]).toContain('"candidateOffset":5');
+  });
   test('evaluate threads the dispatcher budget into the Runtime.evaluate per-command timeout', async () => {
     // The fake target swallows Runtime.evaluate, so only the per-command
     // timeout can settle the call — a reject naming the CALLER's budget

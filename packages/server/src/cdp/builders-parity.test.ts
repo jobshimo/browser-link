@@ -30,6 +30,14 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildSnapshotJs({ since: 'abc123:s1' })).toBe(
       ext.buildSnapshotJs({ since: 'abc123:s1' }),
     );
+    const offset = { interactive: 120, headings: 30, text: 4000 };
+    expect(srv.buildSnapshotJs({ offset })).toBe(ext.buildSnapshotJs({ offset }));
+  });
+
+  test('the cut hints of snapshot and find (owner decision D6)', () => {
+    expect(srv.SNAPSHOT_CUT_HINT).toBe(ext.SNAPSHOT_CUT_HINT);
+    expect(srv.SNAPSHOT_NOT_COMPARED_HINT).toBe(ext.SNAPSHOT_NOT_COMPARED_HINT);
+    expect(srv.FIND_CUT_HINT).toBe(ext.FIND_CUT_HINT);
   });
 
   test('buildFindJs', () => {
@@ -40,6 +48,8 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildFindJs({ key })).toBe(ext.buildFindJs({ key }));
     const bare = { key: { role: 'link', name: 'Docs' } };
     expect(srv.buildFindJs(bare)).toBe(ext.buildFindJs(bare));
+    const paged = { text: 'Save', offset: { candidates: 5 } };
+    expect(srv.buildFindJs(paged)).toBe(ext.buildFindJs(paged));
   });
 
   test('buildClickResolveJs', () => {
