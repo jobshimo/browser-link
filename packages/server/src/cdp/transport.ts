@@ -71,6 +71,7 @@ import {
 } from './detached-flows.js';
 import {
   refFailureMessage,
+  notWalkedSuffix,
   retargetedClickMessage,
   runFlow,
   type ActionOutcome,
@@ -501,7 +502,7 @@ async function dispatchKeyEvent(
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
   | { ok: false; reason: 'occluded'; blocker: string }
   | { ok: false; reason: 'retargeted'; hit_element: string }
   | RefResolveFailure;
@@ -509,7 +510,7 @@ type ClickResolveResult =
 type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
   | RefResolveFailure;
 
 /** A `ref` target the page could not resolve — see `RESOLVE_TARGET_JS` in
@@ -599,7 +600,10 @@ async function performClick(
       if (resolved.reason === 'invalid-selector') {
         return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
       }
-      return { ok: false, error: `Element not found: ${ref ?? selector}` };
+      return {
+        ok: false,
+        error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
+      };
     }
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
@@ -681,7 +685,7 @@ async function performType(
         if (resolved.reason === 'invalid-selector') {
           return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
         }
-        return { ok: false, error: `Element not found: ${selector}` };
+        return { ok: false, error: `Element not found: ${selector}${notWalkedSuffix(resolved)}` };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);

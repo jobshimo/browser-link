@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  notWalkedSuffix,
   refFailureMessage,
   retargetedClickMessage,
   runFlow,
@@ -481,6 +482,52 @@ describe('runFlow — fail-fast', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.error).toContain('multiple-matches');
     expect(result.error).toContain('#a');
+    // Not cut: the message is exactly what it was.
+    expect(result.error).toBe(
+      'find: multiple-matches — candidates: [{"selector":"#a","text":"A","tag":"button"}]',
+    );
+  });
+
+  test('a not-found find under a depth cut says part of the page was not walked', async () => {
+    const note = 'Part of the page was not walked.';
+    const deps = makeDeps({
+      performFind: vi.fn(async () => ({
+        ok: true,
+        result: { matched: false, reason: 'not-found', not_walked: note },
+      })),
+    });
+    const result = await runFlow([{ find: { text: 'Deep' } }], deps);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toBe(`find: not-found (${note})`);
+    expect(notWalkedSuffix({})).toBe('');
+    expect(notWalkedSuffix({ not_walked: note })).toBe(` (${note})`);
+  });
+
+  test('a cut multiple-matches find says how many candidates were left out and how to list them (D6)', async () => {
+    const truncated = {
+      candidates: 3,
+      next_offset: { candidates: 5 },
+      hint: 'More elements match than are listed.',
+    };
+    const deps = makeDeps({
+      performFind: vi.fn(async () => ({
+        ok: true,
+        result: {
+          matched: false,
+          reason: 'multiple-matches',
+          candidates: [{ selector: '#a', text: 'A', tag: 'button' }],
+          truncated,
+        },
+      })),
+    });
+    const result = await runFlow([{ find: { text: 'Save' } }], deps);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toBe(
+      'find: multiple-matches — candidates: [{"selector":"#a","text":"A","tag":"button"}]' +
+        ' — 3 more candidates left out, truncated: ' +
+        JSON.stringify(truncated) +
+        '; list them with browser.find and offset: truncated.next_offset, or narrow the step with exact, role or a longer text',
+    );
   });
 
   test('ambiguous find (matched but ambiguous:true) fails the flow', async () => {
@@ -1399,14 +1446,16 @@ describe('runFlow — ref as a step target (spec v4 §6.3)', () => {
     });
     const result = await runFlow([{ click: { ref: 'k3x9ab:e3' } }], deps);
     if (result.ok) throw new Error('expected failure');
-    expect(result.error).toBe('ref-stale: k3x9ab:e3 not found in document d1');
+    expect(result.error).toBe(
+      'ref-stale: k3x9ab:e3 not found in document d1: the element is gone, take a new snapshot',
+    );
   });
 });
 
 describe('refFailureMessage', () => {
   test('ref-stale names the ref and the doc_id', () => {
     expect(refFailureMessage({ reason: 'ref-stale', doc_id: 'abc' }, 'k3x9ab:e12')).toBe(
-      'ref-stale: k3x9ab:e12 not found in document abc',
+      'ref-stale: k3x9ab:e12 not found in document abc: the element is gone, take a new snapshot',
     );
   });
 

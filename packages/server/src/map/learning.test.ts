@@ -66,7 +66,9 @@ describe('classifyOutcome — thrown errors', () => {
   });
 
   test('a ref-stale error fails with "ref-stale"', () => {
-    const error = new Error('ref-stale: abc:e1 not found in document abc');
+    const error = new Error(
+      'ref-stale: abc:e1 not found in document abc: the element is gone, take a new snapshot',
+    );
     expect(classifyOutcome('browser.click', args, undefined, error)).toEqual({
       ok: false,
       reason: 'ref-stale',
@@ -192,7 +194,9 @@ describe('classifyOutcome — resolved actions', () => {
 
 describe('classifyOutcome — nothing learnable', () => {
   test('a call that used only a ref learns nothing', () => {
-    const error = new Error('ref-stale: abc:e1 not found in document abc');
+    const error = new Error(
+      'ref-stale: abc:e1 not found in document abc: the element is gone, take a new snapshot',
+    );
     expect(classifyOutcome('browser.click', { ref: 'abc:e1' }, undefined, error)).toBeNull();
     expect(
       classifyOutcome('browser.find', { ref: 'abc:e1' }, { matched: false }, undefined),

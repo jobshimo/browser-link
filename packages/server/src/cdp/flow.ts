@@ -70,12 +70,32 @@ export function refFailureMessage(
   ref: string,
 ): string | null {
   if (failure.reason === 'ref-stale') {
-    return `ref-stale: ${ref} not found in document ${failure.doc_id ?? 'unknown'}`;
+    return `ref-stale: ${ref} not found in document ${failure.doc_id ?? 'unknown'}: the element is gone, take a new snapshot`;
   }
   if (failure.reason === 'observer-unavailable') {
     return `observer-unavailable: ref ${ref} cannot be resolved without the page observer`;
   }
   return null;
+}
+
+/** ' (<note>)' when a result says part of the page was not walked (the
+ * deep-query depth guard fired, see `NOT_WALKED_NOTE` in
+ * `inpage/builders.ts`), else empty: a miss there may be a cut. */
+export function notWalkedSuffix(result: object): string {
+  const note = (result as { not_walked?: unknown }).not_walked;
+  return typeof note === 'string' ? ` (${note})` : '';
+}
+
+/** The part of a flow's `multiple-matches` failure that says how many
+ * candidates the page left out and how to list them (owner decision D6);
+ * empty when the answer was not cut. */
+export function cutCandidatesNote(truncated: FindStepResult['truncated']): string {
+  if (!truncated || typeof truncated.candidates !== 'number' || truncated.candidates <= 0)
+    return '';
+  return (
+    ` — ${truncated.candidates} more candidates left out, truncated: ${JSON.stringify(truncated)}` +
+    '; list them with browser.find and offset: truncated.next_offset, or narrow the step with exact, role or a longer text'
+  );
 }
 
 /** The error text for a click whose predicted hit lands on an ancestor of
@@ -130,6 +150,11 @@ export interface FindStepResult {
   text?: string;
   coords?: { x: number; y: number };
   frame?: string;
+  /** On a cut `multiple-matches` answer: what was left out (owner decision
+   * D6, see `buildFindJs`). */
+  truncated?: { candidates?: number; next_offset?: { candidates?: number }; hint?: string };
+  /** Set when the deep-query depth guard left part of the page unwalked. */
+  not_walked?: string;
 }
 
 export interface ClickStepParams {
@@ -667,9 +692,12 @@ async function executeLeafStep(
     if (!r.matched) {
       const candidateNote =
         r.reason === 'multiple-matches' && r.candidates
-          ? ` — candidates: ${JSON.stringify(r.candidates)}`
+          ? ` — candidates: ${JSON.stringify(r.candidates)}${cutCandidatesNote(r.truncated)}`
           : '';
-      return { ok: false, error: `find: ${r.reason ?? 'not-found'}${candidateNote}${raceHint()}` };
+      return {
+        ok: false,
+        error: `find: ${r.reason ?? 'not-found'}${candidateNote}${notWalkedSuffix(r)}${raceHint()}`,
+      };
     }
     if (r.ambiguous) {
       return {

@@ -23,6 +23,12 @@ import { OBSERVER_GLOBAL } from './observer.js';
  * Without the observer (injection failed, pre-observer document) all are
  * no-ops, so every result is byte-identical to the pre-ref output.
  */
+/** Added as `not_walked` to a result built while the deep-query depth
+ * guard refused to enter nested roots (see `DEEP_QUERY_JS`): part of the page
+ * was not walked, so a miss may be a cut. Absent on the common path. */
+export const NOT_WALKED_NOTE =
+  'Part of the page was not walked: shadow roots or frames nest deeper than 20 levels. Target the inner part with within_selector or a ref.';
+
 export const PAGE_OBSERVER_JS = `
   const pageObserver = (() => {
     try {
@@ -41,6 +47,9 @@ export const PAGE_OBSERVER_JS = `
     }
   }
   function withDocId(result) {
+    if (typeof deepDepthLimited !== 'undefined' && deepDepthLimited) {
+      result.not_walked = ${JSON.stringify(NOT_WALKED_NOTE)};
+    }
     if (pageObserver && typeof pageObserver.doc_id === 'string') result.doc_id = pageObserver.doc_id;
     return result;
   }
@@ -91,7 +100,11 @@ export const RESOLVE_TARGET_JS = `
       return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
     }
     const el = deepQueryFirst(opts.selector);
-    if (!el) return { ok: false, reason: 'not-found' };
+    if (!el) {
+      const missing = { ok: false, reason: 'not-found' };
+      if (deepDepthLimited) missing.not_walked = ${JSON.stringify(NOT_WALKED_NOTE)};
+      return missing;
+    }
     return { ok: true, el: el, reresolved: false };
   }
 `;
@@ -163,15 +176,21 @@ function targetJson(opts: TargetOpts): Record<string, string | undefined> {
  * 120, at most 500; in a diff, `added` + `changed`), the headings (30) and
  * the text (4000 characters) are windows starting at `offset.<part>`
  * (default 0). When anything is left out AFTER a window, the result carries
- *   truncated: { interactive?, headings?, text?, not_compared?, next_offset?, hint }
+ *   truncated: { interactive?, headings?, text?, not_compared?,
+ *                not_compared_headings?, not_compared_text?, next_offset?, hint }
  * where each part counts what it left out (entries; characters for text,
  * all counted exactly from the full scan, which runs anyway), `next_offset`
  * holds, for every non-empty part of the result, where the next call should
  * start (pass it back as `offset` to get the rest and nothing twice), and
  * `hint` says how to narrow or continue. `not_compared` (diff only) counts
  * the entries of this snapshot and of the recorded one past the first 500,
- * which a diff never compares. A result that left nothing out carries no
- * `truncated`, so it is unchanged.
+ * which a diff never compares; `not_compared_headings` / `not_compared_text`
+ * (diff only, not with `only_interactive`) count the headings past the first
+ * 30 and the characters past the first 4000 of this snapshot and of the
+ * recorded one, which a diff never looks at for changes. A result that left
+ * nothing out carries no `truncated`, so it is unchanged. Any result built
+ * while the deep-query depth guard fired also carries `not_walked`
+ * (`NOT_WALKED_NOTE`).
  */
 export interface SnapshotOffset {
   interactive?: number;
@@ -198,6 +217,11 @@ export const SNAPSHOT_CUT_HINT =
 export const SNAPSHOT_NOT_COMPARED_HINT =
   'A diff compares only the first 500 entries of each snapshot: not_compared were left out. Narrow the scope with within_selector to compare the rest.';
 
+/** The `hint` of a diff whose headings or text were longer than the part
+ * it compares (30 headings, 4000 characters). */
+export const SNAPSHOT_NOT_COMPARED_TEXT_HINT =
+  'A diff compares only the first 30 headings and the first 4000 characters of text of each snapshot: changes beyond them were not looked at. Take a snapshot without since (offset pages through the rest) or narrow the scope with within_selector.';
+
 /** The `hint` of a cut `multiple-matches` find (see `buildFindJs`). */
 export const FIND_CUT_HINT =
   'More elements match than are listed: truncated counts the candidates left out. Narrow with exact, role or a longer text, or get the rest by calling again with offset set to truncated.next_offset.';
@@ -223,7 +247,11 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       headings: offsetValue(offset.headings),
       text: offsetValue(offset.text),
     },
-    hints: { cut: SNAPSHOT_CUT_HINT, notCompared: SNAPSHOT_NOT_COMPARED_HINT },
+    hints: {
+      cut: SNAPSHOT_CUT_HINT,
+      notCompared: SNAPSHOT_NOT_COMPARED_HINT,
+      notComparedText: SNAPSHOT_NOT_COMPARED_TEXT_HINT,
+    },
   });
   return `
 (() => {
@@ -345,6 +373,7 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     const report = {};
     const next = {};
     let cut = false;
+    const skipped = notCompared || {};
     for (const part of parts) {
       const omitted = Math.max(0, part.total - part.from - part.returned);
       if (omitted > 0) {
@@ -353,12 +382,21 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       }
       if (part.total > 0) next[part.name] = part.from + part.returned;
     }
-    if (notCompared > 0) report.not_compared = notCompared;
-    if (!cut && notCompared === 0) return null;
+    let anySkipped = false;
+    for (const key of ['not_compared', 'not_compared_headings', 'not_compared_text']) {
+      if (skipped[key] > 0) {
+        report[key] = skipped[key];
+        anySkipped = true;
+      }
+    }
+    if (!cut && !anySkipped) return null;
     if (cut) report.next_offset = next;
     const hints = [];
     if (cut) hints.push(opts.hints.cut);
-    if (notCompared > 0) hints.push(opts.hints.notCompared);
+    if (skipped.not_compared > 0) hints.push(opts.hints.notCompared);
+    if (skipped.not_compared_headings > 0 || skipped.not_compared_text > 0) {
+      hints.push(opts.hints.notComparedText);
+    }
     report.hint = hints.join(' ');
     return report;
   }
@@ -380,7 +418,7 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     }
     if (visibleText) result.text = visibleText;
     if (notice) result.notice = notice;
-    const cut = cutReport(parts, 0);
+    const cut = cutReport(parts, null);
     if (cut) result.truncated = cut;
     withDocId(result);
     if (snapshotId) result.snapshot_id = snapshotId;
@@ -416,6 +454,8 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       headings_hash: headingsHash,
       text_hash: textHash,
       unrecorded: unrecorded,
+      headings_beyond: allHeadings ? Math.max(0, allHeadings.length - HEADING_LIMIT) : 0,
+      text_beyond: Math.max(0, allText.length - TEXT_LIMIT),
     });
   }
   if (opts.since === null) return fullResult();
@@ -469,8 +509,16 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       parts.push(windowOf('text', allText.length, visibleText.length));
     }
   }
-  const previousUnrecorded = typeof previous.unrecorded === 'number' ? previous.unrecorded : 0;
-  const cut = cutReport(parts, unrecorded + previousUnrecorded);
+  const recorded = (key) => (typeof previous[key] === 'number' ? previous[key] : 0);
+  // Headings and text are compared on their first windows only; what lies
+  // beyond them in either snapshot was not looked at, and the diff says so.
+  const skipped = { not_compared: unrecorded + recorded('unrecorded') };
+  if (!opts.onlyInteractive) {
+    skipped.not_compared_headings =
+      Math.max(0, allHeadings.length - HEADING_LIMIT) + recorded('headings_beyond');
+    skipped.not_compared_text = Math.max(0, allText.length - TEXT_LIMIT) + recorded('text_beyond');
+  }
+  const cut = cutReport(parts, skipped);
   if (cut) diff.truncated = cut;
   return diff;
 })()

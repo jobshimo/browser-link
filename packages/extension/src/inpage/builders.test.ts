@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   FIND_CUT_HINT,
+  NOT_WALKED_NOTE,
   SNAPSHOT_CUT_HINT,
   SNAPSHOT_NOT_COMPARED_HINT,
+  SNAPSHOT_NOT_COMPARED_TEXT_HINT,
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -2703,6 +2705,175 @@ describe('snapshot and find say when they cut (D6)', () => {
         'removed',
         'changed',
       ]);
+    });
+  });
+});
+
+/**
+ * A diff compares headings and text only on their first windows (30
+ * headings, 4000 characters). When either snapshot held more, the diff says
+ * that changes beyond them were not looked at; otherwise it is unchanged.
+ */
+describe('a since diff says when it did not look at headings or text (D6)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  let docId = '';
+
+  function addHeadings(count: number): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (let i = 0; i < count; i++) {
+      const h = document.createElement('h2');
+      h.textContent = 'Heading ' + i;
+      document.body.appendChild(h);
+      makeVisible(h);
+      out.push(h);
+    }
+    return out;
+  }
+  function setBodyText(text: string): void {
+    Object.defineProperty(document.body, 'innerText', { value: text, configurable: true });
+  }
+
+  beforeEach(() => {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+  });
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+    delete (document.body as unknown as Record<string, unknown>).innerText;
+  });
+
+  test('40 headings: a change in heading 35 is not looked at and the diff says so', () => {
+    const hs = addHeadings(40);
+    evalExpr(buildSnapshotJs({}));
+    hs[35].textContent = 'Changed';
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect('headings' in diff).toBe(false);
+    // 10 headings past the first 30 in this snapshot and 10 in the recorded one.
+    expect(JSON.stringify(diff.truncated)).toBe(
+      JSON.stringify({ not_compared_headings: 20, hint: SNAPSHOT_NOT_COMPARED_TEXT_HINT }),
+    );
+  });
+
+  test('5000 characters of text: the 1000 past 4000 of each snapshot are not looked at', () => {
+    setBodyText('a'.repeat(5000));
+    evalExpr(buildSnapshotJs({}));
+    setBodyText('a'.repeat(4999) + 'b');
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect('text' in diff).toBe(false);
+    expect(JSON.stringify(diff.truncated)).toBe(
+      JSON.stringify({ not_compared_text: 2000, hint: SNAPSHOT_NOT_COMPARED_TEXT_HINT }),
+    );
+  });
+
+  test("exactly 30 headings and 4000 characters: the diff keeps today's shape", () => {
+    addHeadings(30);
+    setBodyText('a'.repeat(4000));
+    evalExpr(buildSnapshotJs({}));
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect(Object.keys(diff)).toEqual([
+      'title',
+      'url',
+      'doc_id',
+      'snapshot_id',
+      'since',
+      'added',
+      'removed',
+      'changed',
+    ]);
+  });
+
+  test('only_interactive never reports headings or text as not compared', () => {
+    addHeadings(40);
+    evalExpr(buildSnapshotJs({ only_interactive: true }));
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1', only_interactive: true }));
+    expect('truncated' in diff).toBe(false);
+  });
+});
+
+/**
+ * The deep-query depth guard (more than 20 nested shadow roots or frames)
+ * must not cut silently: snapshot, find, state and the click / type
+ * resolvers say that part of the page was not walked, only when it fired.
+ */
+describe('results say when part of the page was not walked (depth guard)', () => {
+  function nest(levels: number, label: string): HTMLButtonElement {
+    let scope: Element | ShadowRoot = document.body;
+    for (let i = 0; i < levels; i++) {
+      const host = document.createElement('div');
+      makeVisible(host);
+      scope.appendChild(host);
+      scope = host.attachShadow({ mode: 'open' });
+    }
+    const btn = document.createElement('button');
+    btn.id = 'deepest';
+    btn.textContent = label;
+    scope.appendChild(btn);
+    makeVisible(btn);
+    return btn;
+  }
+
+  test('snapshot: 22 nested roots say not_walked; 21 do not and list the button', () => {
+    nest(22, 'Deep');
+    const cut = evalExpr<Json>(buildSnapshotJs({}));
+    expect(cut.interactive).toEqual([]);
+    expect(cut.not_walked).toBe(NOT_WALKED_NOTE);
+    expect(Object.keys(cut)).toEqual(['title', 'url', 'interactive', 'headings', 'not_walked']);
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    const whole = evalExpr<Json>(buildSnapshotJs({}));
+    expect((whole.interactive as Json[]).length).toBe(1);
+    expect('not_walked' in whole).toBe(false);
+  });
+
+  test('find: a not-found under a depth cut says part of the page was not walked', () => {
+    nest(22, 'Deep');
+    expect(NOT_WALKED_NOTE).toMatch(/not walked/);
+    expect(evalExpr(buildFindJs({ text: 'Deep' }))).toHaveProperty('not_walked');
+    expect(evalExpr(buildFindJs({ text: 'Deep' }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    const found = evalExpr<Json>(buildFindJs({ text: 'Deep' }));
+    expect(found.matched).toBe(true);
+    expect('not_walked' in found).toBe(false);
+  });
+
+  test('state: says not_walked only under a depth cut', () => {
+    nest(22, 'Deep');
+    expect(evalExpr<Json>(buildStateJs())).toHaveProperty('not_walked', NOT_WALKED_NOTE);
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    expect('not_walked' in evalExpr<Json>(buildStateJs())).toBe(false);
+  });
+
+  test('click and type resolvers: a not-found under a depth cut carries not_walked', () => {
+    nest(22, 'Deep');
+    expect(evalExpr(buildClickResolveJs({ selector: '#deepest', force: false }))).toHaveProperty(
+      'not_walked',
+    );
+    expect(evalExpr(buildTypeResolveJs({ selector: '#deepest', clear: false }))).toHaveProperty(
+      'not_walked',
+    );
+    expect(evalExpr(buildClickResolveJs({ selector: '#deepest', force: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    expect(evalExpr(buildTypeResolveJs({ selector: '#deepest', clear: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    document.body.innerHTML = '<p>flat</p>';
+    expect(evalExpr(buildClickResolveJs({ selector: '#nope', force: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
     });
   });
 });

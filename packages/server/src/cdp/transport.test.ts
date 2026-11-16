@@ -357,6 +357,22 @@ describe('callCdpTool — tool dispatch', () => {
     );
   });
 
+  test('click and type say part of the page was not walked when the depth guard fired', async () => {
+    const note = 'Part of the page was not walked.';
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({
+        result: { value: { ok: false, reason: 'not-found', not_walked: note } },
+      }),
+    });
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'click', { selector: '#deep' })).rejects.toThrow(
+      `Element not found: #deep (${note})`,
+    );
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'type', { selector: '#deep', text: 'x' }),
+    ).rejects.toThrow(`Element not found: #deep (${note})`);
+  });
+
   test('click rejects with the retargeted error when the hit lands on an ancestor', async () => {
     const { port, targetId } = await startFakeTarget({
       'Runtime.evaluate': () => ({
@@ -1287,7 +1303,7 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     const { port, targetId } = await startFakeTarget(refPage(STALE, []));
     grantAccess(port);
     await expect(callCdpTool(`cdp:${targetId}`, 'click', { ref: 'k3x9ab:e7' })).rejects.toThrow(
-      'ref-stale: k3x9ab:e7 not found in document doc-1',
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
     );
   });
 
@@ -1330,7 +1346,9 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     grantAccess(port);
     await expect(
       callCdpTool(`cdp:${targetId}`, 'press', { key: 'Enter', ref: 'k3x9ab:e7' }),
-    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+    ).rejects.toThrow(
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
   });
 
   test('find by ref returns the match; a stale ref rejects', async () => {
@@ -1346,7 +1364,9 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     grantAccess(stale.port);
     await expect(
       callCdpTool(`cdp:${stale.targetId}`, 'find', { ref: 'k3x9ab:e7' }),
-    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+    ).rejects.toThrow(
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
   });
 
   test('wait_for by ref polls the ref probe; without the observer it rejects', async () => {

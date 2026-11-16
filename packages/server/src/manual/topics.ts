@@ -140,7 +140,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- `retargeted` error on `click`: the click would land on an ancestor of your target (clipped or covered by its own container) → scroll or expand the container, or `find` the element that receives clicks; `force: true` clicks there anyway.',
       '- `mutation_count: 0` or `settle.settled: false` → `expect` or `wait_for` the effect you need.',
       '- `since_status` on `snapshot`: you received a full snapshot → keep its new `snapshot_id`.',
-      '- `reresolved: true`: the node was replaced and re-found → fine.',
+      '- `reresolved: true`: the node was replaced by a re-render and re-found (never a look-alike that already existed) → fine.',
       '- `ref-stale` → take a fresh `snapshot`/`find`; never retry the same ref.',
       '- `wait_for` returning `matched: false` is not an error → decide.',
       '- `extension_outdated: true` on `list_tabs` → extension older than server, fields may be missing: ask the user to update or reload the extension.',

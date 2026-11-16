@@ -32,12 +32,13 @@ const FIXTURES: readonly Fixture[] = [
     activity: 'retargeted',
   },
   {
-    message: 'ref-stale: abc:e1 not found in document abc',
+    message:
+      'ref-stale: abc:e1 not found in document abc: the element is gone, take a new snapshot',
     mapLearner: 'ref-stale',
     activity: 'ref-stale',
   },
   {
-    message: 'ref-stale: e12 not found in document d3',
+    message: 'ref-stale: e12 not found in document d3: the element is gone, take a new snapshot',
     mapLearner: 'ref-stale',
     activity: 'ref-stale',
   },
