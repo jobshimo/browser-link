@@ -78,6 +78,8 @@ const PLAIN_TOGGLES = [
   'instructionsAutoRefresh',
   'activityEnabled',
   'activityRecordPayloads',
+  'activityHideSensitive',
+  'hidePasswordValues',
 ] as const;
 type PlainToggle = (typeof PLAIN_TOGGLES)[number];
 

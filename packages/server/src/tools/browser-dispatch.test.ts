@@ -5014,3 +5014,85 @@ describe('knowledge loop: wrap_up, read, feedback and the flow/evaluate shortcut
     ).rejects.toThrow(/observed must be a non-empty string/);
   });
 });
+
+describe('password values: the hide-password-values setting (D12)', () => {
+  const NOTE = { values_hidden: 'note from the page' };
+  const KEY = { role: 'button', name: 'Save' };
+
+  /** The tool calls whose answer can carry a password value, with the wire
+   * tool and the params each sends with the setting off. */
+  const CALLS = [
+    ['browser.snapshot', { tab_id: 'tab_1' }, 'snapshot'],
+    ['browser.find', { tab_id: 'tab_1', text: 'Password' }, 'find'],
+    ['browser.find', { tab_id: 'tab_1', ref: 'k3x9ab:e7' }, 'find'],
+    ['browser.find', { tab_id: 'tab_1', key: KEY }, 'find'],
+    ['browser.flow', { tab_id: 'tab_1', steps: [{ find: { text: 'Password' } }] }, 'flow'],
+  ] as const;
+
+  function sentParams(deps: BrowserToolDeps): Record<string, unknown> {
+    const call = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    return call[2] as Record<string, unknown>;
+  }
+
+  test.each(CALLS)(
+    '%s with the setting off: nothing is asked of the page, the answer is returned untouched',
+    async (tool, args, wire) => {
+      for (const hidePasswordValues of [undefined, () => false]) {
+        const answer = { interactive: [{ value: 'hunter2' }] };
+        const deps = makeDeps({
+          callBrowserTool: vi.fn(async () => answer),
+          ...(hidePasswordValues ? { hidePasswordValues } : {}),
+        });
+        const result = await handleBrowserTool(tool, args, deps, TEST_CALLER);
+        expect((deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1]).toBe(wire);
+        expect('hide_password_values' in sentParams(deps)).toBe(false);
+        expect(JSON.stringify(result)).toContain('hunter2');
+      }
+    },
+  );
+
+  test.each(CALLS)(
+    '%s with the setting on: the page is asked to hide, and its answer is returned',
+    async (tool, args) => {
+      const deps = makeDeps({
+        callBrowserTool: vi.fn(async () => ({ matched: false, reason: 'not-found', ...NOTE })),
+        hidePasswordValues: () => true,
+      });
+      const result = await handleBrowserTool(tool, args, deps, TEST_CALLER);
+      expect(sentParams(deps).hide_password_values).toBe(true);
+      expect(result).toMatchObject(NOTE);
+    },
+  );
+
+  test.each(CALLS)(
+    '%s with the setting on: an answer that did not hide (an older extension) is withheld',
+    async (tool, args) => {
+      const deps = makeDeps({
+        callBrowserTool: vi.fn(async () => ({ interactive: [{ value: 'hunter2' }] })),
+        hidePasswordValues: () => true,
+      });
+      const error: unknown = await handleBrowserTool(tool, args, deps, TEST_CALLER).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain(`${tool}: the user's setting hide-password-values is on`);
+      expect(message).toContain('the answer was withheld');
+      expect(message).not.toContain('hunter2');
+      expect(message.includes('(the flow itself ran)')).toBe(tool === 'browser.flow');
+    },
+  );
+
+  test('the setting is read on every call, so a change applies to the next one without a restart', async () => {
+    let on = false;
+    const deps = makeDeps({
+      callBrowserTool: vi.fn(async () => ({ interactive: [], ...NOTE })),
+      hidePasswordValues: () => on,
+    });
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect('hide_password_values' in sentParams(deps)).toBe(false);
+    on = true;
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(sentParams(deps).hide_password_values).toBe(true);
+  });
+});

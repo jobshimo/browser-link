@@ -1,6 +1,8 @@
 import {
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_GRANT_TTL_MINUTES,
+  activityHidesSensitive,
+  hidesPasswordValues,
   type BrowserLinkConfig,
 } from '../config.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
@@ -90,7 +92,13 @@ function readout(
   return { id, kind: 'readout', label, value, writesDisk: false, ...extra };
 }
 
-function toggle(id: string, label: string, value: boolean, requiresRestart = false): AdminItem {
+function toggle(
+  id: string,
+  label: string,
+  value: boolean,
+  requiresRestart = false,
+  extra: Partial<AdminItem> = {},
+): AdminItem {
   return {
     id,
     kind: 'toggle',
@@ -98,7 +106,13 @@ function toggle(id: string, label: string, value: boolean, requiresRestart = fal
     value,
     writesDisk: true,
     ...(requiresRestart ? { requiresRestart: true } : {}),
+    ...extra,
   };
+}
+
+/** The console command that flips an on/off `config set` key. */
+function onOffCommand(key: string, on: boolean): string {
+  return `browser-link config set ${key} ${on ? 'off' : 'on'}`;
 }
 
 export function formatUptime(ms: number): string {
@@ -189,6 +203,20 @@ function statusSection(input: AdminInput, t: AdminI18n): AdminSection {
       input.update?.isNewer === true ? { hint: SELF_UPDATE_COMMAND } : {},
     ),
     readout('status.activity', t.activity, config.activityEnabled === false ? t.off : t.on),
+    // Which of the two hide settings is active (owner decisions D12, D13),
+    // with the console command that flips each one.
+    readout(
+      'status.passwordValues',
+      t.passwordValuesStatus,
+      hidesPasswordValues(config) ? t.passwordValuesHidden : t.passwordValuesShown,
+      { hint: onOffCommand('hide-password-values', hidesPasswordValues(config)) },
+    ),
+    readout(
+      'status.activitySensitive',
+      t.activitySensitiveStatus,
+      activityHidesSensitive(config) ? t.activitySensitiveHidden : t.activitySensitiveStored,
+      { hint: onOffCommand('activity.hide-sensitive', activityHidesSensitive(config)) },
+    ),
   ];
   return { id: 'status', title: t.sections.status, items };
 }
@@ -250,6 +278,14 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       config.activityRecordPayloads !== false,
       true,
     ),
+    // Owner decision D13: read once when the primary wires the trail.
+    toggle('activityHideSensitive', t.activityHideSensitive, activityHidesSensitive(config), true, {
+      hint: t.activityHideSensitiveHint,
+    }),
+    // Owner decision D12: read on every call, so no restart.
+    toggle('hidePasswordValues', t.hidePasswordValues, hidesPasswordValues(config), false, {
+      hint: t.hidePasswordValuesHint,
+    }),
     readout('downloadsDir', t.downloadsDir, input.downloadsDir, {
       hint: 'browser-link config set downloads.dir <absolute-path|default>',
     }),

@@ -131,12 +131,15 @@ export const DOM_HELPERS_JS = `
     }
     return parts.join(' > ');
   }
-  function accessibleText(el) {
+  function accessibleText(el, hideValue) {
+    // hideValue (find with the hide-password-values setting, on a field the
+    // page marks sensitive): what the user typed, or a textarea's own text,
+    // is never matched or quoted.
     const aria = el.getAttribute && el.getAttribute('aria-label');
     if (aria) return aria;
-    const txt = (el.innerText || el.textContent || '').trim();
+    const txt = hideValue ? '' : (el.innerText || el.textContent || '').trim();
     if (txt) return txt;
-    if ('value' in el && el.value) return String(el.value);
+    if (!hideValue && 'value' in el && el.value) return String(el.value);
     const ph = el.getAttribute && el.getAttribute('placeholder');
     if (ph) return ph;
     const title = el.getAttribute && el.getAttribute('title');

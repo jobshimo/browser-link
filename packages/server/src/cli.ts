@@ -115,6 +115,12 @@ Uso:
                                 Habilita/deshabilita el aprendizaje automático del mapa (encendido
                                 por defecto): el servidor cuenta qué selectores funcionaron o
                                 fallaron por app, solo el selector, nunca valores (ver README).
+  browser-link config set hide-password-values <on|off>
+                                Oculta a los agentes el valor de las contraseñas (apagado por
+                                defecto): snapshot y find muestran "filled, N characters".
+  browser-link config set activity.hide-sensitive <on|off>
+                                Oculta en todas las columnas del registro de actividad lo escrito
+                                en campos sensibles; se aplica al reiniciar.
   browser-link config set downloads.dir <ruta-absoluta|default>
                                 Directorio donde browser.download guarda los archivos (por
                                 defecto <directorio de datos>/downloads). Los agentes pueden
@@ -286,6 +292,12 @@ Usage:
                                 Enable/disable automatic map learning (on by default): the server
                                 counts which selectors worked or failed per app, the selector only,
                                 never values (see README).
+  browser-link config set hide-password-values <on|off>
+                                Hide password values from agents (off by default): snapshot and
+                                find show "filled, N characters" instead.
+  browser-link config set activity.hide-sensitive <on|off>
+                                Hide what was typed into sensitive fields in every column of the
+                                activity trail; applies after a restart.
   browser-link config set downloads.dir <absolute-path|default>
                                 Directory browser.download writes files into (default
                                 <data dir>/downloads). Agents can name a file, never pick the

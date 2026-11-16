@@ -217,6 +217,10 @@ export interface SnapshotOpts {
   since?: string;
   /** Where each window starts: `truncated.next_offset` of an earlier call. */
   offset?: SnapshotOffset;
+  /** The user's hide-password-values setting (owner decision D12): see
+   * `SENSITIVE_FIELD_JS`. Off (absent or false) builds exactly what it
+   * built before the setting existed. */
+  hide_password_values?: boolean;
 }
 
 /** The `hint` of a cut snapshot (see `buildSnapshotJs`). */
@@ -243,7 +247,9 @@ function offsetValue(value: unknown): number {
 
 export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   const offset = opts.offset ?? {};
+  const hideValues = opts.hide_password_values === true;
   const optsJson = JSON.stringify({
+    ...(hideValues ? { hideValues: true } : {}),
     withinSelector: typeof opts.within_selector === 'string' ? opts.within_selector : null,
     onlyInteractive: opts.only_interactive === true,
     exclude: Array.isArray(opts.exclude) ? opts.exclude : [],
@@ -263,11 +269,12 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       notComparedText: SNAPSHOT_NOT_COMPARED_TEXT_HINT,
     },
   });
-  return `
+  const expression = `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
+  ${hideValues ? SENSITIVE_FIELD_JS : ''}
   const opts = ${optsJson};
   let root = document;
   let notice = '';
@@ -325,9 +332,13 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     const ref = refOf(el);
     if (ref) entry.ref = ref;
     if (selInfo.ambiguous) entry.ambiguous = true;
-    const txt = shortText(el);
+    const hidden = opts.hideValues === true && isSensitiveField(el);
+    const txt = hidden ? '' : shortText(el);
     if (txt) entry.text = txt;
-    if ('value' in el && el.value) entry.value = String(el.value);
+    if ('value' in el && el.value) {
+      if (hidden) entry.value_hidden = filledLength(el.value);
+      else entry.value = String(el.value);
+    }
     const placeholder = el.getAttribute('placeholder');
     if (placeholder) entry.placeholder = placeholder;
     const aria_label = el.getAttribute('aria-label');
@@ -533,6 +544,7 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   return diff;
 })()
 `;
+  return hideValues ? withValuesHiddenNoteJs(expression) : expression;
 }
 
 /** Build the find-by-text expression. Returns one of:
@@ -618,6 +630,9 @@ export interface FindOpts {
   /** Where the candidate window starts: `truncated.next_offset` of an
    * earlier `multiple-matches` answer (text mode). */
   offset?: { candidates?: number };
+  /** The user's hide-password-values setting (owner decision D12): see
+   * `SENSITIVE_FIELD_JS`. Off builds exactly what it built before. */
+  hide_password_values?: boolean;
 }
 
 /** Only the documented key fields reach the built source, as JSON data. */
@@ -632,7 +647,9 @@ function findKeyJson(key: FindKey): FindKey {
 }
 
 export function buildFindJs(opts: FindOpts): string {
+  const hideValues = opts.hide_password_values === true;
   const optsJson = JSON.stringify({
+    ...(hideValues ? { hideValues: true } : {}),
     text: opts.text,
     role: typeof opts.role === 'string' && opts.role.length > 0 ? opts.role : null,
     exact: opts.exact === true,
@@ -643,13 +660,21 @@ export function buildFindJs(opts: FindOpts): string {
     ...(typeof opts.ref === 'string' && opts.ref.length > 0 ? { ref: opts.ref } : {}),
     ...(opts.key ? { key: findKeyJson(opts.key) } : {}),
   });
-  return `
+  const expression = `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
   ${typeof opts.ref === 'string' && opts.ref.length > 0 ? RESOLVE_TARGET_JS : ''}
+  ${hideValues ? SENSITIVE_FIELD_JS : ''}
   const opts = ${optsJson};
+  // True for a field whose value the hide-password-values setting hides.
+  function hides(el) {
+    return opts.hideValues === true && isSensitiveField(el);
+  }
+  function textOf(el) {
+    return hides(el) ? '' : shortText(el);
+  }
   function semanticKeyOf(el) {
     if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') return null;
     try {
@@ -669,7 +694,7 @@ export function buildFindJs(opts: FindOpts): string {
       y: Math.round(center.y),
     };
     result.tag = el.tagName.toLowerCase();
-    result.text = shortText(el);
+    result.text = textOf(el);
     if (selInfo.ambiguous) result.ambiguous = true;
     const frame = frameSelectorFor(el);
     if (frame) result.frame = frame;
@@ -752,7 +777,7 @@ export function buildFindJs(opts: FindOpts): string {
     // isClickTarget, not isVisible: find returns CLICK TARGETS. Near-miss
     // ranking below keeps plain isVisible — hints, never click targets.
     if (!isClickTarget(el)) continue;
-    const text = accessibleText(el).trim();
+    const text = accessibleText(el, hides(el)).trim();
     if (text.length === 0) continue;
     const lower = text.toLowerCase();
     const ok = opts.exact ? lower === needle : lower.includes(needle);
@@ -762,7 +787,7 @@ export function buildFindJs(opts: FindOpts): string {
     // Near-miss ranking: containment beats token overlap; anything scoring
     // 0 is dropped so the suggestion list never pads itself with noise.
     function snippetOf(el) {
-      const t = accessibleText(el).trim();
+      const t = accessibleText(el, hides(el)).trim();
       return t.length > 60 ? t.slice(0, 60) + '...' : t;
     }
     function scoreText(text) {
@@ -780,7 +805,7 @@ export function buildFindJs(opts: FindOpts): string {
       const scored = [];
       for (const el of elements) {
         if (!isVisible(el)) continue;
-        const text = accessibleText(el).trim();
+        const text = accessibleText(el, hides(el)).trim();
         if (text.length === 0) continue;
         const score = scoreText(text);
         if (score < 0) continue;
@@ -813,7 +838,7 @@ export function buildFindJs(opts: FindOpts): string {
       const broadTextMatches = [];
       for (const el of broadAll) {
         if (!isVisible(el)) continue;
-        const text = accessibleText(el).trim();
+        const text = accessibleText(el, hides(el)).trim();
         if (text.length === 0) continue;
         if (text.toLowerCase().includes(needle)) broadTextMatches.push(el);
       }
@@ -845,7 +870,7 @@ export function buildFindJs(opts: FindOpts): string {
         const candidate = { selector: genSelector(el) };
         const ref = refOf(el);
         if (ref) candidate.ref = ref;
-        candidate.text = shortText(el);
+        candidate.text = textOf(el);
         candidate.tag = el.tagName.toLowerCase();
         return candidate;
       }),
@@ -865,6 +890,7 @@ export function buildFindJs(opts: FindOpts): string {
   return singleMatch(el, refOf(el), false);
 })()
 `;
+  return hideValues ? withValuesHiddenNoteJs(expression) : expression;
 }
 
 /**
@@ -1149,6 +1175,87 @@ export const SENSITIVE_AUTOCOMPLETE_TOKENS: readonly string[] = [
   'cc-number',
   'cc-csc',
 ];
+
+/**
+ * Owner decision D12: `snapshot` and `find` return password values by
+ * default; the user's hide-password-values setting hides them. Added as
+ * `values_hidden` to every snapshot and find result built with the setting
+ * on, so the agent knows a field showing `value_hidden` is not broken.
+ * Absent when the setting is off.
+ */
+export const PASSWORD_VALUES_HIDDEN_NOTE =
+  'The user\'s setting hide-password-values is on: a filled password field shows value_hidden ("filled, N characters") instead of its value, and find neither matches nor quotes that value. The field works as usual; ask the user if you need the value.';
+
+/**
+ * In-page helpers of the hide-password-values setting, injected into
+ * `buildSnapshotJs` / `buildFindJs` only when it is on (so with it off
+ * nothing runs and nothing is written to the page):
+ *   - `isSensitiveField(el)`: the same rule as `buildFocusedFieldJs` (an
+ *     `<input type="password">`, or an `autocomplete` token of
+ *     `SENSITIVE_AUTOCOMPLETE_TOKENS`), plus a field seen as a password by
+ *     an earlier call with the setting on and since turned into a text
+ *     field (a "show password" button). Those are remembered in a WeakSet
+ *     on the page's window, which holds nothing else;
+ *   - `filledLength(value)`: `filled, N characters`, N counting characters
+ *     (code points), never the text.
+ */
+export const SENSITIVE_FIELD_JS = `
+  const sensitiveFieldTokens = ${JSON.stringify(SENSITIVE_AUTOCOMPLETE_TOKENS)};
+  const passwordFieldsSeen = (() => {
+    const key = '__browserLinkPasswordFields';
+    try {
+      if (!(window[key] instanceof WeakSet)) {
+        Object.defineProperty(window, key, { value: new WeakSet(), configurable: true });
+      }
+      return window[key];
+    } catch (_) {
+      return new WeakSet();
+    }
+  })();
+  function isSensitiveField(el) {
+    if (!el || !el.tagName) return false;
+    if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password') {
+      passwordFieldsSeen.add(el);
+      return true;
+    }
+    if (passwordFieldsSeen.has(el)) return true;
+    const attr = el.getAttribute ? el.getAttribute('autocomplete') : '';
+    const tokens = String(attr || '').toLowerCase().split(/\\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      if (sensitiveFieldTokens.indexOf(tokens[i]) !== -1) return true;
+    }
+    return false;
+  }
+  function filledLength(value) {
+    const n = Array.from(String(value)).length;
+    return 'filled, ' + n + (n === 1 ? ' character' : ' characters');
+  }
+`;
+
+/** Wrap a snapshot / find expression so its result carries `values_hidden`. */
+function withValuesHiddenNoteJs(expression: string): string {
+  return `
+(() => {
+  const result = ${expression.trim()};
+  if (result && typeof result === 'object') {
+    result.values_hidden = ${JSON.stringify(PASSWORD_VALUES_HIDDEN_NOTE)};
+  }
+  return result;
+})()`;
+}
+
+/**
+ * `result` with `values_hidden` added, when `hidden` and `result` is a plain
+ * object; otherwise `result` unchanged. For the answers a flow builds itself
+ * (`browser.flow`), whose find steps and recovery snapshot already carry
+ * their own note.
+ */
+export function withValuesHiddenNote<T>(result: T, hidden: boolean): T {
+  if (!hidden || typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return result;
+  }
+  return { ...result, values_hidden: PASSWORD_VALUES_HIDDEN_NOTE };
+}
 
 /** What `buildFocusedFieldJs` evaluates to. */
 export interface FocusedField {
