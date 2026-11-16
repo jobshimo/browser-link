@@ -10,6 +10,7 @@ import type { ClientId } from '../installers/index.js';
 import type { Language } from '../commands/welcome.js';
 import type { AdminActionResult, AdminItem } from '../messages.js';
 import { adminItems, adminLanguage, buildAdminState, type AdminInput } from './descriptor.js';
+import type { ConfirmationCodes } from './confirmation.js';
 import { ADMIN_I18N } from './i18n.js';
 
 /**
@@ -17,9 +18,10 @@ import { ADMIN_I18N } from './i18n.js';
  * closed allowlist: an action id must name an actionable item of the state
  * the server builds right now (so an instructions file that is not
  * detected, or a readout, can never be written), its value is checked
- * against the item's kind and options, a disk write needs an explicit
- * `confirm: true`, and the write itself goes through the SAME helper the
- * CLI uses, never a new write path.
+ * against the item's kind and options, a disk write happens only with the
+ * single-use code its own preview issued (D11, confirmation.ts), and the
+ * write itself goes through the SAME helper the CLI uses, never a new write
+ * path.
  *
  * The tool set, cdp-direct, its grant lifetime and MCP client registration
  * have no branch here at all: they are console-only, so a later descriptor
@@ -29,7 +31,9 @@ import { ADMIN_I18N } from './i18n.js';
 export interface AdminActionRequest {
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  /** The code a preview of this exact action returned. Without one a
+   * disk-writing action only previews (and issues a fresh code). */
+  code?: string;
   /** Language of this answer (previews, errors, output, state); by default
    * the configured one. */
   language?: Language;
@@ -63,6 +67,8 @@ export interface AdminActionDeps {
   doctor: (language: Language) => Promise<string[]>;
   /** A forced update check, formatted into lines (network). */
   checkUpdates: (language: Language) => Promise<string[]>;
+  /** The codes previews issue and writes spend; one store per primary. */
+  confirmations: ConfirmationCodes;
   helpers?: Partial<AdminHelpers>;
 }
 
@@ -112,12 +118,13 @@ function preview(
   }
   const displayName = (id: string | null): string =>
     input.instructions.find((s) => s.id === id)?.displayName ?? String(id);
+  if (item.id === 'updates.check') return t.previewUpdatesCheck;
   const install = suffix(item.id, 'instructions.install.');
   if (install !== null) return t.previewInstall(displayName(install));
   return t.previewUninstall(displayName(suffix(item.id, 'instructions.uninstall.')));
 }
 
-/** Runs the write for one validated, confirmed item. Returns output lines;
+/** Runs the write for one validated item whose code was redeemed. Returns output lines;
  * throws an `AdminRefusal` (or the helper's own error) when it refused. */
 async function apply(
   item: AdminItem,
@@ -159,7 +166,8 @@ async function apply(
   throw new AdminRefusal(ADMIN_I18N[language].unknownAction(id));
 }
 
-/** Validate, confirm, apply. Never throws: every failure is `ok: false`. */
+/** Validate, preview or redeem the code, apply. Never throws: every failure
+ * is `ok: false`. */
 export async function applyAdminAction(
   req: AdminActionRequest,
   deps: AdminActionDeps,
@@ -174,13 +182,20 @@ export async function applyAdminAction(
       return { ok: false, error: t.notAnAction(item.id) };
     }
     if (!checkValue(item, req.value)) return { ok: false, error: t.invalidValue(item.id) };
-    if (item.writesDisk && req.confirm !== true) {
-      return {
-        ok: true,
-        applied: false,
-        needsConfirm: true,
-        preview: preview(item, req.value, input, language),
-      };
+    if (item.writesDisk) {
+      const binding = { id: item.id, ...(req.value !== undefined ? { value: req.value } : {}) };
+      if (req.code === undefined) {
+        return {
+          ok: true,
+          applied: false,
+          needsConfirm: true,
+          preview: preview(item, req.value, input, language),
+          code: deps.confirmations.issue(binding),
+        };
+      }
+      if (!deps.confirmations.redeem(req.code, binding)) {
+        return { ok: false, error: t.confirmationInvalid };
+      }
     }
     const helpers = { ...DEFAULT_ADMIN_HELPERS, ...deps.helpers };
     const output = await apply(item, req.value, language, deps, helpers);

@@ -340,9 +340,13 @@ export interface AdminState {
   sections: AdminSection[];
   ui: AdminUiStrings;
 }
+/** A preview's `code` (servers from 1.0.2) is the only way to apply that
+ * write: send the same `id` and `value` back with it. It is single-use,
+ * short-lived and bound to that action and value; the server ignores any
+ * `confirm` flag. */
 export type AdminActionResult =
   | { ok: true; applied: true; requiresRestart?: boolean; state?: AdminState; output?: string[] }
-  | { ok: true; applied: false; needsConfirm: true; preview: string }
+  | { ok: true; applied: false; needsConfirm: true; preview: string; code: string }
   | { ok: false; error: string };
 /** `language` (extensions from 0.51.0): render this answer's labels, previews,
  * errors and `ui` block in the extension's interface language. Absent or
@@ -358,7 +362,8 @@ export interface AdminActionMessage {
   request_id: string;
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  /** The `code` of this action's preview; absent asks for a preview. */
+  code?: string;
   language?: AdminRequestLanguage;
 }
 export type AdminStateMessage =

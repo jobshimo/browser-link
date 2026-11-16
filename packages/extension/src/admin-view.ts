@@ -62,7 +62,9 @@ export interface AdminRow {
 export interface AdminRequest {
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  /** The code the preview of this exact request returned; the server applies
+   * a write only with it. */
+  code?: string;
 }
 
 const EMPTY_VALUE = '—';
@@ -179,7 +181,7 @@ export type AdminNextAction =
       preview: string;
       confirmLabel: string;
       cancelLabel: string;
-      resend: AdminRequest & { confirm: true };
+      resend: AdminRequest & { code: string };
     }
   | { type: 'applied'; message: string; output?: string[]; refresh: true }
   | { type: 'error'; message: string };
@@ -193,7 +195,9 @@ export function nextAction(
 ): AdminNextAction {
   if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui, t) };
   if (!result.applied) {
-    const resend: AdminRequest & { confirm: true } = { id: request.id, confirm: true };
+    // The same id and value back with the preview's code: the server binds
+    // the code to both and applies nothing else.
+    const resend: AdminRequest & { code: string } = { id: request.id, code: result.code };
     if (request.value !== undefined) resend.value = request.value;
     return {
       type: 'confirm',
@@ -214,7 +218,7 @@ export function nextAction(
 
 export type ConfirmState =
   | { phase: 'idle' }
-  | { phase: 'confirming'; preview: string; pendingRequest: AdminRequest & { confirm: true } }
+  | { phase: 'confirming'; preview: string; pendingRequest: AdminRequest & { code: string } }
   | { phase: 'applied'; message: string; output?: string[] }
   | { phase: 'error'; message: string };
 

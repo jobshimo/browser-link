@@ -544,7 +544,7 @@ type RuntimeMessage =
       action: 'adminAction';
       id: string;
       value?: string | number | boolean;
-      confirm?: boolean;
+      code?: string;
       language?: unknown;
     };
 
@@ -562,7 +562,11 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
     const v = m.value;
     return (
       typeof m.id === 'string' &&
-      (v === undefined || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+      (v === undefined ||
+        typeof v === 'string' ||
+        typeof v === 'number' ||
+        typeof v === 'boolean') &&
+      (m.code === undefined || typeof m.code === 'string')
     );
   }
   if (m.action === 'saveRecording') {
@@ -760,7 +764,7 @@ function adminDescribe(language: unknown): Promise<AdminReply> {
 function adminAction(input: {
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  code?: string;
   language?: unknown;
 }): Promise<AdminReply> {
   return adminRoundTrip(
@@ -769,7 +773,7 @@ function adminAction(input: {
       request_id,
       id: input.id,
       ...(input.value !== undefined ? { value: input.value } : {}),
-      ...(input.confirm === true ? { confirm: true } : {}),
+      ...(input.code !== undefined ? { code: input.code } : {}),
       ...adminLanguageField(input.language),
     }),
     input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,

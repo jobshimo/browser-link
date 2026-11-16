@@ -62,9 +62,9 @@ function problem(): UnreadableConfig {
 
 describe('Admin window with an unreadable config.json', () => {
   test.each([
-    [{ id: 'language', value: 'en', confirm: true }],
-    [{ id: 'multiAgent', value: false, confirm: true }],
-    [{ id: 'activityEnabled', value: false, confirm: true }],
+    [{ id: 'language', value: 'en', code: 'x' }],
+    [{ id: 'multiAgent', value: false, code: 'x' }],
+    [{ id: 'activityEnabled', value: false, code: 'x' }],
   ])('action %j fails with the refusal message and writes nothing', async (req) => {
     writeFileSync(configPath, BROKEN, 'utf8');
     expect(await handlers().action(req)).toEqual({
@@ -93,8 +93,11 @@ describe('Admin window with an unreadable config.json', () => {
 describe('Admin window with a valid config.json (unchanged)', () => {
   test('a confirmed toggle still writes a valid file with the other keys kept', async () => {
     writeFileSync(configPath, JSON.stringify({ language: 'es' }), 'utf8');
-    const result = await handlers().action({ id: 'activityEnabled', value: false, confirm: true });
-    expect(result.ok).toBe(true);
+    const admin = handlers();
+    const preview = await admin.action({ id: 'activityEnabled', value: false });
+    if (!preview.ok || preview.applied) throw new Error('no preview');
+    const result = await admin.action({ id: 'activityEnabled', value: false, code: preview.code });
+    expect(result).toMatchObject({ ok: true, applied: true });
     expect(readFileSync(configPath, 'utf8')).toBe(
       JSON.stringify({ language: 'es', activityEnabled: false }, null, 2) + '\n',
     );
