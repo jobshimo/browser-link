@@ -70,12 +70,32 @@ export function refFailureMessage(
   ref: string,
 ): string | null {
   if (failure.reason === 'ref-stale') {
-    return `ref-stale: ${ref} not found in document ${failure.doc_id ?? 'unknown'}`;
+    return `ref-stale: ${ref} not found in document ${failure.doc_id ?? 'unknown'}: the element is gone, take a new snapshot`;
   }
   if (failure.reason === 'observer-unavailable') {
     return `observer-unavailable: ref ${ref} cannot be resolved without the page observer`;
   }
   return null;
+}
+
+/** ' (<note>)' when a result says part of the page was not walked (the
+ * deep-query depth guard fired, see `NOT_WALKED_NOTE` in
+ * `inpage/builders.ts`), else empty: a miss there may be a cut. */
+export function notWalkedSuffix(result: object): string {
+  const note = (result as { not_walked?: unknown }).not_walked;
+  return typeof note === 'string' ? ` (${note})` : '';
+}
+
+/** The part of a flow's `multiple-matches` failure that says how many
+ * candidates the page left out and how to list them (owner decision D6);
+ * empty when the answer was not cut. */
+export function cutCandidatesNote(truncated: FindStepResult['truncated']): string {
+  if (!truncated || typeof truncated.candidates !== 'number' || truncated.candidates <= 0)
+    return '';
+  return (
+    ` — ${truncated.candidates} more candidates left out, truncated: ${JSON.stringify(truncated)}` +
+    '; list them with browser.find and offset: truncated.next_offset, or narrow the step with exact, role or a longer text'
+  );
 }
 
 /** The error text for a click whose predicted hit lands on an ancestor of
@@ -91,6 +111,62 @@ export function retargetedClickMessage(hitElement: string, target: string): stri
     'or target the element that receives clicks; force: true clicks there anyway'
   );
 }
+
+/** The error text for a click on a target with no visible box (the in-page
+ * resolve reports `reason: 'no-box'`, see `hasVisibleBox` in
+ * `inpage/deep-query.ts`): owner decision D4, never a pointer click at
+ * (0,0). Shared by both transports' `performClick`. `target` is the
+ * selector or ref as given. */
+export function noBoxClickMessage(target: string): string {
+  return (
+    `Element ${target} has no visible box (not rendered, visibility-hidden, or an option of a select), ` +
+    'so there is no point to click: make it visible first (open its menu, dialog or section), ' +
+    "or pass force: true to call the element's own click() with no pointer"
+  );
+}
+
+/** The error text for a `force` click on a target with no visible box whose
+ * own `click()` could do nothing (the in-page programmatic click reports
+ * `reason: 'not-clickable'`, see `buildProgrammaticClickJs`): a disabled
+ * control (the element or a disabling ancestor fieldset), or an `<option>` /
+ * `<optgroup>`, which `click()` never selects. Nothing was clicked. Shared
+ * by both transports' `performClick`. `target` is the selector or ref as
+ * given. */
+export function notClickableMessage(target: string, why: string): string {
+  if (why === 'option') {
+    return (
+      `Element ${target} is an <option> (or <optgroup>): clicking an option does nothing ` +
+      "and it never selects it, so nothing was clicked; the select's value must be set instead"
+    );
+  }
+  return (
+    `Element ${target} is disabled, so its own click() does nothing and nothing was clicked: ` +
+    'wait until it is enabled, or find the control that enables it'
+  );
+}
+
+/** The error text for a `type` / `press` whose target did not take focus
+ * (the in-page resolve reports `reason: 'not-focused'`, see
+ * `FOCUS_REFUSAL_JS` in `inpage/builders.ts`): the text or key would have
+ * gone to whatever had focus before, so nothing was sent. Shared by both
+ * transports. `target` is the selector or ref as given; `why` is the
+ * in-page guess at the cause. */
+export function notFocusedMessage(
+  target: string,
+  why: string,
+  action: 'typed' | 'pressed',
+): string {
+  return (
+    `Element ${target} did not take focus (${why}), so nothing was ${action}: ` +
+    'the input would have gone to whatever had focus before; target the field itself'
+  );
+}
+
+/** The value of `programmatic_click` on a click result (owner decision D4):
+ * a `force` click on a target with no visible box called the element's own
+ * `click()` instead of the mouse. */
+export const PROGRAMMATIC_CLICK_NOTE =
+  'the target has no visible box, so its own click() was called: no pointer, no mouse events, no coordinates';
 
 /** Hard cap on steps per flow — mirrors the `maxItems: 20` on the MCP
  * schema (`browser-definitions.ts`) and the server-side validation
@@ -130,6 +206,11 @@ export interface FindStepResult {
   text?: string;
   coords?: { x: number; y: number };
   frame?: string;
+  /** On a cut `multiple-matches` answer: what was left out (owner decision
+   * D6, see `buildFindJs`). */
+  truncated?: { candidates?: number; next_offset?: { candidates?: number }; hint?: string };
+  /** Set when the deep-query depth guard left part of the page unwalked. */
+  not_walked?: string;
 }
 
 export interface ClickStepParams {
@@ -160,6 +241,10 @@ export interface ClickStepResult {
    * whatever covers the point (see `buildClickResolveJs`). Omitted when
    * the click lands on the target itself. */
   hit_element?: string;
+  /** Present only when a `force` click found no visible box on the target
+   * and called its own `click()` instead of the mouse; the value is
+   * `PROGRAMMATIC_CLICK_NOTE` (owner decision D4). */
+  programmatic_click?: string;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
@@ -231,6 +316,10 @@ export interface WaitForStepResult {
    * condition was never given its full budget. Both perform* implementations
    * (`background.ts`, `cdp/transport.ts`) set this. */
   reason?: string;
+  /** Only on a timeout of a `wait_for` by ref (`visible` / `attached`) whose
+   * element was gone at the last poll: `<ref> not found in document
+   * <doc_id>: the element is gone, take a new snapshot`. */
+  ref_gone?: string;
 }
 
 /** Mirrors the standalone `browser.drag` tool's params exactly (minus
@@ -503,12 +592,14 @@ function compactActionResult(result: {
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
   hit_element?: string;
+  programmatic_click?: string;
   drag_mode?: string;
 }): {
   ok: true;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
   hit_element?: string;
+  programmatic_click?: string;
   drag_mode?: string;
 } {
   return {
@@ -516,6 +607,7 @@ function compactActionResult(result: {
     ...(result.settle ? { settle: result.settle } : {}),
     ...(result.expect ? { expect: result.expect } : {}),
     ...(result.hit_element ? { hit_element: result.hit_element } : {}),
+    ...(result.programmatic_click ? { programmatic_click: result.programmatic_click } : {}),
     ...(result.drag_mode ? { drag_mode: result.drag_mode } : {}),
   };
 }
@@ -667,9 +759,12 @@ async function executeLeafStep(
     if (!r.matched) {
       const candidateNote =
         r.reason === 'multiple-matches' && r.candidates
-          ? ` — candidates: ${JSON.stringify(r.candidates)}`
+          ? ` — candidates: ${JSON.stringify(r.candidates)}${cutCandidatesNote(r.truncated)}`
           : '';
-      return { ok: false, error: `find: ${r.reason ?? 'not-found'}${candidateNote}${raceHint()}` };
+      return {
+        ok: false,
+        error: `find: ${r.reason ?? 'not-found'}${candidateNote}${notWalkedSuffix(r)}${raceHint()}`,
+      };
     }
     if (r.ambiguous) {
       return {
@@ -694,7 +789,9 @@ async function executeLeafStep(
       // a navigation race — a plain timeout is a genuine non-match.
       return {
         ok: false,
-        error: `wait_for: condition not met within timeout (${outcome.result.elapsed_ms}ms, ${outcome.result.checks} checks)`,
+        error:
+          `wait_for: condition not met within timeout (${outcome.result.elapsed_ms}ms, ${outcome.result.checks} checks)` +
+          (outcome.result.ref_gone ? ` — ${outcome.result.ref_gone}` : ''),
       };
     }
     state.lastSettleReason = undefined;

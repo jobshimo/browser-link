@@ -5,6 +5,7 @@ import {
   fallbackAdminUi,
   adminUi,
   buildAdminRows,
+  createConsoleInfo,
   describeAdminError,
   initialConfirmState,
   nextAction,
@@ -243,6 +244,62 @@ describe('buildAdminRows', () => {
     });
   });
 
+  test('a console-only readout (the hide settings) has no control, shows its value and command, and is flagged', () => {
+    const s = state();
+    s.sections[1]!.items.push(
+      {
+        id: 'hidePasswordValues',
+        kind: 'readout',
+        label: 'Ocultar a los agentes el valor de las contraseñas',
+        value: 'visibles',
+        writesDisk: false,
+        consoleOnly: true,
+        hint: 'browser-link config set hide-password-values on',
+      },
+      {
+        id: 'activityHideSensitive',
+        kind: 'readout',
+        label: 'Ocultar los valores sensibles en el registro de actividad',
+        value: 'ocultas',
+        writesDisk: false,
+        consoleOnly: true,
+        hint: 'browser-link config set activity.hide-sensitive off',
+      },
+    );
+    const rows = buildAdminRows(s, ES);
+    for (const id of ['hidePasswordValues', 'activityHideSensitive']) {
+      expect(rows.find((r) => r.itemId === id)).toMatchObject({
+        control: 'none',
+        consoleOnly: true,
+      });
+    }
+    expect(rows.find((r) => r.itemId === 'hidePasswordValues')).toMatchObject({
+      valueText: 'visibles',
+      hint: 'browser-link config set hide-password-values on',
+    });
+    // Only the flagged rows carry the marker; the existing toggles keep theirs.
+    expect(rows.filter((r) => r.consoleOnly === true).map((r) => r.itemId)).toEqual([
+      'hidePasswordValues',
+      'activityHideSensitive',
+    ]);
+    expect(rows.find((r) => r.itemId === 'multiAgent')).toMatchObject({ control: 'toggle' });
+  });
+
+  test('the existing toggles still go through preview and code', () => {
+    const request = { id: 'multiAgent', value: true };
+    const preview: AdminActionResult = {
+      ok: true,
+      applied: false,
+      needsConfirm: true,
+      preview: 'Activar: Multi-agente',
+      code: 'c1',
+    };
+    expect(nextAction(preview, request, UI_ES, ES)).toMatchObject({
+      type: 'confirm',
+      resend: { id: 'multiAgent', value: true, code: 'c1' },
+    });
+  });
+
   test('a toggle without a boolean value is disabled rather than guessed', () => {
     const s = state();
     s.sections[1]!.items[0] = { ...s.sections[1]!.items[0]!, value: 'yes' };
@@ -330,19 +387,20 @@ describe('describeAdminError', () => {
 describe('nextAction', () => {
   const request = { id: 'multiAgent', value: true };
 
-  test('needsConfirm shows the preview with confirm/cancel and prepares the confirmed re-send', () => {
+  test('needsConfirm shows the preview with confirm/cancel and re-sends the same action with its code', () => {
     const result: AdminActionResult = {
       ok: true,
       applied: false,
       needsConfirm: true,
       preview: 'Activar multi-agente para todos los agentes',
+      code: 'k1',
     };
     expect(nextAction(result, request, UI_ES, ES)).toEqual({
       type: 'confirm',
       preview: 'Activar multi-agente para todos los agentes',
       confirmLabel: 'Confirmar',
       cancelLabel: 'Cancelar',
-      resend: { id: 'multiAgent', value: true, confirm: true },
+      resend: { id: 'multiAgent', value: true, code: 'k1' },
     });
   });
 
@@ -367,6 +425,28 @@ describe('nextAction', () => {
     ).toEqual({ type: 'applied', message: 'Cambiado', output: ['ok: port 9876'], refresh: true });
   });
 
+  test("a refused code shows the server's own sentence, in either language", () => {
+    for (const [error, ui, t] of [
+      [
+        'This confirmation is no longer valid: it expired, was already used or was for a different change. Nothing was changed; try again.',
+        UI_ES,
+        EN,
+      ],
+      [
+        'Esta confirmación ya no es válida: caducó, ya se usó o correspondía a otro cambio. No se cambió nada; vuelva a intentarlo.',
+        UI_ES,
+        ES,
+      ],
+    ] as const) {
+      expect(
+        nextAction({ ok: false, error }, { id: 'language', value: 'en', code: 'k' }, ui, t),
+      ).toEqual({
+        type: 'error',
+        message: error,
+      });
+    }
+  });
+
   test('an error is shown, not-connected localised', () => {
     expect(nextAction({ ok: false, error: 'unknown action' }, request, UI_ES, ES)).toEqual({
       type: 'error',
@@ -384,11 +464,12 @@ describe('nextAction', () => {
       applied: false,
       needsConfirm: true,
       preview: 'p',
+      code: 'k2',
     };
     const action = nextAction(result, { id: 'instructions.install:claude-code' }, UI_ES, ES);
     expect(action.type === 'confirm' && action.resend).toEqual({
       id: 'instructions.install:claude-code',
-      confirm: true,
+      code: 'k2',
     });
   });
 });
@@ -400,6 +481,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     applied: false,
     needsConfirm: true,
     preview: 'Cambiar idioma a English',
+    code: 'k3',
   };
 
   test('starts idle', () => {
@@ -418,7 +500,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     ).toEqual({
       phase: 'confirming',
       preview: 'Cambiar idioma a English',
-      pendingRequest: { id: 'language', value: 'en', confirm: true },
+      pendingRequest: { id: 'language', value: 'en', code: 'k3' },
     });
   });
 
@@ -444,7 +526,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     expect(
       reduceConfirm(confirming, {
         type: 'result',
-        request: { ...request, confirm: true },
+        request: { ...request, code: 'k3' },
         result: { ok: true, applied: true },
         ui: UI_ES,
         t: ES,
@@ -489,5 +571,74 @@ describe('admin window in Spanish', () => {
   test('a boolean readout reads in the interface language', () => {
     const rows = buildAdminRows(state(), ES);
     expect(rows.find((r) => r.itemId === 'server.multiAgent')?.valueText).toBe('activado');
+  });
+});
+
+describe('the console-only info control', () => {
+  function mount(t: typeof EN): { button: HTMLButtonElement; panel: HTMLElement } {
+    document.body.replaceChildren();
+    const info = createConsoleInfo(document, t, 'cdpDirectEnabled');
+    document.body.append(info.button, info.panel);
+    return info;
+  }
+  const key = (el: Element, k: string): void => {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+  };
+
+  test.each([
+    ['en', EN],
+    ['es', ES],
+  ] as const)('is a focusable button with a non-empty accessible name in %s', (_l, t) => {
+    const { button, panel } = mount(t);
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.type).toBe('button');
+    expect(button.tabIndex).toBe(0);
+    expect(button.getAttribute('aria-label')).toBe(t.adminConsoleOnlyName);
+    expect(button.getAttribute('aria-label')?.trim()).not.toBe('');
+    expect(button.getAttribute('aria-describedby')).toBe(panel.id);
+    expect(panel.textContent).toBe(t.adminConsoleOnlyInfo);
+    expect(panel.hidden).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('the text says it is changed from the console, in both languages', () => {
+    expect(EN.adminConsoleOnlyInfo).toContain('console');
+    expect(ES.adminConsoleOnlyInfo).toContain('consola');
+  });
+
+  test('click shows the text, a second click hides it, Escape closes it', () => {
+    const { button, panel } = mount(EN);
+    button.click();
+    expect(panel.hidden).toBe(false);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    button.click();
+    expect(panel.hidden).toBe(true);
+    button.click();
+    expect(panel.hidden).toBe(false);
+    key(button, 'Escape');
+    expect(panel.hidden).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('hover and keyboard focus show it without a click; leaving or blurring hides it', () => {
+    const { button, panel } = mount(EN);
+    button.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(panel.hidden).toBe(true);
+    button.dispatchEvent(new FocusEvent('focus'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new FocusEvent('blur'));
+    expect(panel.hidden).toBe(true);
+  });
+
+  test('a clicked (pinned) text survives the pointer leaving, and blur closes it', () => {
+    const { button, panel } = mount(EN);
+    button.dispatchEvent(new MouseEvent('mouseenter'));
+    button.click();
+    button.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new FocusEvent('blur'));
+    expect(panel.hidden).toBe(true);
   });
 });

@@ -23,6 +23,7 @@ import {
 import { parseInsight } from '../map/tools.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import type { Language } from './welcome.js';
+import { readCommandArgs, type ParsedArgs } from '../cli-args.js';
 
 /**
  * `browser-link map` — a scriptable, human-facing window into the
@@ -43,46 +44,10 @@ import type { Language } from './welcome.js';
 
 // === Shared helpers =========================================================
 
-interface ParsedArgs {
-  positionals: string[];
-  flags: Record<string, string | true>;
-}
-
-/** The flags that are pure switches and NEVER take a value. Without this
- * set, `map forget --yes my-app` would swallow "my-app" as the value of
- * `--yes` and then fail with a usage error — flag position must not
- * matter for a boolean switch. */
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['yes', 'replace']);
-
-/** Minimal `--flag value` / `--flag` parser — good enough for this
- * command family's small, fixed flag set (`--yes`, `--flow`, `--out`,
- * `--replace`). Flags in `BOOLEAN_FLAGS` are always switches; any other
- * flag consumes the next token as its value unless that token is itself
- * another `--flag` or there is no next token. */
-function parseArgs(argv: string[]): ParsedArgs {
-  const positionals: string[] = [];
-  const flags: Record<string, string | true> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const token = argv[i];
-    if (token.startsWith('--')) {
-      const key = token.slice(2);
-      if (BOOLEAN_FLAGS.has(key)) {
-        flags[key] = true;
-        continue;
-      }
-      const hasValue = i + 1 < argv.length && !argv[i + 1].startsWith('--');
-      if (hasValue) {
-        flags[key] = argv[i + 1];
-        i++;
-      } else {
-        flags[key] = true;
-      }
-      continue;
-    }
-    positionals.push(token);
-  }
-  return { positionals, flags };
-}
+// Options are read by the command line's one parser (cli-args.ts), against
+// the `map` grammar declared there: `--yes` and `--replace` are switches,
+// `--flow`, `--pitfall`, `--mechanism` and `--out` take a value written
+// `--flow login` or `--flow=login`, and anything else is refused.
 
 /** Simple aligned table: column widths from the longest cell (header
  * included), two spaces between columns, trailing whitespace trimmed. */
@@ -174,7 +139,7 @@ interface MapI18n {
   statusUnverified: string;
   appNotFound: (identifier: string, known: string[]) => string;
   forgetUsage: string;
-  flowFlagRequiresValue: string;
+  forgetAmbiguous: (identifier: string, candidates: readonly AppRow[]) => string;
   flowNotFound: (flowName: string, appKey: string, origin: string) => string;
   flowForgotten: (flowName: string, appKey: string, origin: string) => string;
   flowForgetAmbiguous: (
@@ -185,6 +150,7 @@ interface MapI18n {
     candidateCount: number,
   ) => string;
   forgetDryRun: (
+    identifier: string,
     appKey: string,
     origin: string,
     entries: number,
@@ -193,7 +159,6 @@ interface MapI18n {
   ) => string;
   appForgotten: (appKey: string, deletedEntries: number, deletedInsights: number) => string;
   colInsights: string;
-  insightFlagRequiresValue: (flag: string) => string;
   insightNotFound: (kind: string, key: string, appKey: string, origin: string) => string;
   insightForgotten: (kind: string, key: string, appKey: string, origin: string) => string;
   insightForgetAmbiguous: (
@@ -255,8 +220,10 @@ const MAP_I18N: Record<Language, MapI18n> = {
         : `No app matches "${identifier}" by app_key or origin. Known app_keys: ${known.join(', ')}`,
     forgetUsage:
       'Usage: browser-link map forget <app> [--flow <name> | --pitfall <key> | --mechanism <key>] [--yes]',
-    flowFlagRequiresValue:
-      '--flow requires a flow name: browser-link map forget <app> --flow <name>',
+    forgetAmbiguous: (identifier, candidates) =>
+      `"${identifier}" matches ${candidates.length} apps:\n` +
+      candidates.map((c) => `  ${c.app_key}  (${c.origin})\n`).join('') +
+      `Nothing was deleted. Name the app with an app_key or an origin that matches only that app.`,
     flowNotFound: (flowName, appKey, origin) =>
       `No flow named "${flowName}" on app "${appKey}" (${origin}).`,
     flowForgotten: (flowName, appKey, origin) =>
@@ -267,14 +234,14 @@ const MAP_I18N: Record<Language, MapI18n> = {
       `Nothing was deleted. If that is the right app, re-run with --yes to confirm:\n` +
       `  browser-link map forget ${identifier} --flow "${flowName}" --yes\n` +
       `Otherwise, pass the app's origin instead of its app_key to disambiguate.`,
-    forgetDryRun: (appKey, origin, entries, flows, insights) =>
+    forgetDryRun: (identifier, appKey, origin, entries, flows, insights) =>
       `This would delete app "${appKey}" (${origin}) — ${entries} entr${entries === 1 ? 'y' : 'ies'} and ${flows} flow${flows === 1 ? '' : 's'}` +
       (insights > 0
         ? `, plus ${insights} ${insights === 1 ? 'pitfall/mechanism' : 'pitfalls/mechanisms'}`
         : '') +
       `.\n` +
       `Nothing was deleted. Re-run with --yes to confirm:\n` +
-      `  browser-link map forget ${appKey} --yes`,
+      `  browser-link map forget ${identifier} --yes`,
     appForgotten: (appKey, deletedEntries, deletedInsights) =>
       `Deleted app "${appKey}" and its ${deletedEntries} entr${deletedEntries === 1 ? 'y' : 'ies'} (flows deleted along with it)` +
       (deletedInsights > 0
@@ -282,8 +249,6 @@ const MAP_I18N: Record<Language, MapI18n> = {
         : '') +
       `.`,
     colInsights: 'INSIGHTS',
-    insightFlagRequiresValue: (flag) =>
-      `${flag} requires a key: browser-link map forget <app> ${flag} <key>`,
     insightNotFound: (kind, key, appKey, origin) =>
       `No ${kind} named "${key}" on app "${appKey}" (${origin}).`,
     insightForgotten: (kind, key, appKey, origin) =>
@@ -362,8 +327,10 @@ const MAP_I18N: Record<Language, MapI18n> = {
         : `Ninguna app coincide con "${identifier}" por app_key u origen. App_keys conocidas: ${known.join(', ')}`,
     forgetUsage:
       'Uso: browser-link map forget <app> [--flow <nombre> | --pitfall <clave> | --mechanism <clave>] [--yes]',
-    flowFlagRequiresValue:
-      '--flow requiere un nombre de flow: browser-link map forget <app> --flow <nombre>',
+    forgetAmbiguous: (identifier, candidates) =>
+      `"${identifier}" coincide con ${candidates.length} apps:\n` +
+      candidates.map((c) => `  ${c.app_key}  (${c.origin})\n`).join('') +
+      `No se eliminó nada. Indique la app con un app_key o un origin que coincida solo con esa app.`,
     flowNotFound: (flowName, appKey, origin) =>
       `No hay un flow llamado "${flowName}" en la app "${appKey}" (${origin}).`,
     flowForgotten: (flowName, appKey, origin) =>
@@ -374,14 +341,14 @@ const MAP_I18N: Record<Language, MapI18n> = {
       `No se eliminó nada. Si esa es la app correcta, volvé a correr con --yes para confirmar:\n` +
       `  browser-link map forget ${identifier} --flow "${flowName}" --yes\n` +
       `Si no, pasá el origin de la app en lugar de su app_key para desambiguar.`,
-    forgetDryRun: (appKey, origin, entries, flows, insights) =>
+    forgetDryRun: (identifier, appKey, origin, entries, flows, insights) =>
       `Esto eliminaría la app "${appKey}" (${origin}) — ${entries} entrada${entries === 1 ? '' : 's'} y ${flows} flow${flows === 1 ? '' : 's'}` +
       (insights > 0
         ? `, más ${insights} ${insights === 1 ? 'trampa/mecanismo' : 'trampas/mecanismos'}`
         : '') +
       `.\n` +
       `No se eliminó nada. Volvé a correr con --yes para confirmar:\n` +
-      `  browser-link map forget ${appKey} --yes`,
+      `  browser-link map forget ${identifier} --yes`,
     appForgotten: (appKey, deletedEntries, deletedInsights) =>
       `Se eliminó la app "${appKey}" y sus ${deletedEntries} entrada${deletedEntries === 1 ? '' : 's'} (los flows se eliminaron junto con ella)` +
       (deletedInsights > 0
@@ -389,8 +356,6 @@ const MAP_I18N: Record<Language, MapI18n> = {
         : '') +
       `.`,
     colInsights: 'TRAMPAS/MEC.',
-    insightFlagRequiresValue: (flag) =>
-      `${flag} requiere una clave: browser-link map forget <app> ${flag} <clave>`,
     insightNotFound: (kind, key, appKey, origin) =>
       `No hay un ${kind} llamado "${key}" en la app "${appKey}" (${origin}).`,
     insightForgotten: (kind, key, appKey, origin) =>
@@ -476,9 +441,9 @@ function runLs(language: Language): string {
 
 // === map show ================================================================
 
-function runShow(argv: string[], language: Language): string {
+function runShow(args: ParsedArgs, language: Language): string {
   const t = MAP_I18N[language];
-  const identifier = argv[0];
+  const identifier = args.positionals.at(0);
   if (!identifier) throw new Error(t.showUsage);
   const app = resolveAppOrThrow(identifier, t);
   const entries = listEntries(app.id);
@@ -574,27 +539,23 @@ function knowledgeLines(app: AppRow, t: MapI18n): string[] {
 
 // === map forget ==============================================================
 
-function runForget(argv: string[], language: Language): string {
+function runForget(args: ParsedArgs, language: Language): string {
   const t = MAP_I18N[language];
-  const { positionals, flags } = parseArgs(argv);
-  const identifier = positionals[0];
+  const identifier = args.positionals.at(0);
   if (!identifier) throw new Error(t.forgetUsage);
 
-  // A valueless `--flow` parses as boolean `true` (see parseArgs) — reading
-  // that as "no --flow given" would silently widen scope to the whole-app
-  // path below, so a user who forgot the flow name gets a whole-app dry-run
-  // instead of a clear error. Reject it here, before any DB lookup, so a
-  // mistyped `--flow` never even resolves an app or touches the database.
-  if (flags.flow === true) throw new Error(t.flowFlagRequiresValue);
-  const flowName = typeof flags.flow === 'string' ? flags.flow : undefined;
-  // Same valueless-flag rule for --pitfall / --mechanism.
-  if (flags.pitfall === true) throw new Error(t.insightFlagRequiresValue('--pitfall'));
-  if (flags.mechanism === true) throw new Error(t.insightFlagRequiresValue('--mechanism'));
+  // The parser has already refused a `--flow`, `--pitfall` or `--mechanism`
+  // without its value, so an absent one here really was not given and the
+  // scope below is the one the user asked for.
+  const flowName = args.value('flow');
+  const yes = args.has('yes');
+  const pitfall = args.value('pitfall');
+  const mechanism = args.value('mechanism');
   const insightTarget =
-    typeof flags.pitfall === 'string'
-      ? { kind: 'pitfall' as const, key: flags.pitfall }
-      : typeof flags.mechanism === 'string'
-        ? { kind: 'mechanism' as const, key: flags.mechanism }
+    pitfall !== undefined
+      ? { kind: 'pitfall' as const, key: pitfall }
+      : mechanism !== undefined
+        ? { kind: 'mechanism' as const, key: mechanism }
         : undefined;
 
   // Destructive command — resolve through findAppCandidates, not findApp,
@@ -617,7 +578,7 @@ function runForget(argv: string[], language: Language): string {
     // its clear not-found error (naming the resolved origin) either way.
     const exists = listFlows(app.id).some((f) => f.name === flowName);
     if (!exists) throw new Error(t.flowNotFound(flowName, app.app_key, app.origin));
-    if (candidates.length > 1 && flags.yes !== true) {
+    if (candidates.length > 1 && !yes) {
       return t.flowForgetAmbiguous(
         flowName,
         app.app_key,
@@ -635,7 +596,7 @@ function runForget(argv: string[], language: Language): string {
     if (!listInsights(app.id, kind).some((r) => r.key === key)) {
       throw new Error(t.insightNotFound(kind, key, app.app_key, app.origin));
     }
-    if (candidates.length > 1 && flags.yes !== true) {
+    if (candidates.length > 1 && !yes) {
       return t.insightForgetAmbiguous(
         kind,
         key,
@@ -649,9 +610,15 @@ function runForget(argv: string[], language: Language): string {
     return t.insightForgotten(kind, key, app.app_key, app.origin);
   }
 
-  if (flags.yes !== true) {
+  // A whole app is deleted only when the identifier names exactly one app:
+  // with several candidates the scope is not established, so nothing is
+  // deleted (with or without --yes) and every candidate is listed.
+  if (candidates.length > 1) throw new Error(t.forgetAmbiguous(identifier, candidates));
+
+  if (!yes) {
     const summary = listAppsWithCounts().find((a) => a.id === app.id);
     return t.forgetDryRun(
+      identifier,
       app.app_key,
       app.origin,
       summary?.entries ?? 0,
@@ -750,13 +717,12 @@ function exportInsights(appId: number, kind: InsightKind): MapExportInsight[] {
   }));
 }
 
-function runExport(argv: string[], language: Language): string {
+function runExport(args: ParsedArgs, language: Language): string {
   const t = MAP_I18N[language];
-  const { positionals, flags } = parseArgs(argv);
-  const file = buildExport(positionals[0], t);
+  const file = buildExport(args.positionals.at(0), t);
   const json = JSON.stringify(file, null, 2);
 
-  const outPath = typeof flags.out === 'string' ? flags.out : undefined;
+  const outPath = args.value('out');
   if (!outPath) return json;
 
   try {
@@ -1154,10 +1120,9 @@ function writeImport(apps: MapExportApp[], replace: boolean): ImportSummary {
   return summary;
 }
 
-function runImport(argv: string[], language: Language): string {
+function runImport(args: ParsedArgs, language: Language): string {
   const t = MAP_I18N[language];
-  const { positionals, flags } = parseArgs(argv);
-  const filePath = positionals[0];
+  const filePath = args.positionals.at(0);
   if (!filePath) throw new Error(t.importUsage);
 
   let raw: string;
@@ -1173,27 +1138,31 @@ function runImport(argv: string[], language: Language): string {
   const { errors, apps } = validateImportFile(rawApps, t);
   if (errors.length > 0) throw new Error(t.importAborted(errors));
 
-  const summary = writeImport(apps, flags.replace === true);
+  const summary = writeImport(apps, args.has('replace'));
   return t.importSummary(summary);
 }
 
 // === dispatch ================================================================
 
+const MAP_ACTIONS: ReadonlySet<string> = new Set(['ls', 'show', 'forget', 'export', 'import']);
+
 export function runMapCommand(argv: string[], language: Language = 'en'): string {
   const t = MAP_I18N[language];
   const action = argv[0] ?? 'ls';
-  const rest = argv.slice(1);
+  if (!MAP_ACTIONS.has(action)) throw new Error(t.unknownAction(action));
+  // Every option is read and checked before anything opens the database.
+  const args = readCommandArgs('map', argv, language);
   switch (action) {
     case 'ls':
       return runLs(language);
     case 'show':
-      return runShow(rest, language);
+      return runShow(args, language);
     case 'forget':
-      return runForget(rest, language);
+      return runForget(args, language);
     case 'export':
-      return runExport(rest, language);
+      return runExport(args, language);
     case 'import':
-      return runImport(rest, language);
+      return runImport(args, language);
     default:
       throw new Error(t.unknownAction(action));
   }

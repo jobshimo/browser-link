@@ -26,6 +26,7 @@ const h = vi.hoisted(() => {
     runToolsCommand: vi.fn(() => 'tools-report'),
     runMultiAgentCommand: vi.fn(() => 'multi-agent-report'),
     runFreePort: vi.fn(() => ({ ok: true, message: 'freed' })),
+    runStopPid: vi.fn((_pid: number, _lang: string) => ({ ok: true, message: 'stopped-pid' })),
     runConfigCommand: vi.fn(async () => 'config-report'),
     runCdpCommand: vi.fn(async () => 'cdp-report'),
     runMapCommand: vi.fn(() => 'map-report'),
@@ -34,7 +35,7 @@ const h = vi.hoisted(() => {
     installerInstall: vi.fn((_opts?: { withCore?: boolean }) => 'Inserted the block.'),
     formatStatus: vi.fn(() => 'instructions-status'),
     statusAll: vi.fn(() => []),
-    statusFor: vi.fn(() => ({})),
+    statusFor: vi.fn(() => ({ state: { kind: 'no-file' } })),
     installInstructionsAll: vi.fn(() => []),
     installInstructionsFor: vi.fn(() => ({})),
     uninstallInstructionsAll: vi.fn(() => []),
@@ -87,7 +88,7 @@ function registerModuleMocks(): void {
   });
   vi.doMock('./commands/free-port.js', () => {
     h.loaded.add('free-port');
-    return { runFreePort: h.spies.runFreePort };
+    return { runFreePort: h.spies.runFreePort, runStopPid: h.spies.runStopPid };
   });
   vi.doMock('./commands/config.js', () => {
     h.loaded.add('config-command');
@@ -344,6 +345,68 @@ describe('cli dispatch: every command reaches its handler and loads only its mod
     },
     { argv: ['feedback'], module: 'feedback', handler: 'runFeedbackCommand', stdout: [] },
     { argv: ['stop'], module: 'free-port', handler: 'runFreePort', stdout: ['freed'] },
+    // D9 regression guards: every valid spelling that worked before still
+    // reaches its handler.
+    { argv: ['instructions', 'status'], module: 'instructions', handler: 'statusAll' },
+    {
+      argv: ['instructions', 'status', '--client', 'claude'],
+      module: 'instructions',
+      handler: 'statusFor',
+    },
+    {
+      argv: ['instructions', 'install', '--client', 'opencode'],
+      module: 'instructions',
+      handler: 'installInstructionsFor',
+    },
+    { argv: ['tools'], module: 'tools', handler: 'runToolsCommand' },
+    { argv: ['tools', 'enable', 'a', 'b', 'c'], module: 'tools', handler: 'runToolsCommand' },
+    { argv: ['tools', 'preset', 'readonly'], module: 'tools', handler: 'runToolsCommand' },
+    {
+      argv: ['multi-agent', 'auto-reelect', 'enable'],
+      module: 'multi-agent',
+      handler: 'runMultiAgentCommand',
+    },
+    {
+      argv: ['config', 'set', 'idle-ttl', '15'],
+      module: 'config-command',
+      handler: 'runConfigCommand',
+    },
+    {
+      argv: ['config', 'restore-defaults', '--yes'],
+      module: 'config-command',
+      handler: 'runConfigCommand',
+    },
+    { argv: ['cdp', 'allow', '--minutes', '5'], module: 'cdp', handler: 'runCdpCommand' },
+    {
+      argv: ['map', 'forget', 'my-app', '--flow', 'login', '--yes'],
+      module: 'map',
+      handler: 'runMapCommand',
+    },
+    { argv: ['map', 'forget', '--yes', 'my-app'], module: 'map', handler: 'runMapCommand' },
+    {
+      argv: ['map', 'export', 'my-app', '--out', 'f.json'],
+      module: 'map',
+      handler: 'runMapCommand',
+    },
+    { argv: ['map', 'import', 'f.json', '--replace'], module: 'map', handler: 'runMapCommand' },
+    {
+      argv: ['activity', 'export', '--out', 'a.csv', '--format', 'csv', '--redact'],
+      module: 'activity',
+      handler: 'runActivityCommand',
+    },
+    {
+      argv: ['activity', 'clear', '--from', '2026-01-01', '--to', '2026-01-02', '--yes'],
+      module: 'activity',
+      handler: 'runActivityCommand',
+    },
+    {
+      argv: ['activity', 'report', '--since', '7d'],
+      module: 'activity',
+      handler: 'runActivityCommand',
+    },
+    { argv: ['feedback', '--limit', '5'], module: 'feedback', handler: 'runFeedbackCommand' },
+    { argv: ['feedback', 'issue', '3'], module: 'feedback', handler: 'runFeedbackCommand' },
+    { argv: ['map', 'bogus'], module: 'map', handler: 'runMapCommand' },
   ];
 
   it.each(cases)('$argv -> $handler', async ({ argv, module, handler, stdout }) => {
@@ -357,8 +420,8 @@ describe('cli dispatch: every command reaches its handler and loads only its mod
   it('passes the remaining arguments and the language through unchanged', async () => {
     h.language.value = 'es';
     const dispatch = await loadDispatch();
-    await dispatch(['map', 'show', 'example.com', '--yes']);
-    expect(h.spies.runMapCommand).toHaveBeenCalledWith(['show', 'example.com', '--yes'], 'es');
+    await dispatch(['map', 'forget', 'example.com', '--yes']);
+    expect(h.spies.runMapCommand).toHaveBeenCalledWith(['forget', 'example.com', '--yes'], 'es');
   });
 
   it('rejects an unknown --client value before running the installer', async () => {
@@ -382,6 +445,354 @@ describe('cli dispatch: every command reaches its handler and loads only its mod
     h.spies.checkUpdates.mockResolvedValueOnce({ latest: '', error: 'offline' });
     const dispatch = await loadDispatch();
     await expect(dispatch(['updates'])).rejects.toEqual(new ExitCalled(2));
+  });
+});
+
+/* D9 (owner decision): `--help` or `-h` in any position prints that
+ * command's help and does nothing else; an unknown or malformed option, or
+ * one missing its value, makes the command refuse and touch nothing;
+ * `--option=value` and `--option value` are the same everywhere. These run
+ * the real dispatch with every command module mocked, so a command that
+ * would act is observed through its spy, never run. */
+describe('cli D9: --help or -h in any position prints help and does nothing else', () => {
+  const cases: { argv: string[]; handler: keyof typeof h.spies; usage: string }[] = [
+    { argv: ['start', '--help'], handler: 'runServer', usage: '  browser-link        ' },
+    { argv: ['install', '--help'], handler: 'installAll', usage: '  browser-link install' },
+    { argv: ['install', '--client', 'claude', '-h'], handler: 'installFor', usage: 'install' },
+    { argv: ['uninstall', '--help'], handler: 'uninstallAll', usage: '  browser-link uninstall' },
+    { argv: ['uninstall', '-h', '--client', 'claude'], handler: 'uninstallFor', usage: 'uninst' },
+    { argv: ['stop', '--help'], handler: 'runFreePort', usage: '  browser-link stop' },
+    { argv: ['stop', '-h'], handler: 'runFreePort', usage: '  browser-link stop' },
+    { argv: ['doctor', '--help'], handler: 'runDoctor', usage: '  browser-link doctor' },
+    { argv: ['updates', '--help'], handler: 'checkUpdates', usage: '  browser-link updates' },
+    {
+      argv: ['extension', '--help'],
+      handler: 'printExtensionInstructions',
+      usage: '  browser-link extension',
+    },
+    { argv: ['about', '-h'], handler: 'printAbout', usage: '  browser-link about' },
+    {
+      argv: ['instructions', 'install', '--help'],
+      handler: 'installInstructionsAll',
+      usage: '  browser-link instructions install',
+    },
+    {
+      argv: ['instructions', 'install', '--with-core', '-h'],
+      handler: 'installerInstall',
+      usage: '  browser-link instructions install --with-core',
+    },
+    {
+      argv: ['instructions', 'uninstall', '--help'],
+      handler: 'uninstallInstructionsAll',
+      usage: '  browser-link instructions uninstall',
+    },
+    {
+      argv: ['instructions', '--help'],
+      handler: 'statusAll',
+      usage: '  browser-link instructions',
+    },
+    {
+      argv: ['cdp', 'allow', '--help'],
+      handler: 'runCdpCommand',
+      usage: '  browser-link cdp allow',
+    },
+    { argv: ['cdp', '-h', 'revoke'], handler: 'runCdpCommand', usage: '  browser-link cdp revoke' },
+    {
+      argv: ['tools', 'disable', 'browser.click', '--help'],
+      handler: 'runToolsCommand',
+      usage: '  browser-link tools disable',
+    },
+    {
+      argv: ['multi-agent', 'enable', '--help'],
+      handler: 'runMultiAgentCommand',
+      usage: '  browser-link multi-agent enable',
+    },
+    {
+      argv: ['config', 'set', 'idle-ttl', '5', '--help'],
+      handler: 'runConfigCommand',
+      usage: '  browser-link config set idle-ttl',
+    },
+    {
+      argv: ['map', 'forget', 'my-app', '--yes', '--help'],
+      handler: 'runMapCommand',
+      usage: '  browser-link map forget <app>',
+    },
+  ];
+
+  it.each(cases)(
+    '$argv prints the help and never calls $handler',
+    async ({ argv, handler, usage }) => {
+      const dispatch = await loadDispatch();
+      await dispatch(argv);
+      expect(h.spies[handler]).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain(usage);
+      expect(logs[0].startsWith('Usage:')).toBe(true);
+    },
+  );
+
+  it('the command help shows only that command, not the whole help', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['stop', '--help']);
+    expect(logs[0]).toContain('  browser-link stop ');
+    expect(logs[0]).toContain(
+      '  browser-link stop --pid <PID> Show that process as the operating system',
+    );
+    expect(logs[0]).not.toContain('browser-link install');
+    expect(logs[0]).not.toContain('Environment:');
+  });
+
+  it('config --help lists the two hide settings with their meaning (D12, D13)', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['config', 'set', 'hide-password-values', 'on', '--help']);
+    expect(logs[0]).toContain(
+      '  browser-link config set hide-password-values <on|off>\n' +
+        '                                Hide password values from agents (off by default): snapshot and\n' +
+        '                                find show "filled, N characters" instead.',
+    );
+    expect(logs[0]).toContain(
+      '  browser-link config set activity.hide-sensitive <on|off>\n' +
+        '                                Hide what was typed into sensitive fields in every column of the\n' +
+        '                                activity trail; applies after a restart.',
+    );
+    expect(h.spies.runConfigCommand).not.toHaveBeenCalled();
+  });
+
+  it('config --help in Spanish lists the two hide settings with their meaning (D12, D13)', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await dispatch(['config', '--help']);
+    expect(logs[0]).toContain(
+      '  browser-link config set hide-password-values <on|off>\n' +
+        '                                Oculta a los agentes el valor de las contraseñas (apagado por\n' +
+        '                                defecto): snapshot y find muestran "filled, N characters".',
+    );
+    expect(logs[0]).toContain(
+      '  browser-link config set activity.hide-sensitive <on|off>\n' +
+        '                                Oculta en todas las columnas del registro de actividad lo escrito\n' +
+        '                                en campos sensibles; se aplica al reiniciar.',
+    );
+  });
+
+  it('the command help is in Spanish when the configured language is es', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await dispatch(['uninstall', '--help']);
+    expect(logs[0].startsWith('Uso:')).toBe(true);
+    expect(logs[0]).toContain('Elimina todos los registros.');
+    expect(h.spies.uninstallAll).not.toHaveBeenCalled();
+  });
+
+  it('version --help prints the version help, not the version', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['version', '--help']);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('  browser-link version');
+  });
+
+  it.each([
+    ['activity', 'clear', '--yes', '--help'],
+    ['feedback', 'issue', '3', '-h'],
+  ])('%j hands the help to the command, which owns its usage text', async (...argv) => {
+    const dispatch = await loadDispatch();
+    await dispatch(argv);
+    const spy = argv[0] === 'activity' ? h.spies.runActivityCommand : h.spies.runFeedbackCommand;
+    expect(spy).toHaveBeenCalledWith(argv.slice(1), 'en');
+  });
+});
+
+describe('cli D9: an unknown, malformed or valueless option refuses and touches nothing', () => {
+  const refusals: { argv: string[]; handler: keyof typeof h.spies; error: string }[] = [
+    {
+      argv: ['uninstall', '--client'],
+      handler: 'uninstallAll',
+      error: 'browser-link uninstall: option --client needs a value',
+    },
+    {
+      argv: ['install', '--client'],
+      handler: 'installAll',
+      error: 'browser-link install: option --client needs a value',
+    },
+    {
+      argv: ['install', '--client', '--yes'],
+      handler: 'installAll',
+      error: 'browser-link install: option --client needs a value',
+    },
+    {
+      argv: ['uninstall', '--dry-run'],
+      handler: 'uninstallAll',
+      error: 'browser-link uninstall: unknown option --dry-run',
+    },
+    {
+      argv: ['install', '--client=claude', '--client', 'opencode'],
+      handler: 'installFor',
+      error: 'browser-link install: option --client was given more than once',
+    },
+    {
+      argv: ['stop', 'now'],
+      handler: 'runFreePort',
+      error: 'browser-link stop: unexpected argument now',
+    },
+    {
+      argv: ['stop', '--dry-run'],
+      handler: 'runFreePort',
+      error: 'browser-link stop: unknown option --dry-run',
+    },
+    {
+      argv: ['stop', '--pid'],
+      handler: 'runStopPid',
+      error: 'browser-link stop: option --pid needs a value',
+    },
+    {
+      argv: ['stop', '--pid', '4', '--pid=5'],
+      handler: 'runStopPid',
+      error: 'browser-link stop: option --pid was given more than once',
+    },
+    { argv: ['start', '-x'], handler: 'runServer', error: 'browser-link start: unknown option -x' },
+    {
+      argv: ['doctor', '--nonsense'],
+      handler: 'runDoctor',
+      error: 'browser-link doctor: unknown option --nonsense',
+    },
+    {
+      argv: ['instructions', 'uninstall', '--client'],
+      handler: 'uninstallInstructionsAll',
+      error: 'browser-link instructions uninstall: option --client needs a value',
+    },
+    {
+      argv: ['instructions', 'install', '--with-core=yes'],
+      handler: 'installerInstall',
+      error:
+        'browser-link instructions install: option --with-core does not take a value (got --with-core=yes)',
+    },
+    {
+      argv: ['cdp', 'allow', '--minutes'],
+      handler: 'runCdpCommand',
+      error: 'browser-link cdp allow: option --minutes needs a value',
+    },
+    {
+      argv: ['map', 'forget', 'my-app', '--flow', '--yes'],
+      handler: 'runMapCommand',
+      error: 'browser-link map forget: option --flow needs a value',
+    },
+    {
+      argv: ['map', 'import', 'f.json', '--replace=true'],
+      handler: 'runMapCommand',
+      error: 'browser-link map import: option --replace does not take a value (got --replace=true)',
+    },
+    {
+      argv: ['activity', 'clear', '--older-than', '--yes'],
+      handler: 'runActivityCommand',
+      error: 'browser-link activity clear: option --older-than needs a value',
+    },
+    {
+      argv: ['activity', 'clear', '--from', '--yes'],
+      handler: 'runActivityCommand',
+      error: 'browser-link activity clear: option --from needs a value',
+    },
+    {
+      argv: ['activity', 'clear', '--older-than=', '--yes'],
+      handler: 'runActivityCommand',
+      error: 'browser-link activity clear: option --older-than needs a value',
+    },
+    {
+      argv: ['tools', 'enable', '--all'],
+      handler: 'runToolsCommand',
+      error: 'browser-link tools enable: unknown option --all',
+    },
+    {
+      argv: ['multi-agent', 'enable', 'now'],
+      handler: 'runMultiAgentCommand',
+      error: 'browser-link multi-agent enable: unexpected argument now',
+    },
+    {
+      argv: ['config', 'restore-defaults', '--force'],
+      handler: 'runConfigCommand',
+      error: 'browser-link config restore-defaults: unknown option --force',
+    },
+    {
+      argv: ['feedback', '--limit'],
+      handler: 'runFeedbackCommand',
+      error: 'browser-link feedback: option --limit needs a value',
+    },
+    {
+      argv: ['map', 'forget', 'my-app', '---flow', 'x'],
+      handler: 'runMapCommand',
+      error: 'browser-link map forget: could not read ---flow as an option',
+    },
+  ];
+
+  it.each(refusals)(
+    '$argv exits 2, says what it did not understand and never calls $handler',
+    async ({ argv, handler, error }) => {
+      const dispatch = await loadDispatch();
+      await expect(dispatch(argv)).rejects.toEqual(new ExitCalled(2));
+      expect(h.spies[handler]).not.toHaveBeenCalled();
+      expect(logs).toEqual([]);
+      expect(errors[0]).toBe(error);
+      expect(errors[1]).toBe(`Nothing was done. See: browser-link ${argv[0]} --help`);
+    },
+  );
+
+  it('the refusal is in Spanish when the configured language is es', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['uninstall', '--client'])).rejects.toEqual(new ExitCalled(2));
+    expect(errors).toEqual([
+      'browser-link uninstall: la opción --client necesita un valor',
+      'No se hizo nada. Consulte: browser-link uninstall --help',
+    ]);
+    expect(h.spies.uninstallAll).not.toHaveBeenCalled();
+  });
+
+  it('version with an unknown option refuses instead of printing the version', async () => {
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['--version', '--json'])).rejects.toEqual(new ExitCalled(2));
+    expect(errors[0]).toBe('browser-link version: unknown option --json');
+    expect(logs).toEqual([]);
+  });
+});
+
+describe('cli D9: --option=value and --option value are the same', () => {
+  it.each([[['uninstall', '--client=opencode']], [['uninstall', '--client', 'opencode']]])(
+    '%j removes only the named client',
+    async (argv) => {
+      const dispatch = await loadDispatch();
+      await dispatch(argv);
+      expect(h.spies.uninstallFor).toHaveBeenCalledWith('opencode');
+      expect(h.spies.uninstallAll).not.toHaveBeenCalled();
+    },
+  );
+
+  it('install --client=claude registers only claude', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['install', '--client=claude']);
+    expect(h.spies.installFor).toHaveBeenCalledWith('claude');
+    expect(h.spies.installAll).not.toHaveBeenCalled();
+  });
+
+  it('uninstall --client=x is an unknown client, rejected before anything runs', async () => {
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['uninstall', '--client=x'])).rejects.toThrow(
+      'Unknown --client value: x. Use claude, opencode or copilot.',
+    );
+    expect(h.spies.uninstallAll).not.toHaveBeenCalled();
+    expect(h.spies.uninstallFor).not.toHaveBeenCalled();
+  });
+
+  it('instructions install --client=claude --with-core writes only claude, with the core', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions', 'install', '--client=claude', '--with-core']);
+    expect(h.spies.installerInstall).toHaveBeenCalledTimes(1);
+    expect(h.spies.installInstructionsAll).not.toHaveBeenCalled();
+  });
+
+  it('instructions uninstall --client=copilot removes only copilot', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['instructions', 'uninstall', '--client=copilot']);
+    expect(h.spies.uninstallInstructionsFor).toHaveBeenCalledWith('copilot');
+    expect(h.spies.uninstallInstructionsAll).not.toHaveBeenCalled();
   });
 });
 
@@ -571,5 +982,65 @@ describe('cli: instructions install --with-core (S13)', () => {
     await dispatch(['help']);
     expect(logs[0]).toContain('  browser-link instructions install --with-core');
     expect(logs[0]).toContain('la primera llamada al navegador devuelve las reglas');
+  });
+});
+
+/* D14 (owner decision): `stop --pid <PID>` is the explicit command the
+ * take-over and `stop` point to. The command module is mocked: no test here
+ * looks up or kills a process. */
+describe('cli D14: stop --pid <PID>', () => {
+  it.each([[['stop', '--pid', '4242']], [['stop', '--pid=4242']]])(
+    '%j hands exactly that pid to runStopPid and never runs the automatic stop',
+    async (argv) => {
+      const dispatch = await loadDispatch();
+      await dispatch(argv);
+      expect(h.spies.runStopPid.mock.calls).toEqual([[4242, 'en']]);
+      expect(h.spies.runFreePort).not.toHaveBeenCalled();
+      expect(logs).toEqual(['stopped-pid']);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it('a refused or failed stop --pid exits 2 after printing what it found', async () => {
+    h.spies.runStopPid.mockReturnValueOnce({ ok: false, message: 'refused-pid' });
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['stop', '--pid', '7'])).rejects.toEqual(new ExitCalled(2));
+    expect(logs).toEqual(['refused-pid']);
+  });
+
+  it.each(['abc', '0', '-5', '12x', '1.5', '99999999999999999999'])(
+    '--pid %s is not a process number: exit 2, nothing loaded, nothing stopped',
+    async (value) => {
+      const dispatch = await loadDispatch();
+      await expect(dispatch(['stop', '--pid', value])).rejects.toEqual(new ExitCalled(2));
+      expect(h.spies.runStopPid).not.toHaveBeenCalled();
+      expect(h.spies.runFreePort).not.toHaveBeenCalled();
+      expect(commandModulesLoaded()).toEqual([]);
+      expect(logs).toEqual([]);
+      expect(errors).toEqual([
+        `browser-link stop: --pid needs a process number (got ${value})`,
+        'Nothing was done. See: browser-link stop --help',
+      ]);
+    },
+  );
+
+  it('the --pid refusal and the help are in Spanish when the language is es', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await expect(dispatch(['stop', '--pid', 'x'])).rejects.toEqual(new ExitCalled(2));
+    expect(errors).toEqual([
+      'browser-link stop: --pid necesita un número de proceso (se recibió x)',
+      'No se hizo nada. Consulte: browser-link stop --help',
+    ]);
+    logs = [];
+    await dispatch(['stop', '-h']);
+    expect(logs[0]).toContain('  browser-link stop --pid <PID> Muestra ese proceso');
+  });
+
+  it('plain stop still runs the automatic stop, never runStopPid', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['stop']);
+    expect(h.spies.runFreePort.mock.calls).toEqual([['en']]);
+    expect(h.spies.runStopPid).not.toHaveBeenCalled();
   });
 });

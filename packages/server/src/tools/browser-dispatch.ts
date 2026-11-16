@@ -68,6 +68,7 @@ import { recordFeedback } from '../activity/feedback.js';
 import { summarizeActivity } from '../activity/summary.js';
 import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
+import { findTab, listKnownTabs, listTabsForSession, withCallTabMemo } from './tab-lookup.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
 import {
   formatClaimConflict,
@@ -208,7 +209,8 @@ export interface BrowserToolDeps {
    * throw; null adds no field. */
   getActionHint?(input: ActionHintInput): ActionHint | null;
   /** Optional cdp-direct target discovery — when present, `browser.list_tabs`
-   * merges its result into `listTabs()`'s. Internally gated on
+   * merges its result into `listTabs()`'s, and every tab-details lookup on a
+   * `cdp:` tab reads it (see `tab-lookup.ts`, D7). Internally gated on
    * `cdp/gate.ts`'s two-step check (enabled + live grant): returns `[]`
    * whenever cdp-direct is off or ungranted, so an extension-only build (or
    * an install that has simply never enabled the feature) behaves exactly
@@ -256,6 +258,14 @@ export interface BrowserToolDeps {
    * wires `recordActivity` without wiring this gets the full trail it clearly
    * asked for rather than a silently gutted one. */
   recordActivityPayloads?: boolean;
+  /** Mirror of the `activity.hide-sensitive` config flag (owner decision
+   * D13, see `activity/extract.ts`). Only `false` stores sensitive rows
+   * unhidden; an absent value hides, the safe side. */
+  hideSensitiveActivity?: boolean;
+  /** The user's hide-password-values setting (owner decision D12), read on
+   * every snapshot, find and flow so a change applies to the next call.
+   * Absent means off: values are returned, as by default. */
+  hidePasswordValues?(): boolean;
   /** Optional map learner (see `map/learning.ts`'s `learnFromDispatch`).
    * Called once per dispatched tool, after the call settles, with the tool,
    * its args, the resolved result or the thrown error, and the tab's URL and
@@ -354,6 +364,37 @@ const MAX_EXPECT_TIMEOUT_MS = 10_000;
 
 /** Longest `snapshot({ since })` id forwarded; matches the tool schema's maxLength. */
 const MAX_SNAPSHOT_SINCE_LENGTH = 64;
+
+/** The parts an `offset` may name, per tool: the windows the page cuts. */
+const SNAPSHOT_OFFSET_PARTS = ['interactive', 'headings', 'text'] as const;
+const FIND_OFFSET_PARTS = ['candidates'] as const;
+
+/**
+ * Validate an `offset` (owner decision D6: `truncated.next_offset` of an
+ * earlier answer, passed back to get the rest). Rejected rather than
+ * dropped: a dropped offset would silently answer the first window again.
+ */
+function offsetArg(
+  tool: string,
+  value: unknown,
+  parts: readonly string[],
+): Record<string, number> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${tool}: offset must be an object like truncated.next_offset`);
+  }
+  const out: Record<string, number> = {};
+  for (const [part, start] of Object.entries(value)) {
+    if (!parts.includes(part)) {
+      throw new Error(`${tool}: offset.${part} is not one of ${parts.join(', ')}`);
+    }
+    if (typeof start !== 'number' || !Number.isInteger(start) || start < 0) {
+      throw new Error(`${tool}: offset.${part} must be a non-negative integer`);
+    }
+    out[part] = start;
+  }
+  return out;
+}
 
 const EXPECT_CONDITION_KEYS = [
   'url_changed',
@@ -1276,6 +1317,31 @@ function routeToolCall(
     : deps.callBrowserTool(tabId, tool, params);
 }
 
+/** The user's hide-password-values setting (owner decision D12), read now. */
+function passwordValuesHidden(deps: BrowserToolDeps): boolean {
+  return deps.hidePasswordValues?.() === true;
+}
+
+/** The wire option that asks the page to hide password values: present only
+ * when the setting is on, so with it off every request is as before. */
+function hideParam(hide: boolean): { hide_password_values?: true } {
+  return hide ? { hide_password_values: true } : {};
+}
+
+/**
+ * With the setting on, a snapshot, find or flow answer must carry the page's
+ * `values_hidden` note: an extension older than this server ignores the
+ * option and would return the values. Such an answer is withheld, never
+ * passed on. With the setting off the answer is returned untouched.
+ */
+function requireValuesHidden(tool: string, result: unknown, hide: boolean): unknown {
+  if (!hide) return result;
+  if (typeof result === 'object' && result !== null && 'values_hidden' in result) return result;
+  throw new Error(
+    `${tool}: the user's setting hide-password-values is on, but the browser answered without hiding password values (an extension older than this server?), so the answer was withheld${tool === 'browser.flow' ? ' (the flow itself ran)' : ''}. Ask the user to update the browser-link extension.`,
+  );
+}
+
 /** Run an action through the claim registry. Returns the response payload of
  * the action when the agent is allowed, or throws a descriptive Error otherwise.
  * When no registry is wired (test fixtures, or future configs that disable
@@ -1321,9 +1387,7 @@ async function handleListTabs(
   deps: BrowserToolDeps,
   caller: AgentCaller,
 ): Promise<EnrichedTabSnapshot[]> {
-  const extensionTabs = deps.listTabs();
-  const cdpTabs = deps.listCdpTabs ? await deps.listCdpTabs() : [];
-  const allTabs = [...extensionTabs, ...cdpTabs];
+  const allTabs = await listKnownTabs(deps);
 
   // Resolve every tab's map hint in ONE batched call over the DISTINCT
   // origins present, instead of one lookup per tab — see `getMapHints`'
@@ -1366,29 +1430,25 @@ function knowledgeFor(
   return deps.getKnowledge({ origin: at.origin, pathname: at.pathname, build: build ?? null });
 }
 
-/** The tab a call addressed, from the live tab table. */
-function findTab(deps: BrowserToolDeps, tabId: string): TabSnapshot | undefined {
-  return deps.listTabs().find((t) => t.tab_id === tabId);
-}
-
 /**
  * Add `known` (knowledge-loop S6) to a click/type/press/find result when
  * the call named a durable target (a selector, or a find key) that has
  * evidence on this app. Looked up after the call settles and before the
  * learner records it, so it reports the evidence the call was made with.
  * Only the target string reaches the lookup, never typed text or values.
+ * The call already ran, so a failed tab lookup returns the result as is.
  */
-function withKnown(
+async function withKnown(
   deps: BrowserToolDeps,
   tool: string,
   action: string,
   args: unknown,
   result: unknown,
-): unknown {
+): Promise<unknown> {
   if (!deps.getActionHint) return result;
   const target = durableTarget(tool, args);
   if (!target) return result;
-  const tab = findTab(deps, requireTabId(args));
+  const tab = await findTab(deps, requireTabId(args)).catch(() => undefined);
   const at = splitUrl(tab?.url);
   if (!at) return result;
   const known = deps.getActionHint({
@@ -1462,9 +1522,9 @@ function handleMyTabs(deps: BrowserToolDeps, caller: AgentCaller): { claims: Pub
  * The map modules are imported lazily, like the manual: only these calls
  * need them, and a build without a data dir never loads them. */
 
-/** Origin of a connected tab, or null. */
-function tabOrigin(deps: BrowserToolDeps, tabId: string): string | null {
-  const tab = findTab(deps, tabId);
+/** Origin of a connected tab, on either transport, or null. */
+async function tabOrigin(deps: BrowserToolDeps, tabId: string): Promise<string | null> {
+  const tab = await findTab(deps, tabId);
   return tab ? originOf(tab.url) : null;
 }
 
@@ -1523,7 +1583,7 @@ async function resolveFlowSteps(args: unknown, deps: BrowserToolDeps): Promise<F
   };
   if (a.steps === undefined && name !== null) {
     const tabId = requireTabId(args);
-    const origin = tabOrigin(deps, tabId);
+    const origin = await tabOrigin(deps, tabId);
     if (!origin) throw new Error(`browser.flow: tab ${tabId} has no web app to find "${name}" in`);
     const [{ getDb }, { winnerApp, findFlow, listFlows }] = await Promise.all([
       import('../map/db.js'),
@@ -1579,7 +1639,7 @@ async function rememberFlowRun(
       import('../map/queries.js'),
     ]);
     recordSessionFlow(caller.agent_id, {
-      origin: source.origin ?? tabOrigin(deps, tabId),
+      origin: source.origin ?? (await tabOrigin(deps, tabId)),
       name: source.name,
       saved_name: source.saved?.name ?? null,
       steps: source.template,
@@ -1621,7 +1681,7 @@ async function handleWrapUp(
     import('../map/session.js'),
   ]);
   const session = sessionFor(caller.agent_id);
-  const tabs = deps.listTabs();
+  const tabs = await listTabsForSession(deps, session.origins);
   const origins = [
     ...session.origins,
     ...tabs.map((t) => originOf(t.url)).filter((o): o is string => o !== null && o !== 'null'),
@@ -1678,7 +1738,7 @@ async function handleRead(
     throw new Error('browser.read: id must be an integer');
   }
   const values = valuesArg('browser.read', args);
-  const tab = findTab(deps, tabId);
+  const tab = await findTab(deps, tabId);
   const origin = tab ? originOf(tab.url) : null;
   if (!origin || origin === 'null') {
     throw new Error(`browser.read: tab ${tabId} is not connected or has no web app`);
@@ -1878,12 +1938,37 @@ function handleActivity(args: unknown): unknown {
  * refused before anything reaches the page. */
 const DOWNLOAD_URL_SCHEMES = new Set(['http:', 'https:', 'blob:', 'data:']);
 
+/** The extension's answer to the `download` wire tool. `unattributed`: a
+ * download appeared in Chrome during the wait but could not be tied to the
+ * clicked tab with certainty, so it was left alone. `download_id` is present
+ * when the extension holds the captured download until `download_settle`
+ * (an older extension cancelled it already and sends none). */
 interface DownloadCapture {
-  state: 'captured' | 'timeout';
+  state: 'captured' | 'timeout' | 'unattributed';
+  download_id?: number;
   url?: string;
   filename?: string;
   mime?: string;
 }
+
+/** What became of Chrome's own download in selector mode: `removed` (cancelled
+ * and erased, only after the file was written), `cancelled` (the erase
+ * failed), `left_in_chrome` (untouched: Chrome carries on with it), or
+ * `unknown` (the extension could not be asked). */
+type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'unknown';
+
+type BrowserDownloadResult = DownloadResult & {
+  chrome_download?: ChromeDownloadOutcome;
+  /** Present when the file was saved but what became of Chrome's own copy is
+   * not known (`chrome_download: 'unknown'`). */
+  chrome_download_note?: string;
+};
+
+/** What the extension's `download_settle` may answer and the server takes at
+ * face value. Anything else, `not_held` (the extension holds no such download:
+ * unknown id, already settled, hold expired) and values a newer extension may
+ * add included, is `unknown`: the server never claims what it was not told. */
+const CHROME_DOWNLOAD_OUTCOMES = new Set(['removed', 'cancelled', 'left_in_chrome']);
 
 /**
  * `browser.download` — get a file onto disk without ever surfacing Chrome's
@@ -1891,8 +1976,11 @@ interface DownloadCapture {
  *
  *   - url mode: fetch the URL in the page (page credentials) and write it.
  *   - selector mode: the extension arms a `chrome.downloads` capture, clicks
- *     the element, cancels the download Chrome starts BEFORE it can prompt,
- *     and hands back its URL — which is then fetched exactly like url mode.
+ *     the element and HOLDS the download the clicked tab reported (Chrome
+ *     neither prompts nor saves it), and hands back its URL. That URL is
+ *     fetched exactly like url mode and the file written here; only then
+ *     does `download_settle` tell the extension whether it was saved, and
+ *     it cancels and erases Chrome's own copy only if it was.
  *
  * The bytes are always written here, by the server, into the directory the
  * human configured (`downloads.dir`). See `downloads.ts` for why Chrome's
@@ -1906,7 +1994,7 @@ async function handleDownload(
   args: unknown,
   deps: BrowserToolDeps,
   caller: AgentCaller,
-): Promise<DownloadResult> {
+): Promise<BrowserDownloadResult> {
   const tabId = requireTabId(args);
   const { selector, url, filename, timeout_ms } = (args ?? {}) as {
     selector?: unknown;
@@ -1978,41 +2066,161 @@ async function runDownload(
   },
   deps: BrowserToolDeps,
   caller: AgentCaller,
-): Promise<DownloadResult> {
-  const { requested, timeoutMs, save } = opts;
+): Promise<BrowserDownloadResult> {
+  const { requested, timeoutMs } = opts;
   const deadline = Date.now() + timeoutMs;
-  let sourceUrl: string;
-  let suggested: string | undefined;
-  let capturedMime: string | null = null;
-  if ('selector' in source) {
-    const capture = (await runAction(
-      'download',
-      tabId,
-      { selector: source.selector, timeout_ms: timeoutMs },
-      deps,
-      caller,
-      timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
-    )) as DownloadCapture;
-    if (capture.state !== 'captured' || typeof capture.url !== 'string') {
-      return {
-        ok: false,
-        state: 'timeout',
-        path: null,
-        filename: requested ?? null,
-        bytes: 0,
-        mime: null,
-        url: null,
-        error: `no download started within ${timeoutMs}ms after clicking ${source.selector}`,
-      };
-    }
-    sourceUrl = capture.url;
-    suggested = capture.filename;
-    capturedMime = capture.mime ?? null;
-  } else {
-    sourceUrl = source.url;
+  if (!('selector' in source)) {
+    return fetchAndSave(tabId, { url: source.url, mime: null }, opts, deadline, deps, caller);
   }
+  const capture = (await runAction(
+    'download',
+    tabId,
+    { selector: source.selector, timeout_ms: timeoutMs },
+    deps,
+    caller,
+    timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
+  )) as DownloadCapture;
+  if (capture.state === 'unattributed') {
+    return {
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      filename: requested ?? null,
+      bytes: 0,
+      mime: null,
+      url: null,
+      error: `the capture failed: a download appeared in Chrome within ${timeoutMs}ms after clicking ${source.selector}, but it could not be tied to this tab with certainty, so it was left alone in Chrome (not cancelled, not saved here). If it is the file you want, pass its link as url, or ask the user.`,
+      chrome_download: 'left_in_chrome',
+    };
+  }
+  if (capture.state !== 'captured' || typeof capture.url !== 'string') {
+    return {
+      ok: false,
+      state: 'timeout',
+      path: null,
+      filename: requested ?? null,
+      bytes: 0,
+      mime: null,
+      url: null,
+      error: `no download started within ${timeoutMs}ms after clicking ${source.selector}`,
+    };
+  }
+  const captured = { url: capture.url, suggested: capture.filename, mime: capture.mime ?? null };
+  const downloadId = capture.download_id;
+  // An older extension cancelled its download already and holds nothing.
+  if (typeof downloadId !== 'number') {
+    return fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+  }
+  // The extension holds Chrome's download until told what happened here:
+  // it is cancelled and erased only once the file is written, and released
+  // untouched otherwise — also when the fetch throws.
+  let result: BrowserDownloadResult;
+  try {
+    result = await fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+  } catch (err) {
+    const outcome = await settleHeldDownload(tabId, downloadId, false, deps);
+    const note = CHROME_DOWNLOAD_NOTES.failed[outcome];
+    // The same error object keeps its class (`RefusedBeforeRun` is read by
+    // the trail); only its text gains what the settle reported.
+    if (note && err instanceof Error) err.message = `${err.message}; ${note}`;
+    throw err;
+  }
+  const outcome = await settleHeldDownload(tabId, downloadId, result.ok, deps);
+  return withChromeDownload(result, outcome);
+}
 
-  const sources = { url: sourceUrl, suggested, ...(requested !== undefined ? { requested } : {}) };
+/** Tell the extension whether the file was written; answer what became of
+ * Chrome's own download. Never throws: a failed settle is `unknown` (the
+ * extension then releases the download untouched when its hold expires). */
+async function settleHeldDownload(
+  tabId: string,
+  downloadId: number,
+  saved: boolean,
+  deps: BrowserToolDeps,
+): Promise<ChromeDownloadOutcome> {
+  try {
+    // Not through the claim check: this is the tail of the same call, and a
+    // refused settle would leave the user's browser holding the download.
+    const answer = (await routeToolCall(
+      'download_settle',
+      tabId,
+      { download_id: downloadId, saved },
+      deps,
+      DOWNLOAD_BRIDGE_SLACK_MS,
+    )) as { chrome_download?: unknown } | undefined;
+    const outcome = answer?.chrome_download;
+    return typeof outcome === 'string' && CHROME_DOWNLOAD_OUTCOMES.has(outcome)
+      ? (outcome as ChromeDownloadOutcome)
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const CHROME_DOWNLOAD_NOTES: {
+  /** Appended to the text of a download that failed. */
+  failed: Record<ChromeDownloadOutcome, string>;
+  /** Added to a download that was saved, when what became of Chrome's own
+   * copy is not known. */
+  saved: Partial<Record<ChromeDownloadOutcome, string>>;
+} = {
+  failed: {
+    removed: '',
+    cancelled: '',
+    left_in_chrome:
+      "Chrome's own download was left untouched and continues in Chrome (Chrome may ask the user where to save it).",
+    unknown:
+      "the extension could not be told the outcome; it releases Chrome's own download untouched when its hold expires.",
+  },
+  saved: {
+    unknown:
+      "The file was saved, but whether Chrome's own copy was removed is not known, so there may be a second copy in Chrome's downloads.",
+  },
+};
+
+function withChromeDownload(
+  result: BrowserDownloadResult,
+  chromeDownload: ChromeDownloadOutcome,
+): BrowserDownloadResult {
+  if (result.ok) {
+    const note = CHROME_DOWNLOAD_NOTES.saved[chromeDownload];
+    return {
+      ...result,
+      chrome_download: chromeDownload,
+      ...(note ? { chrome_download_note: note } : {}),
+    };
+  }
+  const note = CHROME_DOWNLOAD_NOTES.failed[chromeDownload];
+  if (!note) return { ...result, chrome_download: chromeDownload };
+  return {
+    ...result,
+    error: `${result.error ?? 'download did not complete'}; ${note}`,
+    chrome_download: chromeDownload,
+  };
+}
+
+/** Fetch `source.url` in the page within what is left of `deadline` and
+ * write it. */
+async function fetchAndSave(
+  tabId: string,
+  source: { url: string; suggested?: string; mime: string | null },
+  opts: {
+    requested: string | undefined;
+    timeoutMs: number;
+    save: (filename: string, data: Buffer) => string;
+  },
+  deadline: number,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<BrowserDownloadResult> {
+  const { requested, timeoutMs, save } = opts;
+  const sourceUrl = source.url;
+  const capturedMime = source.mime;
+  const sources = {
+    url: sourceUrl,
+    suggested: source.suggested,
+    ...(requested !== undefined ? { requested } : {}),
+  };
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) {
     return {
@@ -2130,7 +2338,7 @@ async function dispatchBrowserTool(
       if (!deps.getKnowledge) return result;
       // The start pack of where it landed: the result's final URL when it
       // has one, else the tab's (re-read after the navigation).
-      const tab = findTab(deps, tabId);
+      const tab = await findTab(deps, tabId).catch(() => undefined);
       const landed = (result as { url?: unknown } | null)?.url;
       const knowledge = knowledgeFor(
         deps,
@@ -2140,14 +2348,16 @@ async function dispatchBrowserTool(
       return knowledge ? withExtras(result, { knowledge }) : result;
     }
     case 'browser.snapshot': {
-      const { within_selector, only_interactive, exclude, max_interactive, since } = (args ??
-        {}) as {
-        within_selector?: string;
-        only_interactive?: boolean;
-        exclude?: unknown;
-        max_interactive?: number;
-        since?: unknown;
-      };
+      const { within_selector, only_interactive, exclude, max_interactive, since, offset } =
+        (args ?? {}) as {
+          within_selector?: string;
+          only_interactive?: boolean;
+          exclude?: unknown;
+          max_interactive?: number;
+          since?: unknown;
+          offset?: unknown;
+        };
+      const snapshotOffset = offsetArg('browser.snapshot', offset, SNAPSHOT_OFFSET_PARTS);
       const filterExclude = Array.isArray(exclude)
         ? exclude.filter((v): v is string => typeof v === 'string')
         : undefined;
@@ -2155,7 +2365,8 @@ async function dispatchBrowserTool(
       // like non-string exclude entries, and the call answers a full snapshot.
       const sinceId =
         typeof since === 'string' && since.length <= MAX_SNAPSHOT_SINCE_LENGTH ? since : undefined;
-      return routeToolCall(
+      const hide = passwordValuesHidden(deps);
+      const snapshot = await routeToolCall(
         'snapshot',
         requireTabId(args),
         {
@@ -2164,40 +2375,62 @@ async function dispatchBrowserTool(
           exclude: filterExclude,
           max_interactive,
           since: sinceId,
+          ...(snapshotOffset ? { offset: snapshotOffset } : {}),
+          ...hideParam(hide),
         },
         deps,
       );
+      return requireValuesHidden('browser.snapshot', snapshot, hide);
     }
     case 'browser.find': {
-      const { text, role, exact, ref, key } = (args ?? {}) as {
+      const { text, role, exact, ref, key, offset } = (args ?? {}) as {
         text?: unknown;
         role?: unknown;
         exact?: unknown;
         ref?: unknown;
         key?: unknown;
+        offset?: unknown;
       };
       requireValidRef('browser.find', ref);
-      // The three modes are strictly exclusive, and role/exact only refine a
-      // text search: an option a mode would ignore is rejected, never dropped.
+      // The three modes are strictly exclusive, and role/exact/offset only
+      // refine a text search: an option a mode would ignore is rejected,
+      // never dropped.
       const modes = [text, ref, key].filter((mode) => mode !== undefined).length;
       if (modes > 1) throw new Error('browser.find needs exactly one of text, ref or key');
       if ((ref !== undefined || key !== undefined) && (role !== undefined || exact !== undefined)) {
         throw new Error('browser.find: role and exact apply to text mode only');
       }
+      if ((ref !== undefined || key !== undefined) && offset !== undefined) {
+        throw new Error('browser.find: offset applies to text mode only');
+      }
+      const findOffset = offsetArg('browser.find', offset, FIND_OFFSET_PARTS);
+      const hide = passwordValuesHidden(deps);
       if (key !== undefined) {
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
         const found = await routeToolCall(
           'find',
           requireTabId(args),
-          { key: key as SemanticKey },
+          { key: key as SemanticKey, ...hideParam(hide) },
           deps,
         );
-        return withKnown(deps, 'browser.find', 'find', args, found);
+        return withKnown(
+          deps,
+          'browser.find',
+          'find',
+          args,
+          requireValuesHidden('browser.find', found, hide),
+        );
       }
       if (ref !== undefined) {
         // With a ref, find describes that element (see buildFindJs).
-        return routeToolCall('find', requireTabId(args), { ref: ref as string }, deps);
+        const described = await routeToolCall(
+          'find',
+          requireTabId(args),
+          { ref: ref as string, ...hideParam(hide) },
+          deps,
+        );
+        return requireValuesHidden('browser.find', described, hide);
       }
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error('browser.find: text required');
@@ -2208,7 +2441,19 @@ async function dispatchBrowserTool(
         );
       }
       // find is a read tool: no claim enforcement, no userGesture concerns.
-      return routeToolCall('find', requireTabId(args), { text, role, exact: exact === true }, deps);
+      const found = await routeToolCall(
+        'find',
+        requireTabId(args),
+        {
+          text,
+          role,
+          exact: exact === true,
+          ...(findOffset ? { offset: findOffset } : {}),
+          ...hideParam(hide),
+        },
+        deps,
+      );
+      return requireValuesHidden('browser.find', found, hide);
     }
     case 'browser.state':
       // state is a read tool, same bucket as find/snapshot: no claim
@@ -2535,6 +2780,21 @@ async function dispatchBrowserTool(
       const flowTimeoutMs = foreground
         ? Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs)
         : ACTION_TIMEOUT_FLOOR_MS;
+      const hide = passwordValuesHidden(deps);
+      // Owner decision D1: the flow's steps run inside the transport, never
+      // through `runAction`, so the claim is held for the flow's life and
+      // its clock restarts from the last step. Bounded by the flow's own
+      // maximum: the call's timeout in the foreground, the detached ceiling
+      // otherwise. A detached flow's hold is released by its `flow-finished`
+      // summary (`followFlowFinishedEvents`, wired in server.ts).
+      if (!dryRun) {
+        deps.tabClaims?.holdForFlow(
+          flowTabId,
+          caller.agent_id,
+          flowId,
+          detached ? MAX_DETACHED_FLOW_TIMEOUT_MS : flowTimeoutMs,
+        );
+      }
       let result: unknown;
       try {
         result = await runAction(
@@ -2548,18 +2808,22 @@ async function dispatchBrowserTool(
             // A RELATIVE duration, not a timestamp: the extension and the
             // server do not share a clock.
             ...(foreground ? { deadline_ms: flowTimeoutMs - FLOW_DEADLINE_MARGIN_MS } : {}),
+            ...hideParam(hide),
           },
           deps,
           caller,
           flowTimeoutMs,
         );
       } catch (err) {
+        deps.tabClaims?.releaseFlowHold(flowId);
         // The runner's own deadline normally answers first. This is the
         // backstop for a runner stuck INSIDE one step past the bridge
         // timeout: recover what the registry knows instead of losing it.
         if (!foreground || isCdpTabId(flowTabId) || !isBridgeFlowTimeout(err)) throw err;
         return recoverTimedOutFlow(flowTabId, flowId, err, deps);
       }
+      if (foreground) deps.tabClaims?.releaseFlowHold(flowId);
+      result = requireValuesHidden('browser.flow', result, hide);
       // A projection is only useful if it says which mode the flow needs —
       // see the dry-run comment above.
       const decorated = dryRun
@@ -2852,6 +3116,8 @@ export async function handleBrowserTool(
   deps: BrowserToolDeps,
   caller: AgentCaller,
 ): Promise<unknown> {
+  // One cdp discovery shared by every tab lookup of this call (D7).
+  deps = withCallTabMemo(deps, name);
   // No sink wired (unit tests, builds without a data dir) — straight through,
   // zero overhead, no timing call.
   if (!deps.recordActivity && !deps.recordOutcome) {
@@ -2859,31 +3125,32 @@ export async function handleBrowserTool(
   }
 
   const startedAt = Date.now();
+  let result: unknown;
   try {
-    const result = await dispatchBrowserTool(name, args, deps, caller);
-    observe(deps, name, args, caller, Date.now() - startedAt, { result, error: undefined });
-    return result;
+    result = await dispatchBrowserTool(name, args, deps, caller);
   } catch (error) {
-    observe(deps, name, args, caller, Date.now() - startedAt, { result: undefined, error });
+    await observe(deps, name, args, caller, Date.now() - startedAt, { result: undefined, error });
     throw error;
   }
+  await observe(deps, name, args, caller, Date.now() - startedAt, { result, error: undefined });
+  return result;
 }
 
 /** Hand one settled call to both observers: the trail and the map learner.
  * The tab is resolved once, AFTER the call, so a `navigate` row shows where
- * it landed. */
-function observe(
+ * it landed. Never throws. */
+async function observe(
   deps: BrowserToolDeps,
   name: string,
   args: unknown,
   caller: AgentCaller,
   durationMs: number,
   settled: { result: unknown; error: unknown },
-): void {
+): Promise<void> {
   let tab: TabSnapshot | undefined;
   try {
     const tabId = extractTabIdArg(args);
-    tab = tabId === null ? undefined : deps.listTabs().find((t) => t.tab_id === tabId);
+    tab = tabId === null ? undefined : await findTab(deps, tabId);
   } catch {
     tab = undefined;
   }
@@ -2935,13 +3202,12 @@ function writeTrail(
       ...(error === undefined ? { result } : { error: error ?? new Error('unknown error') }),
       agentId: caller.agent_id,
       recordPayloads: deps.recordActivityPayloads !== false,
+      hideSensitive: deps.hideSensitiveActivity !== false,
+      // The tab's URL and title are the two columns that make a row readable
+      // a week later, and only the dispatcher can see the tab table. Passed
+      // in, not set afterwards, so the D13 rule covers them too.
+      ...(tab ? { page: { url: tab.url, title: tab.title } } : {}),
     });
-    // The tab's URL and title are the two columns that make a row readable a
-    // week later, and only the dispatcher can see the tab table.
-    if (row.tabId !== null && tab && tab.tab_id === row.tabId) {
-      row.url = tab.url;
-      row.title = tab.title;
-    }
     deps.recordActivity?.(row);
   } catch {
     // Observation must never break the observed. A row we failed to build is

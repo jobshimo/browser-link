@@ -245,6 +245,29 @@
         accent-color: var(--brand-to);
       }
 
+      /* The info control of a console-only row: sits right after the label,
+       * pushes the value to the far side. */
+      .admin-row button.admin-info {
+        margin-right: auto;
+        padding: 0 4px;
+        font-size: 14px;
+        line-height: 1;
+        color: var(--text-muted);
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 50%;
+      }
+
+      .admin-row button.admin-info:hover,
+      .admin-row button.admin-info:focus-visible {
+        color: var(--text);
+        border-color: var(--brand-from);
+      }
+
+      .admin-info-text[hidden] {
+        display: none;
+      }
+
       .admin-note {
         padding-bottom: 4px;
         font-size: 11.5px;

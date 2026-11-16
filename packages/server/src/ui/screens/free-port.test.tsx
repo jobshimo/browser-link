@@ -27,9 +27,12 @@ async function settle(): Promise<void> {
 }
 
 describe('FreePortView', () => {
-  test('the confirm copy says every browser-link process is stopped', () => {
+  test('the confirm copy says only an OS-confirmed browser-link holder is stopped (D14)', () => {
     const { lastFrame } = render(<FreePortView language="en" onBack={() => undefined} />);
-    expect(lastFrame() ?? '').toContain('every other browser-link');
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('once the operating system confirms it is');
+    expect(frame).toContain('Other browser-link processes are listed, not stopped.');
+    expect(frame).not.toContain('"node"');
   });
 
   test('after confirming, every stopped process is listed', async () => {
@@ -45,6 +48,6 @@ describe('FreePortView', () => {
 
   test('ES copy', () => {
     const { lastFrame } = render(<FreePortView language="es" onBack={() => undefined} />);
-    expect(lastFrame() ?? '').toContain('todos los demás procesos de browser-link');
+    expect(lastFrame() ?? '').toContain('Los demás procesos de browser-link se muestran');
   });
 });

@@ -1,5 +1,7 @@
 import {
+  DEFAULT_ACTIVITY_HIDE_SENSITIVE,
   DEFAULT_DOWNLOADS_MAX_MB,
+  DEFAULT_HIDE_PASSWORD_VALUES,
   MAX_CDP_DIRECT_PORT,
   MAX_DOWNLOADS_MAX_MB,
   MAX_GRANT_TTL_MINUTES,
@@ -8,9 +10,11 @@ import {
   MIN_DOWNLOADS_MAX_MB,
   MIN_GRANT_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
+  activityHidesSensitive,
   clampCdpDirectPort,
   clampGrantTtlMinutes,
   clampIdleTtlMinutes,
+  hidesPasswordValues,
   loadConfig,
   readConfig,
   restoreDefaultConfig,
@@ -25,6 +29,7 @@ import { resolveDownloadsDir } from '../downloads.js';
 import { getDataDir } from '../map/paths.js';
 import { readToken } from '../bridge/token.js';
 import type { Language } from './welcome.js';
+import { readArgs } from '../cli-args.js';
 
 /**
  * `browser-link config` — scriptable CLI surface for settings that are also
@@ -104,6 +109,16 @@ export interface ConfigI18n {
   mapLearningOff: string;
   invalidMapLearningValue: (raw: string) => string;
   mapLearningSetSaved: (label: string) => string;
+  hidePasswordValuesLabel: string;
+  hidePasswordValuesOn: string;
+  hidePasswordValuesOff: string;
+  invalidHidePasswordValuesValue: (raw: string) => string;
+  hidePasswordValuesSetSaved: (label: string) => string;
+  activityHideSensitiveLabel: string;
+  activityHideSensitiveOn: string;
+  activityHideSensitiveOff: string;
+  invalidActivityHideSensitiveValue: (raw: string) => string;
+  activityHideSensitiveSetSaved: (label: string) => string;
 }
 
 /** Exported so `commands/cdp.ts` can reuse `parseGrantTtlArg`'s exact
@@ -128,9 +143,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config restore-defaults [--yes]',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Unknown config action: ${action}. Use get, set or restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -177,6 +192,20 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     invalidMapLearningValue: (raw) => `Invalid map-learning value: "${raw}". Use "on" or "off".`,
     mapLearningSetSaved: (label) =>
       `map-learning set to ${label}. Applies to the next browser action, no restart needed. Only selectors and semantic keys are stored, never typed values.`,
+    hidePasswordValuesLabel: 'hide-password-values',
+    hidePasswordValuesOn: 'on: snapshot and find show "filled, N characters" for password fields',
+    hidePasswordValuesOff: 'off: snapshot and find return the values of password fields',
+    invalidHidePasswordValuesValue: (raw) =>
+      `Invalid hide-password-values value: "${raw}". Use "on" or "off".`,
+    hidePasswordValuesSetSaved: (label) =>
+      `hide-password-values set to ${label}. Applies to the next snapshot, find or flow, no restart needed.`,
+    activityHideSensitiveLabel: 'activity.hide-sensitive',
+    activityHideSensitiveOn: 'on: a sensitive trail row hides the typed value in every column',
+    activityHideSensitiveOff: 'off: sensitive trail rows are stored like any other, nothing hidden',
+    invalidActivityHideSensitiveValue: (raw) =>
+      `Invalid activity.hide-sensitive value: "${raw}". Use "on" or "off".`,
+    activityHideSensitiveSetSaved: (label) =>
+      `activity.hide-sensitive set to ${label}. Applies when the server restarts (restart your MCP client); rows already stored are not rewritten.`,
   },
   es: {
     header: 'Configuración de browser-link',
@@ -197,9 +226,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config restore-defaults [--yes]',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Acción de config desconocida: ${action}. Usá get, set o restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -247,6 +276,24 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     invalidMapLearningValue: (raw) => `Valor de map-learning inválido: "${raw}". Usá "on" u "off".`,
     mapLearningSetSaved: (label) =>
       `map-learning configurado a ${label}. Se aplica en la próxima acción del navegador, sin reiniciar. Solo se guardan selectores y claves semánticas, nunca valores escritos.`,
+    hidePasswordValuesLabel: 'hide-password-values',
+    hidePasswordValuesOn:
+      'activado: snapshot y find muestran "filled, N characters" en los campos de contraseña',
+    hidePasswordValuesOff:
+      'desactivado: snapshot y find devuelven el valor de los campos de contraseña',
+    invalidHidePasswordValuesValue: (raw) =>
+      `Valor de hide-password-values inválido: "${raw}". Usá "on" u "off".`,
+    hidePasswordValuesSetSaved: (label) =>
+      `hide-password-values configurado a ${label}. Se aplica en la próxima llamada a snapshot, find o flow, sin reiniciar.`,
+    activityHideSensitiveLabel: 'activity.hide-sensitive',
+    activityHideSensitiveOn:
+      'activado: una fila sensible del registro oculta el valor escrito en todas las columnas',
+    activityHideSensitiveOff:
+      'desactivado: las filas sensibles del registro se guardan como cualquier otra, sin ocultar nada',
+    invalidActivityHideSensitiveValue: (raw) =>
+      `Valor de activity.hide-sensitive inválido: "${raw}". Usá "on" u "off".`,
+    activityHideSensitiveSetSaved: (label) =>
+      `activity.hide-sensitive configurado a ${label}. Se aplica al reiniciar el servidor (reiniciá tu cliente MCP); las filas ya guardadas no se modifican.`,
   },
 };
 
@@ -322,6 +369,8 @@ export function listConfig(language: Language = 'en'): string {
     getDownloadsDirLine(language),
     getDownloadsMaxMbLine(language),
     getMapLearningLine(language),
+    getHidePasswordValuesLine(language),
+    getActivityHideSensitiveLine(language),
   ].join('\n');
 }
 
@@ -650,6 +699,91 @@ export function setMapLearning(rawValue: string, language: Language = 'en'): str
   return t.mapLearningSetSaved(enabled ? t.mapLearningOn : t.mapLearningOff);
 }
 
+/** `on` / `off` of the two hide switches, the spellings map-learning takes. */
+function parseOnOff(raw: string, invalid: (raw: string) => string): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (['on', 'true', '1'].includes(normalized)) return true;
+  if (['off', 'false', '0'].includes(normalized)) return false;
+  throw new Error(invalid(raw));
+}
+
+/** The label of one hide switch, with the default note when it is the default. */
+function onOffLabel(
+  value: boolean,
+  fallback: boolean,
+  on: string,
+  off: string,
+  t: ConfigI18n,
+): string {
+  return (value ? on : off) + (value === fallback ? t.downloadsDirDefaultNote : '');
+}
+
+/** One formatted line describing the hide-password-values setting (D12). */
+export function getHidePasswordValuesLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = onOffLabel(
+    hidesPasswordValues(loadConfig()),
+    DEFAULT_HIDE_PASSWORD_VALUES,
+    t.hidePasswordValuesOn,
+    t.hidePasswordValuesOff,
+    t,
+  );
+  return `  ${t.hidePasswordValuesLabel}   ${value}`;
+}
+
+/**
+ * `config set hide-password-values <on|off>` (owner decision D12). Writes
+ * the boolean; no live push: the server reads it on every snapshot, find and
+ * flow, so it applies to the next call.
+ */
+export function setHidePasswordValues(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const hide = parseOnOff(rawValue, t.invalidHidePasswordValuesValue);
+  saveConfig({ hidePasswordValues: hide });
+  return t.hidePasswordValuesSetSaved(
+    onOffLabel(
+      hide,
+      DEFAULT_HIDE_PASSWORD_VALUES,
+      t.hidePasswordValuesOn,
+      t.hidePasswordValuesOff,
+      t,
+    ),
+  );
+}
+
+/** One formatted line describing the activity.hide-sensitive setting (D13). */
+export function getActivityHideSensitiveLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = onOffLabel(
+    activityHidesSensitive(loadConfig()),
+    DEFAULT_ACTIVITY_HIDE_SENSITIVE,
+    t.activityHideSensitiveOn,
+    t.activityHideSensitiveOff,
+    t,
+  );
+  return `  ${t.activityHideSensitiveLabel}   ${value}`;
+}
+
+/**
+ * `config set activity.hide-sensitive <on|off>` (owner decision D13). Read
+ * once when the primary wires the trail, so it applies after a restart; rows
+ * already stored are never rewritten.
+ */
+export function setActivityHideSensitive(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const hide = parseOnOff(rawValue, t.invalidActivityHideSensitiveValue);
+  saveConfig({ activityHideSensitive: hide });
+  return t.activityHideSensitiveSetSaved(
+    onOffLabel(
+      hide,
+      DEFAULT_ACTIVITY_HIDE_SENSITIVE,
+      t.activityHideSensitiveOn,
+      t.activityHideSensitiveOff,
+      t,
+    ),
+  );
+}
+
 interface RestoreI18n {
   restored: string;
   unreadable: (path: string) => string;
@@ -707,6 +841,10 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
       activityEnabled: 'activity trail recording',
       activityRecordPayloads: 'whether the activity trail keeps the text an action moved',
       mapLearningEnabled: 'map learning (config set map-learning)',
+      hidePasswordValues:
+        'snapshot and find hide the values of password fields (config set hide-password-values)',
+      activityHideSensitive:
+        'a sensitive trail row hides the typed value in every column (config set activity.hide-sensitive)',
       downloadsDir:
         'folder browser.download writes into (config set downloads.dir; not set: <data dir>/downloads)',
       downloadsMaxMb: 'per-file size cap of browser.download, in MiB (config set downloads.max-mb)',
@@ -755,6 +893,10 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
       activityEnabled: 'registro del rastro de actividad',
       activityRecordPayloads: 'si el rastro de actividad guarda el texto que movió cada acción',
       mapLearningEnabled: 'aprendizaje del mapa (config set map-learning)',
+      hidePasswordValues:
+        'snapshot y find ocultan el valor de los campos de contraseña (config set hide-password-values)',
+      activityHideSensitive:
+        'una fila sensible del rastro de actividad oculta el valor escrito en todas las columnas (config set activity.hide-sensitive)',
       downloadsDir:
         'carpeta donde browser.download guarda los archivos (config set downloads.dir; sin valor: <directorio de datos>/downloads)',
       downloadsMaxMb:
@@ -803,8 +945,9 @@ export function formatRestoreResult(result: RestoreDefaultsResult, language: Lan
  * other destructive commands, it only says what it would do. */
 export function restoreDefaults(argv: string[], language: Language = 'en'): string {
   const t = RESTORE_I18N[language];
+  const yes = readArgs('config restore-defaults', argv, language).has('yes');
   const read = readConfig();
-  if (read.state === 'unreadable' && !argv.includes('--yes')) {
+  if (read.state === 'unreadable' && !yes) {
     return [
       t.unreadable(read.path),
       `  ${t.error} ${read.error}`,
@@ -819,10 +962,16 @@ export function restoreDefaults(argv: string[], language: Language = 'en'): stri
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
-  const key = argv.at(1);
-  const value = argv.at(2);
-
   if (action === 'restore-defaults') return restoreDefaults(argv.slice(1), language);
+  if (action !== undefined && action !== 'get' && action !== 'set') {
+    throw new Error(t.unknownAction(action));
+  }
+  // `get` and `set` take plain words only; an option or an extra word is
+  // refused before anything is read or written.
+  const words =
+    action === undefined ? [] : readArgs(`config ${action}`, argv.slice(1), language).positionals;
+  const key = words.at(0);
+  const value = words.at(1);
 
   if (action === undefined || action === 'get') {
     if (key === undefined) return listConfig(language);
@@ -832,31 +981,39 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'downloads.dir') return getDownloadsDirLine(language);
     if (key === 'downloads.max-mb') return getDownloadsMaxMbLine(language);
     if (key === 'map-learning') return getMapLearningLine(language);
+    if (key === 'hide-password-values') return getHidePasswordValuesLine(language);
+    if (key === 'activity.hide-sensitive') return getActivityHideSensitiveLine(language);
     throw new Error(t.unknownKey(key));
   }
-  if (action === 'set') {
-    if (key === undefined) throw new Error(t.usage);
-    if (key === 'idle-ttl' || key === 'flow-recording') {
-      if (value === undefined) throw new Error(t.usage);
-      return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
-    }
-    if (isCdpDirectKey(key)) {
-      if (value === undefined) throw new Error(t.usage);
-      return setCdpDirectKey(key, value, language);
-    }
-    if (key === 'downloads.dir') {
-      if (value === undefined) throw new Error(t.usage);
-      return setDownloadsDir(value, language);
-    }
-    if (key === 'downloads.max-mb') {
-      if (value === undefined) throw new Error(t.usage);
-      return setDownloadsMaxMb(value, language);
-    }
-    if (key === 'map-learning') {
-      if (value === undefined) throw new Error(t.usage);
-      return setMapLearning(value, language);
-    }
-    throw new Error(t.unknownKey(key));
+  // `set` is the only action left.
+  if (key === undefined) throw new Error(t.usage);
+  if (key === 'idle-ttl' || key === 'flow-recording') {
+    if (value === undefined) throw new Error(t.usage);
+    return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
   }
-  throw new Error(t.unknownAction(action));
+  if (isCdpDirectKey(key)) {
+    if (value === undefined) throw new Error(t.usage);
+    return setCdpDirectKey(key, value, language);
+  }
+  if (key === 'downloads.dir') {
+    if (value === undefined) throw new Error(t.usage);
+    return setDownloadsDir(value, language);
+  }
+  if (key === 'downloads.max-mb') {
+    if (value === undefined) throw new Error(t.usage);
+    return setDownloadsMaxMb(value, language);
+  }
+  if (key === 'map-learning') {
+    if (value === undefined) throw new Error(t.usage);
+    return setMapLearning(value, language);
+  }
+  if (key === 'hide-password-values') {
+    if (value === undefined) throw new Error(t.usage);
+    return setHidePasswordValues(value, language);
+  }
+  if (key === 'activity.hide-sensitive') {
+    if (value === undefined) throw new Error(t.usage);
+    return setActivityHideSensitive(value, language);
+  }
+  throw new Error(t.unknownKey(key));
 }

@@ -1,5 +1,6 @@
 import { loadConfig, saveConfig } from '../config.js';
 import { PRESETS, TOOL_CATALOGUE, getPreset, isKnownTool, type PresetId } from '../permissions.js';
+import { readArgs } from '../cli-args.js';
 import type { Language } from './welcome.js';
 
 /* The scriptable surface of the tool-permissions feature. Mirrors what the
@@ -173,9 +174,11 @@ export interface ToolsArgs {
 export function parseToolsArgs(argv: string[], language: Language = 'en'): ToolsArgs {
   const t = TOOLS_I18N[language];
   const [action, ...rest] = argv;
-  if (!action || action === 'list') return { action: 'list', names: [] };
-  if (action === 'enable' || action === 'disable' || action === 'preset') {
-    return { action, names: rest };
+  if (!action) return { action: 'list', names: [] };
+  if (action === 'list' || action === 'enable' || action === 'disable' || action === 'preset') {
+    // Plain words only: an option or a word too many is refused.
+    const names = readArgs(`tools ${action}`, rest, language).positionals;
+    return { action, names: [...names] };
   }
   throw new Error(t.unknownAction(action));
 }

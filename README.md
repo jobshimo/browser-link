@@ -224,6 +224,8 @@ browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("n
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
+browser-link config set hide-password-values on  # snapshot and find show "filled, N characters" for password fields (off by default)
+browser-link config set activity.hide-sensitive off  # store sensitive trail rows unhidden (on in this version; applies after a restart)
 browser-link config restore-defaults --yes # only when config.json cannot be read: keep a copy, write the defaults
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
@@ -236,7 +238,7 @@ browser-link map export --out map.json     # export the map (or one app) as JSON
 browser-link map import map.json           # import an export (merge by default, --replace to overwrite)
 browser-link multi-agent disable           # opt out of the default shared-bridge mode
 browser-link multi-agent auto-reelect enable
-browser-link stop                          # stop every live browser-link server (17529 owner included), one line each
+browser-link stop                          # stop the browser-link server the OS confirms on the bridge port; stop --pid <PID> stops one process
 browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
@@ -244,6 +246,26 @@ browser-link help                          # list every subcommand
 
 `browser-link version` prints the version and returns at once: it does not
 load the config, so a corrupt config never warns there.
+
+**The command line is strict.** `--opt value` and `--opt=value` mean the same
+everywhere. `--help` or `-h` after any command prints that command's help and
+does nothing else. An unknown option, a repeated option, an option without its
+value or an extra word makes the command refuse: it touches nothing, says what
+it did not understand and exits with code 2. `map forget <app>` never deletes a
+whole app when the identifier matches more than one: it lists the candidates
+and deletes nothing, with or without `--yes`. The dry run's confirm command
+repeats the identifier you typed.
+
+**Registration edits only its own entry.** `install` and `uninstall` change the
+`browser-link` entry of the client's config and keep the rest of the file byte
+for byte, line ends included. The write is atomic and makes no backup copy. A
+config that is a symlink, lies outside your home directory (unless
+`COPILOT_HOME` points there), is not valid UTF-8, does not parse, has the wrong
+shape or repeats the key is refused and left unchanged, with a message saying
+what was found. Without `--client`, both report every client. A client
+that is refused shows `Refused, nothing written: <reason>` and does not stop
+the others; the exit code is 1 when any client was refused. A replaced file
+keeps its permission bits.
 
 `doctor` starts its slow checks together (both port probes, the running
 server's `/version`, the Chrome debugger-flag scan and the live-process
@@ -390,41 +412,76 @@ of them:
 Still available from the Admin window: console language, multi-agent,
 auto-reelect, the instructions auto-refresh, the activity trail switches,
 `doctor`, the update check, and installing or removing the instructions block per
-client. The cdp-direct port and the downloads folder were already readouts.
+client. The two hide settings (password values for agents, sensitive values in
+the trail) are changed from the console only, with
+`browser-link config set hide-password-values <on|off>` and
+`browser-link config set activity.hide-sensitive <on|off>`; the window shows
+their current state. The cdp-direct port and the downloads folder were already readouts.
 
 ### The activity trail
 
-- **Password fields are no longer stored.** When `browser.type` or
+- **Password fields are hidden in the trail.** When `browser.type` or
   `browser.press` acts on a field the page declares sensitive (an
   `<input type="password">`, or an `autocomplete` attribute containing
-  `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`),
-  the row stores `[sensitive field]` instead of the text or key, whether
-  `activity.record-payloads` is on or off. The tool result carries
-  `sensitive_field: true` or `false`. A call that fails on such a field stores
-  the marker too.
-- **Only when the connected extension reports the field.** The server relies
-  on the extension to say a field is sensitive. An extension that was not
-  reloaded after the update does not send `sensitive_field`, and its typed text
-  is stored as before. To tell, check that the tool result of a `type` or
-  `press` carries `sensitive_field`; if it is missing, reload the extension in
+  `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`)
+  and `activity.hide-sensitive` is on, the row stores `[sensitive field]` in
+  `payload` instead of the text or key, whether `activity.record-payloads` is
+  on or off, and the typed text is removed from the other columns too (next
+  bullet). The tool result carries `sensitive_field: true` or `false`. A call
+  that fails on such a field stores the marker too.
+- **Where the value is hidden.** With `activity.hide-sensitive` on, a hidden
+  row changes these columns, and no other column holds free text:
+  `payload` holds the marker; `url` loses its query string and fragment (a form
+  sent by GET puts its fields there); `url`, `title`, `selector` and `error` have
+  the text a `type` typed replaced by the marker wherever it appears, ignoring
+  letter case and also URL-encoded (as a component, or as a browser writes it
+  in a path), form-encoded (`+` for a space), JSON-escaped, or in the other
+  Unicode normalization form. A typed text shorter than 4 characters is not
+  searched for, because it occurs by coincidence in almost any text: `title` and
+  `error` become the marker whole, `url` keeps its origin and path, and
+  `selector` is kept. A `press` hides its key in `payload` only: one character
+  would match almost any text.
+- **A field that was not identified.** A `type` or `press` that never said
+  which field it acted on is hidden the same way, with `[field not identified]`
+  in place of `[sensitive field]`: it failed with a plain error (a stale
+  `ref`, a selector that matched nothing, a dropped tab, a bridge timeout or a
+  socket that closed), or the connected extension answered without
+  `sensitive_field` (it was not reloaded after the update). The marker does not
+  claim the field was sensitive. To tell whether the extension reports the
+  field, check that the tool result of a `type` or `press` carries
+  `sensitive_field`; if it is missing, reload the extension in
   `chrome://extensions` (and reconnect your tabs).
-- **Rows already stored are untouched.** Text typed before 1.0.0 stays in
-  `activity.db`. To remove it, purge the trail (see [Purging](#purging)):
+- **Storing everything.** `browser-link config set activity.hide-sensitive off`
+  stores such rows like any other row: no marker, nothing replaced, the query
+  string stays in `url`, and `activity.record-payloads` alone decides whether
+  `payload` holds the text. With `hide-sensitive` on and `record-payloads` off,
+  an ordinary row keeps an empty `payload`, a sensitive row still stores
+  `[sensitive field]`, and a row whose field was not identified stores no
+  payload; the other columns are cleaned in both. The setting is read when the server starts recording the trail, so it
+  applies after a restart (restart your MCP client).
+- **Rows already stored are untouched.** Text typed before 1.0.0, or while
+  `activity.hide-sensitive` was off, stays in `activity.db`; changing the
+  setting never rewrites a stored row. To remove it, purge the trail (see
+  [Purging](#purging)):
   `browser-link activity clear --from 2000-01-01 --yes` deletes every row and
   then reclaims the disk space. Plain `browser-link activity clear --yes` also
-  deletes every row but does not shrink the file, so deleted text can stay in
-  free pages.
-- **What is not detected.** Only a field the page itself marks is detected. These
-  are stored as before:
-  - `browser.evaluate` expressions;
-  - plain text fields, even one named or labelled "password";
-  - `browser.press` on a field that is not marked sensitive (each key is stored);
+  deletes every row and compacts the file.
+- **What is not detected.** Only a field the page itself marks is detected, and
+  each row hides only the text of its own call. These are stored as typed:
+  - fields the page does not declare sensitive: plain text fields, even one
+    named or labelled "password"; fields inside cross-origin iframes, closed
+    shadow roots and `contenteditable` elements (reported as not sensitive);
+  - `browser.press` on a field that is not marked sensitive (each key is
+    stored), and, on a sensitive one, every column but `payload` and the query
+    string of `url`;
+  - text a later row echoes from an earlier `type`: a `find` text, a
+    `navigate` URL, a `browser.evaluate` expression, a page title;
+  - `browser.flow` rows, which are never marked sensitive (a flow row stores
+    its step kinds, not the text its steps typed; its `url` and `title` are
+    stored as they are);
   - URLs with query strings (`navigate`, `download`) and `find` text;
-  - fields inside cross-origin iframes, closed shadow roots and `contenteditable`
-    elements (reported as not sensitive);
   - a field whose focus changes between the check and the typing;
-  - a bridge timeout or a socket that closes while typing: no report arrives, so
-    the text is stored.
+  - every sensitive row, when `activity.hide-sensitive` is off.
 - **Who can read payloads.** Other agents read them through `browser.activity`,
   and bridge clients can read them too. `activity.record-payloads false` is how
   you keep text out of the trail.
@@ -552,8 +609,8 @@ knowledge loop, and 6 persistent-map tools (2 read, 4 write): 40 in all. All
 | `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`), the extension's `extension_version` and `extension_outdated: true` when it is older than the server                                                          |
 | `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                            |
 | `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                 |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed                                                                                                                    |
-| `browser.find`              | Locate one element by visible text, by `ref` or by `semantic_key` (`key`) → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`                                                                                               |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed; a cut result carries `truncated`, `offset` returns the rest                                                       |
+| `browser.find`              | Locate one element by visible text, by `ref` or by `semantic_key` (`key`) → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`; `truncated` and `offset` when candidates were cut                                            |
 | `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                                                                                                                      |
 | `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                                                                                                                              |
 | `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB; an element larger than its iframe/scroll container is only painted as far as that container shows it) |
@@ -572,7 +629,7 @@ two exceptions are footnoted):
 | Tool                     | Purpose                                                                                                                                                  |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `browser.navigate`       | Send a tab to a different URL (waits for load by default)                                                                                                |
-| `browser.click`          | Click an element by CSS selector or `ref`; hit-tests first and fails on occlusion or `retargeted` (`force:true` to bypass)                               |
+| `browser.click`          | Click an element by CSS selector or `ref`; hit-tests first and fails on occlusion, `retargeted` or no visible box (`force:true` to bypass)               |
 | `browser.type`           | Focus an input (by selector or `ref`) and type text via the native value setter                                                                          |
 | `browser.press`          | Trusted CDP key press (+ modifiers), optionally focusing a selector or `ref` first — real `isTrusted:true` input, for widgets synthetic events miss      |
 | `browser.drag`           | Drag element→element or coordinate→coordinate; HTML5 or pointer-based, auto-detected                                                                     |
@@ -618,16 +675,16 @@ iframes, nested arbitrarily.
   same-origin iframes as well, the same places `browser.find({ key })`
   searches.
 
-| Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shadow DOM / iframe piercing**   | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map. |
-| **Occlusion guard**                | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally.                                                                                                                                                                                             |
-| **`near_misses`**                  | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                               |
-| **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                               |
-| **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                             |
-| **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                          |
-| **`extension_outdated`**           | Each extension tab in `browser.list_tabs` carries `extension_version` (what the extension reported when it connected). When that is a plain `MAJOR.MINOR.PATCH` lower than the server's version, the tab also carries `extension_outdated: true`: results from that tab may lack fields newer servers add, so update or reload the extension. An extension older than 0.39.0 sends no version, so its tabs carry neither field; cdp-direct tabs never do.             |
-| **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                              |
+| Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shadow DOM / iframe piercing**   | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map.                   |
+| **Occlusion guard**                | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally: a covered target is then clicked at its position. A target with no visible box fails before the hit-test, see [A target with no visible box](#a-target-with-no-visible-box-and-a-target-that-takes-no-focus). |
+| **`near_misses`**                  | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                                                 |
+| **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                                                 |
+| **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                                               |
+| **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                                            |
+| **`extension_outdated`**           | Each extension tab in `browser.list_tabs` carries `extension_version` (what the extension reported when it connected). When that is a plain `MAJOR.MINOR.PATCH` lower than the server's version, the tab also carries `extension_outdated: true`: results from that tab may lack fields newer servers add, so update or reload the extension. An extension older than 0.39.0 sends no version, so its tabs carry neither field; cdp-direct tabs never do.                               |
+| **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                                                |
 
 #### `retargeted` — a click that would land on an ancestor
 
@@ -639,6 +696,87 @@ node. Scroll or expand the container, or target the element that receives
 clicks; `force: true` clicks at that point anyway. `hit_element` now appears
 only on a successful click that passed through a `pointer-events: none`
 element, or on a `force` click.
+
+#### A target with no visible box, and a target that takes no focus
+
+`browser.click` never clicks by pointer at a target with no visible box, and
+never at the page origin (0,0). The page decides, for the target itself, that
+it has no visible box when the browser says it is not rendered or has
+`visibility: hidden` (`checkVisibility` with the visibility property: a
+`display: none` on the target or an ancestor, a closed `<details>`,
+`content-visibility`; where `checkVisibility` is missing, a computed
+`visibility` of `hidden` or `collapse`), or when it has no client rectangle at
+all (`display: none`, `display: contents`, an `<option>` of a `<select>`). A
+rectangle of size zero still counts as a box, and so does `opacity: 0`; only an
+empty rectangle whose click point is exactly the top-left corner of the
+viewport is treated as no box (the same for an endpoint of `drag`).
+
+- Without `force` the call fails: `Element <target> has no visible box (not rendered, visibility-hidden, or an option of a select), so there is no point to click: make it visible first (open its menu, dialog or section), or pass force: true to call the element's own click() with no pointer`.
+- With `force: true` a covered target is clicked at its position, as before. A
+  target with no box gets its own `click()` and no pointer, and the result
+  carries `programmatic_click: "the target has no visible box, so its own click() was called: no pointer, no mouse events, no coordinates"`.
+  What the agent loses with it: no hit-test, no hover, pointer, `mousedown` or
+  `mouseup` events, no coordinates, and the click event is not trusted
+  (`isTrusted: false`); focus moves only if the element takes it itself. The
+  forced click is refused, with nothing clicked, when its `click()` could do
+  nothing: on a disabled target (`:disabled`, which includes a disabling
+  ancestor `<fieldset>`) it fails with `Element <target> is disabled, so its own click() does nothing and nothing was clicked: wait until it is enabled, or find the control that enables it`,
+  and on an `<option>` or `<optgroup>` with `Element <target> is an <option> (or <optgroup>): clicking an option does nothing and it never selects it, so nothing was clicked; the select's value must be set instead`.
+- `browser.drag` fails the same way for a selector endpoint with no visible
+  box: `drag: from_selector <selector> has no visible box (not rendered or visibility-hidden), so there is no point to drag from: make it visible first` (`to_selector` for the other endpoint).
+  Nothing is sent, and `drag` has no `force`.
+- `browser.type`, and `browser.press` with a `selector` or `ref`, focus the
+  target and check that focus is where they asked: the target, an element
+  inside it (a shadow root that delegates focus), the control of a `<label>`,
+  or the editable area that contains it. Otherwise nothing is sent and the
+  call fails with `Element <target> did not take focus (<why>), so nothing was typed: the input would have gone to whatever had focus before; target the field itself`
+  (`pressed` instead of `typed` for `press`). `<why>` is `it has no visible box`,
+  `it is disabled` or `it is not focusable`.
+
+#### `truncated` and `offset` — a cut result says so
+
+`snapshot` and `find` return a window of what they scan: up to
+`max_interactive` interactive entries (default 120, at most 500), 30 headings
+and 4000 characters of text; a `find` that matches several elements lists 5
+candidates. When something after the window was left out, the result carries:
+
+```
+truncated: { interactive?, headings?, text?, not_compared?,
+             not_compared_headings?, not_compared_text?, next_offset?, hint }
+```
+
+- `interactive`, `headings` and `text` count what was left out (entries;
+  characters for `text`), counted from the full scan.
+- `next_offset` holds, for every non-empty part of the result, where the next
+  window starts. Pass it back as `offset` to get the rest, with nothing
+  twice. `hint` says how to narrow the scope (`within_selector`, `exclude`,
+  `only_interactive`) or to continue.
+- A `multiple-matches` answer of `find` carries
+  `truncated: { candidates, next_offset: { candidates }, hint }`; `offset: { candidates }`
+  applies to a search by `text` only. A failing `find` step of a `browser.flow`
+  says how many candidates were left out and repeats `truncated` in its error.
+- A result where nothing was cut has no `truncated`: it holds everything in
+  scope, with the fields it always had.
+- The text window never ends between the two halves of a surrogate pair, so
+  the pages of `text` concatenate to the text.
+- When an `offset` was given and every requested part came back empty, the
+  result carries `offset_past_end`: `{ <part>: { offset, total } }` for each
+  part asked at or past its end (`find`: `{ candidates: { offset, total } }`).
+  Nothing is left there, which is not the same as the page having nothing.
+  Paging with `next_offset` never carries it.
+- `offset` is `{ interactive?, headings?, text? }` for `snapshot` and
+  `{ candidates? }` for `find`, each a non-negative integer. Anything else is
+  refused, never dropped: `browser.snapshot: offset must be an object like truncated.next_offset`,
+  `browser.snapshot: offset.<part> is not one of interactive, headings, text`,
+  `browser.snapshot: offset.<part> must be a non-negative integer` (`browser.find` likewise,
+  and `browser.find: offset applies to text mode only` with `ref` or `key`).
+
+A result built while part of the page was not walked carries `not_walked`: a
+string saying that shadow roots or frames nest deeper than 20 levels and
+were skipped, so a miss may be a cut. `snapshot`, `find` and `state` carry it
+as a field; a `click` or `type` whose target is not found, and a failing
+`find` step of a flow, carry it in parentheses at the end of the error. It is
+absent when nothing was skipped.
 
 #### `snapshot({ since })` — diff instead of re-sending the page
 
@@ -652,7 +790,16 @@ Take one full `snapshot` per view, keep its `snapshot_id`, and pass it as
 - `added` and `changed` are full entries (added first); `removed` is
   `{ ref, tag, text? }`.
 - `max_interactive` applies after diffing, to `added` + `changed`;
-  `overflow` (how many were dropped) appears only when above 0.
+  `overflow` (how many were dropped) appears only when above 0, and a cut
+  diff carries `truncated` like a full snapshot.
+- A diff compares at most the first 500 interactive entries of each snapshot,
+  the first 30 headings and the first 4000 characters of text. What it did not
+  compare is counted in `truncated`: `not_compared` (entries of this snapshot
+  and of the recorded one past the first 500), `not_compared_headings` and
+  `not_compared_text` (headings past the first 30 and characters past the
+  first 4000, of both snapshots; not with `only_interactive`). A change beyond
+  those limits is not in the diff: take a snapshot without `since` and page
+  through it with `offset`, or narrow with `within_selector`.
 - `headings` / `text` appear in a diff only when `only_interactive` is
   false **and** they changed.
 - An invalid `since` (not a string, or over 64 characters) is dropped and a
@@ -677,6 +824,26 @@ the document that issued it and dies with the document. Results also carry `doc_
 `snapshot` results carry `snapshot_id` (`<doc_id>:s<N>`). All of these are
 additive and absent when the observer is not in the page. A `ref` is also an
 action target: see [`ref` as a target](#ref-as-a-target--stable-identity-for-this-document).
+
+**Password values.** `snapshot` and `find` return the `value` of filled
+inputs, password fields included, so the agent can type and check them.
+`browser-link config set hide-password-values on` hides them; the Admin window
+shows the setting but does not change it. The setting is read on every call, so it applies to the
+next one, with no restart. For a password field (an `<input type="password">`,
+an `autocomplete` containing `current-password`, `new-password`,
+`one-time-code`, `cc-number` or `cc-csc`, or a field an earlier call with the
+setting on saw as a password and that has since become a text input) the entry
+then carries `value_hidden: "filled, N characters"` (`"filled, 1 character"`
+for one) instead of `value`, and no `text`. `find` neither matches on the value
+nor quotes it, in a candidate, a near miss or an error; it still matches the
+field's `aria-label`, placeholder or title. Every `snapshot`, `find` and
+`browser.flow` result then carries `values_hidden`, a note saying that a user
+setting hid the value, so a field showing `value_hidden` is not read as broken.
+The `find` steps of a flow and its recovery snapshot hide the values too. An
+answer without `values_hidden` (an extension older than the server ignores the
+option) is withheld: the call fails with `the user's setting hide-password-values
+is on, but the browser answered without hiding password values`, and a flow that
+fails this way has already run.
 
 **Selectors can change.** The structural selector adds `:nth-of-type` only
 when siblings force it, so inserting a sibling can change a neighbour's
@@ -703,21 +870,31 @@ inserted (see above), a live `ref` still names the same node.
 | `find`          | exactly one of `text`, `ref` or `key`; `role` and `exact` apply to `text` only, any other combination is rejected                                               |
 | `flow` steps    | a step `ref` beats the implicit target of a preceding `find`; `selector` and `ref` together are rejected; a `find` step takes `text` (and `role`, `exact`) only |
 
-**Resolution.** A `ref` whose node is still in the page resolves directly. If
-the node is gone (a list re-rendered and replaced it), the observer looks it
-up again by the element's **semantic key**, recorded when the `ref` was
-issued: the same role, the same accessible name and an identical ancestor tag
-path, and exactly one element must match. Sibling indices are kept in the key
-but never choose between candidates. When that rebind succeeds the result carries `reresolved: true` and the action
-proceeds on the new node. A changed name or role invalidates the `ref`.
+**Resolution.** A `ref` whose node is still in the page resolves directly, and
+so does the same node after it was detached and re-attached (it is not
+marked `reresolved`). If the node is gone (a list re-rendered and replaced it), the
+observer looks it up again by the element's **semantic key**, recorded when
+the `ref` was issued: the same role, the same accessible name and an identical
+ancestor tag path, and exactly one element must match. Sibling indices are
+kept in the key but never choose between candidates. That one element must
+also have first appeared after the original node was gone (a re-render; the
+removal of the original and the insertion of its replacement in the same
+mutation record count). When that rebind succeeds the result carries
+`reresolved: true` and the action proceeds on the new node. A look-alike that
+already existed while the original was alive (the other of two identical rows,
+when one of them is deleted) is never taken: the `ref` fails with `ref-stale`,
+and so it does when the observer did not see the original removed. The observer
+records insertions and removals from the moment it issues the first `ref` of a
+document, so an element connected before then counts as already existing. A
+changed name or role invalidates the `ref`.
 
 **Failures.**
 
-| Error                                             | Meaning and next step                                                                                                                             |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ref-stale: <ref> not found in document <doc_id>` | The node is gone and no unique match exists, or the `ref` belongs to another document. Take a fresh `snapshot` (or `find`) and use the new `ref`. |
-| `observer-unavailable: …`                         | The page observer is not running in the tab, so a `ref` cannot be resolved. Use a selector.                                                       |
-| `wait_for` on a `ref` that no longer resolves     | Not an error: the element counts as missing (`attached` false, `detached` true).                                                                  |
+| Error                                                                                       | Meaning and next step                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ref-stale: <ref> not found in document <doc_id>: the element is gone, take a new snapshot` | The node is gone and no rebind is allowed (no match, several, or a look-alike that already existed), or the `ref` belongs to another document. Take a fresh `snapshot` (or `find`) and use the new `ref`.                                                                                                                                                                                                                                                                                 |
+| `observer-unavailable: …`                                                                   | The page observer is not running in the tab, so a `ref` cannot be resolved. Use a selector.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `wait_for` on a `ref` that no longer resolves                                               | For `hidden` and `detached` the element counts as missing (`attached` false, `detached` true) and the wait is met. For `visible` and `attached`, a `ref` of another document fails at once with the `ref-stale` message; a `ref` whose node is only gone keeps polling and ends `matched: false, reason: 'timeout'` plus `ref_gone: "<ref> not found in document <doc_id>: the element is gone, take a new snapshot"`, and a flow `wait_for` step's failure text ends with that sentence. |
 
 **Properties.**
 
@@ -753,7 +930,7 @@ and fold the "wait, then re-check" round trip into the action call
 itself. The result carries a compact report:
 
 ```
-{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason?, changes, observer? }
+{ settled, duration_ms, mutation_count, url_changed?, focus_moved?, reason?, changes, observer?, unobserved? }
 ```
 
 `changes` is what the action caused, measured from a mark taken right
@@ -773,7 +950,7 @@ changes: { records, targets, kinds: { childList, attributes, characterData },
 | `targets`                     | mutated elements (an element touched in two flushes counts twice)                     |
 | `descriptors` / `overflow`    | the most-mutated targets (up to 20) and how many more there were                      |
 | `truncated`                   | `true` when the observer had already dropped older summaries                          |
-| `mutation_count`              | equals `changes.records`                                                              |
+| `mutation_count`              | `changes.records` plus the records seen inside same-origin frames                     |
 | `url_changed` / `focus_moved` | compared with the URL and focused element at the mark, not at the end of the dispatch |
 
 - **Fallback.** When the observer could not report for this action,
@@ -782,6 +959,26 @@ changes: { records, targets, kinds: { childList, attributes, characterData },
   `"changes-error"`). The other fields then come from the quiet-window
   watch alone, as before: it starts right after the dispatch, so
   mutations that finish in that gap are invisible there.
+- **What it watches.** The page observer records the top document and its
+  shadow roots. The quiet-window watch covers the same, and every same-origin
+  iframe document, including iframes and shadow roots that appear during the
+  wait. In a document whose page observer is current, the shadow roots come
+  from it, closed ones included. Records inside frames are added to
+  `mutation_count` (they are not in `changes`).
+- **`unobserved` — what settle could not watch.** The field is present only
+  when part of the page was not watched: `{ cross_origin_frames?,
+shadow_roots?, hint }`. `cross_origin_frames` counts the cross-origin iframes
+  whose document cannot be read. `shadow_roots: "open-only"` means a document
+  had no current page observer (absent, older, or not covering the whole
+  document), so settle scanned for open roots only: closed shadow roots, and
+  roots attached during the wait to elements already in the page, were not
+  watched. A change in an unwatched part is not in `mutation_count` and did not
+  delay `settled`, so `settled: true` and `mutation_count: 0` say nothing about it.
+- **A limit settle cannot report.** A closed shadow root that the page declared
+  in markup (`shadowrootmode="closed"`), or created before the page observer
+  was installed, is not known to anything, so `unobserved` does not mention it.
+  The observer is installed when the tab connects, so this includes every closed
+  root of a tab connected after the page loaded.
 - **Quiet is not effect.** Async reactions that start after the quiet
   window are invisible either way — `settled: true` proves the page went
   quiet, not that every effect has happened.
@@ -1047,6 +1244,12 @@ where `state` is `running` | `completed` | `cancelled` | `failed` |
   and outcome — never one per iteration, which would blow the 200-entry
   log and evict everything else. The manifest itself is not in the event;
   it is addressed by `flow_id`.
+- **No clock cuts a running flow.** While a flow runs it holds the
+  launching agent's [tab claim](#multi-agent-mode), the extension's
+  [idle disconnect](#idle-disconnect-ttl) and the
+  [cdp-direct connection](#cdp-direct-mode-no-extension), each for at most
+  the flow's own maximum duration; when the flow ends, each clock restarts
+  from its last step.
 
 ##### No auto-resume after a worker restart
 
@@ -1582,18 +1785,56 @@ A plain `browser.click` on a Download button can open Chrome's native
 or the page can press that dialog, so an agent gets stuck. `browser.download`
 never lets it appear:
 
-- `browser.download({ tab_id, selector })` clicks the element, catches the
-  download Chrome starts in `chrome.downloads.onDeterminingFilename` —
-  which Chrome consults _before_ it prompts — and cancels it there. The
-  cancelled download's URL is then fetched like the `url` mode below.
+- `browser.download({ tab_id, selector })` clicks the element and catches
+  the download Chrome starts in `chrome.downloads.onDeterminingFilename` —
+  which Chrome consults _before_ it prompts — by holding it there, so Chrome
+  cannot prompt and the download does not complete. The held download's URL
+  is then fetched like the `url` mode below. Chrome's own download is
+  cancelled and erased only after the file is saved.
 - `browser.download({ tab_id, url })` fetches an http(s), `blob:` or
   `data:` URL in the page, with the page's cookies.
 
 The server writes the bytes into the downloads directory and returns
-`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error? }`.
+`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download? }`.
 Timeouts and failures still report what is known (URL, MIME type, bytes
 received so far). `browser.events` gets `download-started` and
 `download-finished` entries.
+
+**Which download a selector capture takes.** Chrome's download list gives no
+tab, so the capture takes a download only when the clicked tab's own debugger
+session reported it (`Page.downloadWillBegin`) during the wait with the same
+URL, no extension started it, and no other download with that URL appeared in
+the wait. Any other download that appears while it waits is left alone: it is
+not held, paused, cancelled or erased. When a download appeared but none could
+be tied to the tab with certainty, the tool answers
+`ok: false, state: "interrupted"` with an `error` starting "the capture
+failed" and `chrome_download: "left_in_chrome"`; the file is not saved. The
+agent can pass the file's link as `url`, or ask you. When nothing appeared the
+state is `timeout`.
+
+**What happens to Chrome's own download (`chrome_download`, selector mode).**
+The extension holds the captured download until the server says whether the
+file was saved:
+
+| `chrome_download` | What you see in Chrome                                                                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `removed`         | Nothing: the file is saved, and Chrome's copy was cancelled and erased from its list.                                                                      |
+| `cancelled`       | The file is saved; Chrome's list still shows the download as cancelled, because the erase failed.                                                          |
+| `left_in_chrome`  | The download carries on as if browser-link had not been there; Chrome may ask where to save it. If the file was saved too, you have two copies.            |
+| `unknown`         | What became of Chrome's copy is not known (see below). A saved file then carries `chrome_download_note`: there may be a second copy in Chrome's downloads. |
+
+`left_in_chrome` is the answer when the extension held the download and the
+fetch or the write failed (nothing is erased), when the capture could not
+attribute the download, and when a second download with the same URL appeared
+while the first was held (the two cannot be told apart, so Chrome's copy is
+never cancelled). `unknown` appears when the server's settle message was
+lost, or when the extension no longer held the download (an unknown id, one
+already settled, or a hold that expired and was released: it answers
+`not_held`, which the server reports as `unknown`). The extension releases a
+download it still holds untouched when its hold expires (the call's
+`timeout_ms` plus 30 seconds). The values an agent can see are `removed`,
+`cancelled`, `left_in_chrome` and `unknown`. When a save fails, the error ends
+with what happened to Chrome's own copy.
 
 `browser.download` refuses files over 25 MiB by default. Change the cap with
 `browser-link config set downloads.max-mb <1..64>` (`default` restores
@@ -1624,12 +1865,33 @@ second time in the page sidesteps both — with these limits:
   be fetched again; it comes back `interrupted` with the HTTP error.
 - A `blob:` URL the page revoked right after the click is gone.
 - 25 MiB per file.
-- `chrome.downloads` gives no tab id, so selector mode takes the first
-  download Chrome starts while it waits whose referrer is not another
-  origin. A download from another tab on the same site, or one with no
-  referrer, can still be taken. Only one `browser.download` can wait at a
-  time.
+- `chrome.downloads` gives no tab id, so selector mode never guesses: a
+  download is taken only on the tab's own report, as described above. A
+  download the tab cannot report is never attributable, so the call fails and
+  Chrome keeps it: one that opens in a new tab or window, one started by a
+  cross-origin iframe, one started by a service worker, and the same URL
+  downloaded twice during the wait. For those, pass the link as `url`. Only
+  one `browser.download` can wait at a time.
 - On cdp-direct tabs only `url` mode works.
+
+**The file is written under a temporary name.** The server writes the bytes
+to `.browser-link-<random>.part` in the downloads directory, then links it to
+the final name, so a write that fails halfway leaves no file under that name.
+The temporary file is removed on every path. An existing file is never
+overwritten, whatever the file system: where hard links are not supported
+(FAT, exFAT, some network shares) the server copies the file instead, which
+is not atomic.
+
+**Extension and server of different versions.**
+
+| Extension | Server | Selector mode                                                                                                                                                                                                                                                                                 |
+| --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| new       | new    | As described above.                                                                                                                                                                                                                                                                           |
+| new       | older  | The server never settles the held download, so the extension releases it untouched after the hold expires: the file is saved and Chrome carries on with its own copy as well. A download that cannot be attributed is reported as `timeout`. An older server reads `not_held` as unknown too. |
+| older     | new    | The older extension cancels and erases Chrome's download before the server fetches it, takes downloads by referrer and timing, and sends no id to settle; no `chrome_download`.                                                                                                               |
+
+`browser.list_tabs` marks an extension older than the server with
+`extension_outdated: true`.
 
 ## Activity trail
 
@@ -1699,9 +1961,10 @@ browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
 browser-link activity clear --from 2000-01-01 --yes  # every row, then reclaim the space
 ```
 
-A date range (`--from` / `--to`) vacuums the file, so the deleted text is gone
-from disk. `browser-link activity clear --yes` (the whole trail) and
-`--older-than` delete the rows but do not vacuum.
+Every form of `activity clear` that goes ahead (a date range, `--older-than`,
+or the whole trail with `--yes`) compacts the database file afterwards, so the
+deleted text is gone from disk. If the compaction fails, the command says the
+rows were deleted but the file could not be compacted, and exits 1.
 
 ### Friction report (v0.43.0)
 
@@ -1765,20 +2028,20 @@ Three things keep that honest:
   (`activity.db`, beside `map.db`), read over loopback and never sent anywhere.
 - **Redaction happens on the way out, with one exception decided by the page.**
   You keep the full trail; `--redact` is what you run when handing it to
-  someone else. The exception: since 1.0.0, when `browser.type` or
-  `browser.press` acts on a field the page itself declares sensitive (a
-  password input, or an `autocomplete` of `current-password`, `new-password`,
-  `one-time-code`, `cc-number` or `cc-csc`), the row stores
-  `[sensitive field]` instead of the text, with `record-payloads` on or off,
-  but only when the connected extension reports the field as sensitive; an
-  extension not reloaded after the update does not (see
-  [The activity trail](#the-activity-trail)). Rows stored earlier are not
-  changed.
+  someone else. The exception: when `browser.type` or `browser.press` acts on
+  a field the page itself declares sensitive (a password input, or an
+  `autocomplete` of `current-password`, `new-password`, `one-time-code`,
+  `cc-number` or `cc-csc`), or on a field it never identified, and
+  `activity.hide-sensitive` is on, the row stores `[sensitive field]` (or
+  `[field not identified]`) in `payload` with `record-payloads` on or off, and
+  the typed text is removed from `url`, `title`, `selector` and `error` too (see
+  [The activity trail](#the-activity-trail)). With the setting off such rows
+  are stored like any other. Rows stored earlier are not changed.
 - **It is not complete.** Detection relies on what the page declares, so
   `evaluate` expressions, plain text fields, `press` on unmarked fields, URLs
   with query strings, fields in cross-origin iframes, closed shadow roots and
-  `contenteditable`, and text typed when a bridge timeout or a closed socket
-  hides the report are stored as typed. Other agents (`browser.activity`) and
+  `contenteditable`, text typed by an earlier call that a later row echoes,
+  and flow rows are stored as typed. Other agents (`browser.activity`) and
   bridge clients can read the payloads. The full list is under
   [Upgrading to 1.0](#upgrading-to-10).
 
@@ -1787,6 +2050,7 @@ If you would rather not record the text at all:
 ```bash
 browser-link config set activity.record-payloads false   # keep the shape, drop the text
 browser-link config set activity.enabled false           # record nothing
+browser-link config set activity.hide-sensitive off      # store sensitive rows unhidden (restart to apply)
 ```
 
 With `record-payloads` off, every row still says which tool ran, where, by whom
@@ -1826,18 +2090,37 @@ tab; without one it says so.
 From the Admin window you can switch the console language; toggle multi-agent,
 auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
 and an update check; and install or remove the instructions block per client.
-Since 1.0.0 it only **shows** the settings that widen what an agent may do: each
-MCP tool, cdp-direct on or off, its grant lifetime and MCP client registration
-appear as a value plus the console command that changes it
+Since 1.0.0 it only **shows** the settings that widen what an agent may see or
+do: each MCP tool, cdp-direct on or off, its port and grant lifetime, MCP client
+registration, and the two hide settings (password values, sensitive values in the
+trail) appear as a value plus the console command that changes it
 (`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
+`browser-link config set cdp-direct.port <port>`,
 `browser-link config set cdp-direct.grant-ttl <minutes>`,
-`browser-link install --client <id>`), and the server refuses a write for them
-if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
+`browser-link install --client <id>`,
+`browser-link config set hide-password-values <on|off>`,
+`browser-link config set activity.hide-sensitive <on|off>`), and the server
+refuses a write for them if one arrives, with or without a confirmation code.
+Each of these rows has an info control next to its label. On hover, keyboard
+focus or click it says: "This setting is changed from the console, not from
+here: it changes what agents can see or do." Turning either hide setting off
+widens what an agent can read, so the rule covers both. See
+[Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
   one-line preview (for example "Turn off: Record the activity trail") and
-  applies it only after you confirm. `doctor` and the update check only read,
-  so they run straight away.
+  applies it only after you confirm. Each preview carries a single-use code,
+  bound to that exact change and valid for two minutes. The server applies the
+  change only with that code: a `confirm` flag alone writes nothing, and a
+  changed value, a second use or an expired code is refused. The forced update
+  check writes `update-check.json`, so it asks first. `doctor` runs straight
+  away.
+- **What the code does not prove.** It stops one-frame writes, replays and a
+  value changed after the preview. It does not prove that a person clicked.
+  A process that has already passed the bridge's checks runs as your OS user
+  and could already edit `config.json` by hand. The update check that starts
+  when the Admin window opens can refresh its own cache file,
+  `update-check.json`, without a code.
 - **Same write path as the CLI.** The server applies a change through the
   helpers `browser-link multi-agent`, `config set` and `instructions` use,
   with their validation, and accepts only the entries it described: an unknown
@@ -1849,7 +2132,8 @@ if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
   updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
   server that answers the popup, so they appear as the console commands to
   run. The same goes for the tool set, cdp-direct (on or off, grant lifetime and
-  port), MCP client registration and the downloads folder, shown with their
+  port), MCP client registration, the two hide settings and the downloads
+  folder, shown with their
   console command; idle disconnect and flow recording keep their own popup
   controls.
 
@@ -1861,14 +2145,19 @@ reason to call `browser.snapshot` when you say "the button is broken". The
 manual reaches the agent through three channels, all rendered from one
 source in the server:
 
-1. **Connect-time core** (`initialize.instructions`, at most 3,800
-   characters). Claude Code shows about 4,090 characters of it, so the core
-   holds only what must change behaviour from the first call: when to look
-   at the browser, the rules that avoid wasted calls, and where the rest is.
-2. **Installed block** (core plus four topics, about 11.6 KB).
+1. **Connect-time core** (`initialize.instructions`). The core is at most
+   2,000 characters (2,300 with the refresh notice), and it comes first in
+   that text because hosts truncate it. It holds only what must change
+   behaviour from the first call: when to look at the browser, the rules that
+   avoid wasted calls, and where the rest is. The first browser tool call of
+   each agent session returns the same rules as a second text block.
+2. **Installed block** (a trigger of under 600 characters; with
+   `--with-core`, the trigger plus the core, about 2,700 characters).
    `browser-link instructions install` writes it, fenced by HTML-comment
    markers with a version stamp, into the agent's **global** instructions
-   markdown:
+   markdown. The trigger says what browser-link is and when to use it. The
+   core joins it in the file only with `--with-core`; the block records that
+   mode and the start-time refresh keeps it:
 
    | Client             | File                                                 |
    | ------------------ | ---------------------------------------------------- |
@@ -1876,8 +2165,15 @@ source in the server:
    | OpenCode           | `~/.config/opencode/AGENTS.md`                       |
    | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
 
-   Reinstall overwrites in place and uninstall removes exactly the span we
-   manage. `browser-link doctor` shows `⚠ outdated` until you re-run install
+   Reinstall overwrites in place. Install puts exactly one line end before the
+   block, none into an empty file. Uninstall removes the block and, when the
+   block is last in the file, the one line end install put before it, and
+   nothing else: blank lines and a missing final newline in your text stay as
+   they are. Everything else in the file is kept byte for byte, and a file with
+   CRLF line ends keeps them. The write is atomic and makes no backup copy.
+   A file that is not valid UTF-8, or that holds a begin marker with no end
+   marker after it, is refused and left unchanged; the message says what was
+   found. `browser-link doctor` shows `⚠ outdated` until you re-run install
    or the server refreshes it at its next start.
 
 3. **`browser.manual` on demand.** No arguments returns the index (server
@@ -1962,7 +2258,8 @@ path (`peerExecutablePaths`) applies to the WebSocket port only, not to this
 one.
 
 **Auto-reelect on primary close**: if the primary's MCP client closes,
-secondary proxies enter a 5-second reconnect window — in-flight
+secondary proxies enter a reconnect window of two full reconnect attempts
+(24 seconds by default) — in-flight
 requests get a `-32001 "temporarily unavailable"` envelope while the
 proxy waits for the new primary to bind the WS port. When it appears,
 the proxy hot-swaps and traffic resumes.
@@ -1987,6 +2284,20 @@ calling agent currently owns. Claims are advisory — they inform, they
 do not block — so a single-client workflow never has to think about
 them.
 
+The TTL is the agent's own choice (`ttl_minutes`, default 10, at most 60);
+it is not a setting you change. A running `browser.flow` holds the claim of
+the agent that launched it: while the flow runs the claim cannot expire, and
+when the flow ends, however it ends, the TTL restarts from the flow's last
+step. The hold is bounded by the flow's own maximum duration (its time
+budget, at most 60 s, in the foreground; 30 minutes when detached): past it
+the TTL restarts from that bound. A detached flow's hold ends with its
+`flow-finished` event. Only the claim of the flow's own agent is held;
+another agent still gets the usual conflict. A long single call, such as a
+`wait_for`, holds nothing: the TTL counts from the call that started it.
+Claims live in the primary's memory, so after a primary restart no claim and
+no hold survive, and a detached flow still running in the extension is
+unclaimed until an agent acts on its tab.
+
 ### Updating while a server is running
 
 An `npm install -g @jobshimo/browser-link` replaces the files on disk, but
@@ -1997,12 +2308,22 @@ a server that is already running keeps the code it started with. Since
   finds `127.0.0.1:17529` taken, it retries the bind briefly (a hand-off
   may be in progress), then asks the running primary
   `GET http://127.0.0.1:17529/version` (`{ name, version, pid, startedAt,
-installedVersion, repairing }`; answered only when the `Host` header is
+installedVersion, repairing, sessions? }`; answered only when the `Host` header is
   `127.0.0.1`, `localhost` or `[::1]`, with or without a port, else
   `403`, so a web page reaching the port under its own host name never
   reads it). If the primary is older, it is stopped (Unix
   `SIGTERM`, then `SIGKILL` after 3 s; Windows `taskkill /F`) and the new
-  process binds in its place. A primary from before 0.41.0 has no
+  process binds in its place. The pid in that `/version` body is only a claim:
+  before it stops anything, the new process asks the operating system (Windows
+  `netstat`, macOS and Linux `lsof`) which process listens on the port, and
+  stops it only when that process is the one the primary named, runs under a
+  Node-family runtime and its command line runs this package as a server. If
+  the operating system cannot be asked, names another process, or shows a
+  process that is not a browser-link server, nothing is stopped: the new
+  process defers, and the [server log](#what-now-stops-a-connection) names the
+  holder (PID and name) and the command `browser-link stop --pid <PID>` that
+  stops it. When the lookup itself failed, the log says so and points to
+  `browser-link stop`. A primary from before 0.41.0 has no
   `/version`: it is replaced when its process started before the installed
   `dist/cli.js` was last written, because then it is necessarily running
   stale code. Same or newer version: nothing changes (proxy in multi-agent
@@ -2012,12 +2333,25 @@ installedVersion, repairing }`; answered only when the `Host` header is
   step-down never targets the starting process itself or one of its
   ancestors (the shell or MCP client that launched it). The connected tabs
   reconnect by themselves.
-- **`browser-link stop` stops every live server**, not only the one
-  holding port 17529: the IPC port owner and every process whose command
-  line runs this package with no subcommand (or `start`). It never touches
-  itself, the shell that launched it, or short commands such as `doctor`.
-  It prints one line per process (PID, command, result) and also ends a
-  setup UI running in another console.
+- **`browser-link stop` stops only what the operating system confirms.** It
+  asks the operating system which process listens on port 17529 and on the IPC
+  port 17530, and stops a holder only when it is a browser-link server: a
+  Node-family runtime whose command line runs this package with no subcommand
+  (or `start`). It never touches itself or the shell that launched it. It says
+  the port is "already free" only when that lookup ran and found no listener;
+  if the lookup failed, it says so, stops nothing and exits with code 2.
+  A holder that is not a browser-link server is left running and shown with its
+  PID, name and the command to stop it. Other processes that only look like a
+  bridge (proxies, strays, a setup UI in another console) hold no port the
+  operating system can confirm them by: `stop` lists each with its command and
+  does not stop them.
+- **`browser-link stop --pid <PID>` stops exactly one process you name.** It
+  prints the process as the operating system reports it, then stops that one
+  process, in one step with no `--yes`. It refuses, stopping nothing, when the
+  operating system does not list the PID, when the PID is this command or one
+  of the processes that started it, or when the process neither holds port
+  17529 or 17530 nor runs as a browser-link server. A PID that is not a
+  positive whole number is refused with exit code 2.
 - **"Running X / installed Y" is visible everywhere.** `browser-link
 doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   with what to do, and lists the live browser-link processes;
@@ -2034,6 +2368,38 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   one. The server hands over only once the new process has really
   started: if starting it fails, even asynchronously, the failure is
   logged and the running server keeps serving.
+- **The console's Updates screen asks before it touches anything.** When a
+  newer version exists, `u` reads what the update would touch and shows it:
+  the running server and its version, how many agent sessions use it, what
+  will be stopped and why, and that other browser-link processes are not
+  stopped. Nothing runs until you answer `y`; `n` or Esc backs out. The count
+  comes from an optional `sessions` field of the primary's `/version` body:
+  its own MCP client while connected, plus the proxies that passed the IPC
+  handshake. A primary that sends none (older than this field) makes the
+  screen say the number cannot be read. The install (`npm install -g` of the
+  chosen version) is asked to stop after 10 minutes at most, and `c` cancels it
+  sooner; leaving the screen during an install cancels it the same way. A
+  cancel or the time limit only asks npm to stop: the tool cannot confirm that
+  it ended (it can end only the process it started, and on Windows that may be
+  the shell that launched npm), so the result says npm may still be running,
+  to check for a leftover npm or node process (Task Manager on Windows, `ps`
+  on macOS and Linux), and to run `npm install -g` again once it is gone. The
+  result lists everything that was stopped, whether it installed, npm's own
+  error lines when it failed (not the log path npm prints last) and the next
+  step. Once an update has finished, `u` does nothing.
+- **A server is stopped only on Windows.** A running primary has loaded the
+  package's native module (better-sqlite3) once it opened its map or activity
+  database, and Windows keeps a loaded module's file locked, so npm cannot
+  replace the package. The update then stops that one server; the agents using
+  it lose browser-link until their MCP client restarts, and the first client
+  to start runs the new version. On macOS and Linux npm replaces files a
+  running process has open, so nothing is stopped: the running server keeps
+  the old version until its MCP client restarts, and the next server to start
+  takes the port over. Proxies hold no database and other browser-link
+  processes (other consoles, agents connected through the server) are never
+  stopped on any system. If one of them still locks the package on Windows,
+  the result says so: close every browser-link console and MCP client, then
+  run `npm install -g @jobshimo/browser-link` yourself in a new terminal.
 
 ### Idle-disconnect TTL
 
@@ -2064,6 +2430,15 @@ Lowering the TTL applies against each tab's **absolute** last-activity
 time, not the moment you changed the setting — a tab that has already
 been idle longer than the new TTL disconnects on the next sweep (within
 about a minute).
+
+**A running flow is not idle.** A flow's steps run inside the extension and
+never arrive as tool calls, so while a flow runs on a tab, that tab is not
+disconnected, whatever the TTL. When the flow ends, however it ends, the idle
+window restarts from its last step. The hold is bounded by the flow's own
+maximum duration (its time budget, at most 60 s, in the foreground; 30
+minutes when detached): past it the window restarts from that bound. A long
+single call, such as a `wait_for`, holds nothing: the window counts from the
+call that started it.
 
 **Precedence — last write wins.** The popup and the CLI both stamp an
 `updatedAt` timestamp on every change. When a tab (re)connects, the
@@ -2180,9 +2555,16 @@ Once both conditions hold, `browser.list_tabs` also returns cdp-direct
 page targets — real Chrome tabs, filtered to exclude `devtools://` and
 `chrome-extension://` pages — with `tab_id` values shaped `cdp:<targetId>`
 and `transport: "cdp"`, alongside your normal extension tabs (which keep
-working exactly as before, unaffected). Claims, the persistent map's
-origin-keyed hints, and every other cross-cutting feature work on a `cdp:`
-tab the same as an extension tab.
+working exactly as before, unaffected). Claims, `browser.read` by name,
+saved flows by name, the persistent map's origin-keyed hints, the `known`
+hint on results, the activity trail's url and title, and every other
+cross-cutting feature work on a `cdp:` tab the same as an extension tab.
+One thing is missing: a `cdp:` tab carries no `build` or `view_sig` in
+`list_tabs`, so its map start pack is chosen by origin and path alone and the
+learner records no build or view signature for it. These features look the
+tab up through the same cdp-direct discovery as `list_tabs`; if that
+discovery fails, the call still answers, without the map hints and with no
+page in its trail row.
 
 ```bash
 browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
@@ -2225,6 +2607,14 @@ process dies the flow dies with it and there is no state left to be wrong
 about. The flip side is that detached-flow state here is per-process — a
 server restart loses the manifests, where the extension's survive in
 `chrome.storage.session` for the browser session.
+
+**The connection clock.** The server keeps one connection per `cdp:` tab it
+drives and closes it after 5 minutes without a call; the next call dials it
+again. That value is internal, not a setting. A running flow holds its tab's
+connection open, bounded by the flow's own maximum duration (its time budget,
+at most 60 s, in the foreground; 30 minutes when detached), and when the flow
+ends the 5 minutes restart from its last step. A long single call, such as a
+`wait_for`, holds nothing.
 
 Claims apply to `cdp:` tab_ids through the same registry extension tabs
 use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add

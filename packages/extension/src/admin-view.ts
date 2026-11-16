@@ -5,7 +5,9 @@
  * every label already localised (`AdminState`). This module turns that data
  * into flat view rows the popup can render without knowing what any item
  * means, and owns the confirm flow for disk-writing actions as a tiny state
- * machine. Pure: no DOM, no chrome.* — so it is tested, unlike popup.ts.
+ * machine. No chrome.* and no page: the one DOM piece (the info control of a
+ * console-only row) takes its document as an argument — so it is tested,
+ * unlike popup.ts.
  */
 import type {
   AdminActionResult,
@@ -56,13 +58,17 @@ export interface AdminRow {
   disabled?: boolean;
   hint?: string;
   requiresRestart?: boolean;
+  /** A setting only the console changes: the row gets an info control. */
+  consoleOnly?: boolean;
 }
 
 /** What an admin request carries, minus the wire envelope. */
 export interface AdminRequest {
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  /** The code the preview of this exact request returned; the server applies
+   * a write only with it. */
+  code?: string;
 }
 
 const EMPTY_VALUE = '—';
@@ -137,6 +143,7 @@ function rowFor(section: AdminSection, item: AdminItem, t: Messages): AdminRow {
 
   if (item.hint !== undefined) row.hint = item.hint;
   if (item.requiresRestart === true) row.requiresRestart = true;
+  if (item.consoleOnly === true) row.consoleOnly = true;
   return row;
 }
 
@@ -159,6 +166,59 @@ export function buildAdminRows(state: AdminState | null | undefined, t: Messages
   return rows;
 }
 
+/**
+ * The info control of a console-only row: a real button (focusable, named)
+ * and the text it points to. Hover and keyboard focus show the text, a click
+ * pins it open (a second click unpins), Escape or blur closes it; the text is
+ * in the page, so it is readable without any of them. Events are wired here,
+ * never inline, for the extension pages' Content Security Policy.
+ */
+export function createConsoleInfo(
+  doc: Document,
+  t: Messages,
+  itemId: string,
+): { button: HTMLButtonElement; panel: HTMLElement } {
+  const panel = doc.createElement('div');
+  panel.id = `admin-info-${itemId}`;
+  panel.className = 'admin-note admin-info-text';
+  panel.textContent = t.adminConsoleOnlyInfo;
+  panel.hidden = true;
+
+  const button = doc.createElement('button');
+  button.type = 'button';
+  button.className = 'admin-info';
+  button.textContent = 'ⓘ';
+  button.setAttribute('aria-label', t.adminConsoleOnlyName);
+  button.setAttribute('aria-describedby', panel.id);
+  button.setAttribute('aria-expanded', 'false');
+
+  let pinned = false;
+  const show = (): void => {
+    panel.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+  };
+  const hide = (): void => {
+    pinned = false;
+    panel.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+  };
+  button.addEventListener('mouseenter', show);
+  button.addEventListener('mouseleave', () => {
+    if (!pinned) hide();
+  });
+  button.addEventListener('focus', show);
+  button.addEventListener('blur', hide);
+  button.addEventListener('click', () => {
+    pinned = !pinned;
+    if (pinned) show();
+    else hide();
+  });
+  button.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') hide();
+  });
+  return { button, panel };
+}
+
 /** The server's UI strings, or the fallback in the interface language. */
 export function adminUi(state: AdminState | null | undefined, language: Language): AdminUiStrings {
   return state?.ui ?? fallbackAdminUi(language);
@@ -179,7 +239,7 @@ export type AdminNextAction =
       preview: string;
       confirmLabel: string;
       cancelLabel: string;
-      resend: AdminRequest & { confirm: true };
+      resend: AdminRequest & { code: string };
     }
   | { type: 'applied'; message: string; output?: string[]; refresh: true }
   | { type: 'error'; message: string };
@@ -193,7 +253,9 @@ export function nextAction(
 ): AdminNextAction {
   if (!result.ok) return { type: 'error', message: describeAdminError(result.error, ui, t) };
   if (!result.applied) {
-    const resend: AdminRequest & { confirm: true } = { id: request.id, confirm: true };
+    // The same id and value back with the preview's code: the server binds
+    // the code to both and applies nothing else.
+    const resend: AdminRequest & { code: string } = { id: request.id, code: result.code };
     if (request.value !== undefined) resend.value = request.value;
     return {
       type: 'confirm',
@@ -214,7 +276,7 @@ export function nextAction(
 
 export type ConfirmState =
   | { phase: 'idle' }
-  | { phase: 'confirming'; preview: string; pendingRequest: AdminRequest & { confirm: true } }
+  | { phase: 'confirming'; preview: string; pendingRequest: AdminRequest & { code: string } }
   | { phase: 'applied'; message: string; output?: string[] }
   | { phase: 'error'; message: string };
 

@@ -15,7 +15,10 @@ describe('checkExtensionFrame', () => {
     { kind: 'activity.purge', request_id: 'r', dry_run: true },
     { kind: 'bridge.repair', request_id: 'r' },
     { kind: 'admin.describe', request_id: 'r', language: 'es' },
-    { kind: 'admin.action', request_id: 'r', id: 'x', confirm: true },
+    { kind: 'admin.action', request_id: 'r', id: 'x', code: 'c' },
+    // A malformed code passes the shape check on purpose: the handler
+    // answers it with an error the caller sees instead of a silent drop.
+    { kind: 'admin.action', request_id: 'r', id: 'x', code: 42 },
   ])('accepts the valid frame %j unchanged', (frame) => {
     expect(checkExtensionFrame(frame)).toEqual({ ok: true, msg: frame });
   });

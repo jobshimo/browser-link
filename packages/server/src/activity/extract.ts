@@ -75,6 +75,16 @@ function summariseFlow(args: unknown): string | null {
  */
 export const SENSITIVE_PAYLOAD_MARKER = '[sensitive field]';
 
+/**
+ * What a hidden row stores in place of the value when its `type` / `press`
+ * never said whether the field was sensitive: it failed before the field
+ * was found (a stale ref, a selector that matched nothing, a dropped tab, a
+ * bridge timeout), or the executor reports no field type (an older
+ * extension). Under the hide setting such a value may be a password, so it
+ * is hidden; the marker says why without claiming the field was sensitive.
+ */
+export const UNIDENTIFIED_FIELD_MARKER = '[field not identified]';
+
 /** The tools whose result can carry `sensitive_field`. */
 const FIELD_INPUT_TOOLS: ReadonlySet<string> = new Set(['browser.type', 'browser.press']);
 
@@ -134,6 +144,15 @@ export interface BuildRowInput {
   result?: unknown;
   /** IPC session uuid of the caller; `'primary'` when absent. */
   agentId?: string | null;
+  /** URL and title of the tab the call addressed, read after the call by
+   * the dispatcher (only it sees the tab table). Absent: both null. */
+  page?: { url: string | null; title: string | null };
+  /** The `activity.hide-sensitive` setting (owner decision D13). Hide
+   * (anything but `false`): a `type` / `press` row whose field was
+   * sensitive, or never identified, stores its marker in `payload` and has
+   * the value removed from every other column (`hideValueEverywhere`).
+   * `false`: such a row is stored like any other row, nothing hidden. */
+  hideSensitive?: boolean;
 }
 
 /* ---------------------------------------------------------- flags ------
@@ -179,14 +198,29 @@ function resultData(result: unknown): unknown {
  * executor that reports nothing (an older extension, a failed probe, a plain
  * error) is false: the row is stored as before. */
 export function reportsSensitiveField(tool: string, result: unknown, error?: unknown): boolean {
-  if (!FIELD_INPUT_TOOLS.has(tool)) return false;
-  if (error instanceof SensitiveFieldError) return true;
+  return fieldVerdict(tool, result, error) === 'sensitive';
+}
+
+/** What a `type` / `press` said about the field it acted on: `sensitive`
+ * (`sensitive_field: true`, or a `SensitiveFieldError`), `plain`
+ * (`sensitive_field: false` on its result), or `unknown` (it threw a plain
+ * error, which the executor also does before it ever reaches the field, or
+ * answered without the flag). Null for every other tool. */
+export function fieldVerdict(
+  tool: string,
+  result: unknown,
+  error?: unknown,
+): 'sensitive' | 'plain' | 'unknown' | null {
+  if (!FIELD_INPUT_TOOLS.has(tool)) return null;
+  if (error instanceof SensitiveFieldError) return 'sensitive';
+  if (error !== undefined) return 'unknown';
   const data = resultData(result);
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    (data as { sensitive_field?: unknown }).sensitive_field === true
-  );
+  const flag =
+    typeof data === 'object' && data !== null
+      ? (data as { sensitive_field?: unknown }).sensitive_field
+      : undefined;
+  if (flag === true) return 'sensitive';
+  return flag === false ? 'plain' : 'unknown';
 }
 
 /** Thrown (or `isError`) messages, through the default rules of the shared
@@ -278,24 +312,22 @@ export function buildRow({
   recordPayloads,
   result,
   agentId,
+  page,
+  hideSensitive,
 }: BuildRowInput): ActivityInput {
   const tabId = extractTabId(args);
-  return {
+  const row: ActivityInput = {
     tool,
     tabId,
     transport: transportFor(tabId),
-    // Filled in by the dispatcher wrapper, which is the only caller that can
-    // see the tab table. Null here keeps this module free of bridge deps.
-    url: null,
-    title: null,
+    // The dispatcher passes them: only it can see the tab table, which keeps
+    // this module free of bridge deps.
+    url: page?.url ?? null,
+    title: page?.title ?? null,
     agent: agentNameFor(caller),
     agentPid: caller?.pid ?? null,
     selector: extractSelector(tool, args),
-    payload: reportsSensitiveField(tool, result, error)
-      ? SENSITIVE_PAYLOAD_MARKER
-      : recordPayloads
-        ? extractPayload(tool, args)
-        : null,
+    payload: recordPayloads ? extractPayload(tool, args) : null,
     outcome: error === undefined ? 'ok' : 'error',
     error: error === undefined ? null : errorMessage(error),
     durationMs,
@@ -304,6 +336,114 @@ export function buildRow({
     agentId: agentId ?? 'primary',
     resultBytes: error === undefined ? serializedBytes(result) : null,
   };
+  // Owner decision D13: hidden in every column, or stored like any row.
+  if (hideSensitive === false) return row;
+  const verdict = fieldVerdict(tool, result, error);
+  if (verdict === 'sensitive') {
+    return hideValueEverywhere(row, secretOf(tool, args), SENSITIVE_PAYLOAD_MARKER, recordPayloads);
+  }
+  if (verdict === 'unknown') {
+    return hideValueEverywhere(
+      row,
+      secretOf(tool, args),
+      UNIDENTIFIED_FIELD_MARKER,
+      recordPayloads,
+    );
+  }
+  return row;
+}
+
+/**
+ * A typed value shorter than this is never searched for as a substring. Text
+ * of one to three characters ("a", "ok", "123") occurs by coincidence in
+ * almost any url, title or error message, and replacing every occurrence
+ * mangles unrelated text (`https://example.com` becomes
+ * `https://ex[field not identified]mple.com`) without proving anything was
+ * hidden. For such a value the free-text columns that could echo it are
+ * replaced whole instead.
+ */
+const MIN_SEARCHABLE_SECRET_LENGTH = 4;
+
+/** The value to look for in the other columns: the text a `type` typed. A
+ * `press` sends one key, at most one character of a value, and a single
+ * character is found by coincidence in almost any text (the `x` of
+ * "expectation"), so its key is hidden in `payload` only. */
+function secretOf(tool: string, args: unknown): string | null {
+  return tool === 'browser.type' ? readString(args, 'text') : null;
+}
+
+/**
+ * Owner decision D13: a row marked sensitive hides the value in EVERY column
+ * where it can appear. `payload` is the marker (with payloads off, only the
+ * sensitive marker is kept, as it is not a payload; the not-identified one
+ * becomes null, as before the setting); `url` loses its
+ * query string and fragment (a form sent by GET puts every field there, in
+ * encodings no list can cover); then the value is replaced by the marker
+ * wherever it still appears in `url`, `title`, `selector` and `error`,
+ * ignoring case, also URL-encoded (component and path forms), form-encoded,
+ * JSON-escaped and in either Unicode normalization form. A value shorter than
+ * `MIN_SEARCHABLE_SECRET_LENGTH` is not searched for: `title` and `error`
+ * become the marker whole. Every other column holds no free text.
+ */
+function hideValueEverywhere(
+  row: ActivityInput,
+  secret: string | null,
+  marker: string,
+  recordPayloads: boolean,
+): ActivityInput {
+  const short = secret !== null && secret.length < MIN_SEARCHABLE_SECRET_LENGTH;
+  const scrub = (text: string | null): string | null =>
+    text === null || secret === null || short ? text : replaceValue(text, secret, marker);
+  const whole = (text: string | null): string | null => (text === null ? null : marker);
+  return {
+    ...row,
+    // The sensitive marker is not a payload: it tells the user a sensitive field was typed,
+    // so it stays with payloads off (1.0.0). "Not identified" is stored as null there.
+    payload: recordPayloads || marker === SENSITIVE_PAYLOAD_MARKER ? marker : null,
+    url: row.url === null ? null : scrub(withoutQuery(row.url)),
+    title: short ? whole(row.title) : scrub(row.title),
+    selector: scrub(row.selector),
+    error: short ? whole(row.error) : scrub(row.error),
+  };
+}
+
+/** `url` cut at its query string or fragment, whichever comes first. */
+function withoutQuery(url: string): string {
+  return url.split(/[?#]/, 1)[0];
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Every case-insensitive occurrence of `secret`, as typed or in the
+ * encodings a URL, a form or a JSON string give it, replaced in one pass. */
+function replaceValue(text: string, secret: string, marker: string): string {
+  if (secret.length === 0) return text;
+  const forms = new Set<string>();
+  // A page may hold the text in either Unicode normalization form (a title
+  // typed on one platform, echoed by a server that normalizes the other way).
+  for (const variant of new Set([secret, secret.normalize('NFC'), secret.normalize('NFD')])) {
+    forms.add(variant);
+    forms.add(JSON.stringify(variant).slice(1, -1));
+    try {
+      const encoded = encodeURIComponent(variant);
+      forms.add(encoded);
+      forms.add(encoded.replace(/%20/g, '+'));
+      // The way a browser writes it inside a URL path: `@`, `!` and `:` stay.
+      forms.add(encodeURI(variant));
+    } catch {
+      // A lone surrogate has no URL form; the literal forms above still apply.
+    }
+  }
+  const pattern = new RegExp(
+    [...forms]
+      .sort((a, b) => b.length - a.length)
+      .map(escapeRegExp)
+      .join('|'),
+    'gi',
+  );
+  return text.replace(pattern, () => marker);
 }
 
 /**

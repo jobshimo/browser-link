@@ -23,7 +23,7 @@
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */
-export const OBSERVER_VERSION = 4;
+export const OBSERVER_VERSION = 5;
 
 /** Name of the `Runtime.addBinding` function the observer pushes messages through. */
 export const OBSERVER_BINDING = '__blPageObserverPush';
@@ -74,14 +74,26 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * to 8 `{ tag, index }` ancestor steps (1-based same-tag sibling index, a
  * shadow boundary as `{ tag: '#shadow', index: 0 }`). `refFor` stores the key
  * when it issues a ref. `resolveRefDetailed(ref)` returns `{ el, reresolved }`:
- * the live node with `reresolved: false`, else the element with the same role,
- * name and tag-only path when exactly one exists, rebinding the ref to it
- * (`reresolved: true`); zero or several candidates give `null` (sibling
- * indices are kept in the key as data but never pick among candidates). Candidates come from the document, every open shadow root and
+ * the live node with `reresolved: false` (also the same node detached and
+ * re-attached), else the element with the same role, name and tag-only path
+ * when exactly one exists AND it first appeared after the original node was
+ * gone (a re-render; an atomic replacement counts), rebinding the ref to it
+ * (`reresolved: true`); zero or several candidates, a candidate that already
+ * existed while the original was alive, or a removal the observer did not
+ * see give `null` (sibling indices are kept in the key as data but never
+ * pick among candidates). Insertions and removals are ordered by one
+ * childList observer that starts with the first ref, so everything connected
+ * before it counts as already existing. Candidates come from the document, every open shadow root and
  * same-origin iframe document reachable from it, and every root the `attachShadow` patch observed (closed ones
  * included); closed roots attached before install are not reachable.
  * `resolveRef(ref)` is `resolveRefDetailed(ref)?.el ?? null`. `keyForRef(ref)`
  * returns a copy of the stored key or `null`. None of these throws.
+ * For settle (owner decision D5, since version 5): `liveRoots()` returns the
+ * document and every root this instance observes (closed ones included)
+ * whose host is in the page; `shadowRootOf(el)` the root observed on a host,
+ * or `null`; `onRoot(cb)` calls `cb` with each root observed from then on
+ * and returns a stop function (nothing after teardown). Frame documents are
+ * not tracked here: each same-origin frame runs its own instance.
  * `nextSnapshotId()`
  * issues `<doc_id>:s<N>` (N monotonic per document instance, from 1) for each
  * `snapshot` result and returns `null` once the instance is torn down; the
@@ -132,6 +144,9 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   };
   const observers = [];
   const observed = new WeakSet();
+  // Settle (owner decision D5) reads the roots held here and hears of new ones.
+  const rootListeners = new Set();
+  const rootOfHost = new WeakMap();
   let refs = new WeakMap();
   const refNodes = new Map();
   // Semantic key captured when each ref is issued; kept while the ref lives so
@@ -272,6 +287,103 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       observers.push({ mo: mo, kind: kind, root: root });
       g.roots++;
     } catch (e) {}
+    if (root.nodeType === 11 && root.host) rootOfHost.set(root.host, root);
+    watchIdentity(root);
+    for (const cb of Array.from(rootListeners)) {
+      try { cb(root); } catch (e) {}
+    }
+  }
+
+  // Identity history (owner decision D3): a ref rebinds only to an element
+  // that first appeared after its original node was gone. ONE childList
+  // observer over every observed root (and the root of every ref'd element)
+  // delivers insertions and removals in true mutation order; each record gets
+  // the next stamp. bornAt: an element's first insertion seen (never set on a
+  // node that was removed before). removedAt: its last removal. It starts with
+  // the first ref, so everything connected before that is old. Cost: one
+  // WeakMap write per top-level added or removed element, plus one pass over
+  // the live refs per delivered batch.
+  let idmo = null;
+  let idWatched = new WeakSet();
+  let bornAt = new WeakMap();
+  let removedAt = new WeakMap();
+  let idStamp = 0;
+  // Stamp of the removal that took each ref's node away, kept so the answer
+  // survives the node being garbage-collected (null: removal not seen).
+  const refGone = new Map();
+
+  function watchIdentity(root) {
+    if (!idmo || !root || idWatched.has(root)) return;
+    if (root.nodeType !== 9 && root.nodeType !== 11) return;
+    try {
+      idmo.observe(root, { subtree: true, childList: true });
+      idWatched.add(root);
+    } catch (e) {}
+  }
+
+  function startIdentity() {
+    if (idmo || typeof MutationObserver !== 'function') return;
+    idmo = new MutationObserver((records) => {
+      if (g.dead) return;
+      try { noteIdentity(records); } catch (e) {}
+    });
+    watchIdentity(document);
+    for (const o of observers) watchIdentity(o.root);
+  }
+
+  function noteIdentity(records) {
+    for (const rec of records) {
+      if (rec.type !== 'childList') continue;
+      idStamp++;
+      for (const n of rec.removedNodes) {
+        if (n.nodeType === 1) removedAt.set(n, idStamp);
+      }
+      for (const n of rec.addedNodes) {
+        if (n.nodeType === 1 && !removedAt.has(n) && !bornAt.has(n)) bornAt.set(n, idStamp);
+      }
+    }
+    // Lift each newly detached ref's removal stamp while the records still
+    // hold its node; a re-attached node clears it.
+    for (const entry of refNodes) {
+      const node = entry[1].deref();
+      if (!node) continue;
+      if (node.isConnected) refGone.delete(entry[0]);
+      else if (!refGone.has(entry[0])) refGone.set(entry[0], goneStamp(node));
+    }
+  }
+
+  function takeIdentity() {
+    if (!idmo) return;
+    const records = idmo.takeRecords();
+    if (records.length) noteIdentity(records);
+  }
+
+  function upOf(n) {
+    if (n.nodeType === 11) return n.host || null;
+    return n.nodeType === 9 ? null : n.parentNode;
+  }
+
+  // When a detached node went away: the latest removal stamp on its detached
+  // chain (later is stricter); null when no removal of it was seen.
+  function goneStamp(node) {
+    let best = null;
+    for (let n = node; n; n = upOf(n)) {
+      const s = removedAt.get(n);
+      if (s !== undefined && (best === null || s > best)) best = s;
+    }
+    return best;
+  }
+
+  // When an element first appeared: the nearest node on its chain with a
+  // marker decides. bornAt is that first insertion; a node only ever seen
+  // removed, or no marker at all, means it was already there: null (old).
+  function bornStamp(el) {
+    for (let n = el; n; n = upOf(n)) {
+      const born = bornAt.get(n);
+      if (born !== undefined) return born;
+      if (removedAt.has(n)) return null;
+    }
+    return null;
   }
 
   function walk(root) {
@@ -598,6 +710,8 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   g.refFor = function (el) {
     try {
       if (g.dead || !el || el.nodeType !== 1) return null;
+      startIdentity();
+      if (typeof el.getRootNode === 'function') watchIdentity(el.getRootNode());
       let ref = refs.get(el);
       if (!ref) {
         ref = refPrefix + ++refSeq;
@@ -619,12 +733,22 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       const held = refNodes.get(ref);
       const old = held ? held.deref() : null;
       if (old && old.isConnected) return { el: old, reresolved: false };
-      refNodes.delete(ref);
+      takeIdentity();
+      // A detached node keeps its entry (held weakly), so the same node
+      // re-attached later is found again as itself, never as a look-alike.
+      if (!old) refNodes.delete(ref);
       const key = refKeys.get(ref);
       if (!key) return null;
+      const gone = old ? goneStamp(old) : refGone.has(ref) ? refGone.get(ref) : null;
+      if (gone === null) return null;
       const el = findByKey(key);
       if (!el) return null;
+      // D3: only an element that first appeared after the original was gone
+      // (the same record counts: an atomic replacement) may take the ref.
+      const born = bornStamp(el);
+      if (born === null || born < gone) return null;
       if (old && refs.get(old) === ref) refs.delete(old);
+      refGone.delete(ref);
       // A node that already has its own ref keeps it for refFor; this ref
       // still resolves to it through refNodes.
       if (!refs.has(el)) refs.set(el, ref);
@@ -662,6 +786,30 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     if (g.dead || typeof id !== 'string') return null;
     const record = snapshots.get(id);
     return record === undefined ? null : record;
+  };
+
+  // Roots for settle (owner decision D5). liveRoots: the document and every
+  // root observed here (closed ones included) whose host is in the page.
+  // shadowRootOf: the root observed on a host, open or closed, or null.
+  // onRoot: calls cb with each root observed from now on; returns a stop
+  // function. Frame documents are not here: each runs its own instance.
+  g.liveRoots = function () {
+    const out = [];
+    for (const o of observers) {
+      const r = o.root;
+      if (r.nodeType === 9 || (r.host && r.host.isConnected)) out.push(r);
+    }
+    return out;
+  };
+  g.shadowRootOf = function (el) {
+    return (el && rootOfHost.get(el)) || null;
+  };
+  g.onRoot = function (cb) {
+    if (g.dead || typeof cb !== 'function') return function () {};
+    rootListeners.add(cb);
+    return function () {
+      rootListeners.delete(cb);
+    };
   };
 
   g.mark = function () {
@@ -731,6 +879,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       try { o.mo.disconnect(); } catch (e) {}
     }
     observers.length = 0;
+    rootListeners.clear();
     if (patchedAttach && proto.attachShadow === patchedAttach) {
       try { proto.attachShadow = originalAttach; } catch (e) {}
     }
@@ -750,6 +899,14 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     refs = new WeakMap();
     refNodes.clear();
     refKeys.clear();
+    if (idmo) {
+      try { idmo.disconnect(); } catch (e) {}
+    }
+    idmo = null;
+    idWatched = new WeakSet();
+    bornAt = new WeakMap();
+    removedAt = new WeakMap();
+    refGone.clear();
     snapshotSeq = 0;
     snapshots.clear();
     if (window[opts.key] === g) {

@@ -24,6 +24,7 @@ import {
   toolResponse,
 } from '../tools/responses.js';
 import { buildEmptyTabsHint } from '../tools/empty-tabs-hint.js';
+import { findTab, withCallTabMemo } from '../tools/tab-lookup.js';
 import type { AgentCaller } from '../tools/tab-claims.js';
 import { buildActivityRow } from '../activity/extract.js';
 import { rememberTypedValue, typedTextsOf } from '../map/readers.js';
@@ -98,21 +99,23 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
   // knowledge-loop S13: the first browser call of a session returns the
   // rules as a second text block, whatever the tool.
   const firstCall = browserCall && beginToolCall(caller.agent_id);
-  const finish = (response: ToolResponse): ToolResponse => {
-    if (browserCall) noteTabOrigin(args, caller, deps);
+  // One cdp discovery shared by the tool's lookups and the session origin (D7).
+  const browserTools = withCallTabMemo(deps.browserTools, name);
+  const finish = async (response: ToolResponse): Promise<ToolResponse> => {
+    if (browserCall) await noteTabOrigin(args, caller, browserTools);
     return firstCall ? withRulesBlock(response) : response;
   };
   try {
     if (isMapTool(name)) {
-      return finish(
+      return await finish(
         toolResponse(withPendingWrapUp(name, recordedMapTool(name, args, caller, deps), caller)),
       );
     }
     if (isBrowserTool(name)) {
-      const raw = await handleBrowserTool(name, args, deps.browserTools, caller);
+      const raw = await handleBrowserTool(name, args, browserTools, caller);
       if (isPendingWork(name, args, raw)) notePendingWork(caller.agent_id);
       const result = withPendingWrapUp(name, raw, caller);
-      if (name === 'browser.screenshot') return finish(imageToolResponse(result));
+      if (name === 'browser.screenshot') return await finish(imageToolResponse(result));
       // list_tabs explains itself in a second block; the first stays the
       // bare array every client already parses. An empty list gets the
       // reconnect hint; a server older than the installed one gets the
@@ -125,13 +128,13 @@ export async function handleToolCall(req: ToolCallRequest, deps: DispatchDeps) {
         }
         const outdated = outdatedServerHint();
         if (outdated) hints.push(outdated);
-        if (hints.length > 0) return finish(hintToolResponse(result, hints.join('\n')));
+        if (hints.length > 0) return await finish(hintToolResponse(result, hints.join('\n')));
       }
-      return finish(toolResponse(result));
+      return await finish(toolResponse(result));
     }
     return toolError(`Unknown tool: ${name}`);
   } catch (err) {
-    return finish(toolError(err instanceof Error ? err.message : String(err)));
+    return await finish(toolError(err instanceof Error ? err.message : String(err)));
   }
 }
 
@@ -186,13 +189,17 @@ function withPendingWrapUp(name: string, result: unknown, caller: AgentCaller): 
   return { ...(result as Record<string, unknown>), pending_wrap_up: pending };
 }
 
-/** Remember the origin of the tab a call addressed (after the call, so a
- * navigate counts where it landed). Never throws. */
-function noteTabOrigin(args: unknown, caller: AgentCaller, deps: DispatchDeps): void {
+/** Remember the origin of the tab a call addressed, on either transport
+ * (after the call, so a navigate counts where it landed). Never throws. */
+async function noteTabOrigin(
+  args: unknown,
+  caller: AgentCaller,
+  browserTools: BrowserToolDeps,
+): Promise<void> {
   try {
     const tabId = (args as { tab_id?: unknown } | undefined)?.tab_id;
     if (typeof tabId !== 'string' || tabId.length === 0) return;
-    const tab = deps.browserTools.listTabs().find((t) => t.tab_id === tabId);
+    const tab = await findTab(browserTools, tabId);
     if (!tab) return;
     noteOrigin(caller.agent_id, new URL(tab.url).origin);
   } catch {

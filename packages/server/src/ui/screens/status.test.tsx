@@ -79,6 +79,25 @@ describe('StatusView', () => {
     expect(frame.indexOf('running v0.42.0')).toBeLessThan(frame.indexOf('Register browser-link'));
   });
 
+  test('says which hide settings are active (D12, D13) and the command that flips each', async () => {
+    const { lastFrame } = view();
+    await tick();
+    const frame = (lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(frame).toContain('Password values returned');
+    expect(frame).toContain('browser-link config set hide-password-values on');
+    expect(frame).toContain('Sensitive rows hidden');
+    expect(frame).toContain('browser-link config set activity.hide-sensitive off');
+    const es = view({
+      language: 'es',
+      loadInput: () => Promise.resolve(input({ config: { hidePasswordValues: true } })),
+    });
+    await tick();
+    const esFrame = (es.lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(esFrame).toContain('Contraseñas ocultas');
+    expect(esFrame).toContain('browser-link config set hide-password-values off');
+    expect(esFrame).toContain('Filas sensibles ocultas');
+  });
+
   test('with no primary answering, the server rows say so', async () => {
     const { lastFrame } = view({
       loadInput: () =>

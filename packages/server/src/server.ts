@@ -12,6 +12,8 @@ import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-inst
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   ConfigUnreadableError,
+  activityHidesSensitive,
+  hidesPasswordValues,
   loadConfig,
   readConfig,
   unreadableConfigMessage,
@@ -28,12 +30,16 @@ import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dis
 import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/proxy.js';
 import { BridgeEventLog } from './bridge/events.js';
-import { TabClaimRegistry, type AgentCaller } from './tools/tab-claims.js';
+import {
+  TabClaimRegistry,
+  followFlowFinishedEvents,
+  type AgentCaller,
+} from './tools/tab-claims.js';
 import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
-import { findPidOnPort, imageNameOf, isNodeImage } from './commands/free-port.js';
+import { inspectPortHolder } from './lifecycle/port-holder.js';
 import {
   probeVersion,
   retryBind,
@@ -192,14 +198,12 @@ function startWithConfig(cfg: BrowserLinkConfig): Promise<void> {
     election: {
       localVersion: VERSION,
       probe: () => probeVersion(WS_PORT),
-      findOwnerPid: () => findPidOnPort(WS_PORT),
+      // The OS-verified holder of the port: the take-over kills only it, and
+      // only when it is a browser-link server (D14).
+      inspectHolder: () => Promise.resolve(inspectPortHolder(WS_PORT)),
       processStartTime: (pid) => readProcessStartTime(pid),
       installedCodeMtime: () => readInstalledCodeMtime(),
-      stepDown: async (pid) => {
-        // Same safety rule as `browser-link stop`: only a node process.
-        if (!isNodeImage(imageNameOf(pid))) throw new Error(`PID ${pid} is not a node process`);
-        await stepDownProcess(pid);
-      },
+      stepDown: (pid) => stepDownProcess(pid),
     },
     log,
   });
@@ -302,7 +306,24 @@ async function electPrimary(deps: StartServerDeps): Promise<boolean> {
   }
 }
 
+/**
+ * Agent sessions using this primary, as `/version` reports them: its own MCP
+ * client (only while it is really connected) plus the proxies the IPC server
+ * counts (authenticated ones only; `null` when multi-agent is off).
+ */
+export function agentSessionCount(
+  ownClient: boolean,
+  ipc: { sessionCount(): number } | null,
+): number {
+  return (ownClient ? 1 : 0) + (ipc ? ipc.sessionCount() : 0);
+}
+
 async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
+  // Whether this primary's own MCP client is there: it has completed the
+  // MCP handshake and its stdin has not ended. A primary started without a
+  // client (or one left serving after its client went away) reports none.
+  let ownClient = false;
+  let reportSessions: () => number | undefined = () => undefined;
   const tabs = new Map<string, TabSession>();
   const pendingRequests = new Map<string, PendingRequest>();
   const events = new BridgeEventLog();
@@ -337,6 +358,7 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   const wss = await startWsBridge(tabs, pendingRequests, events, {
     onRepair: () => repair.start(),
     isRepairing: () => repair.inProgress,
+    getSessionCount: () => reportSessions(),
     // Admin panel (popup): describe/act on this primary's settings through
     // the same helpers the console uses. Doctor runs only on its button.
     admin: createPrimaryAdminHandlers({
@@ -397,6 +419,11 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   // flow, never one per iteration" rule as the extension path.
   setCdpFlowEventSink((data) => events.add('flow-finished', data));
 
+  // Owner decision D1: a detached flow holds its agent's claim until its
+  // `flow-finished` summary arrives (from either transport), or until its
+  // own 30-minute ceiling.
+  followFlowFinishedEvents(tabClaims, (fn) => events.subscribe(fn));
+
   // Read once at wiring time, not per call: a trail that switched itself on
   // and off mid-session would have gaps nothing explains. Both default ON —
   // only an explicit `false` disables. Taken from the config this primary
@@ -404,6 +431,8 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   // find the file unreadable and fall back to the defaults.
   const activityEnabled = cfg.activityEnabled !== false;
   const recordActivityPayloads = cfg.activityRecordPayloads !== false;
+  // Owner decision D13; its default waits for the owner (config.ts).
+  const hideSensitiveActivity = activityHidesSensitive(cfg);
 
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
@@ -455,8 +484,14 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
             record(row);
           },
           recordActivityPayloads,
+          hideSensitiveActivity,
         }
       : {}),
+    // Owner decision D12, read on every snapshot, find and flow so a change
+    // from the console or the extension applies to the next call. A config
+    // that cannot be read throws, and the call is refused, like the tool
+    // deny list: it never falls back to showing values the user hid.
+    hidePasswordValues: () => hidesPasswordValues(loadConfig()),
     // Map learning (see map/learning.ts). Wired unconditionally and
     // independent of the activity toggle: the learner reads its own
     // `map-learning` switch per call, so `browser-link config set
@@ -642,6 +677,19 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
       ipcServer = null;
     }
   }
+
+  // The stdio transport never notices its stdin ending, so watch it here.
+  mcpServer.server.oninitialized = () => {
+    ownClient = true;
+  };
+  mcpServer.server.onclose = () => {
+    ownClient = false;
+  };
+  process.stdin.once('end', () => {
+    ownClient = false;
+  });
+  const ipcForCount = ipcServer;
+  reportSessions = () => agentSessionCount(ownClient, ipcForCount);
 
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);

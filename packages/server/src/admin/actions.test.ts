@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from '../map/paths.js';
@@ -11,8 +11,11 @@ import {
   applyAdminAction,
   DEFAULT_ADMIN_HELPERS,
   type AdminActionDeps,
+  type AdminActionRequest,
   type AdminHelpers,
 } from './actions.js';
+import { createConfirmationCodes } from './confirmation.js';
+import type { AdminActionResult } from '../messages.js';
 import type { AdminInput } from './descriptor.js';
 
 /* S2: the admin action allowlist. Config writes go to a throwaway data dir
@@ -59,13 +62,22 @@ function deps(over: Partial<AdminActionDeps> = {}): AdminActionDeps {
     input,
     doctor: () => Promise.resolve(['doctor line 1', 'doctor line 2']),
     checkUpdates: () => Promise.resolve(['Current: 0.42.0', 'Latest: 0.42.0']),
+    confirmations: createConfirmationCodes(),
     ...over,
   };
 }
 
+/** The Admin window's two steps: a preview, then the same action with the
+ * code it issued (D11; the rules themselves are in confirmation.test.ts). */
+async function confirmed(req: AdminActionRequest, d: AdminActionDeps): Promise<AdminActionResult> {
+  const preview = await applyAdminAction(req, d);
+  if (!preview.ok || preview.applied) return preview;
+  return applyAdminAction({ ...req, code: preview.code }, d);
+}
+
 describe('applyAdminAction — allowlist', () => {
   test('an unknown id is an error', async () => {
-    expect(await applyAdminAction({ id: 'nope', confirm: true }, deps())).toEqual({
+    expect(await applyAdminAction({ id: 'nope', code: 'x' }, deps())).toEqual({
       ok: false,
       error: 'Unknown admin action: nope',
     });
@@ -73,7 +85,7 @@ describe('applyAdminAction — allowlist', () => {
 
   test('a tool outside the catalogue is an unknown id, never a disabledTools entry', async () => {
     const result = await applyAdminAction(
-      { id: 'tools.browser.nope', value: false, confirm: true },
+      { id: 'tools.browser.nope', value: false, code: 'x' },
       deps(),
     );
     expect(result).toEqual({ ok: false, error: 'Unknown admin action: tools.browser.nope' });
@@ -82,7 +94,7 @@ describe('applyAdminAction — allowlist', () => {
 
   test('readouts and process-ending entries are never actions', async () => {
     for (const id of ['status.server', 'stop', 'selfUpdate', 'cdpDirectPort', 'idleTtl', 'repo']) {
-      const result = await applyAdminAction({ id, confirm: true }, deps());
+      const result = await applyAdminAction({ id, code: 'x' }, deps());
       expect(result).toEqual({ ok: false, error: `${id} is read-only` });
     }
   });
@@ -165,13 +177,16 @@ describe('applyAdminAction — elevating settings are console-only (arch ask-3 c
     ['cdpDirectGrantTtlMinutes', '240'],
     ['tools.browser.evaluate', false],
     ['client.register.claude', true],
+    // Owner decision (2026-11-16): the two hide settings are console-only too.
+    ['hidePasswordValues', true],
+    ['activityHideSensitive', false],
   ];
   for (const [id, value] of cases) {
-    test(`${id} with confirm:true is refused and calls no helper`, async () => {
+    test(`${id} with a code is refused and calls no helper`, async () => {
       const spies = spyEverything();
       const before = loadConfig();
       try {
-        const result = await applyAdminAction({ id, value, confirm: true }, spies.deps);
+        const result = await applyAdminAction({ id, value, code: 'x' }, spies.deps);
         expect(result).toEqual({ ok: false, error: `${id} is read-only` });
         expect(spies.calls()).toBe(0);
         expect(loadConfig()).toEqual(before);
@@ -180,6 +195,50 @@ describe('applyAdminAction — elevating settings are console-only (arch ask-3 c
       }
     });
   }
+});
+
+describe('applyAdminAction — the two hide settings are changed only from the console', () => {
+  for (const key of ['hidePasswordValues', 'activityHideSensitive'] as const) {
+    for (const value of [true, false]) {
+      test(`${key}=${String(value)}: no preview, no code, no write, config.json untouched`, async () => {
+        DEFAULT_ADMIN_HELPERS.saveConfig({ language: 'en' });
+        const file = join(dataDir, 'config.json');
+        const before = readFileSync(file);
+        const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+        const d = deps({ helpers: { saveConfig } });
+        const noCode = await applyAdminAction({ id: key, value }, d);
+        expect(noCode).toEqual({ ok: false, error: `${key} is read-only` });
+        const withCode = await applyAdminAction({ id: key, value, code: 'x' }, d);
+        expect(withCode).toEqual({ ok: false, error: `${key} is read-only` });
+        // A code issued for another item cannot be borrowed either.
+        const other = await applyAdminAction({ id: 'multiAgent', value: false }, d);
+        if (!other.ok || other.applied) throw new Error('expected a preview');
+        expect(await applyAdminAction({ id: key, value, code: other.code }, d)).toEqual({
+          ok: false,
+          error: `${key} is read-only`,
+        });
+        expect(saveConfig).not.toHaveBeenCalled();
+        expect(readFileSync(file).equals(before)).toBe(true);
+      });
+    }
+  }
+
+  test('the existing toggles still preview, then write with their code', async () => {
+    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+    const result = await confirmed(
+      { id: 'activityRecordPayloads', value: false },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(result).toMatchObject({ ok: true, applied: true, requiresRestart: true });
+    expect(saveConfig).toHaveBeenCalledWith({ activityRecordPayloads: false });
+    expect(loadConfig().activityRecordPayloads).toBe(false);
+  });
+
+  test('config set (the console path) still writes both keys', async () => {
+    await configCommand.runConfigCommand(['set', 'hide-password-values', 'on']);
+    await configCommand.runConfigCommand(['set', 'activity.hide-sensitive', 'off']);
+    expect(loadConfig()).toMatchObject({ hidePasswordValues: true, activityHideSensitive: false });
+  });
 });
 
 describe('applyAdminAction — confirm step', () => {
@@ -194,6 +253,7 @@ describe('applyAdminAction — confirm step', () => {
       applied: false,
       needsConfirm: true,
       preview: 'Turn off: Multi-agent mode',
+      code: expect.any(String),
     });
     expect(disableMultiAgent).not.toHaveBeenCalled();
     expect(loadConfig().multiAgent).toBe(true);
@@ -211,6 +271,9 @@ describe('applyAdminAction — confirm step', () => {
     expect(await preview('instructions.uninstall.claude')).toBe(
       "Remove the browser-link instructions block from Claude Code's file",
     );
+    expect(await preview('updates.check')).toBe(
+      'Ask the npm registry for the latest version now and save the answer in update-check.json',
+    );
   });
 
   test('es preview', async () => {
@@ -225,8 +288,8 @@ describe('applyAdminAction — confirm step', () => {
 describe('applyAdminAction — apply through the existing helpers', () => {
   test('multi-agent goes through the multi-agent helpers and requires a restart', async () => {
     const disableMultiAgent = vi.fn(DEFAULT_ADMIN_HELPERS.disableMultiAgent);
-    const result = await applyAdminAction(
-      { id: 'multiAgent', value: false, confirm: true },
+    const result = await confirmed(
+      { id: 'multiAgent', value: false },
       deps({ helpers: { disableMultiAgent } }),
     );
     expect(disableMultiAgent).toHaveBeenCalledWith('en');
@@ -237,16 +300,13 @@ describe('applyAdminAction — apply through the existing helpers', () => {
   test('auto-reelect and instructions auto-refresh require a restart', async () => {
     const enableAutoReelect = vi.fn(DEFAULT_ADMIN_HELPERS.enableAutoReelect);
     expect(
-      await applyAdminAction(
-        { id: 'autoReelect', value: true, confirm: true },
-        deps({ helpers: { enableAutoReelect } }),
-      ),
+      await confirmed({ id: 'autoReelect', value: true }, deps({ helpers: { enableAutoReelect } })),
     ).toMatchObject({ ok: true, applied: true, requiresRestart: true });
     expect(enableAutoReelect).toHaveBeenCalledWith('en');
     const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
     expect(
-      await applyAdminAction(
-        { id: 'instructionsAutoRefresh', value: false, confirm: true },
+      await confirmed(
+        { id: 'instructionsAutoRefresh', value: false },
         deps({ helpers: { saveConfig } }),
       ),
     ).toMatchObject({ ok: true, applied: true, requiresRestart: true });
@@ -255,10 +315,7 @@ describe('applyAdminAction — apply through the existing helpers', () => {
 
   test('a helper refusal comes back as ok:false with its own message', async () => {
     DEFAULT_ADMIN_HELPERS.saveConfig({ multiAgent: false });
-    const result = await applyAdminAction(
-      { id: 'autoReelect', value: true, confirm: true },
-      deps(),
-    );
+    const result = await confirmed({ id: 'autoReelect', value: true }, deps());
     expect(result).toEqual({
       ok: false,
       error: 'Cannot enable auto-reelect while multi-agent mode is off. Enable multi-agent first.',
@@ -267,23 +324,20 @@ describe('applyAdminAction — apply through the existing helpers', () => {
 
   test('activity toggles write their config key', async () => {
     const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
-    await applyAdminAction(
-      { id: 'activityRecordPayloads', value: false, confirm: true },
+    await confirmed(
+      { id: 'activityRecordPayloads', value: false },
       deps({ helpers: { saveConfig } }),
     );
     expect(saveConfig).toHaveBeenCalledWith({ activityRecordPayloads: false });
     expect(loadConfig().activityRecordPayloads).toBe(false);
     expect(
-      await applyAdminAction(
-        { id: 'activityEnabled', value: false, confirm: true },
-        deps({ helpers: { saveConfig } }),
-      ),
+      await confirmed({ id: 'activityEnabled', value: false }, deps({ helpers: { saveConfig } })),
     ).toMatchObject({ ok: true, applied: true, requiresRestart: true });
     expect(loadConfig().activityEnabled).toBe(false);
   });
 
   test('the language select saves and the fresh state comes back in that language', async () => {
-    const result = await applyAdminAction({ id: 'language', value: 'es', confirm: true }, deps());
+    const result = await confirmed({ id: 'language', value: 'es' }, deps());
     expect(loadConfig().language).toBe('es');
     if (!result.ok || !result.applied) throw new Error('not applied');
     expect(result.state?.ui.language).toBe('es');
@@ -307,34 +361,26 @@ describe('applyAdminAction — apply through the existing helpers', () => {
       ok: false,
     }));
     const helpers = { installInstructionsFor, uninstallInstructionsFor };
-    expect(
-      await applyAdminAction(
-        { id: 'instructions.install.claude', confirm: true },
-        deps({ helpers }),
-      ),
-    ).toMatchObject({ ok: true, applied: true, output: ['Installed block.'] });
+    expect(await confirmed({ id: 'instructions.install.claude' }, deps({ helpers }))).toMatchObject(
+      { ok: true, applied: true, output: ['Installed block.'] },
+    );
     expect(installInstructionsFor).toHaveBeenCalledWith('claude');
-    expect(
-      await applyAdminAction(
-        { id: 'instructions.uninstall.claude', confirm: true },
-        deps({ helpers }),
-      ),
-    ).toEqual({ ok: false, error: 'refused' });
+    expect(await confirmed({ id: 'instructions.uninstall.claude' }, deps({ helpers }))).toEqual({
+      ok: false,
+      error: 'refused',
+    });
   });
 });
 
 describe('applyAdminAction — validation', () => {
   test('a toggle needs a boolean', async () => {
-    const result = await applyAdminAction(
-      { id: 'multiAgent', value: 'yes', confirm: true },
-      deps(),
-    );
+    const result = await applyAdminAction({ id: 'multiAgent', value: 'yes', code: 'x' }, deps());
     expect(result).toEqual({ ok: false, error: 'Invalid value for multiAgent' });
     expect(loadConfig().multiAgent).toBe(true);
   });
 
   test('a select only takes one of its options', async () => {
-    expect(await applyAdminAction({ id: 'language', value: 'fr', confirm: true }, deps())).toEqual({
+    expect(await applyAdminAction({ id: 'language', value: 'fr', code: 'x' }, deps())).toEqual({
       ok: false,
       error: 'Invalid value for language',
     });
@@ -349,7 +395,7 @@ describe('applyAdminAction — validation', () => {
   });
 });
 
-describe('applyAdminAction — read-only buttons', () => {
+describe('applyAdminAction — buttons', () => {
   test('doctor runs without confirm and returns its lines', async () => {
     const doctor = vi.fn(() => Promise.resolve(['ok 1', 'ok 2']));
     const result = await applyAdminAction({ id: 'doctor' }, deps({ doctor }));
@@ -357,9 +403,15 @@ describe('applyAdminAction — read-only buttons', () => {
     expect(result).toMatchObject({ ok: true, applied: true, output: ['ok 1', 'ok 2'] });
   });
 
-  test('updates.check runs without confirm and returns its lines', async () => {
+  test('updates.check writes update-check.json, so it previews first, then runs with its code', async () => {
     const checkUpdates = vi.fn(() => Promise.resolve(['Latest: 0.43.0']));
-    const result = await applyAdminAction({ id: 'updates.check' }, deps({ checkUpdates }));
+    const d = deps({ checkUpdates });
+    expect(await applyAdminAction({ id: 'updates.check' }, d)).toMatchObject({
+      applied: false,
+      needsConfirm: true,
+    });
+    expect(checkUpdates).not.toHaveBeenCalled();
+    const result = await confirmed({ id: 'updates.check' }, d);
     expect(checkUpdates).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ ok: true, applied: true, output: ['Latest: 0.43.0'] });
   });

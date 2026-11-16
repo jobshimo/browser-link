@@ -233,6 +233,7 @@ describe('defaultSettings is derived from the loader, not hand-copied (S6.4)', (
     expect(Object.keys(defaultSettings()).sort()).toEqual(
       [
         'activityEnabled',
+        'activityHideSensitive',
         'activityRecordPayloads',
         'allowedExtensionIds',
         'autoReelect',
@@ -244,6 +245,7 @@ describe('defaultSettings is derived from the loader, not hand-copied (S6.4)', (
         'downloadsMaxMb',
         'flowRecordingEnabled',
         'flowRecordingUpdatedAt',
+        'hidePasswordValues',
         'idleTtlMinutes',
         'idleTtlUpdatedAt',
         'instructionsAutoRefresh',

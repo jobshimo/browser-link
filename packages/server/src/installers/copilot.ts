@@ -1,48 +1,37 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import {
+  editMcpConfig,
+  expectObjectAt,
+  isJsonObject,
+  loadMcpConfig,
+  type JsonObject,
+  type McpConfigFile,
+} from './json-config.js';
 import type { DetectResult, Installer } from './types.js';
 
 const SERVER_NAME = 'browser-link';
 
-interface CopilotMcpEntry {
-  type: 'local' | 'http' | 'sse';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  tools?: string[];
-  url?: string;
-  headers?: Record<string, string>;
-}
-
-interface CopilotConfig {
-  mcpServers?: Record<string, CopilotMcpEntry>;
-  [key: string]: unknown;
-}
-
-function configFile(): string {
+function configFile(): McpConfigFile {
   // GitHub Copilot CLI reads from ~/.copilot/mcp-config.json by default.
-  // COPILOT_HOME overrides the directory (the same env var the CLI honours).
-  const root = process.env.COPILOT_HOME ?? join(homedir(), '.copilot');
-  return join(root, 'mcp-config.json');
+  // COPILOT_HOME overrides the directory (the same env var the CLI honours);
+  // a path the user redirected there may sit outside the home directory.
+  const override = process.env.COPILOT_HOME;
+  return {
+    path: join(override ?? join(homedir(), '.copilot'), 'mcp-config.json'),
+    label: 'Copilot',
+    allowOutsideHome: override !== undefined,
+  };
 }
 
-function readConfig(path: string): CopilotConfig {
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as CopilotConfig;
-  } catch {
-    throw new Error(`Could not parse Copilot config at ${path}. Fix the file or delete it.`);
-  }
+/** `mcpServers` is an object when present. */
+function checkShape(cfg: JsonObject): string | null {
+  return expectObjectAt(cfg.mcpServers, ['mcpServers']);
 }
 
-function writeConfig(path: string, cfg: CopilotConfig): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-}
-
-function isRegistered(cfg: CopilotConfig): boolean {
-  return !!cfg.mcpServers?.[SERVER_NAME];
+function hasEntry(cfg: JsonObject): boolean {
+  return isJsonObject(cfg.mcpServers) && SERVER_NAME in cfg.mcpServers;
 }
 
 export const copilotInstaller: Installer = {
@@ -50,47 +39,43 @@ export const copilotInstaller: Installer = {
   displayName: 'GitHub Copilot CLI',
 
   configPath() {
-    return configFile();
+    return configFile().path;
   },
 
   detect(): DetectResult {
-    const path = configFile();
-    if (!existsSync(path)) {
-      return { installed: false, registered: false, configPath: path };
+    const file = configFile();
+    if (!existsSync(file.path)) {
+      return { installed: false, registered: false, configPath: file.path };
     }
-    const cfg = readConfig(path);
-    return { installed: true, registered: isRegistered(cfg), configPath: path };
+    const { data } = loadMcpConfig(file, checkShape);
+    const registered = isJsonObject(data.mcpServers) && !!data.mcpServers[SERVER_NAME];
+    return { installed: true, registered, configPath: file.path };
   },
 
   install(command: string, args: string[]): string {
-    const path = configFile();
-    const cfg = readConfig(path);
-    cfg.mcpServers = cfg.mcpServers ?? {};
-    const existed = SERVER_NAME in cfg.mcpServers;
-    // Copilot requires `env` and `tools` even when empty/wildcard.
-    cfg.mcpServers[SERVER_NAME] = {
-      type: 'local',
-      command,
-      args,
-      env: {},
-      tools: ['*'],
-    };
-    writeConfig(path, cfg);
-    return existed
-      ? `Updated ${SERVER_NAME} entry in ${path}.`
-      : `Added ${SERVER_NAME} entry to ${path}.`;
+    const file = configFile();
+    return editMcpConfig(file, checkShape, ({ data }) => {
+      // Copilot requires `env` and `tools` even when empty/wildcard.
+      const entry = { type: 'local', command, args, env: {}, tools: ['*'] };
+      return {
+        ops: [{ kind: 'set', path: ['mcpServers', SERVER_NAME], value: entry }],
+        message: hasEntry(data)
+          ? `Updated ${SERVER_NAME} entry in ${file.path}.`
+          : `Added ${SERVER_NAME} entry to ${file.path}.`,
+      };
+    });
   },
 
   uninstall(): string {
-    const path = configFile();
-    if (!existsSync(path)) return `No Copilot CLI config at ${path}; nothing to remove.`;
-    const cfg = readConfig(path);
-    if (!cfg.mcpServers || !(SERVER_NAME in cfg.mcpServers)) {
-      return `${SERVER_NAME} was not registered in ${path}.`;
-    }
-    const { [SERVER_NAME]: _removed, ...rest } = cfg.mcpServers;
-    cfg.mcpServers = rest;
-    writeConfig(path, cfg);
-    return `Removed ${SERVER_NAME} entry from ${path}.`;
+    const file = configFile();
+    if (!existsSync(file.path)) return `No Copilot CLI config at ${file.path}; nothing to remove.`;
+    return editMcpConfig(file, checkShape, ({ data }) =>
+      hasEntry(data)
+        ? {
+            ops: [{ kind: 'remove', path: ['mcpServers', SERVER_NAME] }],
+            message: `Removed ${SERVER_NAME} entry from ${file.path}.`,
+          }
+        : { ops: [], message: `${SERVER_NAME} was not registered in ${file.path}.` },
+    );
   },
 };

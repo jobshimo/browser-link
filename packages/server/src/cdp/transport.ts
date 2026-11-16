@@ -29,6 +29,8 @@ import {
   buildElementRectJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  withValuesHiddenNote,
+  buildProgrammaticClickJs,
   isFocusedField,
   actionFailure,
   buildSnapshotJs,
@@ -65,12 +67,18 @@ import {
   detachedFlowForTab,
   detachedFlowStatus,
   finishDetachedFlow,
+  MAX_DETACHED_FLOW_MS,
   registerDetachedFlow,
   reportDetachedProgress,
   shouldStopDetachedFlow,
 } from './detached-flows.js';
 import {
+  PROGRAMMATIC_CLICK_NOTE,
+  noBoxClickMessage,
+  notClickableMessage,
+  notFocusedMessage,
   refFailureMessage,
+  notWalkedSuffix,
   retargetedClickMessage,
   runFlow,
   type ActionOutcome,
@@ -140,15 +148,58 @@ let cleanupTimer: NodeJS.Timeout | null = null;
 function ensureCleanupTimer(): void {
   if (cleanupTimer) return;
   cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [targetId, conn] of connections) {
-      if (now - conn.lastUsedAt > idleCleanupMs) {
-        connections.delete(targetId);
-        void closeConnection(conn.client, targetId);
-      }
-    }
+    sweepIdleConnections(Date.now());
   }, idleSweepIntervalMs);
   cleanupTimer.unref();
+}
+
+/**
+ * Running flows holding a connection's idle clock, keyed by targetId (owner
+ * decision D1). A flow's steps use the client directly and never pass
+ * through `getConnection`, so without a hold the sweep would close the
+ * socket under a flow nobody else touches. Each hold carries the flow's own
+ * maximum end (`until`): past it the hold no longer counts.
+ */
+const flowHolds = new Map<string, Set<{ until: number }>>();
+
+/** Hold `targetId`'s connection open while a flow runs, at most until
+ * `until`. The returned release restarts the idle window from the flow's
+ * last step (now, or the bound if the flow outlived it). */
+function holdConnectionForFlow(targetId: string, until: number): () => void {
+  const hold = { until };
+  let holds = flowHolds.get(targetId);
+  if (!holds) {
+    holds = new Set();
+    flowHolds.set(targetId, holds);
+  }
+  holds.add(hold);
+  const owner = holds;
+  return () => {
+    owner.delete(hold);
+    if (owner.size === 0 && flowHolds.get(targetId) === owner) flowHolds.delete(targetId);
+    const conn = connections.get(targetId);
+    const lastStepAt = Math.min(Date.now(), hold.until);
+    if (conn && lastStepAt > conn.lastUsedAt) conn.lastUsedAt = lastStepAt;
+  };
+}
+
+/** Close every connection unused for longer than the idle window at `now`.
+ * A connection a running flow holds is skipped; one whose flow outlived its
+ * bound counts as used at that bound. */
+function sweepIdleConnections(now: number): void {
+  for (const [targetId, conn] of connections) {
+    let lastActiveAt = conn.lastUsedAt;
+    let held = false;
+    for (const hold of flowHolds.get(targetId) ?? []) {
+      if (now < hold.until) held = true;
+      else lastActiveAt = Math.max(lastActiveAt, hold.until);
+    }
+    if (held) continue;
+    if (now - lastActiveAt > idleCleanupMs) {
+      connections.delete(targetId);
+      void closeConnection(conn.client, targetId);
+    }
+  }
 }
 
 /**
@@ -341,6 +392,7 @@ export function resetConnectionsForTest(): void {
   for (const conn of connections.values()) conn.client.close();
   connections.clear();
   inFlight.clear();
+  flowHolds.clear();
   if (cleanupTimer) {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
@@ -356,6 +408,12 @@ export function resetConnectionsForTest(): void {
 export function setIdleCleanupConfigForTest(idleMs: number, sweepIntervalMs: number): void {
   idleCleanupMs = idleMs;
   idleSweepIntervalMs = sweepIntervalMs;
+}
+
+/** Test-only: run one idle sweep as if the clock read `now`, so a test can
+ * step past the real 5-minute window without waiting for it. */
+export function sweepIdleConnectionsForTest(now: number): void {
+  sweepIdleConnections(now);
 }
 
 // === CDP primitives ========================================================
@@ -500,16 +558,27 @@ async function dispatchKeyEvent(
 
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
+  | { ok: true; no_box: true; tag: string; reresolved?: boolean }
+  | { ok: false; reason: 'no-box' }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
   | { ok: false; reason: 'occluded'; blocker: string }
   | { ok: false; reason: 'retargeted'; hit_element: string }
+  | RefResolveFailure;
+
+/** Result shape returned by `buildProgrammaticClickJs` (owner decision D4). */
+type ProgrammaticClickResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-selector'; error: string }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
+  | { ok: false; reason: 'not-clickable'; why: string }
   | RefResolveFailure;
 
 type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
+  | FocusRefusal
   | RefResolveFailure;
 
 /** A `ref` target the page could not resolve — see `RESOLVE_TARGET_JS` in
@@ -519,22 +588,42 @@ type RefResolveFailure =
   | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
   | { ok: false; reason: 'observer-unavailable' };
 
-/** Result shape of `buildFocusJs` with a `ref` (with a selector it is a
- * boolean). */
-type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
+/** The target of a type / press did not take focus — see `FOCUS_REFUSAL_JS`
+ * in `inpage/builders.ts`; `notFocusedMessage` (flow.ts) gives the error. */
+type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
+
+/** Result shape of `buildFocusJs` with a `ref` (with a selector it is
+ * `true`, `false` when not found, or a `FocusRefusal`). */
+type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
 
 async function performFind(
   client: CdpClient,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
+  params: {
+    text?: string;
+    role?: string;
+    exact?: boolean;
+    ref?: string;
+    key?: FindKey;
+    offset?: { candidates?: number };
+    /** The user's hide-password-values setting (owner decision D12). */
+    hide_password_values?: boolean;
+  },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
+    const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(client, buildFindJs({ key: params.key }));
+      const value = await evaluateInTab<FindStepResult>(
+        client,
+        buildFindJs({ key: params.key, hide_password_values }),
+      );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(client, buildFindJs({ ref }));
+      const found = await evaluateInTab<FindStepResult>(
+        client,
+        buildFindJs({ ref, hide_password_values }),
+      );
       const refError = found.matched ? null : refFailureMessage(found, ref);
       if (refError) return { ok: false, error: refError };
       return { ok: true, result: found };
@@ -542,7 +631,13 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       client,
-      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+      buildFindJs({
+        text,
+        role: params.role,
+        exact: params.exact === true,
+        offset: params.offset,
+        hide_password_values,
+      }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -589,39 +684,63 @@ async function performClick(
           error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
         };
       }
+      if (resolved.reason === 'no-box') {
+        return { ok: false, error: noBoxClickMessage(ref ?? selector ?? '') };
+      }
       if (resolved.reason === 'invalid-selector') {
         return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
       }
-      return { ok: false, error: `Element not found: ${ref ?? selector}` };
+      return {
+        ok: false,
+        error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
+      };
     }
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
-    await client.send('Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: resolved.x,
-      y: resolved.y,
-    });
-    await client.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
-    await client.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
+    if ('no_box' in resolved) {
+      const clicked = await evaluateInTab<ProgrammaticClickResult>(
+        client,
+        buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
+      );
+      if (!clicked.ok) {
+        if (clicked.reason === 'not-clickable') {
+          return { ok: false, error: notClickableMessage(ref ?? selector ?? '', clicked.why) };
+        }
+        const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
+        return {
+          ok: false,
+          error: refError ?? `Element not found: ${ref ?? selector}${notWalkedSuffix(clicked)}`,
+        };
+      }
+    } else {
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: resolved.x,
+        y: resolved.y,
+      });
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+    }
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
     if (ref !== undefined) result.ref = ref;
     if (resolved.reresolved === true) result.reresolved = true;
-    if (resolved.hit_element) result.hit_element = resolved.hit_element;
+    if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
+    else if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -659,6 +778,9 @@ async function performType(
         buildTypeResolveJs({ ref, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, resolved.why, 'typed') };
+        }
         return {
           ok: false,
           error: refFailureMessage(resolved, ref) ?? `Element not found: ${ref}`,
@@ -671,10 +793,13 @@ async function performType(
         buildTypeResolveJs({ selector, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(selector, resolved.why, 'typed') };
+        }
         if (resolved.reason === 'invalid-selector') {
           return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
         }
-        return { ok: false, error: `Element not found: ${selector}` };
+        return { ok: false, error: `Element not found: ${selector}${notWalkedSuffix(resolved)}` };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
@@ -730,16 +855,22 @@ async function performPress(
     if (ref !== undefined) {
       const focused = await evaluateInTab<FocusRefResult>(client, buildFocusJs({ ref }));
       if (!focused.ok) {
+        if (focused.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
+        }
         return { ok: false, error: refFailureMessage(focused, ref) ?? `Element not found: ${ref}` };
       }
       reresolved = focused.reresolved === true;
     } else if (params.selector) {
-      const focused = await evaluateInTab<boolean>(
+      const focused = await evaluateInTab<boolean | FocusRefusal>(
         client,
         buildFocusJs({ selector: params.selector }),
       );
       if (!focused) {
         return { ok: false, error: `Element not found: ${params.selector}` };
+      }
+      if (focused !== true && 'why' in focused) {
+        return { ok: false, error: notFocusedMessage(params.selector, focused.why, 'pressed') };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
@@ -824,7 +955,15 @@ async function performWaitFor(
     // Set when a ref probe reports that the page has no observer: the ref
     // can never resolve, so the wait fails instead of timing out (or, for
     // `detached` / `hidden`, matching a ref it never looked up).
-    const refProbe = { unavailable: false };
+    // `stale` is set while the last probe found the ref's element gone
+    // (`visible` / `attached` only; `hidden` / `detached` count it as met);
+    // `docChanged` says the ref belongs to another document, which can never
+    // come back, so the wait fails at once instead of polling.
+    const refProbe: {
+      unavailable: boolean;
+      stale: { reason: string; doc_id?: string } | null;
+      docChanged: boolean;
+    } = { unavailable: false, stale: null, docChanged: false };
     if (waitSelector !== undefined) {
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
@@ -844,9 +983,21 @@ async function performWaitFor(
         try {
           const result = await evaluateInTab(client, expr);
           if (typeof result === 'object' && result !== null) {
+            const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
+            if (probe.reason === 'ref-stale') {
+              refProbe.stale = {
+                reason: 'ref-stale',
+                ...(typeof probe.doc_id === 'string' ? { doc_id: probe.doc_id } : {}),
+              };
+              refProbe.docChanged = probe.doc_changed === true;
+              // A node that is merely detached may be re-attached or
+              // re-rendered, which is what the wait may be for: keep polling.
+              return refProbe.docChanged;
+            }
             refProbe.unavailable = true;
             return true;
           }
+          refProbe.stale = null;
           return result === true;
         } catch {
           return false;
@@ -888,6 +1039,17 @@ async function performWaitFor(
         error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
       };
     }
+    // A ref of another document can never match: fail now with the owner's
+    // sentence. (A merely detached node keeps the timeout result, below.)
+    if (refProbe.stale !== null && params.ref !== undefined && refProbe.docChanged) {
+      return { ok: false, error: refFailureMessage(refProbe.stale, params.ref) ?? '' };
+    }
+    // The element the ref names was gone at the last poll: the timeout result
+    // keeps its shape and carries the sentence in `ref_gone`.
+    const refGone =
+      refProbe.stale !== null && params.ref !== undefined && !cancelled && !matched
+        ? (refFailureMessage(refProbe.stale, params.ref) ?? '').replace(/^ref-stale: /, '')
+        : '';
     // 'cancelled' is deliberately distinct from 'timeout': the step
     // executor turns a timeout into a flow FAILURE (with a recovery
     // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
@@ -900,6 +1062,7 @@ async function performWaitFor(
           elapsed_ms: elapsedMs,
           checks,
           reason: cancelled ? 'cancelled' : 'timeout',
+          ...(refGone ? { ref_gone: refGone } : {}),
         };
     return { ok: true, result };
   } catch (err) {
@@ -918,9 +1081,12 @@ function buildCdpFlowDeps(
    * foreground flow, its deadline. The runner itself only gets
    * `shouldCancel`, which is how it tells a human stop from a timeout. */
   shouldStopWaiting: () => boolean = shouldCancel,
+  /** The user's hide-password-values setting (owner decision D12): find
+   * steps and the recovery snapshot hide password values too. */
+  hidePasswordValues = false,
 ): Omit<FlowDeps, 'onProgress'> {
   return {
-    performFind: (fp) => performFind(client, fp),
+    performFind: (fp) => performFind(client, { ...fp, hide_password_values: hidePasswordValues }),
     performClick: (cp) => performClick(client, cp),
     performType: (tp) => performType(client, tp),
     performPress: (pp) => performPress(client, pp),
@@ -933,7 +1099,14 @@ function buildCdpFlowDeps(
     performDrag: () =>
       Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
     buildRecoverySnapshot: () =>
-      evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+      evaluateInTab(
+        client,
+        buildSnapshotJs({
+          only_interactive: true,
+          max_interactive: 40,
+          hide_password_values: hidePasswordValues,
+        }),
+      ),
   };
 }
 
@@ -1019,6 +1192,8 @@ export async function callCdpTool(
           : undefined,
         max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
         since: typeof p.since === 'string' ? p.since : undefined,
+        offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+        hide_password_values: p.hide_password_values === true,
       };
       return evaluateInTab(client, buildSnapshotJs(opts));
     }
@@ -1052,6 +1227,8 @@ export async function callCdpTool(
         exact: p.exact === true,
         ref: typeof p.ref === 'string' ? p.ref : undefined,
         key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
+        offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+        hide_password_values: p.hide_password_values === true,
       });
       if (!outcome.ok) throw new Error(outcome.error);
       return outcome.result;
@@ -1135,6 +1312,8 @@ export async function callCdpTool(
       const dryRun = p.dry_run === true;
       const detach = p.dry_run !== true && p.detach === true;
       const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : '';
+      // Strict `=== true`: the user's hide-password-values setting (D12).
+      const hidePasswordValues = p.hide_password_values === true;
 
       // THE cdp-direct kill switch. There is no extension here and
       // therefore no popup Stop button, so the user's only lever is
@@ -1172,12 +1351,26 @@ export async function callCdpTool(
           client,
           shouldCancel,
           deadlineAt === undefined ? undefined : () => shouldCancel() || Date.now() >= deadlineAt,
+          hidePasswordValues,
         );
-        return runFlow(
-          rawSteps as FlowStep[],
-          deadlineAt === undefined ? deps : { ...deps, deadlineAt },
-          { dryRun },
-        );
+        // Owner decision D1: the idle sweep must not cut a running flow. A
+        // dry run only probes and needs no hold. Bounded by the flow's own
+        // deadline; without one (a caller that sent none) by the longest
+        // any flow may run.
+        const release = dryRun
+          ? undefined
+          : holdConnectionForFlow(targetId, deadlineAt ?? Date.now() + MAX_DETACHED_FLOW_MS);
+        let ran: FlowResult;
+        try {
+          ran = await runFlow(
+            rawSteps as FlowStep[],
+            deadlineAt === undefined ? deps : { ...deps, deadlineAt },
+            { dryRun },
+          );
+        } finally {
+          release?.();
+        }
+        return withValuesHiddenNote(ran, hidePasswordValues);
       }
 
       // ONE detached flow per tab — same rule, same reason, same error
@@ -1190,6 +1383,8 @@ export async function callCdpTool(
         );
       }
       const flow = registerDetachedFlow({ flowId, tabId, steps: rawSteps.length });
+      // Owner decision D1, bounded by the detached ceiling.
+      const release = holdConnectionForFlow(targetId, flow.expiresAt);
       // The gate branch cancels THROUGH the registry rather than short-
       // circuiting past it: `stopped_by: 'grant-revoked'` is the only thing
       // that tells the agent a human pulled the grant, as opposed to
@@ -1207,7 +1402,7 @@ export async function callCdpTool(
         let result: FlowResult | null = null;
         try {
           result = await runFlow(rawSteps as FlowStep[], {
-            ...buildCdpFlowDeps(client, shouldCancel),
+            ...buildCdpFlowDeps(client, shouldCancel, shouldCancel, hidePasswordValues),
             onProgress: (progress) => {
               reportDetachedProgress(flow.flowId, progress);
             },
@@ -1217,15 +1412,19 @@ export async function callCdpTool(
           // recorded below from a null result. There is no caller left to
           // rethrow to.
         } finally {
+          release();
           finishDetachedFlow(flow.flowId, result);
         }
       })();
-      return {
-        detached: true,
-        started_at: flow.startedAt,
-        steps: rawSteps.length,
-        expires_at: flow.expiresAt,
-      };
+      return withValuesHiddenNote(
+        {
+          detached: true,
+          started_at: flow.startedAt,
+          steps: rawSteps.length,
+          expires_at: flow.expiresAt,
+        },
+        hidePasswordValues,
+      );
     }
 
     case 'flow_status': {

@@ -162,6 +162,39 @@ describe('IpcServer handshake', () => {
     expect(server.sessionCount()).toBe(0);
   });
 
+  test('sessionCount counts only authenticated proxies and follows disconnects (D18)', async () => {
+    server = await startEphemeral();
+    const token = server.currentToken();
+    const hello = encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token });
+    expect(server.sessionCount()).toBe(0);
+
+    // Connected, past the process check, but silent: not a session yet.
+    const silent = await dial(server.boundAddress());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.sessionCount()).toBe(0);
+
+    const a = await dial(server.boundAddress());
+    a.write(hello);
+    await readNFrames(a, 1);
+    const b = await dial(server.boundAddress());
+    b.write(hello);
+    await readNFrames(b, 1);
+    expect(server.sessionCount()).toBe(2);
+
+    // A refused hello on the same server never joins the count.
+    const refused = await dial(server.boundAddress());
+    refused.write(encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: 'wrong' }));
+    await readNFrames(refused, 1);
+    expect(server.sessionCount()).toBe(2);
+
+    a.destroy();
+    for (let i = 0; i < 50 && server.sessionCount() > 1; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(server.sessionCount()).toBe(1);
+    silent.destroy();
+  });
+
   test('drops a connection whose first frame is not hello', async () => {
     server = await startEphemeral();
 

@@ -55,6 +55,16 @@ export interface AdminI18n {
   never: string;
   activityEnabled: string;
   activityRecordPayloads: string;
+  /** Owner decision D12 (setup and status readouts, console-only). */
+  hidePasswordValues: string;
+  passwordValuesStatus: string;
+  passwordValuesHidden: string;
+  passwordValuesShown: string;
+  /** Owner decision D13 (setup and status readouts, console-only). */
+  activityHideSensitive: string;
+  activitySensitiveStatus: string;
+  activitySensitiveHidden: string;
+  activitySensitiveStored: string;
   downloadsDir: string;
   idleTtl: string;
   idleTtlHint: string;
@@ -88,6 +98,10 @@ export interface AdminI18n {
   previewSelect: (label: string, option: string) => string;
   previewInstall: (client: string) => string;
   previewUninstall: (client: string) => string;
+  previewUpdatesCheck: string;
+  /** A write sent with a code that is unknown, spent, expired or issued for
+   * another action or value (D11). */
+  confirmationInvalid: string;
 }
 
 const v = (version: string | null): string => (version === null ? 'unversioned' : `v${version}`);
@@ -160,6 +174,14 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     never: 'never expires',
     activityEnabled: 'Record the activity trail',
     activityRecordPayloads: 'Record tool payloads in the trail',
+    hidePasswordValues: 'Hide password values from agents',
+    passwordValuesStatus: 'Password values',
+    passwordValuesHidden: 'hidden',
+    passwordValuesShown: 'returned',
+    activityHideSensitive: 'Hide sensitive values in the activity trail',
+    activitySensitiveStatus: 'Sensitive rows',
+    activitySensitiveHidden: 'hidden',
+    activitySensitiveStored: 'stored unhidden',
     downloadsDir: 'Downloads folder',
     idleTtl: 'Idle disconnect',
     idleTtlHint:
@@ -194,6 +216,10 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     previewInstall: (client) => `Write the browser-link instructions block into ${client}'s file`,
     previewUninstall: (client) =>
       `Remove the browser-link instructions block from ${client}'s file`,
+    previewUpdatesCheck:
+      'Ask the npm registry for the latest version now and save the answer in update-check.json',
+    confirmationInvalid:
+      'This confirmation is no longer valid: it expired, was already used or was for a different change. Nothing was changed; try again.',
   },
   es: {
     ui: {
@@ -270,6 +296,14 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     never: 'no vence',
     activityEnabled: 'Guardar el registro de actividad',
     activityRecordPayloads: 'Guardar los payloads de las tools en el registro',
+    hidePasswordValues: 'Ocultar a los agentes el valor de las contraseñas',
+    passwordValuesStatus: 'Contraseñas',
+    passwordValuesHidden: 'ocultas',
+    passwordValuesShown: 'visibles',
+    activityHideSensitive: 'Ocultar los valores sensibles en el registro de actividad',
+    activitySensitiveStatus: 'Filas sensibles',
+    activitySensitiveHidden: 'ocultas',
+    activitySensitiveStored: 'sin ocultar',
     downloadsDir: 'Carpeta de descargas',
     idleTtl: 'Desconexión por inactividad',
     idleTtlHint:
@@ -306,5 +340,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
       `Escribir el bloque de instrucciones de browser-link en el archivo de ${client}`,
     previewUninstall: (client) =>
       `Quitar el bloque de instrucciones de browser-link del archivo de ${client}`,
+    previewUpdatesCheck:
+      'Consultar ahora en el registro de npm la versión más reciente y guardar la respuesta en update-check.json',
+    confirmationInvalid:
+      'Esta confirmación ya no es válida: caducó, ya se usó o correspondía a otro cambio. No se cambió nada; vuelva a intentarlo.',
   },
 };

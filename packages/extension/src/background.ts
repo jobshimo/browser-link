@@ -13,9 +13,11 @@ import {
   buildSnapshotJs,
   buildFindJs,
   buildClickResolveJs,
+  buildProgrammaticClickJs,
   buildTypeResolveJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  withValuesHiddenNote,
   isFocusedField,
   actionFailure,
   buildStateJs,
@@ -23,6 +25,7 @@ import {
   buildElementRectJs,
   buildWaitForSelectorJs,
   type FindKey,
+  type SnapshotOffset,
   type WaitForSelectorCondition,
 } from './inpage/builders.js';
 import {
@@ -52,9 +55,18 @@ import {
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
-import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
+  captureAround,
+  createDownloadCapture,
+  type TabDownloadSignals,
+} from './download-capture.js';
+import {
+  PROGRAMMATIC_CLICK_NOTE,
+  noBoxClickMessage,
+  notClickableMessage,
+  notFocusedMessage,
   refFailureMessage,
+  notWalkedSuffix,
   retargetedClickMessage,
   runFlow,
   type ActionOutcome,
@@ -96,11 +108,14 @@ import {
   DEFAULT_IDLE_TTL_MINUTES,
   IDLE_TTL_STORAGE_KEY,
   IDLE_TTL_UPDATED_AT_STORAGE_KEY,
+  activityAfterFlowEnded,
   clampIdleTtlMinutes,
+  idleHoldUntil,
   parseIncomingSettings,
   shouldAcceptIncomingSettings,
-  shouldDisconnectForIdle,
   shouldScheduleIdleSweep,
+  tabsToDisconnectForIdle,
+  type IdleFlowHold,
   type IncomingIdleSettings,
 } from './idle-policy.js';
 import {
@@ -544,7 +559,7 @@ type RuntimeMessage =
       action: 'adminAction';
       id: string;
       value?: string | number | boolean;
-      confirm?: boolean;
+      code?: string;
       language?: unknown;
     };
 
@@ -562,7 +577,11 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
     const v = m.value;
     return (
       typeof m.id === 'string' &&
-      (v === undefined || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+      (v === undefined ||
+        typeof v === 'string' ||
+        typeof v === 'number' ||
+        typeof v === 'boolean') &&
+      (m.code === undefined || typeof m.code === 'string')
     );
   }
   if (m.action === 'saveRecording') {
@@ -760,7 +779,7 @@ function adminDescribe(language: unknown): Promise<AdminReply> {
 function adminAction(input: {
   id: string;
   value?: string | number | boolean;
-  confirm?: boolean;
+  code?: string;
   language?: unknown;
 }): Promise<AdminReply> {
   return adminRoundTrip(
@@ -769,7 +788,7 @@ function adminAction(input: {
       request_id,
       id: input.id,
       ...(input.value !== undefined ? { value: input.value } : {}),
-      ...(input.confirm === true ? { confirm: true } : {}),
+      ...(input.code !== undefined ? { code: input.code } : {}),
       ...adminLanguageField(input.language),
     }),
     input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,
@@ -880,6 +899,13 @@ chrome.windows.onRemoved.addListener((closedId) => {
  * as `failed` / `worker-terminated` instead of leaving a phantom.
  */
 const flowRegistry = createFlowRegistry();
+
+/** The server's deadline of each running FOREGROUND flow, by flow id: the
+ * bound of its hold on the tab's idle clock (owner decision D1, see
+ * `idleHoldUntil`). A detached flow's bound is its registry `expiresAt`.
+ * In memory with the registry, so it dies with the worker exactly as the
+ * flows it describes do. */
+const foregroundFlowDeadlines = new Map<string, number>();
 
 /** Fallback id for a `browser.flow` that arrived without one (a server
  * older than this extension). `crypto.randomUUID` is available in the MV3
@@ -1570,17 +1596,28 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 /** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
+  | { ok: true; no_box: true; tag: string; reresolved?: boolean }
+  | { ok: false; reason: 'no-box' }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
   | { ok: false; reason: 'occluded'; blocker: string }
   | { ok: false; reason: 'retargeted'; hit_element: string }
+  | RefResolveFailure;
+
+/** Result shape returned by `buildProgrammaticClickJs` (owner decision D4). */
+type ProgrammaticClickResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-selector'; error: string }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
+  | { ok: false; reason: 'not-clickable'; why: string }
   | RefResolveFailure;
 
 /** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
 type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
+  | FocusRefusal
   | RefResolveFailure;
 
 /** A `ref` target the page could not resolve — see `resolveTarget` in
@@ -1590,9 +1627,13 @@ type RefResolveFailure =
   | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
   | { ok: false; reason: 'observer-unavailable' };
 
-/** Result shape of `buildFocusJs` with a `ref` (with a selector it is a
- * boolean). */
-type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
+/** The target of a type / press did not take focus — see `FOCUS_REFUSAL_JS`
+ * in `inpage/builders.ts`; `notFocusedMessage` (flow.ts) gives the error. */
+type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
+
+/** Result shape of `buildFocusJs` with a `ref` (with a selector it is
+ * `true`, `false` when not found, or a `FocusRefusal`). */
+type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
 
 async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
   const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
@@ -1653,16 +1694,32 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
 
 async function performFind(
   tabId: number,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
+  params: {
+    text?: string;
+    role?: string;
+    exact?: boolean;
+    ref?: string;
+    key?: FindKey;
+    offset?: { candidates?: number };
+    /** The user's hide-password-values setting (owner decision D12). */
+    hide_password_values?: boolean;
+  },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
+    const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ key: params.key }));
+      const value = await evaluateInTab<FindStepResult>(
+        tabId,
+        buildFindJs({ key: params.key, hide_password_values }),
+      );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ ref }));
+      const found = await evaluateInTab<FindStepResult>(
+        tabId,
+        buildFindJs({ ref, hide_password_values }),
+      );
       const refError = found.matched ? null : refFailureMessage(found, ref);
       if (refError) return { ok: false, error: refError };
       return { ok: true, result: found };
@@ -1670,7 +1727,13 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       tabId,
-      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+      buildFindJs({
+        text,
+        role: params.role,
+        exact: params.exact === true,
+        offset: params.offset,
+        hide_password_values,
+      }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -1717,39 +1780,63 @@ async function performClick(
           error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
         };
       }
+      if (resolved.reason === 'no-box') {
+        return { ok: false, error: noBoxClickMessage(ref ?? selector ?? '') };
+      }
       if (resolved.reason === 'invalid-selector') {
         return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
       }
-      return { ok: false, error: `Element not found: ${ref ?? selector}` };
+      return {
+        ok: false,
+        error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
+      };
     }
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: resolved.x,
-      y: resolved.y,
-    });
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
+    if ('no_box' in resolved) {
+      const clicked = await evaluateInTab<ProgrammaticClickResult>(
+        tabId,
+        buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
+      );
+      if (!clicked.ok) {
+        if (clicked.reason === 'not-clickable') {
+          return { ok: false, error: notClickableMessage(ref ?? selector ?? '', clicked.why) };
+        }
+        const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
+        return {
+          ok: false,
+          error: refError ?? `Element not found: ${ref ?? selector}${notWalkedSuffix(clicked)}`,
+        };
+      }
+    } else {
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: resolved.x,
+        y: resolved.y,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+    }
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
     if (ref !== undefined) result.ref = ref;
     if (resolved.reresolved === true) result.reresolved = true;
-    if (resolved.hit_element) result.hit_element = resolved.hit_element;
+    if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
+    else if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -1787,6 +1874,9 @@ async function performType(
         buildTypeResolveJs({ ref, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, resolved.why, 'typed') };
+        }
         return {
           ok: false,
           error: refFailureMessage(resolved, ref) ?? `Element not found: ${ref}`,
@@ -1799,10 +1889,13 @@ async function performType(
         buildTypeResolveJs({ selector, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(selector, resolved.why, 'typed') };
+        }
         if (resolved.reason === 'invalid-selector') {
           return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
         }
-        return { ok: false, error: `Element not found: ${selector}` };
+        return { ok: false, error: `Element not found: ${selector}${notWalkedSuffix(resolved)}` };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
@@ -1858,16 +1951,22 @@ async function performPress(
     if (ref !== undefined) {
       const focused = await evaluateInTab<FocusRefResult>(tabId, buildFocusJs({ ref }));
       if (!focused.ok) {
+        if (focused.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
+        }
         return { ok: false, error: refFailureMessage(focused, ref) ?? `Element not found: ${ref}` };
       }
       reresolved = focused.reresolved === true;
     } else if (params.selector) {
-      const focused = await evaluateInTab<boolean>(
+      const focused = await evaluateInTab<boolean | FocusRefusal>(
         tabId,
         buildFocusJs({ selector: params.selector }),
       );
       if (!focused) {
         return { ok: false, error: `Element not found: ${params.selector}` };
+      }
+      if (focused !== true && 'why' in focused) {
+        return { ok: false, error: notFocusedMessage(params.selector, focused.why, 'pressed') };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
@@ -1940,7 +2039,15 @@ async function performWaitFor(
     // Set when a ref probe reports that the page has no observer: the ref
     // can never resolve, so the wait fails instead of timing out (or, for
     // `detached` / `hidden`, matching a ref it never looked up).
-    const refProbe = { unavailable: false };
+    // `stale` is set while the last probe found the ref's element gone
+    // (`visible` / `attached` only; `hidden` / `detached` count it as met);
+    // `docChanged` says the ref belongs to another document, which can never
+    // come back, so the wait fails at once instead of polling.
+    const refProbe: {
+      unavailable: boolean;
+      stale: { reason: string; doc_id?: string } | null;
+      docChanged: boolean;
+    } = { unavailable: false, stale: null, docChanged: false };
     if (waitSelector !== undefined) {
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
@@ -1961,9 +2068,21 @@ async function performWaitFor(
         try {
           const result = await evaluateInTab(tabId, expr);
           if (typeof result === 'object' && result !== null) {
+            const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
+            if (probe.reason === 'ref-stale') {
+              refProbe.stale = {
+                reason: 'ref-stale',
+                ...(typeof probe.doc_id === 'string' ? { doc_id: probe.doc_id } : {}),
+              };
+              refProbe.docChanged = probe.doc_changed === true;
+              // A node that is merely detached may be re-attached or
+              // re-rendered, which is what the wait may be for: keep polling.
+              return refProbe.docChanged;
+            }
             refProbe.unavailable = true;
             return true;
           }
+          refProbe.stale = null;
           return result === true;
         } catch {
           return false;
@@ -2016,6 +2135,17 @@ async function performWaitFor(
         error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
       };
     }
+    // A ref of another document can never match: fail now with the owner's
+    // sentence. (A merely detached node keeps the timeout result, below.)
+    if (refProbe.stale !== null && params.ref !== undefined && refProbe.docChanged) {
+      return { ok: false, error: refFailureMessage(refProbe.stale, params.ref) ?? '' };
+    }
+    // The element the ref names was gone at the last poll: the timeout result
+    // keeps its shape and carries the sentence in `ref_gone`.
+    const refGone =
+      refProbe.stale !== null && params.ref !== undefined && !cancelled && !matched
+        ? (refFailureMessage(refProbe.stale, params.ref) ?? '').replace(/^ref-stale: /, '')
+        : '';
 
     // 'cancelled' is deliberately distinct from 'timeout': the step
     // executor turns a timeout into a flow FAILURE (with a recovery
@@ -2029,6 +2159,7 @@ async function performWaitFor(
           elapsed_ms: elapsedMs,
           checks,
           reason: cancelled ? 'cancelled' : 'timeout',
+          ...(refGone ? { ref_gone: refGone } : {}),
         };
     return { ok: true, result };
   } catch (err) {
@@ -2375,6 +2506,11 @@ async function handleSnapshot(
         : undefined,
       max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
       since: optStr('since'),
+      offset:
+        typeof p.offset === 'object' && p.offset !== null
+          ? (p.offset as SnapshotOffset)
+          : undefined,
+      hide_password_values: p.hide_password_values === true,
     }),
   );
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
@@ -2499,6 +2635,9 @@ async function handleFlow(
   // covers a server too old to send one: the popup's Stop button must work
   // regardless of which half was upgraded first.
   const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : newFlowId();
+  // Strict `=== true`: the user's hide-password-values setting (owner
+  // decision D12), sent by the server only when it is on.
+  const hidePasswordValues = p.hide_password_values === true;
 
   // A dry run dispatches nothing and finishes in milliseconds, so it is
   // deliberately NOT registered: there is nothing to stop, and listing it
@@ -2506,10 +2645,17 @@ async function handleFlow(
   // touched the page. It also ignores `detach` — projecting a flow is
   // fast and synchronous whichever way the real run would go.
   if (dryRun) {
-    const projection = await runFlow(rawSteps as FlowStep[], buildFlowDeps(tabId, state), {
-      dryRun: true,
-    });
-    return { kind: 'tool.response', id: msg.id, ok: true, result: projection };
+    const projection = await runFlow(
+      rawSteps as FlowStep[],
+      buildFlowDeps(tabId, state, undefined, hidePasswordValues),
+      { dryRun: true },
+    );
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: true,
+      result: withValuesHiddenNote(projection, hidePasswordValues),
+    };
   }
 
   if (detach) {
@@ -2562,6 +2708,7 @@ async function handleFlow(
     !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
       ? Date.now() + Math.max(0, p.deadline_ms)
       : undefined;
+  if (deadlineAt !== undefined) foregroundFlowDeadlines.set(flowId, deadlineAt);
   // A `wait_for` poll loop only knows this one flag, so it must also
   // trip at the deadline or a 30s wait would sail past the bridge timeout.
   // The runner itself keeps the two causes apart (`shouldCancel` alone is
@@ -2570,7 +2717,7 @@ async function handleFlow(
     shouldCancel() || (deadlineAt !== undefined && Date.now() >= deadlineAt);
   const run = (): Promise<FlowResult> =>
     runFlow(rawSteps as FlowStep[], {
-      ...buildFlowDeps(tabId, state, stopWaiting),
+      ...buildFlowDeps(tabId, state, stopWaiting, hidePasswordValues),
       shouldCancel,
       ...(deadlineAt === undefined ? {} : { deadlineAt }),
       onProgress: (progress) => {
@@ -2617,12 +2764,15 @@ async function handleFlow(
       kind: 'tool.response',
       id: msg.id,
       ok: true,
-      result: {
-        detached: true,
-        started_at: entry.startedAt,
-        steps: rawSteps.length,
-        expires_at: entry.expiresAt,
-      },
+      result: withValuesHiddenNote(
+        {
+          detached: true,
+          started_at: entry.startedAt,
+          steps: rawSteps.length,
+          expires_at: entry.expiresAt,
+        },
+        hidePasswordValues,
+      ),
     };
   }
 
@@ -2633,7 +2783,12 @@ async function handleFlow(
     // failed step, and even a cancellation, is a legitimate business
     // outcome — same pattern as wait_for's matched:false) — flowResult
     // itself carries the ok:true/false and stopped_by the agent reads.
-    return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: true,
+      result: withValuesHiddenNote(flowResult, hidePasswordValues),
+    };
   } finally {
     // In `finally` so a throw (detached debugger, closed tab) still retires
     // the registry entry — a phantom "running" flow in the popup would be
@@ -2669,16 +2824,27 @@ function buildFlowDeps(
   tabId: number,
   state: TabState,
   shouldCancel?: () => boolean,
+  /** The user's hide-password-values setting (owner decision D12): find
+   * steps and the recovery snapshot hide password values too. */
+  hidePasswordValues = false,
 ): Omit<FlowDeps, 'shouldCancel' | 'onProgress'> {
   return {
-    performFind: (params) => performFind(tabId, params),
+    performFind: (params) =>
+      performFind(tabId, { ...params, hide_password_values: hidePasswordValues }),
     performClick: (params) => performClick(tabId, params),
     performType: (params) => performType(tabId, params),
     performPress: (params) => performPress(tabId, params),
     performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
     performDrag: (params) => performDrag(tabId, params),
     buildRecoverySnapshot: () =>
-      evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+      evaluateInTab(
+        tabId,
+        buildSnapshotJs({
+          only_interactive: true,
+          max_interactive: 40,
+          hide_password_values: hidePasswordValues,
+        }),
+      ),
   };
 }
 
@@ -2733,9 +2899,14 @@ const flowHistoryDroppedAt = new Map<number, number>();
  * a storage failure must not turn a completed flow into a failed tool call,
  * and for a detached flow there is no caller left to fail anyway. */
 function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
+  foregroundFlowDeadlines.delete(flowId);
   const entry = flowRegistry.finish(flowId);
   if (!entry) return;
   const endedAt = Date.now();
+  // Owner decision D1: the flow's steps were the tab's activity, so the
+  // idle window restarts from its last step whatever the outcome.
+  const tabState = tabStates.get(entry.tabId);
+  if (tabState) tabState.lastActivityAt = activityAfterFlowEnded(tabState.lastActivityAt, endedAt);
   const droppedAt = flowHistoryDroppedAt.get(entry.tabId);
   // Skip the append entirely for a tab that has already been removed — see
   // `flowHistoryDroppedAt`. Ordering on the chain is not enough on its own,
@@ -3006,23 +3177,38 @@ async function handleDialogRespond(
  * so only one `browser.download` may wait for a download at a time. */
 const downloadCapture = createDownloadCapture(chrome.downloads);
 
-/** The tab's origin for `mayComeFrom`, or undefined when it has none worth
- * matching (opaque `null` origins, unparseable URLs). */
-function downloadOriginOf(url: string): string | undefined {
-  try {
-    const origin = new URL(url).origin;
-    return origin === 'null' ? undefined : origin;
-  } catch {
-    return undefined;
-  }
+/** How long a captured download stays held after the wait, beyond the
+ * download's own budget: the server's fetch gets what the wait left plus one
+ * bridge slack (10 s), then writes and sends `download_settle`. A hold nobody
+ * settles is released untouched (see `download-capture.ts`). */
+const DOWNLOAD_HOLD_SLACK_MS = 30_000;
+
+/** The clicked tab's own `Page.downloadWillBegin` reports, read from the
+ * debugger session already attached to it (`Page.enable` at connect). */
+function tabDownloadSignals(tabId: number): TabDownloadSignals {
+  return {
+    subscribe(onDownloadWillBegin) {
+      const handler = (source: chrome.debugger.Debuggee, method: string, params?: object): void => {
+        if (source.tabId !== tabId || method !== 'Page.downloadWillBegin') return;
+        const url = (params as { url?: unknown } | undefined)?.url;
+        if (typeof url === 'string') onDownloadWillBegin(url);
+      };
+      chrome.debugger.onEvent.addListener(handler);
+      return () => {
+        chrome.debugger.onEvent.removeListener(handler);
+      };
+    },
+  };
 }
 
 /**
  * `browser.download`'s selector mode: arm the capture, click, and wait for
- * the download the click starts. The capture cancels that download before
- * Chrome can show "Save as" (see `download-capture.ts`) and hands its URL
- * back; the server then fetches the bytes in the page and writes the file.
- * A click that starts nothing within `timeout_ms` answers `state: "timeout"`.
+ * the download the click starts. Only a download the tab itself reported is
+ * taken; it is held (never cancelled here) and its URL handed back; the
+ * server fetches the bytes in the page, writes the file, then sends
+ * `download_settle`. A download that cannot be tied to the tab answers
+ * `state: "unattributed"` and is left alone; nothing at all answers
+ * `state: "timeout"`.
  */
 async function handleDownloadCapture(
   tabId: number,
@@ -3036,24 +3222,42 @@ async function handleDownloadCapture(
     return { kind: 'tool.response', id: msg.id, ok: false, error: 'download: timeout_ms required' };
   }
   const timeoutMs = p.timeout_ms;
-  // Narrow the capture to downloads that may come from this tab's origin —
-  // `chrome.downloads` items carry no tab id (see `mayComeFrom`).
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  const origin = tab?.url ? downloadOriginOf(tab.url) : undefined;
   const outcome = await captureAround(
     downloadCapture,
-    { timeoutMs, ...(origin ? { origin } : {}) },
+    { timeoutMs, holdMs: timeoutMs + DOWNLOAD_HOLD_SLACK_MS, tab: tabDownloadSignals(tabId) },
     // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
     () => performClick(tabId, { selector, settle_ms: 0 }),
   );
   if (!outcome.ok) {
     return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
   }
+  const result =
+    outcome.outcome.state === 'captured'
+      ? { state: 'captured', ...outcome.outcome.download }
+      : { state: outcome.outcome.state };
+  return { kind: 'tool.response', id: msg.id, ok: true, result };
+}
+
+/** The server's word on a held download: `saved` true only when the file was
+ * written. Answers what became of Chrome's own download. */
+async function handleDownloadSettle(
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+): Promise<ExtensionToServer> {
+  if (typeof p.download_id !== 'number' || typeof p.saved !== 'boolean') {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'download_settle: download_id and saved required',
+    };
+  }
+  const chromeDownload = await downloadCapture.settle(p.download_id, p.saved);
   return {
     kind: 'tool.response',
     id: msg.id,
     ok: true,
-    result: outcome.captured ? { state: 'captured', ...outcome.captured } : { state: 'timeout' },
+    result: { chrome_download: chromeDownload },
   };
 }
 
@@ -3142,6 +3346,8 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           exact: p.exact === true,
           ref: optStr('ref'),
           key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
+          offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+          hide_password_values: p.hide_password_values === true,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
@@ -3273,6 +3479,9 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'download':
         return await handleDownloadCapture(tabId, msg, p);
+
+      case 'download_settle':
+        return await handleDownloadSettle(msg, p);
 
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };
@@ -4486,7 +4695,8 @@ chrome.debugger.onDetach.addListener((source) => {
  * tool.request landed more than the user's configured `idleTtlMinutes`
  * ago gets disconnected: the WS closes, the debugger detaches, the popup
  * goes back to "Not connected". The user explicitly re-presses Connect to
- * bring it back.
+ * bring it back. A tab with a flow running is never idle, and a finished
+ * flow's last step counts as its last activity (owner decision D1).
  *
  * When the user picked "Never" (idleTtlMinutesCache === 0),
  * `shouldScheduleIdleSweep` short-circuits the tick before it walks
@@ -4501,8 +4711,20 @@ chrome.debugger.onDetach.addListener((source) => {
 setInterval(() => {
   if (!shouldScheduleIdleSweep(idleTtlMinutesCache)) return;
   const now = Date.now();
-  for (const [tabId, state] of tabStates) {
-    if (!shouldDisconnectForIdle(state.lastActivityAt, now, idleTtlMinutesCache)) continue;
+  // Owner decision D1: a tab with a flow running is not idle. Its steps run
+  // here in the worker and never arrive as tool.request, so the registry is
+  // what says the tab is busy, up to each flow's own maximum duration.
+  const holds: IdleFlowHold[] = [];
+  for (const view of flowRegistry.listRunning(now)) {
+    const entry = flowRegistry.get(view.flowId);
+    if (!entry) continue;
+    holds.push({
+      tabId: entry.tabId,
+      holdUntil: idleHoldUntil(entry, foregroundFlowDeadlines.get(entry.flowId)),
+    });
+  }
+  const tabs = [...tabStates].map(([tabId, state]) => [tabId, state.lastActivityAt] as const);
+  for (const tabId of tabsToDisconnectForIdle(tabs, holds, now, idleTtlMinutesCache)) {
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

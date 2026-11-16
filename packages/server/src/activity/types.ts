@@ -40,8 +40,16 @@
  *      `browser.type` / `browser.press` whose executor reports
  *      `sensitive_field: true` (a password input, or an `autocomplete`
  *      password / one-time-code / card token) stores `[sensitive field]`
- *      instead of the text or key, whatever `record-payloads` says. Rows
- *      stored before that rule existed are left exactly as they were.
+ *      instead of the text or key, whatever `record-payloads` says. Owner
+ *      decision D13: such a row hides the value in EVERY column where it can
+ *      appear, never only in `payload` (the URL loses its query string and
+ *      fragment; the typed text is replaced in url, title, selector and
+ *      error), and a type / press that never said which field it acted on
+ *      is hidden the same way with `[field not identified]`. That is the
+ *      `activity.hide-sensitive` setting (default in `config.ts`, pending
+ *      the owner's confirmation); turned off, such rows are stored like any
+ *      other, nothing hidden. Rows stored before a rule or a setting changed
+ *      are left exactly as they were.
  */
 
 /** Outcome of a dispatched tool. `error` is the failure branch of the same
@@ -116,7 +124,8 @@ export interface ActivityRecord {
   selector: string | null;
   /** Agent-supplied or page-derived text: typed string, evaluate expression,
    * navigate URL. Null when the tool has none, or when payload recording is
-   * off; `[sensitive field]` for input to a field the page marks sensitive.
+   * off; `[sensitive field]` for input to a field the page marks sensitive,
+   * `[field not identified]` for input whose field was never identified.
    * See the PRIVACY CONTRACT above. */
   payload: string | null;
   outcome: ActivityOutcome;

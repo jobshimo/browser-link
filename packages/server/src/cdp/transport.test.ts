@@ -7,18 +7,34 @@ import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
 import { clearGrant, saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR, checkCdpDirectGate } from './gate.js';
-import { callCdpTool, resetConnectionsForTest, setIdleCleanupConfigForTest } from './transport.js';
-import { resetDetachedFlowsForTest } from './detached-flows.js';
+import {
+  callCdpTool,
+  resetConnectionsForTest,
+  setIdleCleanupConfigForTest,
+  sweepIdleConnectionsForTest,
+} from './transport.js';
+import {
+  cancelDetachedFlow,
+  detachedFlowStatus,
+  resetDetachedFlowsForTest,
+} from './detached-flows.js';
 import {
   OBSERVER_BINDING,
   OBSERVER_GLOBAL,
   buildObserverChangesJs,
   buildObserverMarkJs,
 } from './inpage/observer.js';
-import { buildFocusedFieldJs, buildSettleJs } from './inpage/builders.js';
+import {
+  PASSWORD_VALUES_HIDDEN_NOTE,
+  UNOBSERVED_FRAMES_HINT,
+  buildFocusedFieldJs,
+  buildProgrammaticClickJs,
+  buildSettleJs,
+} from './inpage/builders.js';
+import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
-import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
+import { SENSITIVE_PAYLOAD_MARKER, UNIDENTIFIED_FIELD_MARKER } from '../activity/extract.js';
 import { query, record } from '../activity/queries.js';
 import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 
@@ -223,6 +239,42 @@ describe('callCdpTool — tool dispatch', () => {
     expect(expressions[0]).toContain('"since":"s3"');
     expect(expressions[1]).toContain('"since":null');
   });
+
+  test('snapshot and find forward offset (D6) and answer the truncated report unchanged', async () => {
+    const expressions: string[] = [];
+    const cutSnapshot = {
+      interactive: [],
+      truncated: { interactive: 3, next_offset: { interactive: 123 }, hint: 'h' },
+    };
+    const cutFind = {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: [],
+      truncated: { candidates: 2, next_offset: { candidates: 10 }, hint: 'h' },
+    };
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        expressions.push(expression);
+        return {
+          result: { value: expression.includes('candidateOffset') ? cutFind : cutSnapshot },
+        };
+      },
+    });
+    grantAccess(port);
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'snapshot', {
+        offset: { interactive: 120, headings: 30, text: 4000 },
+      }),
+    ).toEqual(cutSnapshot);
+    expect(expressions[0]).toContain('"offset":{"interactive":120,"headings":30,"text":4000}');
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', {});
+    expect(expressions[1]).toContain('"offset":{"interactive":0,"headings":0,"text":0}');
+    expect(
+      await callCdpTool(`cdp:${targetId}`, 'find', { text: 'Save', offset: { candidates: 5 } }),
+    ).toEqual(cutFind);
+    expect(expressions[2]).toContain('"candidateOffset":5');
+  });
   test('evaluate threads the dispatcher budget into the Runtime.evaluate per-command timeout', async () => {
     // The fake target swallows Runtime.evaluate, so only the per-command
     // timeout can settle the call — a reject naming the CALLER's budget
@@ -280,6 +332,47 @@ describe('callCdpTool — tool dispatch', () => {
     expect(result).toEqual({ title: 'Fast', url: 'https://example.com/fast' });
   });
 
+  test('hide-password-values (D12): snapshot, find and a flow ask the page to hide; off asks nothing', async () => {
+    const expressions: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        expressions.push(expression);
+        return {
+          result: {
+            value: expression.includes('candidateOffset')
+              ? { matched: false, reason: 'not-found' }
+              : { interactive: [] },
+          },
+        };
+      },
+    });
+    grantAccess(port);
+    const HIDE = '"hideValues":true';
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', { hide_password_values: true });
+    await callCdpTool(`cdp:${targetId}`, 'find', { text: 'Pw', hide_password_values: true });
+    expect(expressions[0]).toContain(HIDE);
+    expect(expressions[0]).toContain('values_hidden');
+    expect(expressions[1]).toContain(HIDE);
+    const flow = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ find: { text: 'Pw' } }],
+      hide_password_values: true,
+    });
+    // The find step and the failure's recovery snapshot both hid values.
+    expect(expressions.slice(2).every((e) => e.includes(HIDE))).toBe(true);
+    expect(expressions.length).toBe(4);
+    expect(flow).toMatchObject({ ok: false, values_hidden: PASSWORD_VALUES_HIDDEN_NOTE });
+    const before = expressions.length;
+    const plain = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ find: { text: 'Pw' } }],
+    });
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', {});
+    expect(
+      expressions.slice(before).some((e) => e.includes(HIDE) || e.includes('values_hidden')),
+    ).toBe(false);
+    expect('values_hidden' in (plain as object)).toBe(false);
+  });
+
   test('an out-of-v1-scope tool (drag) rejects naming the extension as fallback', async () => {
     const { port, targetId } = await startFakeTarget({});
     grantAccess(port);
@@ -319,6 +412,22 @@ describe('callCdpTool — tool dispatch', () => {
     await expect(callCdpTool(`cdp:${targetId}`, 'click', { selector: '#missing' })).rejects.toThrow(
       /Element not found: #missing/,
     );
+  });
+
+  test('click and type say part of the page was not walked when the depth guard fired', async () => {
+    const note = 'Part of the page was not walked.';
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({
+        result: { value: { ok: false, reason: 'not-found', not_walked: note } },
+      }),
+    });
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'click', { selector: '#deep' })).rejects.toThrow(
+      `Element not found: #deep (${note})`,
+    );
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'type', { selector: '#deep', text: 'x' }),
+    ).rejects.toThrow(`Element not found: #deep (${note})`);
   });
 
   test('click rejects with the retargeted error when the hit lands on an ancestor', async () => {
@@ -498,6 +607,150 @@ describe('callCdpTool — connection cache lifecycle', () => {
     // The idle sweep must have closed and evicted the pooled connection —
     // the next call dials fresh instead of reusing a stale cache entry.
     await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    expect(connectionCount).toBe(2);
+  });
+});
+
+/*
+ * Owner decision D1: the cdp connection sweep stays internal, but it may not
+ * cut a running flow, and a flow's steps count as activity. Only `Date` is
+ * faked, so the sweep is stepped through minutes while the fake target's
+ * sockets and the flow's poll loop run on real (millisecond) timers. Each
+ * check reads `connectionCount` through a ping AFTER the sweep it judges: a
+ * ping refreshes the clock, so it cannot hide what the sweep already did.
+ */
+describe('callCdpTool — a running flow holds its connection (owner decision D1)', () => {
+  const MIN = 60_000;
+  const T0 = 1_700_000_000_000;
+  /** What the fake page answers to `Runtime.evaluate`: the flow's wait_for
+   * waits while it is 'false' and is stuck inside its step while 'hang'. */
+  let page: 'false' | 'true' | 'hang';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+    page = 'false';
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function connect(): Promise<string> {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () =>
+        page === 'hang' ? NO_REPLY : { result: { value: page === 'true' } },
+    });
+    grantAccess(port);
+    const tabId = `cdp:${targetId}`;
+    await callCdpTool(tabId, 'ping', {});
+    return tabId;
+  }
+
+  const waitStep = { wait_for: { expression: 'ready', timeout_ms: 30_000, poll_interval_ms: 10 } };
+
+  async function untilEnded(flowId: string): Promise<string> {
+    const deadline = performance.now() + 5_000;
+    let state = detachedFlowStatus(flowId).state;
+    while (state === 'running' && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      state = detachedFlowStatus(flowId).state;
+    }
+    return state;
+  }
+
+  test('the sweep keeps the connection of a running detached flow past the idle window', async () => {
+    const tabId = await connect();
+    await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+    vi.setSystemTime(T0 + 20 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+    expect(detachedFlowStatus('f1').state).toBe('running');
+  });
+
+  test('after a detached flow ends the idle window counts from its last step', async () => {
+    const tabId = await connect();
+    await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+    vi.setSystemTime(T0 + 20 * MIN);
+    page = 'true';
+    expect(await untilEnded('f1')).not.toBe('running');
+    vi.setSystemTime(T0 + 25 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test('a cancelled detached flow restarts the window from when it stopped', async () => {
+    const tabId = await connect();
+    // A loop of short real pauses: unlike a wait_for, it has no per-step
+    // timeout for the fake clock's jump to trip.
+    await callCdpTool(tabId, 'flow', {
+      flow_id: 'f1',
+      detach: true,
+      steps: [{ repeat: { max_iterations: 500, steps: [{ sleep: { ms: 10 } }] } }],
+    });
+    vi.setSystemTime(T0 + 20 * MIN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(detachedFlowStatus('f1').state).toBe('running');
+    // In-process cancel, not `flow_cancel`: that tool call would refresh
+    // the connection's clock by itself.
+    cancelDetachedFlow('f1');
+    expect(await untilEnded('f1')).toBe('cancelled');
+    vi.setSystemTime(T0 + 25 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test.each([
+    ['keeps', 35 * MIN, 1],
+    ['closes', 35 * MIN + 1, 2],
+  ])(
+    'a detached flow stuck inside a step holds the connection no longer than its 30-minute ceiling: the sweep %s it at the ceiling plus the idle window',
+    async (_, at, dials) => {
+      const tabId = await connect();
+      page = 'hang';
+      await callCdpTool(tabId, 'flow', { flow_id: 'f1', detach: true, steps: [waitStep] });
+      // Let the flow send the command it will never get an answer to.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      vi.setSystemTime(T0 + at);
+      sweepIdleConnectionsForTest(Date.now());
+      expect(detachedFlowStatus('f1').state).toBe('running');
+      await callCdpTool(tabId, 'ping', {});
+      expect(connectionCount).toBe(dials);
+    },
+  );
+
+  test('a foreground flow holds the connection while it runs and restarts the window from its end', async () => {
+    const tabId = await connect();
+    const running = callCdpTool(tabId, 'flow', {
+      flow_id: 'f1',
+      deadline_ms: 30 * MIN,
+      steps: [waitStep, { press: { key: 'a', settle_ms: 0 } }],
+    });
+    // Let the flow reach its wait before the clock moves.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    vi.setSystemTime(T0 + 6 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    page = 'true';
+    const result = (await running) as { ok: boolean };
+    expect(result.ok).toBe(true);
+    vi.setSystemTime(T0 + 10 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+
+  test('with no flow the sweep closes a connection idle for more than five minutes, as before', async () => {
+    const tabId = await connect();
+    vi.setSystemTime(T0 + 5 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+    vi.setSystemTime(T0 + 10 * MIN + 1);
+    sweepIdleConnectionsForTest(Date.now());
+    await callCdpTool(tabId, 'ping', {});
     expect(connectionCount).toBe(2);
   });
 });
@@ -1070,6 +1323,319 @@ describe('callCdpTool — page observer', () => {
     expect(mark?.params.userGesture).toBeUndefined();
   });
 
+  /** A page whose settle wait answers `settle` instead of QUIET. */
+  function settlePage(seen: Seen[], settle: unknown, changes?: unknown): Record<string, Handler> {
+    const page = observerPage(seen, changes === undefined ? {} : { changes });
+    return {
+      ...page,
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === DEFAULT_SETTLE_JS) return { result: { value: settle } };
+        return page['Runtime.evaluate'](params);
+      },
+    };
+  }
+
+  test('records the settle wait saw inside same-origin frames are added to the observer count (D5)', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      settlePage(seen, { ...QUIET, mutation_count: 3, frame_mutation_count: 2 }),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      settled: true,
+      duration_ms: 150,
+      // 4 observer records (top document and its shadow roots) + 2 in frames.
+      mutation_count: 6,
+      url_changed: 'https://example.com/#done',
+      changes: {
+        records: 4,
+        targets: 2,
+        kinds: { childList: 3, attributes: 1, characterData: 0 },
+        roots: { document: true, shadow: false, frame: false },
+        descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+        overflow: 0,
+      },
+    });
+  });
+
+  test('without the observer the settle count already holds frames and the internal field is dropped (D5)', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      settlePage(
+        seen,
+        { ...QUIET, mutation_count: 3, frame_mutation_count: 2 },
+        { ok: false, reason: 'doc-changed' },
+      ),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      ...QUIET,
+      mutation_count: 3,
+      changes: null,
+      observer: 'doc-changed',
+    });
+  });
+
+  test('the unobserved marker of the settle wait reaches the click result (D5)', async () => {
+    const seen: Seen[] = [];
+    const unobserved = { cross_origin_frames: 1, hint: UNOBSERVED_FRAMES_HINT };
+    const { port, targetId } = await startFakeTarget(
+      settlePage(seen, { settled: true, duration_ms: 150, mutation_count: 0, unobserved }),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      settled: true,
+      duration_ms: 150,
+      mutation_count: 4,
+      unobserved,
+      url_changed: 'https://example.com/#done',
+      changes: {
+        records: 4,
+        targets: 2,
+        kinds: { childList: 3, attributes: 1, characterData: 0 },
+        roots: { document: true, shadow: false, frame: false },
+        descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+        overflow: 0,
+      },
+    });
+  });
+
+  test('a force click on a target with no box calls its own click() after the mark, with no mouse events, and settles like a pointer click (D4)', async () => {
+    const seen: Seen[] = [];
+    const order: string[] = [];
+    let noBox = false;
+    const page = observerPage(seen);
+    const programmatic = buildProgrammaticClickJs({ selector: '#go' });
+    const { port, targetId } = await startFakeTarget({
+      ...page,
+      'Input.dispatchMouseEvent': (params) => {
+        order.push(`input:${(params as { type: string }).type}`);
+        return {};
+      },
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          order.push('programmatic');
+          return { result: { value: { ok: true } } };
+        }
+        if (noBox && expression.includes("reason: 'invalid-selector'")) {
+          return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+        }
+        if (expression === buildObserverMarkJs()) order.push('mark');
+        return page['Runtime.evaluate'](params);
+      },
+    });
+    grantAccess(port);
+    const pointer = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: unknown;
+    };
+    order.length = 0;
+    noBox = true;
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', force: true });
+    expect(result).toEqual({
+      clicked: '#go',
+      tag: 'button',
+      programmatic_click: PROGRAMMATIC_CLICK_NOTE,
+      settle: pointer.settle,
+    });
+    expect(order).toEqual(['mark', 'programmatic']);
+  });
+
+  test('a target with no box without force fails with the no-box message and nothing is clicked (D4)', async () => {
+    const order: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Input.dispatchMouseEvent': (params) => {
+        order.push(`input:${(params as { type: string }).type}`);
+        return {};
+      },
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === buildProgrammaticClickJs({ selector: '#hidden' })) {
+          order.push('programmatic');
+        }
+        return { result: { value: { ok: false, reason: 'no-box' } } };
+      },
+    });
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'click', { selector: '#hidden' })).rejects.toThrow(
+      noBoxClickMessage('#hidden'),
+    );
+    expect(noBoxClickMessage('#hidden')).toBe(
+      'Element #hidden has no visible box (not rendered, visibility-hidden, or an option of a select), ' +
+        'so there is no point to click: make it visible first (open its menu, dialog or section), ' +
+        "or pass force: true to call the element's own click() with no pointer",
+    );
+    expect(order).toEqual([]);
+  });
+
+  test.each([
+    ['disabled', /is disabled, so its own click\(\) does nothing and nothing was clicked/],
+    ['option', /is an <option> \(or <optgroup>\): clicking an option does nothing/],
+  ])(
+    'a force click whose programmatic click cannot do anything (%s) fails with a clear message and no mouse events',
+    async (why, message) => {
+      const order: string[] = [];
+      const programmatic = buildProgrammaticClickJs({ selector: '#hidden' });
+      const { port, targetId } = await startFakeTarget({
+        'Input.dispatchMouseEvent': (params) => {
+          order.push(`input:${(params as { type: string }).type}`);
+          return {};
+        },
+        'Runtime.evaluate': (params) => {
+          const expression = (params as { expression: string }).expression;
+          if (expression === programmatic) {
+            order.push('programmatic');
+            return { result: { value: { ok: false, reason: 'not-clickable', why } } };
+          }
+          if (expression.includes("reason: 'invalid-selector'")) {
+            return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+          }
+          return { result: { value: true } };
+        },
+      });
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'click', { selector: '#hidden', force: true }),
+      ).rejects.toThrow(message);
+      expect(order).toEqual(['programmatic']);
+    },
+  );
+
+  test('expect is checked around a programmatic click exactly as around a pointer click (D4)', async () => {
+    let clicked = false;
+    const mouse: string[] = [];
+    const programmatic = buildProgrammaticClickJs({ ref: 'k3x9ab:e7' });
+    const { port, targetId } = await startFakeTarget({
+      'Input.dispatchMouseEvent': (params) => {
+        mouse.push((params as { type: string }).type);
+        return {};
+      },
+      'Runtime.evaluate': (params: unknown) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          clicked = true;
+          return { result: { value: { ok: true } } };
+        }
+        if (expression.includes('function resolveTarget')) {
+          return {
+            result: { value: { ok: true, no_box: true, tag: 'a', reresolved: true } },
+          };
+        }
+        return { result: { value: { url: 'u', selector_appears: clicked } } };
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      ref: 'k3x9ab:e7',
+      force: true,
+      settle_ms: 0,
+      expect: { selector_appears: '#done', timeout_ms: 2000 },
+    });
+    expect(result).toEqual({
+      clicked: 'k3x9ab:e7',
+      tag: 'a',
+      ref: 'k3x9ab:e7',
+      reresolved: true,
+      programmatic_click: PROGRAMMATIC_CLICK_NOTE,
+      expect: { met: true, elapsed_ms: expect.any(Number) },
+    });
+    expect(mouse).toEqual([]);
+  });
+
+  describe('type and press act only on an element that took focus', () => {
+    function refusingPage(sent: string[]): Record<string, Handler> {
+      const record =
+        (method: string): Handler =>
+        () => {
+          sent.push(method);
+          return {};
+        };
+      return {
+        'Input.insertText': record('Input.insertText'),
+        'Input.dispatchKeyEvent': record('Input.dispatchKeyEvent'),
+        'Runtime.evaluate': () => ({
+          result: { value: { ok: false, reason: 'not-focused', why: 'it is disabled' } },
+        }),
+      };
+    }
+
+    test('type by selector and by ref types nothing and says why', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget(refusingPage(sent));
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'type', { selector: '#off', text: 'secret' }),
+      ).rejects.toThrow(notFocusedMessage('#off', 'it is disabled', 'typed'));
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'type', { ref: 'k3x9ab:e7', text: 'secret' }),
+      ).rejects.toThrow(notFocusedMessage('k3x9ab:e7', 'it is disabled', 'typed'));
+      expect(notFocusedMessage('#off', 'it is disabled', 'typed')).toBe(
+        'Element #off did not take focus (it is disabled), so nothing was typed: ' +
+          'the input would have gone to whatever had focus before; target the field itself',
+      );
+      expect(sent).toEqual([]);
+    });
+
+    test('press by selector and by ref sends no key and says why', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget(refusingPage(sent));
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'press', { selector: '#off', key: 'Enter' }),
+      ).rejects.toThrow(notFocusedMessage('#off', 'it is disabled', 'pressed'));
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'press', { ref: 'k3x9ab:e7', key: 'Enter' }),
+      ).rejects.toThrow(notFocusedMessage('k3x9ab:e7', 'it is disabled', 'pressed'));
+      expect(sent).toEqual([]);
+    });
+
+    test('press by selector that took focus still sends the key', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget({
+        ...refusingPage(sent),
+        'Runtime.evaluate': () => ({ result: { value: true } }),
+      });
+      grantAccess(port);
+      await callCdpTool(`cdp:${targetId}`, 'press', {
+        selector: '#in',
+        key: 'Enter',
+        settle_ms: 0,
+      });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(new Set(sent)).toEqual(new Set(['Input.dispatchKeyEvent']));
+    });
+  });
+
+  test('a programmatic click whose target is gone by then fails as not found (D4)', async () => {
+    const programmatic = buildProgrammaticClickJs({ selector: '#go' });
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params: unknown) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          return { result: { value: { ok: false, reason: 'not-found' } } };
+        }
+        if (expression.includes('function resolveTarget')) {
+          return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', force: true, settle_ms: 0 }),
+    ).rejects.toThrow('Element not found: #go');
+  });
+
   test('a mark the observer refuses yields changes: null and keeps the settle fields', async () => {
     const seen: Seen[] = [];
     const { port, targetId } = await startFakeTarget(
@@ -1251,7 +1817,7 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     const { port, targetId } = await startFakeTarget(refPage(STALE, []));
     grantAccess(port);
     await expect(callCdpTool(`cdp:${targetId}`, 'click', { ref: 'k3x9ab:e7' })).rejects.toThrow(
-      'ref-stale: k3x9ab:e7 not found in document doc-1',
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
     );
   });
 
@@ -1294,7 +1860,9 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     grantAccess(port);
     await expect(
       callCdpTool(`cdp:${targetId}`, 'press', { key: 'Enter', ref: 'k3x9ab:e7' }),
-    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+    ).rejects.toThrow(
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
   });
 
   test('find by ref returns the match; a stale ref rejects', async () => {
@@ -1310,7 +1878,9 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     grantAccess(stale.port);
     await expect(
       callCdpTool(`cdp:${stale.targetId}`, 'find', { ref: 'k3x9ab:e7' }),
-    ).rejects.toThrow('ref-stale: k3x9ab:e7 not found in document doc-1');
+    ).rejects.toThrow(
+      'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
   });
 
   test('wait_for by ref polls the ref probe; without the observer it rejects', async () => {
@@ -1332,6 +1902,104 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     ).rejects.toThrow(
       'observer-unavailable: ref k3x9ab:e7 cannot be resolved without the page observer',
     );
+  });
+
+  /** Answers the ref probe with `answers` in order (the last one repeats). */
+  function sequencePage(answers: unknown[], seen: string[]): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"ref":"k3x9ab:e7"')) {
+          const value = answers[Math.min(seen.length, answers.length - 1)];
+          seen.push(expression);
+          return { result: { value } };
+        }
+        return { result: { value: true } };
+      },
+    };
+  }
+  const GONE_MESSAGE =
+    'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot';
+
+  test('wait_for visible/attached by a ref of another document fails at once with the ref-stale message', async () => {
+    for (const condition of ['visible', 'attached']) {
+      const seen: string[] = [];
+      const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: true }], seen));
+      grantAccess(page.port);
+      await expect(
+        callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+          ref: 'k3x9ab:e7',
+          condition,
+          timeout_ms: 5_000,
+        }),
+      ).rejects.toThrow(GONE_MESSAGE);
+      expect(seen).toHaveLength(1);
+      resetConnectionsForTest();
+      wss?.close();
+    }
+  });
+
+  test('wait_for by a ref whose node is only detached keeps polling, then times out with the usual result plus ref_gone', async () => {
+    const seen: string[] = [];
+    const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: false }], seen));
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'visible',
+      timeout_ms: 300,
+      poll_interval_ms: 50,
+    });
+    expect(result).toEqual({
+      matched: false,
+      elapsed_ms: expect.any(Number),
+      checks: expect.any(Number),
+      reason: 'timeout',
+      ref_gone: 'k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    });
+    expect(seen.length).toBeGreaterThan(1);
+  });
+
+  test('a wait_for step in a flow on a gone ref fails as before, the failure text carrying the sentence', async () => {
+    const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: false }], []));
+    grantAccess(page.port);
+    const result = (await callCdpTool(`cdp:${page.targetId}`, 'flow', {
+      steps: [{ wait_for: { ref: 'k3x9ab:e7', condition: 'attached', timeout_ms: 200 } }],
+    })) as { ok: boolean; error: string; failed_step: number };
+    expect(result).toMatchObject({ ok: false, failed_step: 0 });
+    expect(result.error).toMatch(
+      /^wait_for: condition not met within timeout \(\d+ms, \d+ checks\) — /,
+    );
+    expect(result.error).toContain(
+      'k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
+  });
+
+  test('wait_for by a ref that is re-rendered while waiting matches (the polling is what makes it legitimate)', async () => {
+    const seen: string[] = [];
+    const page = await startFakeTarget(
+      sequencePage(
+        [{ ...STALE, doc_changed: false }, { ...STALE, doc_changed: false }, true],
+        seen,
+      ),
+    );
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'attached',
+      timeout_ms: 5_000,
+      poll_interval_ms: 50,
+    });
+    expect(result).toMatchObject({ matched: true, checks: 3 });
+  });
+
+  test('wait_for hidden/detached on a gone ref stays true', async () => {
+    const page = await startFakeTarget(sequencePage([true], []));
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'hidden',
+    });
+    expect(result).toMatchObject({ matched: true, checks: 1 });
   });
 
   test('click by selector is unchanged (no ref or reresolved key)', async () => {
@@ -1560,7 +2228,10 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     closeActivityDb();
   });
 
-  function dispatchDeps(recordActivityPayloads: boolean): BrowserToolDeps {
+  function dispatchDeps(
+    recordActivityPayloads: boolean,
+    hideSensitiveActivity?: boolean,
+  ): BrowserToolDeps {
     return {
       listTabs: () => [],
       callBrowserTool: async () => {
@@ -1572,6 +2243,7 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
         record(row);
       },
       recordActivityPayloads,
+      ...(hideSensitiveActivity === undefined ? {} : { hideSensitiveActivity }),
     };
   }
 
@@ -1603,7 +2275,11 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     },
   );
 
-  test('a failed type on a plain field is stored as today', async () => {
+  // A failure carries the field verdict only when it is sensitive, so a
+  // failed type on a plain field reads like one that never reached the
+  // field: hidden as not identified by default (D13), as before when the
+  // trail stores sensitive rows unhidden.
+  test('a failed type on a plain field: not identified by default, the text when stored unhidden', async () => {
     const { port, targetId } = await startFakeTarget(unmetPage({ sensitive_field: false }));
     grantAccess(port);
     const args = {
@@ -1616,10 +2292,13 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     await expect(
       handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
     ).rejects.toThrow(/^expectation not met/);
-    expect(rows().map((r) => r.payload)).toEqual(['alpha']);
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true, false), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['alpha', UNIDENTIFIED_FIELD_MARKER]);
   });
 
-  test('a failure with no field report (probe failed) is stored as today', async () => {
+  test('a failure with no field report (probe failed): not identified by default, the text when stored unhidden', async () => {
     const { port, targetId } = await startFakeTarget(unmetPage(new CdpError('context destroyed')));
     grantAccess(port);
     const args = {
@@ -1632,6 +2311,9 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     await expect(
       handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
     ).rejects.toThrow(/^expectation not met/);
-    expect(rows().map((r) => r.payload)).toEqual(['hunter2']);
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true, false), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['hunter2', UNIDENTIFIED_FIELD_MARKER]);
   });
 });

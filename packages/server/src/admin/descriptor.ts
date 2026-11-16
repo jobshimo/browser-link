@@ -1,6 +1,8 @@
 import {
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_GRANT_TTL_MINUTES,
+  activityHidesSensitive,
+  hidesPasswordValues,
   type BrowserLinkConfig,
 } from '../config.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
@@ -21,7 +23,8 @@ import { ADMIN_I18N, type AdminI18n } from './i18n.js';
  * actions: they would end the very primary that answers the popup, so they
  * are readouts carrying the console command instead. So are the settings
  * that widen what an agent may do (the tool set, cdp-direct and its grant
- * lifetime, MCP client registration): anything that can reach the bridge
+ * lifetime, MCP client registration, and what is hidden from an agent:
+ * password values, sensitive trail rows): anything that can reach the bridge
  * could otherwise grant them, so only the console changes them.
  */
 
@@ -90,6 +93,17 @@ function readout(
   return { id, kind: 'readout', label, value, writesDisk: false, ...extra };
 }
 
+/** A readout of a setting only the console changes: the window shows it with
+ * an info icon saying so (`consoleOnly`). */
+function consoleReadout(
+  id: string,
+  label: string,
+  value: AdminItem['value'],
+  extra: Partial<AdminItem> = {},
+): AdminItem {
+  return readout(id, label, value, { ...extra, consoleOnly: true });
+}
+
 function toggle(id: string, label: string, value: boolean, requiresRestart = false): AdminItem {
   return {
     id,
@@ -99,6 +113,11 @@ function toggle(id: string, label: string, value: boolean, requiresRestart = fal
     writesDisk: true,
     ...(requiresRestart ? { requiresRestart: true } : {}),
   };
+}
+
+/** The console command that flips an on/off `config set` key. */
+function onOffCommand(key: string, on: boolean): string {
+  return `browser-link config set ${key} ${on ? 'off' : 'on'}`;
 }
 
 export function formatUptime(ms: number): string {
@@ -189,6 +208,20 @@ function statusSection(input: AdminInput, t: AdminI18n): AdminSection {
       input.update?.isNewer === true ? { hint: SELF_UPDATE_COMMAND } : {},
     ),
     readout('status.activity', t.activity, config.activityEnabled === false ? t.off : t.on),
+    // Which of the two hide settings is active (owner decisions D12, D13),
+    // with the console command that flips each one.
+    readout(
+      'status.passwordValues',
+      t.passwordValuesStatus,
+      hidesPasswordValues(config) ? t.passwordValuesHidden : t.passwordValuesShown,
+      { hint: onOffCommand('hide-password-values', hidesPasswordValues(config)) },
+    ),
+    readout(
+      'status.activitySensitive',
+      t.activitySensitiveStatus,
+      activityHidesSensitive(config) ? t.activitySensitiveHidden : t.activitySensitiveStored,
+      { hint: onOffCommand('activity.hide-sensitive', activityHidesSensitive(config)) },
+    ),
   ];
   return { id: 'status', title: t.sections.status, items };
 }
@@ -212,7 +245,7 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
     },
     ...input.toolNames.map((name) => {
       const enabled = !disabled.has(name);
-      return readout(`tools.${name}`, t.tool(name), enabled ? t.on : t.off, {
+      return consoleReadout(`tools.${name}`, t.tool(name), enabled ? t.on : t.off, {
         hint: toolCommand(name, enabled),
       });
     }),
@@ -224,15 +257,20 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       config.instructionsAutoRefresh !== false,
       true,
     ),
-    readout('cdpDirectEnabled', t.cdpDirectEnabled, cdpDirectEnabled ? t.on : t.off, {
+    consoleReadout('cdpDirectEnabled', t.cdpDirectEnabled, cdpDirectEnabled ? t.on : t.off, {
       hint: cdpDirectEnabledCommand(cdpDirectEnabled),
     }),
-    readout('cdpDirectPort', t.cdpDirectPort, config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT, {
-      hint: t.cdpDirectPortHint(
-        `browser-link config set cdp-direct.port ${String(config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT)}`,
-      ),
-    }),
-    readout(
+    consoleReadout(
+      'cdpDirectPort',
+      t.cdpDirectPort,
+      config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT,
+      {
+        hint: t.cdpDirectPortHint(
+          `browser-link config set cdp-direct.port ${String(config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT)}`,
+        ),
+      },
+    ),
+    consoleReadout(
       'cdpDirectGrantTtlMinutes',
       t.cdpDirectGrantTtl,
       grantTtl === 0 ? t.never : t.minutes(grantTtl),
@@ -249,6 +287,20 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       t.activityRecordPayloads,
       config.activityRecordPayloads !== false,
       true,
+    ),
+    // Owner decisions D12, D13 (revised 2026-11-16): these two widen what an
+    // agent may see, so like cdp-direct they are only shown here.
+    consoleReadout(
+      'activityHideSensitive',
+      t.activityHideSensitive,
+      activityHidesSensitive(config) ? t.activitySensitiveHidden : t.activitySensitiveStored,
+      { hint: onOffCommand('activity.hide-sensitive', activityHidesSensitive(config)) },
+    ),
+    consoleReadout(
+      'hidePasswordValues',
+      t.hidePasswordValues,
+      hidesPasswordValues(config) ? t.passwordValuesHidden : t.passwordValuesShown,
+      { hint: onOffCommand('hide-password-values', hidesPasswordValues(config)) },
     ),
     readout('downloadsDir', t.downloadsDir, input.downloadsDir, {
       hint: 'browser-link config set downloads.dir <absolute-path|default>',
@@ -286,7 +338,8 @@ function button(id: string, label: string, writesDisk: boolean): AdminItem {
 function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
   const items: AdminItem[] = [
     button('doctor', t.doctor, false),
-    button('updates.check', t.updatesCheck, false),
+    // Writes update-check.json, so it previews and needs its code (D11).
+    button('updates.check', t.updatesCheck, true),
   ];
   for (const s of input.instructions) {
     // A corrupt file is the CLI's business: the installers refuse to touch it.
@@ -301,7 +354,7 @@ function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
   for (const c of input.clients) {
     if (!c.installed) continue;
     items.push(
-      readout(
+      consoleReadout(
         `client.register.${c.id}`,
         t.registration(c.displayName),
         c.registered ? t.registered : t.notRegistered,

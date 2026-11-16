@@ -260,10 +260,18 @@ const RUNTIMES = new Set(['node', 'node.exe', 'nodejs', 'bun', 'bun.exe']);
 /** npm's own entry scripts: the package spec is a later argument. */
 const NPM_ENTRIES = new Set(['npx-cli.js', 'npm-cli.js']);
 
+/** The npm package, as a path segment or a package spec: a path boundary
+ * (start or `/`) before the scope, and the end, `/` or a version spec after
+ * the name, so `@notjobshimo/…` and `browser-link-evil` never match. */
+const PACKAGE_RE = /(?:^|\/)@jobshimo\/browser-link(?=$|\/|@)/;
+/** A checkout's compiled entry: `browser-link` must be a whole folder name. */
+const CHECKOUT_ENTRY_RE = /(?:^|\/)browser-link\/dist\/cli\.js$/;
+
 function isBrowserLinkEntry(token: string): boolean {
+  // `normalise` turns every `\` into `/`, so the boundaries cover both forms.
   const n = normalise(token);
-  if (n.includes('@jobshimo/browser-link')) return true;
-  if (n.endsWith('browser-link/dist/cli.js')) return true;
+  if (PACKAGE_RE.test(n)) return true;
+  if (CHECKOUT_ENTRY_RE.test(n)) return true;
   // The global bin shim (a symlink on Unix): `node /usr/local/bin/browser-link`.
   const base = basename(token);
   return n.includes('/') && (base === 'browser-link' || base === 'browser-link.js');
@@ -300,6 +308,19 @@ function isBridgeSubcommand(subcommand: string | null): boolean {
   return subcommand === null || subcommand === 'start';
 }
 
+/** Whether a command line runs a browser-link server (the MCP server or the
+ * TUI, never a short-lived subcommand such as `stop` or `doctor`). */
+export function isBridgeCommand(command: string): boolean {
+  const match = matchBrowserLinkCommand(command);
+  return match !== null && isBridgeSubcommand(match.subcommand);
+}
+
+/** Whether an executable name or path is one of the runtimes browser-link
+ * runs under, by its exact base name: `nodemon` or `node-debug` are not. */
+export function isRuntimeName(name: string): boolean {
+  return RUNTIMES.has(basename(name));
+}
+
 /** `selfPid` and every ancestor reachable through `ppid` in `list`. */
 export function selfAndAncestors(list: readonly ProcessEntry[], selfPid: number): Set<number> {
   const byPid = new Map(list.map((p) => [p.pid, p]));
@@ -319,11 +340,7 @@ export function findBridgeProcesses(
   selfPid: number,
 ): ProcessEntry[] {
   const excluded = selfAndAncestors(list, selfPid);
-  return list.filter((p) => {
-    if (excluded.has(p.pid)) return false;
-    const match = matchBrowserLinkCommand(p.command);
-    return match !== null && isBridgeSubcommand(match.subcommand);
-  });
+  return list.filter((p) => !excluded.has(p.pid) && isBridgeCommand(p.command));
 }
 
 export function listBridgeProcesses(

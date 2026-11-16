@@ -14,8 +14,8 @@ import { BRIDGE_PORT } from '../../bridge/protocol.js';
  *   - done: success row showing the result (ok=green / guarded=warn).
  *
  * The `guarded` phase from the design corresponds to a real result where
- * `result.ok === false` (the kill was refused because the image name
- * doesn't start with "node"). We don't need a separate phase enum — we
+ * `result.ok === false` (the OS could not confirm a browser-link holder, so
+ * nothing was killed). We don't need a separate phase enum — we
  * branch on `result.ok` inside the `done` render.
  */
 interface FreePortI18n {
@@ -39,11 +39,11 @@ const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
       'If an MCP client (Claude / OpenCode / Copilot) was closed without',
       'shutting down browser-link cleanly, the next client crashes with',
       '"port already in use". This screen finds the process holding',
-      `127.0.0.1:${BRIDGE_PORT} and stops it, then every other browser-link`,
-      'server still running (an old version included).',
+      `127.0.0.1:${BRIDGE_PORT} and stops it once the operating system confirms it is`,
+      'a browser-link server. Other browser-link processes are listed, not stopped.',
     ].join('\n'),
     safety:
-      'Safety: only processes whose image starts with "node" are killed. Anything else is left alone with an explanation.',
+      'Safety: a process is stopped only when the operating system shows that it holds the port and runs browser-link. Anything else keeps running and is named, with the command that stops it.',
     confirmPrompt: `Stop the process holding port ${BRIDGE_PORT}?`,
     confirmYes: 'Yes — kill it',
     confirmNo: 'No — back to menu',
@@ -56,14 +56,14 @@ const FREE_PORT_I18N: Record<Language, FreePortI18n> = {
   es: {
     title: `Liberar puerto ${BRIDGE_PORT}`,
     intro: [
-      'Si un cliente MCP (Claude / OpenCode / Copilot) cerró sin bajar',
-      'browser-link de forma limpia, el próximo cliente crashea con',
-      '"port already in use". Esta pantalla busca el proceso que tiene',
-      `127.0.0.1:${BRIDGE_PORT} y lo para, y después todos los demás procesos de browser-link`,
-      'que sigan corriendo (incluida una versión vieja).',
+      'Si un cliente MCP (Claude / OpenCode / Copilot) se cerró sin detener',
+      'browser-link correctamente, el siguiente cliente falla con',
+      '"port already in use". Esta pantalla busca el proceso que ocupa',
+      `127.0.0.1:${BRIDGE_PORT} y lo detiene cuando el sistema operativo confirma que es`,
+      'un servidor browser-link. Los demás procesos de browser-link se muestran, sin detenerlos.',
     ].join('\n'),
     safety:
-      'Seguridad: sólo se matan procesos cuyo nombre empieza con "node". Cualquier otro se deja vivo con una explicación.',
+      'Seguridad: solo se detiene un proceso cuando el sistema operativo muestra que ocupa el puerto y ejecuta browser-link. Cualquier otro sigue en ejecución y se muestra con el comando para detenerlo.',
     confirmPrompt: `¿Parar el proceso que tiene el puerto ${BRIDGE_PORT}?`,
     confirmYes: 'Sí — matalo',
     confirmNo: 'No — volver al menú',

@@ -15,7 +15,7 @@ import {
   setReaderTemplate,
   upsertReader,
 } from '../map/readers.js';
-import { notePendingWork, peekSession, resetSessions } from '../map/session.js';
+import { noteOrigin, notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
   handleBrowserTool,
@@ -26,8 +26,9 @@ import {
 import { VERSION } from '../version.js';
 import { saveConfig } from '../config.js';
 import { BridgeEventLog } from '../bridge/events.js';
-import { TabClaimRegistry, type AgentCaller } from './tab-claims.js';
+import { TabClaimRegistry, followFlowFinishedEvents, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
+import { handleToolCall } from '../bridge/dispatch.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
   return {
@@ -1100,6 +1101,81 @@ describe('action-tool claim enforcement', () => {
       exclude: undefined,
       max_interactive: undefined,
     });
+  });
+
+  test('snapshot forwards offset (truncated.next_offset, D6) and omits it when absent', async () => {
+    const deps = makeDeps();
+    const offset = { interactive: 120, headings: 30, text: 4000 };
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1', offset }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'snapshot',
+      expect.objectContaining({ offset }),
+    );
+    const plain = makeDeps();
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, plain, TEST_CALLER);
+    const forwarded = (plain.callBrowserTool as ReturnType<typeof vi.fn>).mock
+      .calls[0][2] as Record<string, unknown>;
+    expect('offset' in forwarded).toBe(false);
+  });
+
+  test('snapshot rejects an invalid offset instead of answering the first window again', async () => {
+    const cases: [unknown, string][] = [
+      [5, 'browser.snapshot: offset must be an object like truncated.next_offset'],
+      [[1], 'browser.snapshot: offset must be an object like truncated.next_offset'],
+      [{ rows: 1 }, 'browser.snapshot: offset.rows is not one of interactive, headings, text'],
+      [{ interactive: -1 }, 'browser.snapshot: offset.interactive must be a non-negative integer'],
+      [{ text: 1.5 }, 'browser.snapshot: offset.text must be a non-negative integer'],
+      [{ headings: '2' }, 'browser.snapshot: offset.headings must be a non-negative integer'],
+    ];
+    for (const [offset, message] of cases) {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool('browser.snapshot', { tab_id: 'tab_1', offset }, deps, TEST_CALLER),
+      ).rejects.toThrow(message);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test('find forwards offset in text mode and rejects it elsewhere or when invalid', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.find',
+      { tab_id: 'tab_1', text: 'Save', offset: { candidates: 5 } },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'find', {
+      text: 'Save',
+      role: undefined,
+      exact: false,
+      offset: { candidates: 5 },
+    });
+    const rejected: [Record<string, unknown>, string][] = [
+      [
+        { ref: 'k3x9ab:e6', offset: { candidates: 5 } },
+        'browser.find: offset applies to text mode only',
+      ],
+      [
+        { key: { role: 'button', name: 'Save' }, offset: { candidates: 5 } },
+        'browser.find: offset applies to text mode only',
+      ],
+      [
+        { text: 'Save', offset: { interactive: 5 } },
+        'browser.find: offset.interactive is not one of candidates',
+      ],
+      [
+        { text: 'Save', offset: { candidates: -5 } },
+        'browser.find: offset.candidates must be a non-negative integer',
+      ],
+    ];
+    for (const [args, message] of rejected) {
+      const other = makeDeps();
+      await expect(
+        handleBrowserTool('browser.find', { tab_id: 'tab_1', ...args }, other, TEST_CALLER),
+      ).rejects.toThrow(message);
+      expect(other.callBrowserTool).not.toHaveBeenCalled();
+    }
   });
 
   test('find forwards text + role + exact to the bridge', async () => {
@@ -3339,6 +3415,197 @@ describe('browser.download', () => {
     expect(out.state).toBe('complete');
   });
 
+  describe('selector mode: a held download is settled only after the write (D17)', () => {
+    const held = {
+      state: 'captured',
+      download_id: 41,
+      url: 'https://x.test/export?id=7',
+      filename: 'Export 7.xlsx',
+      mime: 'application/vnd.ms-excel',
+    };
+    const order: string[] = [];
+
+    function heldDeps(opts: {
+      fetch?: () => unknown;
+      settle?: () => unknown;
+      save?: (filename: string, data: Buffer) => string;
+    }) {
+      order.length = 0;
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string, params?: unknown) => {
+        order.push(tool);
+        if (tool === 'download') return held;
+        if (tool === 'download_settle') {
+          if (opts.settle) return opts.settle();
+          const { saved } = params as { saved: boolean };
+          return { chrome_download: saved ? 'removed' : 'left_in_chrome' };
+        }
+        return opts.fetch ? opts.fetch() : { ...okFetch, final_url: held.url };
+      });
+      const saveDownload = vi.fn((filename: string, data: Buffer) => {
+        order.push('save');
+        return opts.save ? opts.save(filename, data) : `/dl/${filename}`;
+      });
+      const { deps } = downloadDeps({ callBrowserTool, saveDownload });
+      return { deps, callBrowserTool, saveDownload };
+    }
+
+    const run = (deps: BrowserToolDeps) =>
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 5000 },
+        deps,
+        TEST_CALLER,
+      );
+
+    test('saved: the file is written first, then the extension is told saved: true', async () => {
+      const { deps, callBrowserTool } = heldDeps({});
+      const out = await run(deps);
+      expect(order).toEqual(['download', 'evaluate', 'save', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]).toEqual([
+        'tab_1',
+        'download_settle',
+        { download_id: 41, saved: true },
+        10_000,
+      ]);
+      expect(out).toEqual({
+        ok: true,
+        state: 'complete',
+        path: '/dl/Export 7.xlsx',
+        filename: 'Export 7.xlsx',
+        bytes: 3,
+        mime: 'text/csv',
+        url: held.url,
+        chrome_download: 'removed',
+      });
+    });
+
+    test('the fetch fails: saved: false, and the result says the original was left in Chrome', async () => {
+      const { deps, callBrowserTool, saveDownload } = heldDeps({
+        fetch: () => ({ state: 'interrupted', bytes: 0, error: 'HTTP 405' }),
+      });
+      const out = await run(deps);
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(order).toEqual(['download', 'evaluate', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+      expect(out).toMatchObject({
+        ok: false,
+        state: 'interrupted',
+        path: null,
+        chrome_download: 'left_in_chrome',
+        error: expect.stringMatching(/^HTTP 405; Chrome's own download was left untouched/),
+      });
+    });
+
+    test('the write fails: saved: false, the original is left in Chrome', async () => {
+      const { deps, callBrowserTool } = heldDeps({
+        save: () => {
+          throw new Error('ENOSPC: no space left on device');
+        },
+      });
+      const out = await run(deps);
+      expect(order).toEqual(['download', 'evaluate', 'save', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+      expect(out).toMatchObject({
+        ok: false,
+        path: null,
+        chrome_download: 'left_in_chrome',
+        error: expect.stringMatching(/could not write the file: ENOSPC.*left untouched/),
+      });
+    });
+
+    test('the fetch hop throws: the held download is still settled with saved: false', async () => {
+      const { deps, callBrowserTool } = heldDeps({
+        fetch: () => {
+          throw new Error('tab closed');
+        },
+      });
+      // The failure text says what the settle reported: the original was left.
+      await expect(run(deps)).rejects.toThrow(
+        /^tab closed; Chrome's own download was left untouched/,
+      );
+      expect(order).toEqual(['download', 'evaluate', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+    });
+
+    test('the fetch hop throws and the settle is lost: the text does not claim it was left untouched', async () => {
+      const { deps } = heldDeps({
+        fetch: () => {
+          throw new Error('tab closed');
+        },
+        settle: () => {
+          throw new Error('Unknown tool: download_settle');
+        },
+      });
+      const error = await run(deps).catch((e: unknown) => e as Error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/^tab closed; /);
+      expect(error.message).not.toMatch(/left untouched and continues/);
+      expect(error.message).toMatch(/could not be told the outcome/);
+    });
+
+    test('the settle cannot reach the extension: chrome_download unknown, and the result says there may be a second copy', async () => {
+      const { deps } = heldDeps({
+        settle: () => {
+          throw new Error('Unknown tool: download_settle');
+        },
+      });
+      const out = await run(deps);
+      expect(out).toMatchObject({
+        ok: true,
+        state: 'complete',
+        chrome_download: 'unknown',
+        chrome_download_note:
+          "The file was saved, but whether Chrome's own copy was removed is not known, so there may be a second copy in Chrome's downloads.",
+      });
+    });
+
+    test('the extension no longer holds the download (not_held): unknown, with the same note', async () => {
+      const { deps } = heldDeps({ settle: () => ({ chrome_download: 'not_held' }) });
+      const out = await run(deps);
+      expect(out).toMatchObject({
+        ok: true,
+        chrome_download: 'unknown',
+        chrome_download_note: expect.stringMatching(/second copy in Chrome's downloads/),
+      });
+    });
+
+    test('a removed copy carries no note', async () => {
+      const { deps } = heldDeps({});
+      expect(await run(deps)).not.toHaveProperty('chrome_download_note');
+    });
+
+    test('a capture that could not be attributed: no fetch, no write, no settle, the capture failed', async () => {
+      const callBrowserTool = vi.fn(async () => ({ state: 'unattributed' }));
+      const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+      const out = await run(deps);
+      expect(callBrowserTool).toHaveBeenCalledOnce();
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(out).toEqual({
+        ok: false,
+        state: 'interrupted',
+        path: null,
+        filename: null,
+        bytes: 0,
+        mime: null,
+        url: null,
+        error: expect.stringMatching(
+          /^the capture failed: a download appeared in Chrome within 5000ms after clicking #export, but it could not be tied to this tab with certainty, so it was left alone in Chrome/,
+        ),
+        chrome_download: 'left_in_chrome',
+      });
+    });
+
+    test('an older extension (no download_id) is not sent a settle and gets no chrome_download field', async () => {
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string) =>
+        tool === 'download' ? { ...held, download_id: undefined } : okFetch,
+      );
+      const { deps } = downloadDeps({ callBrowserTool });
+      const out = await run(deps);
+      expect(callBrowserTool.mock.calls.map((c) => c[1])).toEqual(['download', 'evaluate']);
+      expect(out).not.toHaveProperty('chrome_download');
+    });
+  });
+
   test('selector mode with no download within the timeout returns a timeout result, never nothing', async () => {
     const callBrowserTool = vi.fn(async () => ({ state: 'timeout' }));
     const { deps, saveDownload } = downloadDeps({ callBrowserTool });
@@ -3495,6 +3762,17 @@ describe('browser.download', () => {
         filename: 'f.csv',
       });
     });
+  });
+
+  test('the description promises only what the capture does: held, erased after the write, others left alone', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.download');
+    expect(def?.description).toMatch(/cancelled and erased only after the file is written/);
+    expect(def?.description).toMatch(/released untouched/);
+    expect(def?.description).toMatch(/chrome_download/);
+    expect(def?.description).not.toMatch(/cancelled before it can prompt/);
+    const gotchas = (def as { doc?: { gotchas?: string[] } } | undefined)?.doc?.gotchas ?? [];
+    expect(gotchas.join('\n')).toMatch(/Page\.downloadWillBegin/);
+    expect(gotchas.join('\n')).not.toMatch(/no referrer\) can still be taken/);
   });
 
   test('the schema states the shared budget and the real worst case', () => {
@@ -4937,5 +5215,754 @@ describe('knowledge loop: wrap_up, read, feedback and the flow/evaluate shortcut
         TEST_CALLER,
       ),
     ).rejects.toThrow(/observed must be a non-empty string/);
+  });
+});
+
+describe('password values: the hide-password-values setting (D12)', () => {
+  const NOTE = { values_hidden: 'note from the page' };
+  const KEY = { role: 'button', name: 'Save' };
+
+  /** The tool calls whose answer can carry a password value, with the wire
+   * tool and the params each sends with the setting off. */
+  const CALLS = [
+    ['browser.snapshot', { tab_id: 'tab_1' }, 'snapshot'],
+    ['browser.find', { tab_id: 'tab_1', text: 'Password' }, 'find'],
+    ['browser.find', { tab_id: 'tab_1', ref: 'k3x9ab:e7' }, 'find'],
+    ['browser.find', { tab_id: 'tab_1', key: KEY }, 'find'],
+    ['browser.flow', { tab_id: 'tab_1', steps: [{ find: { text: 'Password' } }] }, 'flow'],
+  ] as const;
+
+  function sentParams(deps: BrowserToolDeps): Record<string, unknown> {
+    const call = (deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    return call[2] as Record<string, unknown>;
+  }
+
+  test.each(CALLS)(
+    '%s with the setting off: nothing is asked of the page, the answer is returned untouched',
+    async (tool, args, wire) => {
+      for (const hidePasswordValues of [undefined, () => false]) {
+        const answer = { interactive: [{ value: 'hunter2' }] };
+        const deps = makeDeps({
+          callBrowserTool: vi.fn(async () => answer),
+          ...(hidePasswordValues ? { hidePasswordValues } : {}),
+        });
+        const result = await handleBrowserTool(tool, args, deps, TEST_CALLER);
+        expect((deps.callBrowserTool as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1]).toBe(wire);
+        expect('hide_password_values' in sentParams(deps)).toBe(false);
+        expect(JSON.stringify(result)).toContain('hunter2');
+      }
+    },
+  );
+
+  test.each(CALLS)(
+    '%s with the setting on: the page is asked to hide, and its answer is returned',
+    async (tool, args) => {
+      const deps = makeDeps({
+        callBrowserTool: vi.fn(async () => ({ matched: false, reason: 'not-found', ...NOTE })),
+        hidePasswordValues: () => true,
+      });
+      const result = await handleBrowserTool(tool, args, deps, TEST_CALLER);
+      expect(sentParams(deps).hide_password_values).toBe(true);
+      expect(result).toMatchObject(NOTE);
+    },
+  );
+
+  test.each(CALLS)(
+    '%s with the setting on: an answer that did not hide (an older extension) is withheld',
+    async (tool, args) => {
+      const deps = makeDeps({
+        callBrowserTool: vi.fn(async () => ({ interactive: [{ value: 'hunter2' }] })),
+        hidePasswordValues: () => true,
+      });
+      const error: unknown = await handleBrowserTool(tool, args, deps, TEST_CALLER).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain(`${tool}: the user's setting hide-password-values is on`);
+      expect(message).toContain('the answer was withheld');
+      expect(message).not.toContain('hunter2');
+      expect(message.includes('(the flow itself ran)')).toBe(tool === 'browser.flow');
+    },
+  );
+
+  test('the setting is read on every call, so a change applies to the next one without a restart', async () => {
+    let on = false;
+    const deps = makeDeps({
+      callBrowserTool: vi.fn(async () => ({ interactive: [], ...NOTE })),
+      hidePasswordValues: () => on,
+    });
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect('hide_password_values' in sentParams(deps)).toBe(false);
+    on = true;
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, deps, TEST_CALLER);
+    expect(sentParams(deps).hide_password_values).toBe(true);
+  });
+});
+
+/* D7 follow-up: one cdp discovery per call phase. A lookup before the tool
+ * runs (read, flow by name) and the lookups after it (known hint, navigate
+ * fallback, trail, learner, session origin) share one memo; it is dropped
+ * once the tool ran on a `cdp:` tab, unless the tool cannot change the page,
+ * so the trail never records a stale url. Counted through `handleToolCall`,
+ * the full path of a real call. */
+describe('cdp: tab discovery is shared by every consumer of one call (D7)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const START = `${ORIGIN}/clients/42`;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-cdp-memo-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression: 'document.title', ok: true })!;
+    setReaderStatus(db, row.id, 'kept', 'page-title');
+    saveFlow({
+      origin: ORIGIN,
+      app_key: app.app_key,
+      name: 'search',
+      steps: [{ click: { selector: '#go' } }],
+    });
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Every tab-details consumer wired; `discover` counts cdp discoveries. The
+   * tab's url is live: `moveTo` changes it, as a navigating call would. */
+  function world(tabId: string, answer: unknown) {
+    const isCdp = tabId.startsWith('cdp:');
+    let url = START;
+    const tab = (): TabSnapshotLike => ({
+      tab_id: tabId,
+      url,
+      title: 'Clients',
+      ...(isCdp ? { transport: 'cdp' as const } : {}),
+    });
+    const discover = vi.fn(async () => (isCdp ? [tab()] : []));
+    const call = vi.fn(async (...args: unknown[]) => {
+      const params = args[2] as { url?: string } | undefined;
+      if (args[1] === 'navigate' && params?.url) url = params.url;
+      if (args[1] === 'flow') url = `${ORIGIN}/results`;
+      return answer;
+    });
+    const recordActivity = vi.fn();
+    const deps = makeDeps({
+      listTabs: vi.fn(() => (isCdp ? [] : [tab()])),
+      listCdpTabs: discover,
+      cdpGate: () => ({ ok: true as const }),
+      callBrowserTool: call as BrowserToolDeps['callBrowserTool'],
+      callCdpTool: call as BrowserToolDeps['callCdpTool'],
+      getActionHint: vi.fn(() => HINT) as unknown as BrowserToolDeps['getActionHint'],
+      getKnowledge: vi.fn(() => null),
+      recordActivity,
+      recordOutcome: vi.fn(),
+    });
+    return { deps, discover, recordActivity };
+  }
+  type TabSnapshotLike = { tab_id: string; url: string; title: string; transport?: 'cdp' };
+
+  async function run(deps: BrowserToolDeps, name: string, args: Record<string, unknown>) {
+    return handleToolCall(
+      { name, arguments: args, caller: TEST_CALLER },
+      { browserTools: deps, disabledTools: () => [] },
+    );
+  }
+
+  const CALLS = [
+    ['browser.click', { selector: '#pay' }, { ok: true }, 1],
+    ['browser.read', { name: 'page-title' }, 'Clients', 1],
+    ['browser.navigate', { url: `${ORIGIN}/clients/7` }, { ok: true }, 1],
+    ['browser.flow', { name: 'search' }, { ok: true, steps_completed: 1, results: [] }, 2],
+  ] as const;
+
+  test.each(CALLS)(
+    '%s on a cdp: tab runs discovery once per phase',
+    async (name, args, answer, expected) => {
+      const { deps, discover } = world('cdp:T1', answer);
+      const res = await run(deps, name, { tab_id: 'cdp:T1', ...args });
+      expect(res.isError).toBeFalsy();
+      expect(discover).toHaveBeenCalledTimes(expected);
+    },
+  );
+
+  test.each(CALLS)(
+    '%s on an extension tab never runs cdp discovery',
+    async (name, args, answer) => {
+      const { deps, discover } = world('tab_1', answer);
+      const res = await run(deps, name, { tab_id: 'tab_1', ...args });
+      expect(res.isError).toBeFalsy();
+      expect(discover).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['extension', 'tab_1'],
+    ['cdp', 'cdp:T1'],
+  ])('the trail of a %s tab records where a navigating call left it', async (_, tabId) => {
+    const flow = world(tabId, { ok: true, steps_completed: 1, results: [] });
+    await run(flow.deps, 'browser.flow', { tab_id: tabId, name: 'search' });
+    expect(flow.recordActivity.mock.calls[0]![0]).toMatchObject({ url: `${ORIGIN}/results` });
+    const nav = world(tabId, { ok: true });
+    await run(nav.deps, 'browser.navigate', { tab_id: tabId, url: `${ORIGIN}/clients/7` });
+    expect(nav.recordActivity.mock.calls[0]![0]).toMatchObject({ url: `${ORIGIN}/clients/7` });
+  });
+
+  test.each([
+    ['fails', () => Promise.reject(new Error('ECONNREFUSED'))],
+    ['times out (discovery answers [])', () => Promise.resolve([])],
+  ])(
+    'when discovery %s after the call, the call succeeds once and the row has no page',
+    async (_, failing) => {
+      const { deps, recordActivity } = world('cdp:T1', { ok: true });
+      const discover = vi.fn(failing);
+      const res = await run({ ...deps, listCdpTabs: discover }, 'browser.click', {
+        tab_id: 'cdp:T1',
+        selector: '#pay',
+      });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ ok: true });
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: null, title: null });
+    },
+  );
+});
+
+/* Owner decision D7: a tab reached through cdp-direct behaves like an
+ * extension tab for read by name, saved flows by name, map hints and the
+ * trail fields. Every test runs on both transports and asserts the same
+ * observable result. */
+describe('cdp: tabs have parity with extension tabs (D7)', () => {
+  let dataDir: string;
+  const ORIGIN = 'https://app.test';
+  const URL_ = `${ORIGIN}/clients/42`;
+  const EXT_TAB = { tab_id: 'tab_1', url: URL_, title: 'Clients' };
+  const CDP_TAB = { tab_id: 'cdp:T1', url: URL_, title: 'Clients', transport: 'cdp' as const };
+  const TABS = [
+    ['extension', EXT_TAB],
+    ['cdp', CDP_TAB],
+  ] as const;
+  const HINT = { confidence: 'fresh', ok_n: 3, fail_n: 0, last_reason: null } as const;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-dispatch-cdp-parity-'));
+    process.env.BROWSER_LINK_DATA_DIR = dataDir;
+    resetSessions();
+    clearTypedValues();
+  });
+
+  afterEach(() => {
+    closeMapDb();
+    closeActivityDb();
+    resetSessions();
+    clearTypedValues();
+    delete process.env.BROWSER_LINK_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Deps where `tab` is the only tab, on its own transport, and one fake
+   * call answers for both transports. */
+  function depsFor(
+    tab: typeof EXT_TAB | typeof CDP_TAB,
+    call: (...args: unknown[]) => Promise<unknown>,
+    overrides: Partial<BrowserToolDeps> = {},
+  ): BrowserToolDeps {
+    const isCdp = tab.tab_id.startsWith('cdp:');
+    return makeDeps({
+      listTabs: vi.fn(() => (isCdp ? [] : [tab])),
+      listCdpTabs: vi.fn(async () => (isCdp ? [tab] : [])),
+      cdpGate: () => ({ ok: true as const }),
+      callBrowserTool: call as BrowserToolDeps['callBrowserTool'],
+      callCdpTool: call as BrowserToolDeps['callCdpTool'],
+      ...overrides,
+    });
+  }
+
+  function keptReader(expression: string, name: string): number {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    const row = upsertReader(db, { appId: app.id, expression, ok: true })!;
+    setReaderStatus(db, row.id, 'kept', name);
+    return row.id;
+  }
+
+  test.each(TABS)('read by name runs the kept reader on the %s tab', async (_, tab) => {
+    const id = keptReader('document.title', 'page-title');
+    const call = vi.fn(async () => 'Clients');
+    const value = await handleBrowserTool(
+      'browser.read',
+      { tab_id: tab.tab_id, name: 'page-title' },
+      depsFor(tab, call),
+      TEST_CALLER,
+    );
+    expect(value).toBe('Clients');
+    expect(call).toHaveBeenCalledWith(tab.tab_id, 'evaluate', { expression: 'document.title' });
+    expect(getReader(getMapDb(), id)?.ok_n).toBe(2);
+  });
+
+  test.each(TABS)('a saved flow by name runs on the %s tab', async (_, tab) => {
+    saveFlow({
+      origin: ORIGIN,
+      app_key: resolveLearnerApp(getMapDb(), ORIGIN).app_key,
+      name: 'search',
+      steps: [{ type: { selector: '#q', text: '<QUERY>' } }],
+    });
+    const call = vi.fn(async () => ({ ok: true, steps_completed: 1, results: [] }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: tab.tab_id, name: 'search', values: { QUERY: 'shrek' } },
+      depsFor(tab, call),
+      TEST_CALLER,
+    );
+    const sent = (call.mock.calls[0] as unknown[])[2] as { steps: unknown[] };
+    expect(sent.steps).toEqual([{ type: { selector: '#q', text: 'shrek' } }]);
+    expect(listFlows(resolveLearnerApp(getMapDb(), ORIGIN).id)[0].use_count).toBe(1);
+    expect(peekSession(TEST_CALLER.agent_id)?.flows[0]).toMatchObject({
+      saved_name: 'search',
+      origin: ORIGIN,
+    });
+  });
+
+  test.each(TABS)('a click with evidence carries known on the %s tab', async (_, tab) => {
+    const RESULT = { ok: true, settle: { settled: true, mutation_count: 1 } };
+    const getActionHint = vi.fn(() => HINT);
+    const out = await handleBrowserTool(
+      'browser.click',
+      { tab_id: tab.tab_id, selector: '#pay' },
+      depsFor(
+        tab,
+        vi.fn(async () => RESULT),
+        {
+          getActionHint: getActionHint as unknown as BrowserToolDeps['getActionHint'],
+        },
+      ),
+      TEST_CALLER,
+    );
+    expect(out).toEqual({ ...RESULT, known: HINT });
+    expect(getActionHint).toHaveBeenCalledWith({
+      origin: ORIGIN,
+      pathname: '/clients/42',
+      build: null,
+      target: '#pay',
+      target_kind: 'selector',
+      action: 'click',
+    });
+  });
+
+  test.each(TABS)(
+    'navigate falls back to the tab url for the start pack on the %s tab',
+    async (_, tab) => {
+      const KNOWLEDGE = { app_key: 'my-app', path: '/clients/:id', pitfalls: [] };
+      const getKnowledge = vi.fn(() => KNOWLEDGE);
+      const out = await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: tab.tab_id, url: URL_ },
+        depsFor(
+          tab,
+          vi.fn(async () => ({ ok: true })),
+          {
+            getKnowledge: getKnowledge as unknown as BrowserToolDeps['getKnowledge'],
+          },
+        ),
+        TEST_CALLER,
+      );
+      expect(out).toEqual({ ok: true, knowledge: KNOWLEDGE });
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: ORIGIN,
+        pathname: '/clients/42',
+        build: null,
+      });
+    },
+  );
+
+  test.each(TABS)('list_tabs attaches the map hint to the %s tab', async (_, tab) => {
+    const MAP = { app_key: 'my-app', selectors: 2, gotchas: 0, flows: 1 };
+    const getMapHints = vi.fn(() => new Map([[ORIGIN, MAP]]));
+    const tabs = (await handleBrowserTool(
+      'browser.list_tabs',
+      {},
+      depsFor(
+        tab,
+        vi.fn(async () => undefined),
+        {
+          getMapHints: getMapHints as unknown as BrowserToolDeps['getMapHints'],
+        },
+      ),
+      TEST_CALLER,
+    )) as { tab_id: string; map?: unknown }[];
+    expect(tabs).toEqual([expect.objectContaining({ tab_id: tab.tab_id, map: MAP })]);
+  });
+
+  test.each(TABS)(
+    'the trail row and the learner get the url and title of the %s tab',
+    async (_, tab) => {
+      const recordActivity = vi.fn();
+      const recordOutcome = vi.fn();
+      await handleBrowserTool(
+        'browser.click',
+        { tab_id: tab.tab_id, selector: '#pay' },
+        depsFor(
+          tab,
+          vi.fn(async () => ({ ok: true })),
+          { recordActivity, recordOutcome },
+        ),
+        TEST_CALLER,
+      );
+      expect(recordActivity).toHaveBeenCalledTimes(1);
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({
+        tool: 'browser.click',
+        tabId: tab.tab_id,
+        url: URL_,
+        title: 'Clients',
+      });
+      expect(recordOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ tool: 'browser.click', url: URL_, title: 'Clients' }),
+      );
+    },
+  );
+
+  test.each(TABS)('wrap_up step 1 reports the app of the %s tab', async (_, tab) => {
+    const db = getMapDb();
+    const app = resolveLearnerApp(db, ORIGIN);
+    upsertReader(db, { appId: app.id, expression: 'document.title', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    // The session used this tab: its origin is recorded, as a tool call does.
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
+    const step1 = (await handleBrowserTool(
+      'browser.wrap_up',
+      {},
+      depsFor(tab, vi.fn()),
+      TEST_CALLER,
+    )) as { step: number; apps: { origin: string }[] };
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+  });
+
+  test('wrap_up of a session that used only extension tabs runs no cdp discovery', async () => {
+    const db = getMapDb();
+    upsertReader(db, { appId: resolveLearnerApp(db, ORIGIN).id, expression: '1', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
+    const d = depsFor(EXT_TAB, vi.fn());
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, d, TEST_CALLER)) as {
+      apps: { origin: string }[];
+    };
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+    expect(d.listCdpTabs).not.toHaveBeenCalled();
+  });
+
+  test('wrap_up proceeds with what it has when cdp discovery rejects', async () => {
+    const db = getMapDb();
+    upsertReader(db, { appId: resolveLearnerApp(db, ORIGIN).id, expression: '1', ok: true });
+    notePendingWork(TEST_CALLER.agent_id);
+    noteOrigin(TEST_CALLER.agent_id, ORIGIN);
+    const d = depsFor(CDP_TAB, vi.fn(), {
+      listCdpTabs: vi.fn(async () => Promise.reject(new Error('down'))),
+    });
+    const step1 = (await handleBrowserTool('browser.wrap_up', {}, d, TEST_CALLER)) as {
+      apps: { origin: string }[];
+    };
+    expect(d.listCdpTabs).toHaveBeenCalledTimes(1);
+    expect(step1.apps.map((a) => a.origin)).toEqual([ORIGIN]);
+  });
+
+  /* Existing behaviors that share the lookup, on both transports. */
+
+  test.each([
+    ['extension', 'tab_9'],
+    ['cdp', 'cdp:NOPE'],
+  ])(
+    'an unknown %s tab: read fails before running and the trail row has no page',
+    async (_, tabId) => {
+      keptReader('document.title', 'page-title');
+      const call = vi.fn();
+      const recordActivity = vi.fn();
+      const deps = makeDeps({
+        listTabs: vi.fn(() => [EXT_TAB]),
+        listCdpTabs: vi.fn(async () => [CDP_TAB]),
+        cdpGate: () => ({ ok: true as const }),
+        callBrowserTool: call,
+        callCdpTool: call,
+        recordActivity,
+      });
+      await expect(
+        handleBrowserTool('browser.read', { tab_id: tabId, name: 'page-title' }, deps, TEST_CALLER),
+      ).rejects.toThrow(`browser.read: tab ${tabId} is not connected or has no web app`);
+      expect(call).not.toHaveBeenCalled();
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: null, title: null });
+    },
+  );
+
+  test.each(TABS)(
+    'a %s tab that disconnects during the call leaves a trail row without a page',
+    async (_, tab) => {
+      let connected = true;
+      const recordActivity = vi.fn();
+      const isCdp = tab.tab_id.startsWith('cdp:');
+      const deps = makeDeps({
+        listTabs: vi.fn(() => (!isCdp && connected ? [tab] : [])),
+        listCdpTabs: vi.fn(async () => (isCdp && connected ? [tab] : [])),
+        cdpGate: () => ({ ok: true as const }),
+        callBrowserTool: vi.fn(async () => {
+          connected = false;
+          return { ok: true };
+        }),
+        callCdpTool: vi.fn(async () => {
+          connected = false;
+          return { ok: true };
+        }),
+        recordActivity,
+      });
+      await handleBrowserTool(
+        'browser.click',
+        { tab_id: tab.tab_id, selector: '#pay' },
+        deps,
+        TEST_CALLER,
+      );
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({
+        tabId: tab.tab_id,
+        url: null,
+        title: null,
+      });
+    },
+  );
+
+  test.each(TABS)(
+    'a %s tab claimed by another agent still refuses the click, and the trail keeps its page',
+    async (_, tab) => {
+      const tabClaims = new TabClaimRegistry();
+      tabClaims.claim(tab.tab_id, { agent_id: 'other', pid: 1, binary: 'x' });
+      const call = vi.fn(async () => ({ ok: true }));
+      const recordActivity = vi.fn();
+      await expect(
+        handleBrowserTool(
+          'browser.click',
+          { tab_id: tab.tab_id, selector: '#pay' },
+          depsFor(tab, call, { tabClaims, recordActivity }),
+          TEST_CALLER,
+        ),
+      ).rejects.toThrow(/is in use by another agent/);
+      expect(call).not.toHaveBeenCalled();
+      expect(recordActivity.mock.calls[0]![0]).toMatchObject({ url: URL_, title: 'Clients' });
+    },
+  );
+});
+
+/*
+ * Owner decision D1: while a flow runs, the tab claim between agents may not
+ * expire; every step counts as activity and the claim's clock runs again
+ * from the flow's last step once it ends. The flow's steps run inside the
+ * transport, never through `runAction`, so before D1 nothing refreshed the
+ * claim while they ran.
+ */
+describe('a running flow holds the tab claim (owner decision D1)', () => {
+  const MIN = 60_000;
+  const T0 = 1_000_000;
+
+  function setup(flow: (params: Record<string, unknown>) => Promise<unknown>): {
+    deps: BrowserToolDeps;
+    claims: TabClaimRegistry;
+    events: BridgeEventLog;
+    clock: { now: number };
+  } {
+    const clock = { now: T0 };
+    const claims = new TabClaimRegistry({ nowMs: () => clock.now });
+    const events = new BridgeEventLog();
+    followFlowFinishedEvents(claims, (fn) => events.subscribe(fn));
+    const deps = makeDeps({
+      tabClaims: claims,
+      callBrowserTool: vi.fn(async (_tabId: string, tool: string, params: unknown) =>
+        tool === 'flow' ? flow(params as Record<string, unknown>) : { ok: true },
+      ),
+    });
+    return { deps, claims, events, clock };
+  }
+
+  const detachedAck = async (): Promise<unknown> => ({
+    detached: true,
+    started_at: T0,
+    steps: 1,
+    expires_at: T0 + 30 * MIN,
+  });
+
+  const clickAsB = (deps: BrowserToolDeps): Promise<unknown> =>
+    handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#x' }, deps, B);
+
+  async function launchDetached(deps: BrowserToolDeps): Promise<string> {
+    const ack = (await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', detach: true, steps: [{ press: { key: 'a' } }] },
+      deps,
+      A,
+    )) as { flow_id: string };
+    return ack.flow_id;
+  }
+
+  test('the claim is still held after its TTL while a detached flow runs, and another agent is refused', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await launchDetached(deps);
+    clock.now = T0 + 11 * MIN;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+  });
+
+  test('a detached flow that ends restarts the clock from its last step', async () => {
+    const { deps, claims, events, clock } = setup(detachedAck);
+    const flowId = await launchDetached(deps);
+    clock.now = T0 + 25 * MIN;
+    // The summary reaches the server five minutes after the last step (the
+    // socket was down when the flow ended): the clock counts from the step.
+    events.add('flow-finished', {
+      flow_id: flowId,
+      state: 'completed',
+      detached: true,
+      duration_ms: 20 * MIN,
+    });
+    clock.now = T0 + 29 * MIN;
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+    clock.now = T0 + 30 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(B.agent_id);
+  });
+
+  test.each(['cancelled', 'failed', 'expired'])(
+    'a detached flow that ends %s releases the hold the same way',
+    async (state) => {
+      const { deps, claims, events, clock } = setup(detachedAck);
+      const flowId = await launchDetached(deps);
+      clock.now = T0 + 3 * MIN;
+      events.add('flow-finished', { flow_id: flowId, state, detached: true, duration_ms: 3 * MIN });
+      clock.now = T0 + 12 * MIN;
+      await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+      clock.now = T0 + 13 * MIN;
+      expect(claims.getClaim('tab_1')).toBeNull();
+    },
+  );
+
+  test('a detached flow that never reports an end holds the claim no longer than its 30-minute ceiling', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await launchDetached(deps);
+    clock.now = T0 + 39 * MIN;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    clock.now = T0 + 40 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+  });
+
+  /** A foreground flow lasts at most its call timeout (15 s for one press),
+   * so the claim it outlives is a six-second one. */
+  const SHORT_TTL_MS = 6_000;
+
+  async function startForeground(
+    flow: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof setup> & { running: Promise<unknown>; boundMs: number }> {
+    const s = setup(flow);
+    await handleBrowserTool(
+      'browser.claim_tab',
+      { tab_id: 'tab_1', ttl_minutes: SHORT_TTL_MS / MIN },
+      s.deps,
+      A,
+    );
+    const running = handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', steps: [{ press: { key: 'a' } }] },
+      s.deps,
+      A,
+    );
+    const call = vi.mocked(s.deps.callBrowserTool);
+    await vi.waitFor(() => expect(call.mock.calls.some((c) => c[1] === 'flow')).toBe(true));
+    const boundMs = call.mock.calls.find((c) => c[1] === 'flow')![3] as number;
+    return { ...s, running, boundMs };
+  }
+
+  test.each([
+    ['completes', { ok: true, steps_completed: 1, results: [{ ok: true }] }],
+    ['fails', { ok: false, steps_completed: 0, failed_step: 0, error: 'boom' }],
+    ['is cancelled', { ok: true, stopped_by: 'cancelled', steps_completed: 0, results: [] }],
+  ])(
+    'a foreground flow holds the claim while it runs and, when it %s, the clock restarts from its end',
+    async (_, outcome) => {
+      let finish: (v: unknown) => void = () => {};
+      const { deps, claims, clock, running } = await startForeground(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      clock.now = T0 + 10_000;
+      await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+      finish(outcome);
+      await running;
+      clock.now = T0 + 10_000 + SHORT_TTL_MS - 1;
+      expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+      clock.now = T0 + 10_000 + SHORT_TTL_MS;
+      expect(claims.getClaim('tab_1')).toBeNull();
+      await expect(clickAsB(deps)).resolves.toBeDefined();
+    },
+  );
+
+  test('a foreground flow whose transport throws releases the hold', async () => {
+    let fail: (e: Error) => void = () => {};
+    const { claims, clock, running } = await startForeground(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    clock.now = T0 + 10_000;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    fail(new Error('tab closed'));
+    await expect(running).rejects.toThrow('tab closed');
+    clock.now = T0 + 10_000 + SHORT_TTL_MS;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a foreground flow that never answers holds the claim no longer than its call timeout', async () => {
+    const { claims, clock, boundMs } = await startForeground(() => new Promise(() => {}));
+    clock.now = T0 + boundMs + SHORT_TTL_MS - 1;
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    clock.now = T0 + boundMs + SHORT_TTL_MS;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a detached launch the transport refuses holds nothing', async () => {
+    const { deps, claims, clock } = setup(async () => {
+      throw new Error('flow: a detached flow is already running on this tab (flow_x).');
+    });
+    await expect(launchDetached(deps)).rejects.toThrow(/already running/);
+    clock.now = T0 + 10 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('a dry run holds nothing', async () => {
+    const { deps, claims, clock } = setup(async () => ({ ok: true, dry_run: true }));
+    await handleBrowserTool(
+      'browser.flow',
+      { tab_id: 'tab_1', dry_run: true, steps: [{ press: { key: 'a' } }] },
+      deps,
+      A,
+    );
+    clock.now = T0 + 10 * MIN;
+    expect(claims.getClaim('tab_1')).toBeNull();
+  });
+
+  test('with no flow the claim expires after its TTL exactly as before', async () => {
+    const { deps, claims, clock } = setup(detachedAck);
+    await handleBrowserTool('browser.click', { tab_id: 'tab_1', selector: '#x' }, deps, A);
+    clock.now = T0 + 10 * MIN - 1;
+    await expect(clickAsB(deps)).rejects.toThrow(/is in use by another agent/);
+    clock.now = T0 + 10 * MIN;
+    await expect(clickAsB(deps)).resolves.toBeDefined();
+    expect(claims.getClaim('tab_1')?.agent_id).toBe(B.agent_id);
   });
 });

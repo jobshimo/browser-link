@@ -11,6 +11,7 @@ import type { ClientId } from './installers/index.js';
 import type { InstructionsMode } from './agent-instructions/types.js';
 import type { Language } from './commands/welcome.js';
 import { BRIDGE_PORT } from './bridge/protocol.js';
+import { formatArgProblem, parseCommandLine, ParsedArgs } from './cli-args.js';
 
 // Only the real entry point enables Node's on-disk compile cache, before any
 // command module loads, so later runs reuse the compiled code. Importing this
@@ -60,6 +61,7 @@ interface CliI18n {
   unknownCommand: (cmd: string) => string;
   unknownClient: (val: string) => string;
   unknownInstructionsAction: (val: string) => string;
+  invalidPid: (val: string) => string[];
   instructionsInstallNext: string;
   instructionsUninstallDone: string;
   instructionsModeHeader: string;
@@ -113,6 +115,12 @@ Uso:
                                 Habilita/deshabilita el aprendizaje automático del mapa (encendido
                                 por defecto): el servidor cuenta qué selectores funcionaron o
                                 fallaron por app, solo el selector, nunca valores (ver README).
+  browser-link config set hide-password-values <on|off>
+                                Oculta a los agentes el valor de las contraseñas (apagado por
+                                defecto): snapshot y find muestran "filled, N characters".
+  browser-link config set activity.hide-sensitive <on|off>
+                                Oculta en todas las columnas del registro de actividad lo escrito
+                                en campos sensibles; se aplica al reiniciar.
   browser-link config set downloads.dir <ruta-absoluta|default>
                                 Directorio donde browser.download guarda los archivos (por
                                 defecto <directorio de datos>/downloads). Los agentes pueden
@@ -160,7 +168,8 @@ Uso:
                                 una app y sus datos. Sin --yes solo muestra qué se
                                 borraría y el comando exacto para confirmar. --flow
                                 también pide --yes cuando <app> coincide con más de un
-                                origin.
+                                origin. Una app completa no se elimina si <app>
+                                coincide con más de una: se listan las candidatas.
   browser-link map export [<app>] [--out <archivo.json>]
                                 Exporta el mapa (o una sola app) como JSON a stdout, o
                                 a --out. El archivo puede contener estructura de UI y
@@ -208,14 +217,29 @@ Uso:
   browser-link instructions uninstall
   browser-link instructions uninstall --client <id>
                                 Quita el bloque, deja el resto del archivo intacto.
-  browser-link stop             Mata el proceso browser-link que esté ocupando el
-                                puerto ${BRIDGE_PORT} (útil si un cliente MCP quedó zombie)
-                                y todos los demás servidores browser-link vivos,
-                                una línea por proceso.
+  browser-link stop             Detiene el servidor browser-link que ocupa el puerto
+                                ${BRIDGE_PORT} (útil si un cliente MCP dejó un proceso
+                                zombie), solo cuando el sistema operativo confirma
+                                que ocupa el puerto y ejecuta browser-link. Cualquier
+                                otro proceso, y cualquier otro proceso browser-link,
+                                sigue en ejecución y se muestra con el comando
+                                siguiente.
+  browser-link stop --pid <PID> Muestra ese proceso tal como lo informa el sistema
+                                operativo y lo detiene, sin tocar ningún otro. Debe
+                                ocupar un puerto de browser-link o ejecutarse como
+                                servidor browser-link.
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
                                 Es inmediato: no lee la configuración.
   browser-link help             Este mensaje.
+
+Opciones (en todos los comandos):
+  --help, -h                    En cualquier posición: muestra la ayuda de ese comando
+                                y no hace nada más.
+  --opción valor, --opción=valor
+                                Las dos formas significan lo mismo. Una opción
+                                desconocida, mal escrita o sin su valor detiene el
+                                comando antes de que cambie nada.
 
 Variables de entorno:
   BROWSER_LINK_DATA_DIR         Sobreescribe la ruta de la base (default por SO).
@@ -268,6 +292,12 @@ Usage:
                                 Enable/disable automatic map learning (on by default): the server
                                 counts which selectors worked or failed per app, the selector only,
                                 never values (see README).
+  browser-link config set hide-password-values <on|off>
+                                Hide password values from agents (off by default): snapshot and
+                                find show "filled, N characters" instead.
+  browser-link config set activity.hide-sensitive <on|off>
+                                Hide what was typed into sensitive fields in every column of the
+                                activity trail; applies after a restart.
   browser-link config set downloads.dir <absolute-path|default>
                                 Directory browser.download writes files into (default
                                 <data dir>/downloads). Agents can name a file, never pick the
@@ -312,6 +342,8 @@ Usage:
                                 its data. Without --yes, only prints what would be
                                 deleted and the exact command to confirm. --flow also
                                 asks for --yes when <app> matches more than one origin.
+                                A whole app is never deleted when <app> matches more
+                                than one: the candidates are listed instead.
   browser-link map export [<app>] [--out <file.json>]
                                 Export the map (or one app) as JSON, to stdout or to
                                 --out. The file may contain UI structure and flow steps
@@ -358,14 +390,27 @@ Usage:
   browser-link instructions uninstall --client <id>
                                 Remove the block, leaving the rest of the file
                                 intact.
-  browser-link stop             Kill the browser-link process holding port ${BRIDGE_PORT}
-                                (useful when an MCP client left a zombie behind)
-                                and every other live browser-link server, one
-                                line per process.
+  browser-link stop             Stop the browser-link server holding port ${BRIDGE_PORT}
+                                (useful when an MCP client left a zombie behind),
+                                only once the operating system confirms that it
+                                holds the port and runs browser-link. Any other
+                                holder, and any other browser-link process, is
+                                left running and listed with the command below.
+  browser-link stop --pid <PID> Show that process as the operating system reports
+                                it and stop it, and nothing else. It must hold a
+                                browser-link port or run as a browser-link server.
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
                                 Instant: does not load the config.
   browser-link help             This message.
+
+Options (every command):
+  --help, -h                    In any position: show that command's help and do
+                                nothing else.
+  --option value, --option=value
+                                Both spellings mean the same. An unknown, misspelled
+                                or valueless option stops the command before it
+                                changes anything.
 
 Environment:
   BROWSER_LINK_DATA_DIR         Override the DB location (defaults per OS).
@@ -385,6 +430,10 @@ const CLI_I18N: Record<Language, CliI18n> = {
     unknownClient: (val) => `Unknown --client value: ${val}. Use claude, opencode or copilot.`,
     unknownInstructionsAction: (val) =>
       `Unknown instructions action: ${val}. Use install, uninstall or no arg for status.`,
+    invalidPid: (val) => [
+      `browser-link stop: --pid needs a process number (got ${val})`,
+      'Nothing was done. See: browser-link stop --help',
+    ],
     instructionsInstallNext:
       'Restart your MCP client so it picks up the new instructions on its next session.',
     instructionsUninstallDone: 'Block removed. The rest of each file was left untouched.',
@@ -404,6 +453,10 @@ const CLI_I18N: Record<Language, CliI18n> = {
       `Valor de --client desconocido: ${val}. Usá claude, opencode o copilot.`,
     unknownInstructionsAction: (val) =>
       `Acción de instructions desconocida: ${val}. Usá install, uninstall, o ningún argumento para status.`,
+    invalidPid: (val) => [
+      `browser-link stop: --pid necesita un número de proceso (se recibió ${val})`,
+      'No se hizo nada. Consulte: browser-link stop --help',
+    ],
     instructionsInstallNext:
       'Reiniciá tu cliente MCP para que tome las nuevas instrucciones en la próxima sesión.',
     instructionsUninstallDone: 'Bloque eliminado. El resto del archivo quedó intacto.',
@@ -475,12 +528,47 @@ async function installInstructionsWithCore(client: ClientId | null): Promise<Ins
   });
 }
 
-function parseClient(argv: string[], language: Language): ClientId | null {
-  const idx = argv.findIndex((a) => a === '--client');
-  if (idx === -1 || idx === argv.length - 1) return null;
-  const val = argv[idx + 1];
+/** `--client <id>` (or `--client=<id>`); null when it was not given, which
+ * means every client. A value that is not a client id is refused. */
+function clientOption(args: ParsedArgs, language: Language): ClientId | null {
+  const val = args.value('client');
+  if (val === undefined) return null;
   if (val === 'claude' || val === 'opencode' || val === 'copilot') return val;
   throw new Error(CLI_I18N[language].unknownClient(val));
+}
+
+const VERSION_WORDS: ReadonlySet<string> = new Set(['version', '-v', '--version']);
+const HELP_WORDS: ReadonlySet<string> = new Set(['help', '-h', '--help']);
+/** Commands whose module prints its own usage for `--help`. */
+const OWN_USAGE: ReadonlySet<string> = new Set(['activity', 'feedback']);
+
+/** The help of one command: the Usage lines of the full help that belong to
+ * it, under the same header. `start` is the bare `browser-link` line. */
+export function commandHelp(fullHelp: string, command: string): string {
+  const lines = fullHelp.split('\n');
+  const headerAt = lines.findIndex((l) => l === 'Usage:' || l === 'Uso:');
+  const prefix = '  browser-link ';
+  const word = command === 'start' ? '' : command;
+  const picked: string[] = [];
+  let inBlock = false;
+  for (const line of lines.slice(headerAt + 1)) {
+    if (line === '') break;
+    if (line.startsWith(prefix) || line === prefix.trimEnd()) {
+      inBlock = (line.slice(prefix.length).split(/\s+/)[0] ?? '') === word;
+    } else if (!line.startsWith('      ')) {
+      inBlock = false;
+    }
+    if (inBlock) picked.push(line);
+  }
+  return [lines[headerAt], ...picked].join('\n');
+}
+
+/** A process number as typed after `--pid`: digits only, a positive safe
+ * integer; null for anything else. */
+function parsePid(text: string): number | null {
+  if (!/^\d+$/.test(text)) return null;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
 export async function dispatch(argv: string[]): Promise<void> {
@@ -493,7 +581,8 @@ export async function dispatch(argv: string[]): Promise<void> {
   const rest = argv.slice(1);
 
   // The version is language-independent: print it before the config is read.
-  if (cmd === 'version' || cmd === '-v' || cmd === '--version') {
+  // Anything after it is parsed like any other command line, below.
+  if (cmd !== undefined && VERSION_WORDS.has(cmd) && rest.length === 0) {
     console.log(VERSION);
     return;
   }
@@ -515,6 +604,30 @@ export async function dispatch(argv: string[]): Promise<void> {
   }
   const t = CLI_I18N[language];
 
+  // `help`, `-h` and `--help` as the command print the whole help, whatever
+  // follows.
+  if (cmd !== undefined && HELP_WORDS.has(cmd)) {
+    console.log(buildHelp(language));
+    return;
+  }
+
+  // Every command line is parsed against the grammar before any command
+  // module loads (D9): help is printed, a refused line is reported, and in
+  // both cases nothing else happens. An unknown command has no grammar and
+  // falls to the `default` case below.
+  const command = cmd === undefined ? 'start' : VERSION_WORDS.has(cmd) ? 'version' : cmd;
+  const line = parseCommandLine(command, rest);
+  if (line?.kind === 'help' && !OWN_USAGE.has(command)) {
+    console.log(commandHelp(buildHelp(language), command));
+    return;
+  }
+  if (line?.kind === 'error') {
+    for (const l of formatArgProblem(line.path, line.problem, language)) console.error(l);
+    process.exit(2);
+    return;
+  }
+  const args = line?.kind === 'ok' ? line.args : new ParsedArgs([], new Map());
+
   switch (cmd) {
     case undefined:
     case 'start': {
@@ -522,14 +635,14 @@ export async function dispatch(argv: string[]): Promise<void> {
       await runServer();
       return;
     }
-    case 'help':
-    case '-h':
-    case '--help': {
-      console.log(buildHelp(language));
+    case 'version':
+    case '-v':
+    case '--version': {
+      console.log(VERSION);
       return;
     }
     case 'install': {
-      const client = parseClient(rest, language);
+      const client = clientOption(args, language);
       const { installAll, installFor } = await import('./commands/install.js');
       const reports = client ? [installFor(client)] : installAll();
       for (const r of reports) {
@@ -542,7 +655,7 @@ export async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     case 'uninstall': {
-      const client = parseClient(rest, language);
+      const client = clientOption(args, language);
       const { uninstallAll, uninstallFor } = await import('./commands/uninstall.js');
       const reports = client ? [uninstallFor(client)] : uninstallAll();
       for (const r of reports) console.log(`· ${r.displayName}: ${r.message}`);
@@ -616,15 +729,15 @@ export async function dispatch(argv: string[]): Promise<void> {
       const action = rest.at(0);
       const instructions = await import('./commands/instructions.js');
       if (action === undefined || action === 'status') {
-        const client = parseClient(rest, language);
+        const client = clientOption(args, language);
         const reports = client ? [instructions.statusFor(client)] : instructions.statusAll();
         console.log(instructions.formatStatus(reports, language));
         for (const line of formatInstructionsModes(reports, t)) console.log(line);
         return;
       }
       if (action === 'install') {
-        const client = parseClient(rest, language);
-        const reports = rest.includes('--with-core')
+        const client = clientOption(args, language);
+        const reports = args.has('with-core')
           ? await installInstructionsWithCore(client)
           : client
             ? [instructions.installInstructionsFor(client)]
@@ -635,7 +748,7 @@ export async function dispatch(argv: string[]): Promise<void> {
         return;
       }
       if (action === 'uninstall') {
-        const client = parseClient(rest, language);
+        const client = clientOption(args, language);
         const reports = client
           ? [instructions.uninstallInstructionsFor(client)]
           : instructions.uninstallInstructionsAll();
@@ -649,8 +762,15 @@ export async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     case 'stop': {
-      const { runFreePort } = await import('./commands/free-port.js');
-      const result = runFreePort(language);
+      const pidText = args.value('pid');
+      const pid = pidText === undefined ? undefined : parsePid(pidText);
+      if (pid === null) {
+        for (const l of t.invalidPid(pidText ?? '')) console.error(l);
+        process.exit(2);
+        return;
+      }
+      const { runFreePort, runStopPid } = await import('./commands/free-port.js');
+      const result = pid === undefined ? runFreePort(language) : runStopPid(pid, language);
       console.log(result.message);
       if (!result.ok) process.exit(2);
       return;

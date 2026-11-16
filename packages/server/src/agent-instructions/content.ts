@@ -33,9 +33,11 @@ export function beginMarker(version = VERSION): string {
  * with no version. The named `version` group is set when a version is
  * present (a plain capture group is typed as `string` by TS, which would
  * collapse the `undefined` branch we want; the named-group form keeps
- * `version` as `string | undefined`). */
+ * `version` as `string | undefined`). The version is semver: MAJOR.MINOR.PATCH
+ * with an optional pre-release (`-beta.1`) and build (`+abc`) suffix, so the
+ * marker a pre-release build writes is recognised like any other. */
 export const BEGIN_RE =
-  /<!--\s*browser-link:instructions:begin(?:\s+v(?<version>\d+\.\d+\.\d+))?\s*-->/;
+  /<!--\s*browser-link:instructions:begin(?:\s+v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?))?\s*-->/;
 export const END_RE = /<!--\s*browser-link:instructions:end\s*-->/;
 
 /** Block body: the trigger, plus the core with `withCore`, rendered by
@@ -77,8 +79,17 @@ export function block(
  * no `g` flag (it's used for single-span detection); this helper compiles
  * the same pattern with `g` so duplicates can be diagnosed. */
 export function countBeginMarkers(text: string): number {
-  return (text.match(/<!--\s*browser-link:instructions:begin(?:\s+v\d+\.\d+\.\d+)?\s*-->/g) ?? [])
-    .length;
+  return (text.match(new RegExp(BEGIN_RE.source, 'g')) ?? []).length;
+}
+
+/** 1-based line of the first BEGIN marker when no END marker follows it,
+ * null otherwise. Such a file holds half a block: neither "not installed"
+ * nor something the installer may append to or cut. */
+export function orphanBeginLine(text: string): number | null {
+  const begin = BEGIN_RE.exec(text);
+  if (!begin) return null;
+  if (END_RE.test(text.slice(begin.index + begin[0].length))) return null;
+  return text.slice(0, begin.index).split('\n').length;
 }
 
 /** Pick the dominant line ending of `text`. CRLF wins only when it is the
@@ -110,9 +121,10 @@ export function findBlockSpan(text: string): BlockSpan | null {
   if (!end) return null;
   const endMarkerStartAbsolute = afterBegin + end.index;
   const endMarkerEndAbsolute = endMarkerStartAbsolute + end[0].length;
-  // Consume the trailing newline after the end marker, if any.
-  const nextChar = text[endMarkerEndAbsolute];
-  const endIndex = nextChar === '\n' ? endMarkerEndAbsolute + 1 : endMarkerEndAbsolute;
+  // Consume the line end after the end marker, if any: LF, or CRLF in a
+  // Windows-edited file (the fresh block brings its own line end).
+  const lineEnd = /^\r?\n/.exec(text.slice(endMarkerEndAbsolute, endMarkerEndAbsolute + 2));
+  const endIndex = endMarkerEndAbsolute + (lineEnd?.[0].length ?? 0);
   const inside = text.slice(afterBegin, endMarkerStartAbsolute);
   return {
     startIndex: begin.index,

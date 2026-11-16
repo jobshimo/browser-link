@@ -38,6 +38,27 @@
  *     `ambiguous: true` so agents know not to cache that selector.
  */
 export const DEEP_QUERY_JS = `
+  // Set when the depth guard below refused to enter a root that exists:
+  // part of the page was not walked. Results built on these helpers report
+  // it (owner decision D6: a cut never goes unsaid).
+  var deepDepthLimited = false;
+  function hasNestedRoot(scope) {
+    var all;
+    try {
+      all = scope.querySelectorAll('*');
+    } catch (_) {
+      return false;
+    }
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) return true;
+      if (all[i].tagName === 'IFRAME') {
+        try {
+          if (all[i].contentDocument) return true;
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
   function collectSearchRoots(start) {
     // start: a Document, Element or ShadowRoot to scope the search to.
     // Returns [start, ...every open shadow root and same-origin iframe
@@ -50,7 +71,10 @@ export const DEEP_QUERY_JS = `
       // Depth guard, same pattern as the other recursive helpers here:
       // pathological nesting (or a cycle introduced by a broken mock)
       // must degrade to a truncated result, never a stack overflow.
-      if (depth > 20) return;
+      if (depth > 20) {
+        if (hasNestedRoot(scope)) deepDepthLimited = true;
+        return;
+      }
       var all;
       try {
         all = scope.querySelectorAll('*');
@@ -224,6 +248,45 @@ export const DEEP_QUERY_JS = `
       offsetY += frameRect.top + origin.y;
     }
     return { x: offsetX + localX, y: offsetY + localY, localX: localX, localY: localY };
+  }
+
+  function hasVisibleBox(el) {
+    // Owner decision D4: a target with no visible box is never clicked or
+    // dragged by pointer, because its point would be (0,0) plus frame
+    // offsets. No box: the browser says it is not rendered or
+    // visibility-hidden (checkVisibility: display:none on it or an ancestor,
+    // a closed <details>, content-visibility), or it has NO client rect at
+    // all (display:none, display:contents, an <option> of a <select>). A
+    // zero-size rect still counts as a box: it has a position, and the
+    // hit-test decides (an inline <a> whose only child is positioned has
+    // no height of its own). opacity is NOT asked for: an opacity:0
+    // element is still hit-tested and takes real clicks.
+    if (typeof el.checkVisibility === 'function') {
+      try {
+        if (!el.checkVisibility({ visibilityProperty: true })) return false;
+      } catch (_) {}
+    } else {
+      try {
+        var view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+        var visibility = view.getComputedStyle(el).visibility;
+        if (visibility === 'hidden' || visibility === 'collapse') return false;
+      } catch (_) {}
+    }
+    var rects = null;
+    try {
+      rects = el.getClientRects ? el.getClientRects() : null;
+    } catch (_) {
+      rects = null;
+    }
+    return !!rects && rects.length > 0;
+  }
+
+  function isEmptyRectAtOrigin(el, point) {
+    // The last guard of D4: a point exactly at the top viewport origin that
+    // comes from an empty rect is the (0,0) of an element with no real box.
+    if (point.x !== 0 || point.y !== 0) return false;
+    var rect = clickRectOf(el);
+    return rect.width === 0 && rect.height === 0;
   }
 
   function composedContains(ancestor, node) {

@@ -163,6 +163,28 @@ export interface BrowserLinkConfig {
    */
   mapLearningEnabled?: boolean;
   /**
+   * Owner decision D12. Default OFF: `browser.snapshot` and `browser.find`
+   * return the value of password fields, so the agent can type and check
+   * them. On: a filled password field (or one the page marks with a
+   * password, one-time-code or card `autocomplete` token) shows
+   * `value_hidden: "filled, N characters"` instead, find neither matches
+   * nor quotes it, and every such result carries `values_hidden`. Read on
+   * every call (see `hidesPasswordValues`), so `browser-link config set
+   * hide-password-values <on|off>` or the extension's Admin window applies
+   * to the next call, no restart.
+   */
+  hidePasswordValues?: boolean;
+  /**
+   * Owner decision D13. Default `DEFAULT_ACTIVITY_HIDE_SENSITIVE`. Hide: a
+   * trail row whose `browser.type` / `browser.press` acted on a sensitive
+   * field, or never said which field it acted on, hides the value in every
+   * column (`activity/extract.ts`). `false`: such rows are stored like any
+   * other, nothing hidden. Read once when the primary wires the trail, so a
+   * change needs a restart, like the other activity switches. Rows already
+   * stored are never rewritten.
+   */
+  activityHideSensitive?: boolean;
+  /**
    * Absolute directory `browser.download` writes files into. Undefined means
    * the default, `<dataDir>/downloads` (see `downloads.ts`'s
    * `resolveDownloadsDir`, which also ignores a relative or malformed value).
@@ -727,6 +749,34 @@ export function saveConfig(patch: Partial<BrowserLinkConfig>): BrowserLinkConfig
 }
 
 /**
+ * Default of `activityHideSensitive` (owner decision D13): true hides the
+ * value of a sensitive trail row in every column. PENDING the owner's
+ * confirmation: he did not pick the default; hide is what the finding
+ * recorded as the proposal. Changing it is this one line and its test in
+ * `config.test.ts`.
+ */
+export const DEFAULT_ACTIVITY_HIDE_SENSITIVE = true;
+
+/** Default of `hidePasswordValues` (owner decision D12): values are shown. */
+export const DEFAULT_HIDE_PASSWORD_VALUES = false;
+
+/** The in-effect `activityHideSensitive`: a boolean as written, anything
+ * else (absent, a hand-edited string) the default. */
+export function activityHidesSensitive(cfg: BrowserLinkConfig): boolean {
+  return typeof cfg.activityHideSensitive === 'boolean'
+    ? cfg.activityHideSensitive
+    : DEFAULT_ACTIVITY_HIDE_SENSITIVE;
+}
+
+/** The in-effect `hidePasswordValues`: a boolean as written, anything else
+ * the default. */
+export function hidesPasswordValues(cfg: BrowserLinkConfig): boolean {
+  return typeof cfg.hidePasswordValues === 'boolean'
+    ? cfg.hidePasswordValues
+    : DEFAULT_HIDE_PASSWORD_VALUES;
+}
+
+/**
  * The value every persisted key has when config.json holds nothing, as the
  * code reads it: `withDefaults` applied to an empty config, then each
  * key's sanitizer or "only an explicit false turns it off" rule. A
@@ -753,6 +803,8 @@ export function defaultSettings(): Readonly<Record<keyof BrowserLinkConfig, unkn
     activityEnabled: d.activityEnabled !== false,
     activityRecordPayloads: d.activityRecordPayloads !== false,
     mapLearningEnabled: d.mapLearningEnabled !== false,
+    hidePasswordValues: hidesPasswordValues(d),
+    activityHideSensitive: activityHidesSensitive(d),
     downloadsDir: d.downloadsDir,
     downloadsMaxMb: sanitizeDownloadsMaxMb(d.downloadsMaxMb),
     instructionsAutoRefresh: d.instructionsAutoRefresh,

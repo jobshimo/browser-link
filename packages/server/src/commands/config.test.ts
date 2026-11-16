@@ -457,6 +457,80 @@ describe('config get/set map-learning', () => {
   });
 });
 
+describe('config get/set hide-password-values (D12)', () => {
+  test('defaults to off, listed by "config get", nothing written', async () => {
+    expect(await runConfigCommand(['get', 'hide-password-values'])).toBe(
+      '  hide-password-values   off: snapshot and find return the values of password fields (default)',
+    );
+    expect(listConfig()).toContain('  hide-password-values   off: ');
+    expect(loadConfig().hidePasswordValues).toBeUndefined();
+  });
+
+  test('"set on" persists true and says it applies to the next call; "off" persists false', async () => {
+    expect(await runConfigCommand(['set', 'hide-password-values', 'on'])).toBe(
+      'hide-password-values set to on: snapshot and find show "filled, N characters" for password fields. Applies to the next snapshot, find or flow, no restart needed.',
+    );
+    expect(loadConfig().hidePasswordValues).toBe(true);
+    expect(await runConfigCommand(['get', 'hide-password-values'])).toMatch(
+      /hide-password-values\s+on: snapshot and find show/,
+    );
+    await runConfigCommand(['set', 'hide-password-values', 'off']);
+    expect(loadConfig().hidePasswordValues).toBe(false);
+  });
+
+  test('rejects anything but on/off, and a missing value is a usage error', async () => {
+    await expect(runConfigCommand(['set', 'hide-password-values', 'maybe'])).rejects.toThrow(
+      'Invalid hide-password-values value: "maybe". Use "on" or "off".',
+    );
+    await expect(runConfigCommand(['set', 'hide-password-values'])).rejects.toThrow(/Usage/);
+    expect(loadConfig().hidePasswordValues).toBeUndefined();
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['get', 'hide-password-values'], 'es')).toBe(
+      '  hide-password-values   desactivado: snapshot y find devuelven el valor de los campos de contraseña (por defecto)',
+    );
+    expect(await runConfigCommand(['set', 'hide-password-values', 'on'], 'es')).toContain(
+      'Se aplica en la próxima llamada a snapshot, find o flow, sin reiniciar.',
+    );
+  });
+});
+
+describe('config get/set activity.hide-sensitive (D13)', () => {
+  test('defaults to on (hide), listed by "config get", nothing written', async () => {
+    expect(await runConfigCommand(['get', 'activity.hide-sensitive'])).toBe(
+      '  activity.hide-sensitive   on: a sensitive trail row hides the typed value in every column (default)',
+    );
+    expect(listConfig()).toContain('  activity.hide-sensitive   on: ');
+    expect(loadConfig().activityHideSensitive).toBeUndefined();
+  });
+
+  test('"set off" persists false and says it needs a restart and rewrites nothing', async () => {
+    expect(await runConfigCommand(['set', 'activity.hide-sensitive', 'off'])).toBe(
+      'activity.hide-sensitive set to off: sensitive trail rows are stored like any other, nothing hidden. Applies when the server restarts (restart your MCP client); rows already stored are not rewritten.',
+    );
+    expect(loadConfig().activityHideSensitive).toBe(false);
+    await runConfigCommand(['set', 'activity.hide-sensitive', 'on']);
+    expect(loadConfig().activityHideSensitive).toBe(true);
+  });
+
+  test('rejects anything but on/off', async () => {
+    await expect(runConfigCommand(['set', 'activity.hide-sensitive', 'yes'])).rejects.toThrow(
+      'Invalid activity.hide-sensitive value: "yes". Use "on" or "off".',
+    );
+    await expect(runConfigCommand(['set', 'activity.hide-sensitive'])).rejects.toThrow(/Usage/);
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['set', 'activity.hide-sensitive', 'off'], 'es')).toBe(
+      'activity.hide-sensitive configurado a desactivado: las filas sensibles del registro se guardan como cualquier otra, sin ocultar nada. Se aplica al reiniciar el servidor (reiniciá tu cliente MCP); las filas ya guardadas no se modifican.',
+    );
+    expect(await runConfigCommand(['get', 'activity.hide-sensitive'], 'es')).toBe(
+      '  activity.hide-sensitive   desactivado: las filas sensibles del registro se guardan como cualquier otra, sin ocultar nada',
+    );
+  });
+});
+
 describe('config get/set downloads.max-mb', () => {
   test('"get downloads.max-mb" shows the 25 MiB default', async () => {
     expect(await runConfigCommand(['get', 'downloads.max-mb'])).toBe(

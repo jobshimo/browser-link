@@ -120,6 +120,8 @@ describe('buildAdminState — status section', () => {
       ['status.cdpDirect', 'readout'],
       ['status.update', 'readout'],
       ['status.activity', 'readout'],
+      ['status.passwordValues', 'readout'],
+      ['status.activitySensitive', 'readout'],
     ]);
     expect(sec.items.every((i) => !i.writesDisk)).toBe(true);
   });
@@ -209,6 +211,8 @@ describe('buildAdminState — setup section', () => {
       ['cdpDirectGrantTtlMinutes', 'readout'],
       ['activityEnabled', 'toggle'],
       ['activityRecordPayloads', 'toggle'],
+      ['activityHideSensitive', 'readout'],
+      ['hidePasswordValues', 'readout'],
       ['downloadsDir', 'readout'],
       ['idleTtl', 'readout'],
       ['flowRecording', 'readout'],
@@ -247,6 +251,7 @@ describe('buildAdminState — setup section', () => {
       label: 'Tool browser.list_tabs',
       value: 'on',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'browser-link tools disable browser.list_tabs',
     });
     expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
@@ -260,6 +265,7 @@ describe('buildAdminState — setup section', () => {
       label: 'cdp-direct enabled',
       value: 'off',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'browser-link config set cdp-direct.enabled true',
     });
     expect(item(sec, 'cdpDirectGrantTtlMinutes')).toEqual({
@@ -268,6 +274,7 @@ describe('buildAdminState — setup section', () => {
       label: 'cdp-direct grant lifetime',
       value: '60 min',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl 60',
     });
   });
@@ -345,7 +352,7 @@ describe('buildAdminState — setup section', () => {
 });
 
 describe('buildAdminState — diagnose section', () => {
-  test('ids and kinds: doctor and update check are read-only buttons, writers are flagged', () => {
+  test('ids and kinds: doctor is a read-only button; the update check and the writers are flagged', () => {
     const sec = section(buildAdminState(input()), 'diagnose');
     expect(shape(sec)).toEqual([
       ['doctor', 'button'],
@@ -358,7 +365,8 @@ describe('buildAdminState — diagnose section', () => {
       ['selfUpdate', 'readout'],
     ]);
     expect(item(sec, 'doctor').writesDisk).toBe(false);
-    expect(item(sec, 'updates.check').writesDisk).toBe(false);
+    // It writes update-check.json, so it previews and needs its code (D11).
+    expect(item(sec, 'updates.check').writesDisk).toBe(true);
     expect(item(sec, 'instructions.install.claude').writesDisk).toBe(true);
     expect(item(sec, 'instructions.uninstall.claude').writesDisk).toBe(true);
     expect(item(sec, 'client.register.claude').writesDisk).toBe(false);
@@ -383,6 +391,7 @@ describe('buildAdminState — diagnose section', () => {
       label: 'MCP registration — Claude Code',
       value: 'registered',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'Already registered; to remove it: browser-link uninstall --client claude',
     });
     expect(item(sec, 'client.register.copilot')).toMatchObject({
@@ -455,5 +464,113 @@ describe('buildAdminState — reference section', () => {
     expect(es.title).toBe('Referencia');
     expect(item(es, 'repo').label).toBe('Repositorio en GitHub');
     expect(item(es, 'extension.path').label).toBe('Carpeta de la extensión');
+  });
+});
+
+describe('buildAdminState — which hide setting is active (D12, D13)', () => {
+  test('defaults: password values returned, sensitive trail rows hidden, each with the console command that flips it', () => {
+    const state = buildAdminState(input({ config: {} }));
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      kind: 'readout',
+      label: 'Password values',
+      value: 'returned',
+      hint: 'browser-link config set hide-password-values on',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      kind: 'readout',
+      label: 'Sensitive rows',
+      value: 'hidden',
+      hint: 'browser-link config set activity.hide-sensitive off',
+    });
+    const setup = section(state, 'setup');
+    // Owner decision (2026-11-16): read-only in the extension, changed from the console.
+    expect(item(setup, 'hidePasswordValues')).toEqual({
+      id: 'hidePasswordValues',
+      kind: 'readout',
+      label: 'Hide password values from agents',
+      value: 'returned',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set hide-password-values on',
+    });
+    expect(item(setup, 'activityHideSensitive')).toEqual({
+      id: 'activityHideSensitive',
+      kind: 'readout',
+      label: 'Hide sensitive values in the activity trail',
+      value: 'hidden',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set activity.hide-sensitive off',
+    });
+  });
+
+  test('every console-only setting carries the marker the Admin window draws its info icon from', () => {
+    const state = buildAdminState(input());
+    const marked = state.sections
+      .flatMap((s) => s.items)
+      .filter((i) => i.consoleOnly === true)
+      .map((i) => i.id);
+    expect(marked).toEqual([
+      'tools.browser.list_tabs',
+      'tools.browser.evaluate',
+      'cdpDirectEnabled',
+      'cdpDirectPort',
+      'cdpDirectGrantTtlMinutes',
+      'activityHideSensitive',
+      'hidePasswordValues',
+      'client.register.claude',
+    ]);
+    for (const i of state.sections.flatMap((s) => s.items)) {
+      if (i.consoleOnly === true) expect(i.kind).toBe('readout');
+    }
+  });
+
+  test('both switched: the status rows and the readouts follow the config', () => {
+    const state = buildAdminState(
+      input({ config: { hidePasswordValues: true, activityHideSensitive: false } }),
+    );
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      value: 'hidden',
+      hint: 'browser-link config set hide-password-values off',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      value: 'stored unhidden',
+      hint: 'browser-link config set activity.hide-sensitive on',
+    });
+    const setup = section(state, 'setup');
+    expect(item(setup, 'hidePasswordValues')).toMatchObject({
+      value: 'hidden',
+      hint: 'browser-link config set hide-password-values off',
+    });
+    expect(item(setup, 'activityHideSensitive')).toMatchObject({
+      value: 'stored unhidden',
+      hint: 'browser-link config set activity.hide-sensitive on',
+    });
+  });
+
+  test('es labels', () => {
+    const state = buildAdminState(input({ config: { language: 'es', hidePasswordValues: true } }));
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      label: 'Contraseñas',
+      value: 'ocultas',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      label: 'Filas sensibles',
+      value: 'ocultas',
+    });
+    const setup = section(state, 'setup');
+    expect(item(setup, 'hidePasswordValues')).toMatchObject({
+      label: 'Ocultar a los agentes el valor de las contraseñas',
+      value: 'ocultas',
+      hint: 'browser-link config set hide-password-values off',
+    });
+    expect(item(setup, 'activityHideSensitive')).toMatchObject({
+      label: 'Ocultar los valores sensibles en el registro de actividad',
+      value: 'ocultas',
+      hint: 'browser-link config set activity.hide-sensitive off',
+    });
   });
 });

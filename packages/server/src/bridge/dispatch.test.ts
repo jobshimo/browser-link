@@ -700,6 +700,35 @@ describe('handleToolCall — knowledge-loop session (S9, S13)', () => {
     clearTypedValues();
   });
 
+  test.each([
+    ['extension', 't1'],
+    ['cdp', 'cdp:T1'],
+  ])('the origin of a %s tab is kept on the session (D7)', async (_, tabId) => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: true });
+    const tab = { tab_id: tabId, url: 'https://app.test/list', title: 'A' };
+    const isCdp = tabId.startsWith('cdp:');
+    await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: tabId, selector: '#a' }, caller: TEST_CALLER },
+      makeDeps({
+        browserTools: {
+          listTabs: vi.fn(() => (isCdp ? [] : [tab])),
+          listCdpTabs: vi.fn(async () => (isCdp ? [{ ...tab, transport: 'cdp' as const }] : [])),
+          callBrowserTool: vi.fn(async () => undefined),
+        } as BrowserToolDeps,
+      }),
+    );
+    expect([...peekSession(TEST_CALLER.agent_id)!.origins]).toEqual(['https://app.test']);
+  });
+
+  test('an unknown tab adds no origin to the session', async () => {
+    vi.mocked(handleBrowserTool).mockResolvedValue({ ok: true });
+    await handleToolCall(
+      { name: 'browser.click', arguments: { tab_id: 'cdp:NOPE' }, caller: TEST_CALLER },
+      deps(),
+    );
+    expect([...peekSession(TEST_CALLER.agent_id)!.origins]).toEqual([]);
+  });
+
   test('a disabled tool neither delivers the rules nor starts a session', async () => {
     const res = await handleToolCall(
       { name: 'browser.click', arguments: {}, caller: FRESH },

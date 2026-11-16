@@ -37,6 +37,22 @@ import { OBSERVER_GLOBAL } from './observer.js';
  * Without the observer (injection failed, pre-observer document) all are
  * no-ops, so every result is byte-identical to the pre-ref output.
  */
+/** Added as `not_walked` to a result built while the deep-query depth
+ * guard refused to enter nested roots (see `DEEP_QUERY_JS`): part of the page
+ * was not walked, so a miss may be a cut. Absent on the common path. */
+export const NOT_WALKED_NOTE =
+  'Part of the page was not walked: shadow roots or frames nest deeper than 20 levels. Target the inner part with within_selector or a ref.';
+
+/** Hint of the settle `unobserved` marker, added only when the page holds
+ * frames whose document cannot be read (owner decision D5). */
+export const UNOBSERVED_FRAMES_HINT =
+  'Cross-origin frames cannot be watched: changes inside them are not in mutation_count and did not delay settled. Check that part of the page with browser.screenshot.';
+
+/** Hint of the settle `unobserved.shadow_roots: 'open-only'` marker, added
+ * when a document had no current page observer (owner decision D5). */
+export const UNOBSERVED_SHADOW_HINT =
+  'No current page observer here, so settle watched only open shadow roots: changes inside closed shadow roots, and inside roots attached during the wait to elements already in the page, are not in mutation_count and did not delay settled.';
+
 export const PAGE_OBSERVER_JS = `
   const pageObserver = (() => {
     try {
@@ -55,6 +71,9 @@ export const PAGE_OBSERVER_JS = `
     }
   }
   function withDocId(result) {
+    if (typeof deepDepthLimited !== 'undefined' && deepDepthLimited) {
+      result.not_walked = ${JSON.stringify(NOT_WALKED_NOTE)};
+    }
     if (pageObserver && typeof pageObserver.doc_id === 'string') result.doc_id = pageObserver.doc_id;
     return result;
   }
@@ -105,7 +124,11 @@ export const RESOLVE_TARGET_JS = `
       return { ok: false, reason: 'invalid-selector', error: e && e.message ? e.message : String(e) };
     }
     const el = deepQueryFirst(opts.selector);
-    if (!el) return { ok: false, reason: 'not-found' };
+    if (!el) {
+      const missing = { ok: false, reason: 'not-found' };
+      if (deepDepthLimited) missing.not_walked = ${JSON.stringify(NOT_WALKED_NOTE)};
+      return missing;
+    }
     return { ok: true, el: el, reresolved: false };
   }
 `;
@@ -172,7 +195,33 @@ function targetJson(opts: TargetOpts): Record<string, string | undefined> {
  *     the last 4 records (evicted, or never issued).
  * A `within_selector` miss ignores `since` and keeps the miss shape (plus
  * `doc_id`).
+ *
+ * Cuts (owner decision D6): the interactive list (`max_interactive`, default
+ * 120, at most 500; in a diff, `added` + `changed`), the headings (30) and
+ * the text (4000 characters) are windows starting at `offset.<part>`
+ * (default 0). When anything is left out AFTER a window, the result carries
+ *   truncated: { interactive?, headings?, text?, not_compared?,
+ *                not_compared_headings?, not_compared_text?, next_offset?, hint }
+ * where each part counts what it left out (entries; characters for text,
+ * all counted exactly from the full scan, which runs anyway), `next_offset`
+ * holds, for every non-empty part of the result, where the next call should
+ * start (pass it back as `offset` to get the rest and nothing twice), and
+ * `hint` says how to narrow or continue. `not_compared` (diff only) counts
+ * the entries of this snapshot and of the recorded one past the first 500,
+ * which a diff never compares; `not_compared_headings` / `not_compared_text`
+ * (diff only, not with `only_interactive`) count the headings past the first
+ * 30 and the characters past the first 4000 of this snapshot and of the
+ * recorded one, which a diff never looks at for changes. A result that left
+ * nothing out carries no `truncated`, so it is unchanged. Any result built
+ * while the deep-query depth guard fired also carries `not_walked`
+ * (`NOT_WALKED_NOTE`).
  */
+export interface SnapshotOffset {
+  interactive?: number;
+  headings?: number;
+  text?: number;
+}
+
 export interface SnapshotOpts {
   within_selector?: string;
   only_interactive?: boolean;
@@ -180,10 +229,41 @@ export interface SnapshotOpts {
   max_interactive?: number;
   /** `snapshot_id` of an earlier snapshot of this document to diff against. */
   since?: string;
+  /** Where each window starts: `truncated.next_offset` of an earlier call. */
+  offset?: SnapshotOffset;
+  /** The user's hide-password-values setting (owner decision D12): see
+   * `SENSITIVE_FIELD_JS`. Off (absent or false) builds exactly what it
+   * built before the setting existed. */
+  hide_password_values?: boolean;
+}
+
+/** The `hint` of a cut snapshot (see `buildSnapshotJs`). */
+export const SNAPSHOT_CUT_HINT =
+  'Not everything was returned: truncated counts what was left out (entries; characters for text). Narrow the scope with within_selector, exclude or only_interactive, or get the rest by calling again with offset set to truncated.next_offset (max_interactive goes up to 500).';
+
+/** The `hint` of a diff that could not compare every entry. */
+export const SNAPSHOT_NOT_COMPARED_HINT =
+  'A diff compares only the first 500 entries of each snapshot: not_compared were left out. Narrow the scope with within_selector to compare the rest.';
+
+/** The `hint` of a diff whose headings or text were longer than the part
+ * it compares (30 headings, 4000 characters). */
+export const SNAPSHOT_NOT_COMPARED_TEXT_HINT =
+  'A diff compares only the first 30 headings and the first 4000 characters of text of each snapshot: changes beyond them were not looked at. Take a snapshot without since (offset pages through the rest) or narrow the scope with within_selector.';
+
+/** The `hint` of a cut `multiple-matches` find (see `buildFindJs`). */
+export const FIND_CUT_HINT =
+  'More elements match than are listed: truncated counts the candidates left out. Narrow with exact, role or a longer text, or get the rest by calling again with offset set to truncated.next_offset.';
+
+/** A window start: a non-negative integer, anything else is 0. */
+function offsetValue(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
+  const offset = opts.offset ?? {};
+  const hideValues = opts.hide_password_values === true;
   const optsJson = JSON.stringify({
+    ...(hideValues ? { hideValues: true } : {}),
     withinSelector: typeof opts.within_selector === 'string' ? opts.within_selector : null,
     onlyInteractive: opts.only_interactive === true,
     exclude: Array.isArray(opts.exclude) ? opts.exclude : [],
@@ -192,12 +272,23 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
         ? Math.min(opts.max_interactive, 500)
         : 120,
     since: typeof opts.since === 'string' ? opts.since : null,
+    offset: {
+      interactive: offsetValue(offset.interactive),
+      headings: offsetValue(offset.headings),
+      text: offsetValue(offset.text),
+    },
+    hints: {
+      cut: SNAPSHOT_CUT_HINT,
+      notCompared: SNAPSHOT_NOT_COMPARED_HINT,
+      notComparedText: SNAPSHOT_NOT_COMPARED_TEXT_HINT,
+    },
   });
-  return `
+  const expression = `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
+  ${hideValues ? SENSITIVE_FIELD_JS : ''}
   const opts = ${optsJson};
   let root = document;
   let notice = '';
@@ -255,9 +346,13 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     const ref = refOf(el);
     if (ref) entry.ref = ref;
     if (selInfo.ambiguous) entry.ambiguous = true;
-    const txt = shortText(el);
+    const hidden = opts.hideValues === true && isSensitiveField(el);
+    const txt = hidden ? '' : shortText(el);
     if (txt) entry.text = txt;
-    if ('value' in el && el.value) entry.value = String(el.value);
+    if ('value' in el && el.value) {
+      if (hidden) entry.value_hidden = filledLength(el.value);
+      else entry.value = String(el.value);
+    }
     const placeholder = el.getAttribute('placeholder');
     if (placeholder) entry.placeholder = placeholder;
     const aria_label = el.getAttribute('aria-label');
@@ -273,7 +368,11 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (frame) entry.frame = frame;
     interactive.push(entry);
   });
+  const HEADING_LIMIT = 30;
+  const TEXT_LIMIT = 4000;
+  let allHeadings = null;
   let headings = null;
+  let allText = '';
   let visibleText = '';
   if (!opts.onlyInteractive) {
     const found = [];
@@ -283,24 +382,107 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       const t = shortText(h);
       if (t) found.push({ level: h.tagName, text: t });
     });
-    headings = found.slice(0, 30);
+    allHeadings = found;
+    headings = found.slice(opts.offset.headings, opts.offset.headings + HEADING_LIMIT);
     const textRoot = (root === document) ? (document.body || document) : root;
-    visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
+    allText = (textRoot && textRoot.innerText) ? String(textRoot.innerText) : '';
+    // The window never ends between the two halves of a surrogate pair: back
+    // off one code unit, so the next page starts on the whole character and
+    // the pages concatenate to the text exactly.
+    let textEnd = opts.offset.text + TEXT_LIMIT;
+    if (textEnd < allText.length) {
+      const before = allText.charCodeAt(textEnd - 1);
+      const after = allText.charCodeAt(textEnd);
+      if (before >= 0xD800 && before <= 0xDBFF && after >= 0xDC00 && after <= 0xDFFF) textEnd--;
+    }
+    visibleText = allText.slice(opts.offset.text, textEnd);
   }
+  // What a diff compares headings and text by: the first windows, whatever
+  // the offset, exactly as before offsets existed.
+  const headingsHash = allHeadings ? JSON.stringify(allHeadings.slice(0, HEADING_LIMIT)) : null;
+  const textHash = opts.onlyInteractive ? null : allText.slice(0, TEXT_LIMIT);
   let snapshotId = null;
   if (withDocId({}).doc_id && typeof pageObserver.nextSnapshotId === 'function') {
     const issued = pageObserver.nextSnapshotId();
     if (typeof issued === 'string') snapshotId = issued;
   }
+  // One window of a part: total is the full count (entries, or characters
+  // for text), returned what this result holds from offset on.
+  function windowOf(name, total, returned) {
+    return { name: name, total: total, from: opts.offset[name], returned: returned };
+  }
+  // The truncated report (owner decision D6), or null when nothing after a
+  // window was left out and no entry went uncompared.
+  function cutReport(parts, notCompared) {
+    const report = {};
+    const next = {};
+    let cut = false;
+    const skipped = notCompared || {};
+    for (const part of parts) {
+      const omitted = Math.max(0, part.total - part.from - part.returned);
+      if (omitted > 0) {
+        report[part.name] = omitted;
+        cut = true;
+      }
+      if (part.total > 0) next[part.name] = part.from + part.returned;
+    }
+    let anySkipped = false;
+    for (const key of ['not_compared', 'not_compared_headings', 'not_compared_text']) {
+      if (skipped[key] > 0) {
+        report[key] = skipped[key];
+        anySkipped = true;
+      }
+    }
+    if (!cut && !anySkipped) return null;
+    if (cut) report.next_offset = next;
+    const hints = [];
+    if (cut) hints.push(opts.hints.cut);
+    if (skipped.not_compared > 0) hints.push(opts.hints.notCompared);
+    if (skipped.not_compared_headings > 0 || skipped.not_compared_text > 0) {
+      hints.push(opts.hints.notComparedText);
+    }
+    report.hint = hints.join(' ');
+    return report;
+  }
+  // An offset given and NOTHING returned in any requested part: the empty
+  // answer is caused by the offsets and could be read as "the page has
+  // nothing". Say which parts were asked at or past their end. Null when any
+  // part returned items (the normal paging path, where finished parts sit at
+  // offset == total) and for a call without an offset.
+  function pastEnd(parts) {
+    const past = {};
+    let any = false;
+    for (const part of parts) {
+      if (part.returned > 0) return null;
+      if (part.from > 0 && part.from >= part.total) {
+        past[part.name] = { offset: part.from, total: part.total };
+        any = true;
+      }
+    }
+    return any ? past : null;
+  }
   function fullResult() {
+    const shown = interactive.slice(
+      opts.offset.interactive,
+      opts.offset.interactive + opts.maxInteractive,
+    );
     const result = {
       title: document.title,
       url: location.href,
-      interactive: interactive.slice(0, opts.maxInteractive),
+      interactive: shown,
     };
-    if (headings) result.headings = headings;
+    const parts = [windowOf('interactive', interactive.length, shown.length)];
+    if (headings) {
+      result.headings = headings;
+      parts.push(windowOf('headings', allHeadings.length, headings.length));
+      parts.push(windowOf('text', allText.length, visibleText.length));
+    }
     if (visibleText) result.text = visibleText;
     if (notice) result.notice = notice;
+    const cut = cutReport(parts, null);
+    if (cut) result.truncated = cut;
+    const past = pastEnd(parts);
+    if (past) result.offset_past_end = past;
     withDocId(result);
     if (snapshotId) result.snapshot_id = snapshotId;
     return result;
@@ -317,17 +499,27 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     sinceCut >= 0 && withDocId({}).doc_id === opts.since.slice(0, sinceCut);
   const previous = store && sinceSameDoc ? store.getSnapshot(opts.since) : null;
   const current = new Map();
-  const headingsHash = headings ? JSON.stringify(headings) : null;
-  const textHash = opts.onlyInteractive ? null : visibleText;
+  // Entries with a ref past the first 500: recorded nowhere, never compared.
+  let unrecorded = 0;
   if (store) {
     for (const entry of interactive) {
-      if (current.size >= 500) break;
       if (typeof entry.ref !== 'string') continue;
+      if (current.size >= 500) {
+        unrecorded++;
+        continue;
+      }
       const copy = {};
       for (const key of Object.keys(entry)) if (key !== 'ref') copy[key] = entry[key];
       current.set(entry.ref, { hash: JSON.stringify(copy), entry });
     }
-    store.recordSnapshot(snapshotId, { entries: current, headings_hash: headingsHash, text_hash: textHash });
+    store.recordSnapshot(snapshotId, {
+      entries: current,
+      headings_hash: headingsHash,
+      text_hash: textHash,
+      unrecorded: unrecorded,
+      headings_beyond: allHeadings ? Math.max(0, allHeadings.length - HEADING_LIMIT) : 0,
+      text_beyond: Math.max(0, allText.length - TEXT_LIMIT),
+    });
   }
   if (opts.since === null) return fullResult();
   if (!store) {
@@ -359,27 +551,55 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   // max_interactive applies after diffing (added first, then changed), so
   // a window shift never masquerades as change.
   const listed = added.concat(changed);
-  const kept = listed.slice(0, opts.maxInteractive);
+  const start = opts.offset.interactive;
+  const kept = listed.slice(start, start + opts.maxInteractive);
   const diff = withDocId({ title: document.title, url: location.href });
   diff.snapshot_id = snapshotId;
   diff.since = opts.since;
-  diff.added = kept.slice(0, Math.min(added.length, kept.length));
+  diff.added = kept.slice(0, Math.max(0, Math.min(added.length - start, kept.length)));
   diff.removed = removed;
   diff.changed = kept.slice(diff.added.length);
-  if (listed.length > kept.length) diff.overflow = listed.length - kept.length;
+  const after = listed.length - start - kept.length;
+  if (after > 0) diff.overflow = after;
+  const parts = [windowOf('interactive', listed.length, kept.length)];
   if (!opts.onlyInteractive) {
-    if (headingsHash !== previous.headings_hash) diff.headings = headings;
-    if (textHash !== previous.text_hash) diff.text = visibleText;
+    if (headingsHash !== previous.headings_hash) {
+      diff.headings = headings;
+      parts.push(windowOf('headings', allHeadings.length, headings.length));
+    }
+    if (textHash !== previous.text_hash) {
+      diff.text = visibleText;
+      parts.push(windowOf('text', allText.length, visibleText.length));
+    }
   }
+  const recorded = (key) => (typeof previous[key] === 'number' ? previous[key] : 0);
+  // Headings and text are compared on their first windows only; what lies
+  // beyond them in either snapshot was not looked at, and the diff says so.
+  const skipped = { not_compared: unrecorded + recorded('unrecorded') };
+  if (!opts.onlyInteractive) {
+    skipped.not_compared_headings =
+      Math.max(0, allHeadings.length - HEADING_LIMIT) + recorded('headings_beyond');
+    skipped.not_compared_text = Math.max(0, allText.length - TEXT_LIMIT) + recorded('text_beyond');
+  }
+  const cut = cutReport(parts, skipped);
+  if (cut) diff.truncated = cut;
+  const past = pastEnd(parts);
+  if (past) diff.offset_past_end = past;
   return diff;
 })()
 `;
+  return hideValues ? withValuesHiddenNoteJs(expression) : expression;
 }
 
 /** Build the find-by-text expression. Returns one of:
  *   { matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }
  *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
- *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
+ *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], truncated?, doc_id? }
+ *
+ * `candidates` is a window of 5 matches starting at `offset.candidates`
+ * (default 0). When matches are left out after it (owner decision D6), the
+ * answer carries `truncated: { candidates, next_offset: { candidates }, hint }`
+ * with the exact count; pass `next_offset` back as `offset` for the rest.
  *
  * `ref`, `semantic_key` and `doc_id` are present only when the page observer
  * is installed (see `PAGE_OBSERVER_JS`). `semantic_key` is the observer's
@@ -451,6 +671,12 @@ export interface FindOpts {
   exact?: boolean;
   ref?: string;
   key?: FindKey;
+  /** Where the candidate window starts: `truncated.next_offset` of an
+   * earlier `multiple-matches` answer (text mode). */
+  offset?: { candidates?: number };
+  /** The user's hide-password-values setting (owner decision D12): see
+   * `SENSITIVE_FIELD_JS`. Off builds exactly what it built before. */
+  hide_password_values?: boolean;
 }
 
 /** Only the documented key fields reach the built source, as JSON data. */
@@ -465,22 +691,34 @@ function findKeyJson(key: FindKey): FindKey {
 }
 
 export function buildFindJs(opts: FindOpts): string {
+  const hideValues = opts.hide_password_values === true;
   const optsJson = JSON.stringify({
+    ...(hideValues ? { hideValues: true } : {}),
     text: opts.text,
     role: typeof opts.role === 'string' && opts.role.length > 0 ? opts.role : null,
     exact: opts.exact === true,
     candidateLimit: 5,
+    candidateOffset: offsetValue(opts.offset?.candidates),
+    cutHint: FIND_CUT_HINT,
     nearMissLimit: 3,
     ...(typeof opts.ref === 'string' && opts.ref.length > 0 ? { ref: opts.ref } : {}),
     ...(opts.key ? { key: findKeyJson(opts.key) } : {}),
   });
-  return `
+  const expression = `
 (() => {
   ${DEEP_QUERY_JS}
   ${DOM_HELPERS_JS}
   ${PAGE_OBSERVER_JS}
   ${typeof opts.ref === 'string' && opts.ref.length > 0 ? RESOLVE_TARGET_JS : ''}
+  ${hideValues ? SENSITIVE_FIELD_JS : ''}
   const opts = ${optsJson};
+  // True for a field whose value the hide-password-values setting hides.
+  function hides(el) {
+    return opts.hideValues === true && isSensitiveField(el);
+  }
+  function textOf(el) {
+    return hides(el) ? '' : shortText(el);
+  }
   function semanticKeyOf(el) {
     if (!pageObserver || typeof pageObserver.semanticKeyFor !== 'function') return null;
     try {
@@ -500,7 +738,7 @@ export function buildFindJs(opts: FindOpts): string {
       y: Math.round(center.y),
     };
     result.tag = el.tagName.toLowerCase();
-    result.text = shortText(el);
+    result.text = textOf(el);
     if (selInfo.ambiguous) result.ambiguous = true;
     const frame = frameSelectorFor(el);
     if (frame) result.frame = frame;
@@ -583,7 +821,7 @@ export function buildFindJs(opts: FindOpts): string {
     // isClickTarget, not isVisible: find returns CLICK TARGETS. Near-miss
     // ranking below keeps plain isVisible — hints, never click targets.
     if (!isClickTarget(el)) continue;
-    const text = accessibleText(el).trim();
+    const text = accessibleText(el, hides(el)).trim();
     if (text.length === 0) continue;
     const lower = text.toLowerCase();
     const ok = opts.exact ? lower === needle : lower.includes(needle);
@@ -593,7 +831,7 @@ export function buildFindJs(opts: FindOpts): string {
     // Near-miss ranking: containment beats token overlap; anything scoring
     // 0 is dropped so the suggestion list never pads itself with noise.
     function snippetOf(el) {
-      const t = accessibleText(el).trim();
+      const t = accessibleText(el, hides(el)).trim();
       return t.length > 60 ? t.slice(0, 60) + '...' : t;
     }
     function scoreText(text) {
@@ -611,7 +849,7 @@ export function buildFindJs(opts: FindOpts): string {
       const scored = [];
       for (const el of elements) {
         if (!isVisible(el)) continue;
-        const text = accessibleText(el).trim();
+        const text = accessibleText(el, hides(el)).trim();
         if (text.length === 0) continue;
         const score = scoreText(text);
         if (score < 0) continue;
@@ -644,7 +882,7 @@ export function buildFindJs(opts: FindOpts): string {
       const broadTextMatches = [];
       for (const el of broadAll) {
         if (!isVisible(el)) continue;
-        const text = accessibleText(el).trim();
+        const text = accessibleText(el, hides(el)).trim();
         if (text.length === 0) continue;
         if (text.toLowerCase().includes(needle)) broadTextMatches.push(el);
       }
@@ -667,23 +905,41 @@ export function buildFindJs(opts: FindOpts): string {
     return withDocId(result);
   }
   if (matches.length > 1) {
-    return withDocId({
+    const from = opts.candidateOffset;
+    const shown = matches.slice(from, from + opts.candidateLimit);
+    const result = {
       matched: false,
       reason: 'multiple-matches',
-      candidates: matches.slice(0, opts.candidateLimit).map((el) => {
+      candidates: shown.map((el) => {
         const candidate = { selector: genSelector(el) };
         const ref = refOf(el);
         if (ref) candidate.ref = ref;
-        candidate.text = shortText(el);
+        candidate.text = textOf(el);
         candidate.tag = el.tagName.toLowerCase();
         return candidate;
       }),
-    });
+    };
+    // An offset at or past the end lists nothing: say so, so the empty list
+    // is not read as "no candidates".
+    if (from > 0 && from >= matches.length) {
+      result.offset_past_end = { candidates: { offset: from, total: matches.length } };
+    }
+    // Owner decision D6: the count is exact (every match was scanned).
+    const omitted = matches.length - from - shown.length;
+    if (omitted > 0) {
+      result.truncated = {
+        candidates: omitted,
+        next_offset: { candidates: from + shown.length },
+        hint: opts.cutHint,
+      };
+    }
+    return withDocId(result);
   }
   const el = matches[0];
   return singleMatch(el, refOf(el), false);
 })()
 `;
+  return hideValues ? withValuesHiddenNoteJs(expression) : expression;
 }
 
 /**
@@ -693,6 +949,8 @@ export function buildFindJs(opts: FindOpts): string {
  * is set — hit-tests that point before returning it, so a covering overlay
  * is caught before dispatching CDP mouse events. Returns:
  *   { ok: true, x, y, tag, hit_element?, reresolved? }
+ *   { ok: true, no_box: true, tag, reresolved? }   (force, no visible box)
+ *   { ok: false, reason: 'no-box' }                (no force, no visible box)
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
  *   { ok: false, reason: 'occluded', blocker }
@@ -703,6 +961,14 @@ export function buildFindJs(opts: FindOpts): string {
  * The target is `selector` or `ref` (see `resolveTarget` in
  * `PAGE_OBSERVER_JS`); `reresolved: true` is present only when a `ref`'s
  * node was gone and was just re-resolved by its semantic key.
+ *
+ * Owner decision D4: a target with no visible box (see `hasVisibleBox` in
+ * `deep-query.ts`) never gets a click point, since it would be (0,0) plus
+ * frame offsets, and is not scrolled; an empty rect whose point is exactly
+ * the top viewport origin is treated the same (checked after the scroll).
+ * A zero-size rect elsewhere keeps the hit-test path. Without `force` it fails 'no-box';
+ * with `force` the answer is `no_box: true` and the transport clicks it with
+ * `buildProgrammaticClickJs` instead of the mouse.
  *
  * `hit_element` is present ONLY when the dispatched click will land on a
  * DIFFERENT element than the resolved target (neither the target nor a
@@ -736,13 +1002,23 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   const target = resolveTarget(opts);
   if (!target.ok) return target;
   const el = target.el;
+  const tag = el.tagName.toLowerCase();
+  // Owner decision D4: never a point for a target with no box (it would be
+  // (0,0)): fail without force, a programmatic click with it.
+  function noBox() {
+    if (!opts.force) return { ok: false, reason: 'no-box' };
+    const programmatic = { ok: true, no_box: true, tag };
+    if (target.reresolved) programmatic.reresolved = true;
+    return programmatic;
+  }
+  if (!hasVisibleBox(el)) return noBox();
   const chain = frameElementChain(el);
   for (const fe of chain) {
     if (fe.scrollIntoView) fe.scrollIntoView({ block: 'center', inline: 'center' });
   }
   if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
   const center = viewportCenterOf(el);
-  const tag = el.tagName.toLowerCase();
+  if (isEmptyRectAtOrigin(el, center)) return noBox();
   const occlusion = checkOcclusion(el, center.localX, center.localY);
   if (!occlusion.allowed && !opts.force) {
     if (occlusion.retargeted) {
@@ -755,6 +1031,54 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   if (hit) result.hit_element = hit;
   if (target.reresolved) result.reresolved = true;
   return result;
+})()
+`;
+}
+
+/**
+ * Build the programmatic click of owner decision D4: a `force` click on a
+ * target with no visible box (`buildClickResolveJs` answered `no_box`) calls
+ * the element's own `click()`, with no pointer, no mouse events and no
+ * coordinates. The transports run it where they would dispatch the mouse
+ * events, so the settle mark and the `expect` baseline are taken before it
+ * exactly as before a pointer click. An element without its own `click()`
+ * (SVG) gets the same single bubbling `click` event. A target on which
+ * `click()` cannot do anything is refused before it is called. Returns:
+ *   { ok: true }
+ *   { ok: false, reason: 'not-clickable', why: 'disabled' | 'option' }
+ *     (`:disabled`, which includes a disabling ancestor fieldset; an
+ *     `<option>` or `<optgroup>`, which click() never selects)
+ *   or the target failure of `resolveTarget`, unchanged.
+ */
+export function buildProgrammaticClickJs(opts: TargetOpts): string {
+  const optsJson = JSON.stringify(targetJson(opts));
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
+  const opts = ${optsJson};
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
+  // click() does nothing on these: refuse before calling it, so the tool
+  // never reports as clicked something that cannot have been.
+  const tagName = el.tagName ? el.tagName.toLowerCase() : '';
+  if (tagName === 'option' || tagName === 'optgroup') {
+    return { ok: false, reason: 'not-clickable', why: 'option' };
+  }
+  let disabled = false;
+  try {
+    disabled = el.matches(':disabled');
+  } catch (e) {}
+  if (disabled) return { ok: false, reason: 'not-clickable', why: 'disabled' };
+  if (typeof el.click === 'function') {
+    el.click();
+  } else {
+    const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    el.dispatchEvent(new view.MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+  }
+  return { ok: true };
 })()
 `;
 }
@@ -786,11 +1110,15 @@ export function buildTypeResolveJs(opts: TypeResolveOpts): string {
   ${DEEP_QUERY_JS}
   ${PAGE_OBSERVER_JS}
   ${RESOLVE_TARGET_JS}
+  ${DEEP_ACTIVE_ELEMENT_JS}
+  ${FOCUS_REFUSAL_JS}
   const opts = ${optsJson};
   const target = resolveTarget(opts);
   if (!target.ok) return target;
   const el = target.el;
   el.focus();
+  const refused = focusRefusal(el);
+  if (refused) return refused;
   ${opts.clear ? "if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }" : ''}
   return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
@@ -821,11 +1149,15 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
   ${DEEP_QUERY_JS}
   ${PAGE_OBSERVER_JS}
   ${RESOLVE_TARGET_JS}
+  ${DEEP_ACTIVE_ELEMENT_JS}
+  ${FOCUS_REFUSAL_JS}
   const opts = ${optsJson};
   const target = resolveTarget(opts);
   const byRef = typeof opts.ref === 'string';
   if (!target.ok) return byRef ? target : false;
   target.el.focus();
+  const refused = focusRefusal(target.el);
+  if (refused) return refused;
   if (!byRef) return true;
   return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
@@ -870,6 +1202,32 @@ export const DEEP_ACTIVE_ELEMENT_JS = `
 `;
 
 /**
+ * `focusRefusal(el)`, as a JS source fragment, run right after `el.focus()`
+ * by `buildTypeResolveJs` and `buildFocusJs`: `Input.insertText` and key
+ * events go to the deep active element, so when the element asked for did
+ * not take focus the text or key would land in whatever had focus before.
+ * Returns null when focus is where it should be: the element itself, an
+ * element inside it (a shadow root that delegates focus, a wrapper that
+ * moves focus inward), the control of a `<label>`, or the editing host that
+ * contains it. Otherwise `{ ok: false, reason: 'not-focused', why }`, `why`
+ * naming the likely cause. Needs `DEEP_QUERY_JS` and `DEEP_ACTIVE_ELEMENT_JS`.
+ */
+export const FOCUS_REFUSAL_JS = `
+  function focusRefusal(el) {
+    const active = deepActiveElement();
+    if (active) {
+      if (active === el || composedContains(el, active)) return null;
+      if (el.control && active === el.control) return null;
+      if (active.isContentEditable === true && composedContains(active, el)) return null;
+    }
+    let why = 'it is not focusable';
+    if (el.disabled === true) why = 'it is disabled';
+    else if (!hasVisibleBox(el)) why = 'it has no visible box';
+    return { ok: false, reason: 'not-focused', why: why };
+  }
+`;
+
+/**
  * The `autocomplete` tokens that mark a field sensitive (S2). Only what the
  * page itself declares counts — never a guess from a name, id, label or
  * selector — so an unmarked field is reported as not sensitive.
@@ -881,6 +1239,87 @@ export const SENSITIVE_AUTOCOMPLETE_TOKENS: readonly string[] = [
   'cc-number',
   'cc-csc',
 ];
+
+/**
+ * Owner decision D12: `snapshot` and `find` return password values by
+ * default; the user's hide-password-values setting hides them. Added as
+ * `values_hidden` to every snapshot and find result built with the setting
+ * on, so the agent knows a field showing `value_hidden` is not broken.
+ * Absent when the setting is off.
+ */
+export const PASSWORD_VALUES_HIDDEN_NOTE =
+  'The user\'s setting hide-password-values is on: a filled password field shows value_hidden ("filled, N characters") instead of its value, and find neither matches nor quotes that value. The field works as usual; ask the user if you need the value.';
+
+/**
+ * In-page helpers of the hide-password-values setting, injected into
+ * `buildSnapshotJs` / `buildFindJs` only when it is on (so with it off
+ * nothing runs and nothing is written to the page):
+ *   - `isSensitiveField(el)`: the same rule as `buildFocusedFieldJs` (an
+ *     `<input type="password">`, or an `autocomplete` token of
+ *     `SENSITIVE_AUTOCOMPLETE_TOKENS`), plus a field seen as a password by
+ *     an earlier call with the setting on and since turned into a text
+ *     field (a "show password" button). Those are remembered in a WeakSet
+ *     on the page's window, which holds nothing else;
+ *   - `filledLength(value)`: `filled, N characters`, N counting characters
+ *     (code points), never the text.
+ */
+export const SENSITIVE_FIELD_JS = `
+  const sensitiveFieldTokens = ${JSON.stringify(SENSITIVE_AUTOCOMPLETE_TOKENS)};
+  const passwordFieldsSeen = (() => {
+    const key = '__browserLinkPasswordFields';
+    try {
+      if (!(window[key] instanceof WeakSet)) {
+        Object.defineProperty(window, key, { value: new WeakSet(), configurable: true });
+      }
+      return window[key];
+    } catch (_) {
+      return new WeakSet();
+    }
+  })();
+  function isSensitiveField(el) {
+    if (!el || !el.tagName) return false;
+    if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password') {
+      passwordFieldsSeen.add(el);
+      return true;
+    }
+    if (passwordFieldsSeen.has(el)) return true;
+    const attr = el.getAttribute ? el.getAttribute('autocomplete') : '';
+    const tokens = String(attr || '').toLowerCase().split(/\\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      if (sensitiveFieldTokens.indexOf(tokens[i]) !== -1) return true;
+    }
+    return false;
+  }
+  function filledLength(value) {
+    const n = Array.from(String(value)).length;
+    return 'filled, ' + n + (n === 1 ? ' character' : ' characters');
+  }
+`;
+
+/** Wrap a snapshot / find expression so its result carries `values_hidden`. */
+function withValuesHiddenNoteJs(expression: string): string {
+  return `
+(() => {
+  const result = ${expression.trim()};
+  if (result && typeof result === 'object') {
+    result.values_hidden = ${JSON.stringify(PASSWORD_VALUES_HIDDEN_NOTE)};
+  }
+  return result;
+})()`;
+}
+
+/**
+ * `result` with `values_hidden` added, when `hidden` and `result` is a plain
+ * object; otherwise `result` unchanged. For the answers a flow builds itself
+ * (`browser.flow`), whose find steps and recovery snapshot already carry
+ * their own note.
+ */
+export function withValuesHiddenNote<T>(result: T, hidden: boolean): T {
+  if (!hidden || typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return result;
+  }
+  return { ...result, values_hidden: PASSWORD_VALUES_HIDDEN_NOTE };
+}
 
 /** What `buildFocusedFieldJs` evaluates to. */
 export interface FocusedField {
@@ -968,9 +1407,13 @@ export function actionFailure(
  * `target` is a selector string (the source built for it is unchanged) or
  * `{ ref }` (spec v4 §6.3). A ref resolves through the page observer on
  * every tick, re-resolving a replaced node by its semantic key; a stale ref
- * counts as a MISSING element (`attached` false, `detached` true, `hidden`
- * true, `visible` false), so waiting for a row to disappear by its ref
- * works. Without the observer a ref can never resolve, so the probe answers
+ * counts as a MISSING element for `detached` and `hidden` (true), so waiting
+ * for a row to disappear by its ref works. For `visible` and `attached` it
+ * answers `{ ok: false, reason: 'ref-stale', ref, doc_id, doc_changed }`:
+ * `doc_changed` true means the ref belongs to another document (it can never
+ * come back, the caller fails at once); false means the node is only gone and
+ * may be re-rendered (the caller keeps polling and, at the timeout, says the
+ * element is gone). Without the observer a ref can never resolve, so the probe answers
  * `{ ok: false, reason: 'observer-unavailable' }` instead of a boolean and
  * the caller fails the wait rather than reporting a misleading match.
  */
@@ -990,6 +1433,19 @@ export function buildWaitForSelectorJs(
   const opts = ${refOptsJson};
   const target = resolveTarget(opts);
   if (!target.ok && target.reason === 'observer-unavailable') return target;
+  if (!target.ok && (opts.condition === 'visible' || opts.condition === 'attached')) {
+    // A gone ref can never be visible or attached as it stands: answer the
+    // failure (not false) so the caller says so instead of a bare timeout.
+    // doc_changed: the ref belongs to another document (its prefix is not the
+    // current observer's), which can never come back; false: the node is
+    // only detached and may be re-rendered, so the caller keeps polling.
+    target.doc_changed = !(
+      pageObserver &&
+      typeof pageObserver.doc_id === 'string' &&
+      opts.ref.startsWith(pageObserver.doc_id.slice(0, 6) + ':e')
+    );
+    return target;
+  }
   const el = target.ok ? target.el : null;
   ${WAIT_FOR_CONDITION_JS}
 })()`;
@@ -1086,12 +1542,25 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
 /**
  * Build the settle-await expression shared by `browser.click`, `.type` and
  * `.press`. Called AFTER the action's CDP input events have been
- * dispatched: installs one `MutationObserver` on `document` (subtree,
- * childList, attributes, characterData) and resolves once no mutation has
+ * dispatched: installs one `MutationObserver` (subtree, childList,
+ * attributes, characterData) on `document`, its shadow roots and every
+ * same-origin iframe document, including those that appear during the wait,
+ * and resolves once no mutation has
  * landed for `settle_ms` consecutive milliseconds, or once `settle_timeout_ms`
- * total has elapsed — whichever comes first. Returned as a Promise so the
- * caller's `evaluateInTab` (CDP `Runtime.evaluate` with `awaitPromise: true`)
- * waits for it naturally.
+ * total has elapsed — whichever comes first. Returned as a Promise so
+ * background.ts's `evaluateInTab` (CDP `Runtime.evaluate` with
+ * `awaitPromise: true`) waits for it naturally.
+ *
+ * Shadow roots (owner decision D5): in a document whose page observer is
+ * current (version >= `SETTLE_OBSERVER_MIN_VERSION`, full coverage), the
+ * roots come from it (`liveRoots`, open and closed), roots it observes during
+ * the wait arrive through `onRoot`, and only iframes are looked for inside
+ * each root. Without one (absent, older, or partial coverage) settle scans
+ * for open roots itself and patches nothing, so it cannot see closed roots
+ * or roots attached during the wait to elements already in the page: the
+ * result then carries `unobserved.shadow_roots: 'open-only'`. A closed root
+ * attached before the observer was installed, or created by the parser
+ * (`shadowrootmode="closed"`), cannot be known at all and is not reported.
  *
  * Baseline `url`/`activeElement` are captured at the TOP of this
  * expression — i.e. right after the action's own focus/navigation side
@@ -1100,7 +1569,11 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
  * the settle window, not the action's own expected effect.
  *
  * The result omits `url_changed` / `focus_moved` when they did not change
- * — token-lean by construction, no post-filtering needed.
+ * — token-lean by construction, no post-filtering needed. Also absent on
+ * the common path: `frame_mutation_count` (the part of `mutation_count` seen
+ * inside frame documents, for the host to add to the observer's count),
+ * present only when it is not 0, and `unobserved: { cross_origin_frames?,
+ * shadow_roots?, hint }`, present only when part of the page was not watched.
  */
 export interface SettleOpts {
   /** Quiet-period length in ms. Caller is expected to have already
@@ -1111,36 +1584,169 @@ export interface SettleOpts {
   settle_timeout_ms: number;
 }
 
+/** The first page observer version that gives settle its roots
+ * (`liveRoots`, `shadowRootOf`, `onRoot`). */
+export const SETTLE_OBSERVER_MIN_VERSION = 5;
+
 export function buildSettleJs(opts: SettleOpts): string {
   const optsJson = JSON.stringify({
     settleMs: Math.max(0, opts.settle_ms),
     timeoutMs: Math.max(0, opts.settle_timeout_ms),
+    key: OBSERVER_GLOBAL,
+    minVersion: SETTLE_OBSERVER_MIN_VERSION,
+    framesHint: UNOBSERVED_FRAMES_HINT,
+    shadowHint: UNOBSERVED_SHADOW_HINT,
   });
   return `
 (() => {
   const opts = ${optsJson};
   const startUrl = location.href;
   const startActiveEl = document.activeElement;
-  const state = { mutationCount: 0, lastMutationAt: Date.now() };
+  const state = { mutationCount: 0, frameMutationCount: 0, lastMutationAt: Date.now() };
+  let done = false;
+  let openOnly = false;
+  const watched = new Set();
+  const frames = new Set();
+  const observers = new Map();
+  const stops = [];
   const observer = new MutationObserver((mutations) => {
     state.mutationCount += mutations.length;
     state.lastMutationAt = Date.now();
+    for (const m of mutations) {
+      const owner = m.target.nodeType === 9 ? m.target : m.target.ownerDocument;
+      if (owner !== document) state.frameMutationCount++;
+      if (m.type !== 'childList') continue;
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1) discover(n);
+      }
+    }
   });
-  observer.observe(document, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    characterData: true,
-  });
+  // The page observer of a document when it can give settle its roots, else
+  // null; settle then scans for open roots itself and says so.
+  function observerOf(doc) {
+    if (observers.has(doc)) return observers.get(doc);
+    let g = null;
+    try { g = doc.defaultView ? doc.defaultView[opts.key] : null; } catch (e) { g = null; }
+    const usable = !!g && !g.dead && typeof g.version === 'number' && g.version >= opts.minVersion &&
+      g.coverage === 'full' && typeof g.liveRoots === 'function' &&
+      typeof g.shadowRootOf === 'function' && typeof g.onRoot === 'function';
+    if (!usable) {
+      g = null;
+      openOnly = true;
+    }
+    observers.set(doc, g);
+    return g;
+  }
+  function frameDoc(frame) {
+    try { return frame.contentDocument || null; } catch (e) { return null; }
+  }
+  // Watch every root reachable from start (a document, a shadow root, or an
+  // added element), iteratively and each root once. With the observer, a
+  // document's roots come from it and only iframes are looked for inside a
+  // root; without it, every element is checked for an open root.
+  function discover(start) {
+    const queue = [start];
+    for (let i = 0; i < queue.length; i++) {
+      const scope = queue[i];
+      const isRoot = scope.nodeType === 9 || scope.nodeType === 11;
+      if (isRoot) {
+        if (watched.has(scope)) continue;
+        watched.add(scope);
+        try {
+          observer.observe(scope, { subtree: true, childList: true, attributes: true, characterData: true });
+        } catch (e) {}
+      }
+      const g = observerOf(scope.nodeType === 9 ? scope : scope.ownerDocument);
+      if (scope.nodeType === 9 && g) {
+        try {
+          for (const r of g.liveRoots()) queue.push(r);
+          stops.push(g.onRoot((r) => {
+            if (!done) {
+              try { discover(r); } catch (e) {}
+            }
+          }));
+        } catch (e) {}
+      }
+      let els;
+      try { els = scope.querySelectorAll(isRoot && g ? 'iframe' : '*'); } catch (e) { continue; }
+      if (!isRoot) els = [scope].concat(Array.from(els));
+      for (const el of els) {
+        if (!(isRoot && g)) {
+          let sr = el.shadowRoot;
+          if (!sr && g) {
+            try { sr = g.shadowRootOf(el); } catch (e) { sr = null; }
+          }
+          if (sr) queue.push(sr);
+        }
+        if (el.tagName === 'IFRAME') {
+          frames.add(el);
+          const doc = frameDoc(el);
+          if (doc) queue.push(doc);
+        }
+      }
+    }
+  }
+  // A frame that loaded a new document since it was seen: watch the new one.
+  function refreshFrames() {
+    for (const frame of frames) {
+      const doc = frameDoc(frame);
+      if (doc && !watched.has(doc)) discover(doc);
+    }
+  }
+  // Frames in the page now whose document cannot be read: cross-origin (or
+  // sandboxed without same-origin). A frame counts while it is connected to
+  // the top document or to a frame document reachable from it.
+  function crossOriginFrames() {
+    if (frames.size === 0) return 0;
+    const live = new Set([document]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const frame of frames) {
+        if (!frame.isConnected || !live.has(frame.ownerDocument)) continue;
+        const doc = frameDoc(frame);
+        if (doc && !live.has(doc)) {
+          live.add(doc);
+          grew = true;
+        }
+      }
+    }
+    let count = 0;
+    for (const frame of frames) {
+      if (frame.isConnected && live.has(frame.ownerDocument) && !frameDoc(frame)) count++;
+    }
+    return count;
+  }
+  discover(document);
   const start = Date.now();
   return new Promise((resolve) => {
     function finish(settled) {
+      done = true;
       observer.disconnect();
+      for (const stop of stops) {
+        try { stop(); } catch (e) {}
+      }
       const result = {
         settled: settled,
         duration_ms: Date.now() - start,
         mutation_count: state.mutationCount,
       };
+      if (state.frameMutationCount > 0) result.frame_mutation_count = state.frameMutationCount;
+      const unobserved = {};
+      const hints = [];
+      const hidden = crossOriginFrames();
+      if (hidden > 0) {
+        unobserved.cross_origin_frames = hidden;
+        hints.push(opts.framesHint);
+      }
+      if (openOnly) {
+        unobserved.shadow_roots = 'open-only';
+        hints.push(opts.shadowHint);
+      }
+      if (hints.length > 0) {
+        unobserved.hint = hints.join(' ');
+        result.unobserved = unobserved;
+      }
       if (location.href !== startUrl) result.url_changed = location.href;
       if (document.activeElement !== startActiveEl) result.focus_moved = true;
       resolve(result);
@@ -1150,6 +1756,7 @@ export function buildSettleJs(opts: SettleOpts): string {
       return;
     }
     (function check() {
+      refreshFrames();
       const now = Date.now();
       const quietFor = now - state.lastMutationAt;
       if (quietFor >= opts.settleMs) {

@@ -799,6 +799,7 @@ describe('admin.describe / admin.action (admin panel S3)', () => {
         request_id: 'r3',
         id: 'multiAgent',
         value: false,
+        code: 'c0de',
         confirm: true,
         extra: 'dropped',
       } as never,
@@ -809,7 +810,8 @@ describe('admin.describe / admin.action (admin panel S3)', () => {
         },
       }),
     );
-    expect(seen).toEqual([{ id: 'multiAgent', value: false, confirm: true }]);
+    // `confirm` is not forwarded: only a preview's code applies a write (D11).
+    expect(seen).toEqual([{ id: 'multiAgent', value: false, code: 'c0de' }]);
     expect(reply).toEqual({
       kind: 'admin.action.result',
       request_id: 'r3',
@@ -828,6 +830,29 @@ describe('admin.describe / admin.action (admin panel S3)', () => {
       request_id: 'r4',
       result: { ok: false, error: 'admin.action: id must be a string' },
     });
+    const reached: unknown[] = [];
+    expect(
+      await handleAdminMessage(
+        {
+          kind: 'admin.action',
+          request_id: 'r4b',
+          id: 'multiAgent',
+          value: false,
+          code: 7,
+        } as never,
+        handlers({
+          action: (req) => {
+            reached.push(req);
+            return Promise.resolve({ ok: true, applied: true });
+          },
+        }),
+      ),
+    ).toEqual({
+      kind: 'admin.action.result',
+      request_id: 'r4b',
+      result: { ok: false, error: 'admin.action: code must be a string' },
+    });
+    expect(reached).toEqual([]);
     expect(
       await handleAdminMessage(
         { kind: 'admin.action', request_id: 'r5', id: 'doctor' },

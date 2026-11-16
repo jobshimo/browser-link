@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Language } from './welcome.js';
+import { CommandLineError, parseCommandLine, type ParsedArgs } from '../cli-args.js';
 import { formatRelative } from './map.js';
 import {
   clear,
@@ -174,21 +175,10 @@ const I18N = {
   },
 } as const;
 
-/** Read `--flag value` out of argv. Returns undefined when absent, so a
- * missing flag and an empty one stay distinguishable. */
-function flagValue(argv: string[], name: string): string | undefined {
-  const index = argv.indexOf(`--${name}`);
-  if (index === -1) return undefined;
-  // `.at()` rather than `[]` for the same reason cli.ts uses it: it types the
-  // missing-argument case as `undefined` instead of lying about it under the
-  // project's loose index access.
-  const value = argv.at(index + 1);
-  return value !== undefined && !value.startsWith('--') ? value : undefined;
-}
-
-function hasFlag(argv: string[], name: string): boolean {
-  return argv.includes(`--${name}`);
-}
+// Options are read by the command line's one parser (cli-args.ts), against
+// the `activity` grammar declared there. It has already refused an option
+// without its value, so an absent value here really means the option was
+// not given — a forgotten value can never widen `clear` to the whole trail.
 
 /* ------------------------------------------------------------- time ------
  *
@@ -232,15 +222,15 @@ export function parseDuration(value: string): number | null {
   return amount * unit;
 }
 
-function buildQuery(argv: string[]): ActivityQuery {
-  const limitRaw = flagValue(argv, 'limit');
+function buildQuery(args: ParsedArgs): ActivityQuery {
+  const limitRaw = args.value('limit');
   const parsedLimit = limitRaw === undefined ? undefined : Number.parseInt(limitRaw, 10);
   return {
-    ...(flagValue(argv, 'tab') !== undefined ? { tabId: flagValue(argv, 'tab') } : {}),
-    ...(flagValue(argv, 'agent') !== undefined ? { agent: flagValue(argv, 'agent') } : {}),
-    ...(flagValue(argv, 'tool') !== undefined ? { tool: flagValue(argv, 'tool') } : {}),
-    ...(flagValue(argv, 'flow') !== undefined ? { flowId: flagValue(argv, 'flow') } : {}),
-    ...(hasFlag(argv, 'failed') ? { outcome: 'error' as const } : {}),
+    ...(args.value('tab') !== undefined ? { tabId: args.value('tab') } : {}),
+    ...(args.value('agent') !== undefined ? { agent: args.value('agent') } : {}),
+    ...(args.value('tool') !== undefined ? { tool: args.value('tool') } : {}),
+    ...(args.value('flow') !== undefined ? { flowId: args.value('flow') } : {}),
+    ...(args.has('failed') ? { outcome: 'error' as const } : {}),
     ...(parsedLimit !== undefined && Number.isFinite(parsedLimit) ? { limit: parsedLimit } : {}),
   };
 }
@@ -315,13 +305,13 @@ function toCsv(records: Iterable<ActivityRecord>): string {
   return lines.join('\n');
 }
 
-function runExport(argv: string[], language: Language): string {
+function runExport(args: ParsedArgs, language: Language): string {
   const t = I18N[language];
-  const format = flagValue(argv, 'format') ?? 'json';
+  const format = args.value('format') ?? 'json';
   if (format !== 'json' && format !== 'ndjson' && format !== 'csv') return t.badFormat(format);
 
-  const shouldRedact = hasFlag(argv, 'redact');
-  const filter = buildQuery(argv);
+  const shouldRedact = args.has('redact');
+  const filter = buildQuery(args);
   // `limit` is a display concern; an export takes everything matching.
   delete filter.limit;
 
@@ -329,7 +319,7 @@ function runExport(argv: string[], language: Language): string {
   for (const row of exportAll(filter)) rows.push(shouldRedact ? redact(row) : row);
 
   const defaultName = `activity.${format === 'csv' ? 'csv' : format === 'ndjson' ? 'ndjson' : 'json'}`;
-  const out = resolve(flagValue(argv, 'out') ?? defaultName);
+  const out = resolve(args.value('out') ?? defaultName);
 
   const body =
     format === 'csv'
@@ -388,16 +378,16 @@ function compactAfterClear(compact: () => void, language: Language): void {
   }
 }
 
-function runClear(argv: string[], language: Language, deps: ActivityCommandDeps): string {
+function runClear(args: ParsedArgs, language: Language, deps: ActivityCommandDeps): string {
   const t = I18N[language];
   const compact =
     deps.compact ??
     (() => {
       compactActivityDb();
     });
-  const olderThan = flagValue(argv, 'older-than');
-  const from = flagValue(argv, 'from');
-  const to = flagValue(argv, 'to');
+  const olderThan = args.value('older-than');
+  const from = args.value('from');
+  const to = args.value('to');
 
   // Explicit range takes precedence and mirrors the extension's purge panel,
   // including its VACUUM — the point of purging is that the file shrinks.
@@ -407,7 +397,7 @@ function runClear(argv: string[], language: Language, deps: ActivityCommandDeps)
       ...(to !== undefined ? { to: localDayToUtc(to, 'end') } : {}),
     };
     const willRemove = countInRange(range);
-    if (!hasFlag(argv, 'yes')) return willRemove === 0 ? t.clearedNone : t.confirmRange(willRemove);
+    if (!args.has('yes')) return willRemove === 0 ? t.clearedNone : t.confirmRange(willRemove);
     const removed = purgeRange(range, { vacuum: false });
     compactAfterClear(compact, language);
     return removed === 0 ? t.clearedNone : t.cleared(removed);
@@ -424,7 +414,7 @@ function runClear(argv: string[], language: Language, deps: ActivityCommandDeps)
   // Wiping the whole trail is the one destructive path here, and unlike
   // `--older-than` it cannot be partially undone by waiting. Confirmation is
   // required rather than offered.
-  if (!hasFlag(argv, 'yes')) return t.confirmClear;
+  if (!args.has('yes')) return t.confirmClear;
   const removed = clear();
   compactAfterClear(compact, language);
   return removed === 0 ? t.clearedNone : t.cleared(removed);
@@ -452,10 +442,10 @@ function countList(counts: Record<string, number | undefined>): string {
 
 /** `browser-link activity report` — the same summary `browser.activity`
  * returns with `summary: true`, laid out for a terminal. */
-function runReport(argv: string[], language: Language): string {
+function runReport(args: ParsedArgs, language: Language): string {
   const t = I18N[language];
-  const sinceRaw = flagValue(argv, 'since');
-  const agentId = flagValue(argv, 'agent');
+  const sinceRaw = args.value('since');
+  const agentId = args.value('agent');
   const filters: ActivitySummaryFilters = {};
   if (sinceRaw !== undefined) {
     const since = parseSince(sinceRaw);
@@ -538,17 +528,22 @@ export function runActivityCommand(
   deps: ActivityCommandDeps = {},
 ): string {
   const t = I18N[language];
-  const sub = argv[0];
+  // Parsed whole before anything reads the trail: `--help`/`-h` anywhere is
+  // the usage and nothing else, a refused line touches nothing.
+  const line = parseCommandLine('activity', argv);
+  if (line === undefined || line.kind === 'unknown-subcommand') return t.usage;
+  if (line.kind === 'help') return t.usage;
+  if (line.kind === 'error') throw new CommandLineError(line.path, line.problem, language);
+  const { subcommand: sub, args } = line;
 
-  if (sub === 'help' || hasFlag(argv, 'help')) return t.usage;
+  if (sub === 'help') return t.usage;
   if (sub === 'stats') return runStats(language);
-  if (sub === 'report') return runReport(argv.slice(1), language);
-  if (sub === 'export') return runExport(argv.slice(1), language);
-  if (sub === 'clear') return runClear(argv.slice(1), language, deps);
+  if (sub === 'report') return runReport(args, language);
+  if (sub === 'export') return runExport(args, language);
+  if (sub === 'clear') return runClear(args, language, deps);
 
-  const page = query(
-    buildQuery(argv).limit === undefined ? { ...buildQuery(argv), limit: 50 } : buildQuery(argv),
-  );
+  const filter = buildQuery(args);
+  const page = query(filter.limit === undefined ? { ...filter, limit: 50 } : filter);
   if (page.records.length === 0) return `${t.empty}\n${t.disabledHint}`;
 
   const agents = listAgents();

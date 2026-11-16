@@ -17,10 +17,10 @@
 // E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe).
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
@@ -32,6 +32,7 @@ import {
   extensionCopy,
   freePort,
   isAlive,
+  jsLiteral,
   killPid,
   launchChrome,
   now,
@@ -49,6 +50,11 @@ import {
 
 const CALL_TIMEOUT_MS = 45_000;
 const TOTAL_TIMEOUT_MS = 180_000;
+const REPORT_BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7 + 3) % 256));
+const ATTACHMENTS = {
+  '/file.bin': { name: 'e2e-report.bin', bytes: REPORT_BYTES },
+  '/other.bin': { name: 'e2e-other.bin', bytes: Buffer.from(REPORT_BYTES).reverse() },
+};
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
 
 class StepFailure extends Error {
@@ -117,7 +123,19 @@ async function main() {
 
   // The test page over http (a real origin, like an app; not file://).
   const html = readFileSync(PAGE_FILE);
-  state.http = createServer((_q, r) => {
+  // Two attachment files for the download steps (answered again on every GET:
+  // selector mode re-fetches the URL Chrome reported); everything else is the page.
+  state.http = createServer((q, r) => {
+    const file = ATTACHMENTS[(q.url ?? '/').split('?')[0]];
+    if (file) {
+      r.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-disposition': `attachment; filename="${file.name}"`,
+        'content-length': file.bytes.length,
+      });
+      r.end(file.bytes);
+      return;
+    }
     r.writeHead(200, { 'content-type': 'text/html' });
     r.end(html);
   });
@@ -191,7 +209,7 @@ async function main() {
   });
   const tabId = await evaluateUntil(
     cdp,
-    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${JSON.stringify(page)} && t.status === 'complete') || {}).id ?? null)`,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(page)} && t.status === 'complete') || {}).id ?? null)`,
     swSession,
     15_000,
   );
@@ -207,7 +225,7 @@ async function main() {
   });
   const connected = await evaluateUntil(
     cdp,
-    `chrome.runtime.sendMessage(${JSON.stringify({ action: 'connect', tabId })})`,
+    `chrome.runtime.sendMessage(${jsLiteral({ action: 'connect', tabId })})`,
     popupSession,
     15_000,
   );
@@ -337,6 +355,14 @@ async function main() {
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
 
+  await downloadChecks({
+    T,
+    origin: new URL(page).origin,
+    downloadsDir: join(dataDir, 'downloads'),
+    cdp,
+    swSession,
+  });
+
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
   // connected tab and the nine calls above prove that this browser's
@@ -351,6 +377,227 @@ async function main() {
   const keylessId =
     loadedKeylessId ?? (await cdp.send('Extensions.loadUnpacked', { path: keylessDir })).id;
   await refusedExtension(cdp, swSession, page, keylessId);
+}
+
+/** Names of the files in `dir` (empty when it does not exist yet). */
+const listDir = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : []);
+
+/** Chrome's own download list, read from the extension's worker. */
+const chromeDownloads = (cdp, swSession) =>
+  cdp.evaluate(
+    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, state: d.state, error: d.error ?? null, startTime: d.startTime ?? null })))',
+    swSession,
+  );
+
+/** Print `label ok ms`, or fail it when E2E_EXPECT_FAIL names it. */
+function stepDone(label, t) {
+  const short = label.replace(/^browser\./, '');
+  if (EXPECT_FAIL === short) throw new StepFailure(short, 'forced failure (E2E_EXPECT_FAIL)');
+  console.log(`${label} ok ${String(Math.round(now() - t))}`);
+}
+
+/** A saved path lies directly inside the downloads dir (case-insensitive on Windows). */
+function insideDir(path, dir) {
+  const norm = (p) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+  return typeof path === 'string' && norm(join(path, '..')) === norm(dir);
+}
+
+/** The step's failure: the reason, what the tool said, and the whole result,
+ * so a product failure (state / error / chrome_download) reads differently
+ * from a harness one. */
+function downloadFailure(label, why, res) {
+  const b = json(res);
+  const seen = b
+    ? `state=${String(b.state)} error=${String(b.error)} chrome_download=${String(b.chrome_download)}`
+    : 'no JSON result';
+  return new StepFailure(
+    label.replace(/^browser\./, ''),
+    `${why}; ${seen}; full result: ${text(res).slice(0, 1500)}`,
+  );
+}
+
+/** What is wrong with a saved download: right place, right bytes, no leftovers. */
+function savedProblems(b, downloadsDir, files) {
+  const wrong = [];
+  if (b?.ok !== true) wrong.push(`ok is ${String(b?.ok)}`);
+  if (b?.state !== 'complete') wrong.push(`state is ${String(b?.state)}`);
+  if (b?.bytes !== REPORT_BYTES.length) {
+    wrong.push(`bytes is ${String(b?.bytes)}, served ${String(REPORT_BYTES.length)}`);
+  }
+  if (!insideDir(b?.path, downloadsDir)) {
+    wrong.push(`path ${String(b?.path)} is not inside ${downloadsDir}`);
+  } else if (!existsSync(b.path)) {
+    wrong.push(`path ${b.path} does not exist`);
+  } else if (!readFileSync(b.path).equals(REPORT_BYTES)) {
+    wrong.push('file content differs from the served bytes');
+  }
+  const found = listDir(downloadsDir);
+  if (found.some((n) => /\.(part|crdownload|tmp)$/i.test(n)) || found.length !== files) {
+    wrong.push(
+      `downloads dir holds [${found.join(', ')}], expected ${String(files)} finished file(s)`,
+    );
+  }
+  return wrong;
+}
+
+/**
+ * `browser.download`, three ways. The first decides whether the selector
+ * capture works on this Chrome at all: it needs the clicked tab's own debugger
+ * session to receive `Page.downloadWillBegin`.
+ */
+async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
+  const fileUrl = `${origin}/file.bin`;
+  const otherUrl = `${origin}/other.bin`;
+  const quiet = (label) => ({ print: false, label });
+
+  // 1. Selector mode: the click starts the download, the tab reports it.
+  let label = 'browser.download.selector';
+  let t = now();
+  let res = await call(
+    'browser.download',
+    { tab_id: T, selector: '#dl', timeout_ms: 10_000 },
+    undefined,
+    quiet(label),
+  );
+  let b = json(res);
+  let wrong = savedProblems(b, downloadsDir, 1);
+  if (b?.chrome_download !== 'removed') {
+    wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
+  }
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  try {
+    const left = (await chromeDownloads(cdp, swSession)).filter((d) => d.url === fileUrl);
+    if (left.length) {
+      throw downloadFailure(label, `Chrome's list still holds ${JSON.stringify(left)}`, res);
+    }
+  } catch (e) {
+    if (e instanceof StepFailure) throw e;
+    console.log(
+      `${label} note: Chrome's download list unreadable (${e.message}); erase not verified`,
+    );
+  }
+  stepDone(label, t);
+
+  // 2. URL mode on the same file: Chrome's download manager is not involved.
+  label = 'browser.download.url';
+  t = now();
+  res = await call(
+    'browser.download',
+    { tab_id: T, url: fileUrl, timeout_ms: 10_000 },
+    undefined,
+    quiet(label),
+  );
+  wrong = savedProblems(json(res), downloadsDir, 2);
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  stepDone(label, t);
+
+  // 3. A download that is not the tab's, while a selector that starts none
+  //    waits. Another file opened in a second tab (its own target, no debugger
+  //    of ours on it): Chrome starts a download, the clicked tab reports none.
+  //    Browser.setDownloadBehavior is not used: it would change how the
+  //    extension sees downloads.
+  label = 'browser.download.unrelated';
+  t = now();
+  const before = listDir(downloadsDir);
+  const waitStart = Date.now();
+  const waiting = call(
+    'browser.download',
+    { tab_id: T, selector: '#idle', timeout_ms: 8000 },
+    undefined,
+    quiet(label),
+  ).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  await sleep(1500); // the click is done and the capture is waiting
+  let otherTarget;
+  try {
+    ({ targetId: otherTarget } = await cdp.send('Target.createTarget', { url: otherUrl }));
+  } catch (e) {
+    await waiting;
+    throw new StepFailure(
+      'download.unrelated',
+      `harness: could not open the second tab: ${e.message}`,
+    );
+  }
+  const answered = await waiting;
+  const waitEnd = Date.now();
+  if (answered.error) throw answered.error;
+  res = answered.value;
+  b = json(res);
+  wrong = [];
+  const unattributed =
+    b?.ok === false &&
+    b?.state === 'interrupted' &&
+    b?.chrome_download === 'left_in_chrome' &&
+    /capture failed/.test(String(b?.error));
+  const after = listDir(downloadsDir);
+  if (after.join('|') !== before.join('|')) {
+    wrong.push(`downloads dir changed from [${before.join(', ')}] to [${after.join(', ')}]`);
+  }
+  // Did Chrome itself create the unrelated download during the wait? Its own
+  // list answers (the item's startTime against the wait's wall-clock window);
+  // `null` when the list could not say.
+  let createdDuringWait = null;
+  let harness = null;
+  let chromeNote;
+  try {
+    let item;
+    const t0 = now();
+    while (!item && now() - t0 < 5000) {
+      item = (await chromeDownloads(cdp, swSession)).find((d) => d.url === otherUrl);
+      if (!item) await sleep(200);
+    }
+    if (!item) {
+      createdDuringWait = false;
+      harness = `Chrome never listed ${otherUrl}, so no download was created during the wait`;
+    } else {
+      const started = Date.parse(String(item.startTime));
+      if (Number.isFinite(started)) {
+        createdDuringWait = started >= waitStart - 1000 && started <= waitEnd + 1000;
+        if (!createdDuringWait) {
+          harness = `Chrome lists ${otherUrl} but it started at ${String(item.startTime)}, outside the wait`;
+        }
+      }
+      if (item.state === 'interrupted' || item.error) {
+        wrong.push(`the unrelated download was cancelled: ${JSON.stringify(item)}`);
+      }
+    }
+    chromeNote = item ? `Chrome kept it (${item.state})` : 'not listed by Chrome';
+  } catch (e) {
+    chromeNote = `Chrome list unreadable (${e.message}), not verified`;
+  }
+  try {
+    await cdp.send('Target.closeTarget', { targetId: otherTarget });
+  } catch {
+    // a download tab may close itself
+  }
+  // Only the unattributed outcome passes. A timeout is what a capture that
+  // saw nothing answers, so it proves nothing about attribution: it is a
+  // harness failure when no download was created during the wait, and a
+  // product failure when Chrome shows one was.
+  if (!unattributed) {
+    if (createdDuringWait === true) {
+      wrong.push(
+        'Chrome shows the unrelated download was created during the wait, so only the unattributed outcome passes (ok:false, interrupted, left_in_chrome, "capture failed")',
+      );
+    } else {
+      harness ??= `the capture did not answer unattributed (state ${String(b?.state)}) and Chrome's list could not show whether a download was created during the wait`;
+    }
+  }
+  if (harness) {
+    console.log(
+      `${label} note: nothing was proven about attribution (${harness}); outcome ${String(b?.state)}; ${chromeNote}`,
+    );
+    throw downloadFailure(
+      label,
+      `harness: ${harness}${wrong.length ? `; also: ${wrong.join('; ')}` : ''}`,
+      res,
+    );
+  }
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  console.log(`${label} outcome: unattributed (interrupted, left_in_chrome); ${chromeNote}`);
+  stepDone(label, t);
 }
 
 /** Chrome with the extension loaded. `Extensions.loadUnpacked` when this
@@ -390,7 +637,7 @@ async function refusedExtension(cdp, swSession, page, keylessId) {
   const { targetId: refusedTab } = await cdp.send('Target.createTarget', { url });
   const tabId = await evaluateUntil(
     cdp,
-    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${JSON.stringify(url)} && t.status === 'complete') || {}).id ?? null)`,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(url)} && t.status === 'complete') || {}).id ?? null)`,
     swSession,
     15_000,
   );
@@ -400,7 +647,7 @@ async function refusedExtension(cdp, swSession, page, keylessId) {
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const result = await evaluateUntil(
     cdp,
-    `chrome.runtime.sendMessage(${JSON.stringify({ action: 'connect', tabId })})`,
+    `chrome.runtime.sendMessage(${jsLiteral({ action: 'connect', tabId })})`,
     sessionId,
     15_000,
   );
@@ -434,6 +681,8 @@ const I18N = {
     activity: 'Activity',
     status: 'Status',
     cdpDirectEnabled: 'cdp-direct enabled',
+    hidePasswordValues: 'Hide password values from agents',
+    activityHideSensitive: 'Hide sensitive values in the activity trail',
   },
   es: {
     footer: 'manual · por pestaña · solo loopback',
@@ -441,6 +690,8 @@ const I18N = {
     activity: 'Actividad',
     status: 'Estado',
     cdpDirectEnabled: 'cdp-direct activado',
+    hidePasswordValues: 'Ocultar a los agentes el valor de las contraseñas',
+    activityHideSensitive: 'Ocultar los valores sensibles en el registro de actividad',
   },
 };
 
@@ -501,7 +752,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `${footer} === ${JSON.stringify(I18N[from].footer)}`,
+      `${footer} === ${jsLiteral(I18N[from].footer)}`,
       popup.sessionId,
       `footer not in ${from}`,
     );
@@ -512,7 +763,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[from].status)}`,
+      `document.querySelector('.admin-section-title')?.textContent === ${jsLiteral(I18N[from].status)}`,
       admin.sessionId,
       `admin status section not in ${from}`,
     );
@@ -520,13 +771,13 @@ async function languageChecks(cdp, extId) {
 
   await check('i18n.switch', async (name) => {
     await cdp.evaluate(
-      `document.querySelector('.lang-switch button[data-lang="${to}"]').click()`,
+      `document.querySelector(${jsLiteral(`.lang-switch button[data-lang="${to}"]`)}).click()`,
       popup.sessionId,
     );
     await expectSoon(
       cdp,
       name,
-      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)} && document.querySelector('.lang-switch button[data-lang="${to}"]').getAttribute('aria-pressed') === 'true' && document.getElementById('notice-open').textContent === ${JSON.stringify(I18N[to].notice)}`,
+      `document.documentElement.lang === ${jsLiteral(to)} && ${footer} === ${jsLiteral(I18N[to].footer)} && document.querySelector(${jsLiteral(`.lang-switch button[data-lang="${to}"]`)}).getAttribute('aria-pressed') === 'true' && document.getElementById('notice-open').textContent === ${jsLiteral(I18N[to].notice)}`,
       popup.sessionId,
       `popup did not switch to ${to}`,
     );
@@ -544,14 +795,14 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `window.__e2eNoReload === 1 && document.documentElement.lang === '${to}' && document.querySelector('h1').textContent.trim() === ${JSON.stringify(I18N[to].activity)}`,
+      `window.__e2eNoReload === 1 && document.documentElement.lang === ${jsLiteral(to)} && document.querySelector('h1').textContent.trim() === ${jsLiteral(I18N[to].activity)}`,
       activity.sessionId,
       'Activity did not follow without reload',
     );
     await expectSoon(
       cdp,
       name,
-      `window.__e2eNoReload === 1 && document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[to].status)}`,
+      `window.__e2eNoReload === 1 && document.querySelector('.admin-section-title')?.textContent === ${jsLiteral(I18N[to].status)}`,
       admin.sessionId,
       'Admin did not follow without reload',
     );
@@ -559,16 +810,47 @@ async function languageChecks(cdp, extId) {
 
   // Console-only settings: the server's readout, the command under it, no control.
   await check('admin.console-only', async (name) => {
-    const label = JSON.stringify(I18N[to].cdpDirectEnabled);
-    const seen = await cdp.evaluate(
-      `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; return { controls: row.querySelectorAll('input, select, button').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null }; })()`,
+    // cdp-direct and the two hide settings (changed only from the console):
+    // the server's readout, the command under it, no control, and an info
+    // control (a button with an accessible name, pointing at a text) beside the label.
+    const rows = [
+      [
+        'cdpDirectEnabled',
+        ['true', 'false'].map((v) => `browser-link config set cdp-direct.enabled ${v}`),
+      ],
+      [
+        'hidePasswordValues',
+        ['on', 'off'].map((v) => `browser-link config set hide-password-values ${v}`),
+      ],
+      [
+        'activityHideSensitive',
+        ['on', 'off'].map((v) => `browser-link config set activity.hide-sensitive ${v}`),
+      ],
+    ];
+    for (const [key, commands] of rows) {
+      const label = jsLiteral(I18N[to][key]);
+      const seen = await cdp.evaluate(
+        `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; const info = row.querySelector('button.admin-info'); const text = info ? document.getElementById(info.getAttribute('aria-describedby') ?? '') : null; return { controls: row.querySelectorAll('input, select, button:not(.admin-info)').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null, infoName: info?.getAttribute('aria-label') ?? null, infoText: text?.textContent ?? null }; })()`,
+        admin.sessionId,
+      );
+      if (
+        !seen ||
+        seen.controls !== 0 ||
+        !seen.value ||
+        !commands.includes(seen.command) ||
+        !seen.infoName?.trim() ||
+        !seen.infoText?.trim()
+      ) {
+        throw new StepFailure(name, `${key} row ${JSON.stringify(seen)}`);
+      }
+    }
+    // Every console-only row has the info control, not only these three.
+    const withoutInfo = await cdp.evaluate(
+      `[...document.querySelectorAll('.admin-row')].filter((r) => r.querySelector('button.admin-info') && !r.querySelector('button.admin-info').getAttribute('aria-label')?.trim()).length`,
       admin.sessionId,
     );
-    const commands = ['true', 'false'].map(
-      (v) => `browser-link config set cdp-direct.enabled ${v}`,
-    );
-    if (!seen || seen.controls !== 0 || !seen.value || !commands.includes(seen.command)) {
-      throw new StepFailure(name, `cdpDirectEnabled row ${JSON.stringify(seen)}`);
+    if (withoutInfo !== 0) {
+      throw new StepFailure(name, `${withoutInfo} info control(s) without an accessible name`);
     }
   });
 
@@ -578,7 +860,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)}`,
+      `document.documentElement.lang === ${jsLiteral(to)} && ${footer} === ${jsLiteral(I18N[to].footer)}`,
       again.sessionId,
       'the choice did not survive reopening the popup',
     );

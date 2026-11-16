@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  FIND_CUT_HINT,
+  NOT_WALKED_NOTE,
+  PASSWORD_VALUES_HIDDEN_NOTE,
+  SNAPSHOT_CUT_HINT,
+  SNAPSHOT_NOT_COMPARED_HINT,
+  SNAPSHOT_NOT_COMPARED_TEXT_HINT,
+  UNOBSERVED_FRAMES_HINT,
+  UNOBSERVED_SHADOW_HINT,
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -7,6 +15,7 @@ import {
   buildFindJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  buildProgrammaticClickJs,
   buildSettleJs,
   buildSnapshotJs,
   buildStateJs,
@@ -40,6 +49,33 @@ function evalExpr<T = unknown>(source: string): T {
  * mirroring how a real browser reports offsetParent for a rendered element. */
 function makeVisible(el: Element): void {
   Object.defineProperty(el, 'offsetParent', { value: document.body, configurable: true });
+}
+
+/** jsdom has no layout: every element answers `getClientRects()` with an
+ * empty list and `getBoundingClientRect()` with zeros, which is what Chrome
+ * answers only for an element that is not rendered (display:none, inside a
+ * display:none ancestor, an <option> of a closed <select>). A rendered
+ * element has at least one client rect, so the click tests give their
+ * targets one; a test that leaves a target without it models an element
+ * with no box. */
+function giveBox(
+  el: Element,
+  box: { left: number; top: number; width: number; height: number } = {
+    left: 100,
+    top: 200,
+    width: 80,
+    height: 20,
+  },
+): void {
+  const rect = {
+    ...box,
+    x: box.left,
+    y: box.top,
+    right: box.left + box.width,
+    bottom: box.top + box.height,
+  } as DOMRect;
+  el.getClientRects = () => [rect] as unknown as DOMRectList;
+  el.getBoundingClientRect = () => rect;
 }
 
 interface FindMatch {
@@ -103,6 +139,7 @@ describe('buildFindJs -> buildClickResolveJs round trip (the core agent workflow
     shadow.innerHTML = '<button>Save changes</button>';
     const target = shadow.querySelector('button')!;
     makeVisible(target);
+    giveBox(target);
 
     const found = evalExpr<FindResult>(buildFindJs({ text: 'Save changes' }));
     expect(found.matched).toBe(true);
@@ -122,6 +159,7 @@ describe('buildFindJs -> buildClickResolveJs round trip (the core agent workflow
     idoc.body.innerHTML = '<button>Submit order</button>';
     const target = idoc.querySelector('button')!;
     makeVisible(target);
+    giveBox(target);
 
     const found = evalExpr<FindResult>(buildFindJs({ text: 'Submit order' }));
     expect(found.matched).toBe(true);
@@ -410,6 +448,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
     document.body.appendChild(overlay);
@@ -427,6 +466,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
     document.body.appendChild(overlay);
@@ -448,6 +488,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     acc.id = 'acc-1';
     acc.style.pointerEvents = 'none';
     document.body.appendChild(acc);
+    giveBox(acc);
     const hitTarget = document.createElement('div');
     hitTarget.id = 'hit-layer';
     document.body.appendChild(hitTarget);
@@ -473,6 +514,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'clipped-btn';
     scroller.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -489,6 +531,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'clipped-btn';
     scroller.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -509,6 +552,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     icon.className = 'icon';
     icon.style.pointerEvents = 'none';
     button.appendChild(icon);
+    giveBox(icon);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => button;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -524,6 +568,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const button = document.createElement('button');
     button.id = 'save-btn';
     document.body.appendChild(button);
+    giveBox(button);
     const label = document.createElement('span');
     label.textContent = 'Save';
     button.appendChild(label);
@@ -542,6 +587,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => target;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -614,6 +660,308 @@ describe('buildClickResolveJs — occlusion guard', () => {
   });
 });
 
+/*
+ * Owner decision D4: "without `force`, a target with no visible box fails
+ * with a clear message; a click is never made at (0,0). With `force`: a
+ * covered target is clicked at its position as today; a target with no box
+ * gets a programmatic click on the element itself, with no pointer, and the
+ * result says so explicitly."
+ */
+describe('a click never lands at (0,0) (D4)', () => {
+  const NO_BOX = { ok: false, reason: 'no-box' };
+  const doc = document as unknown as {
+    elementFromPoint?: (x: number, y: number) => Element | null;
+  };
+  let corner: HTMLElement;
+
+  beforeEach(() => {
+    // What a real page has at its top-left corner: the element a click at
+    // (0,0) would land on.
+    corner = document.createElement('div');
+    corner.id = 'corner';
+    document.body.appendChild(corner);
+    doc.elementFromPoint = (x, y) => (x === 0 && y === 0 ? corner : null);
+  });
+  afterEach(() => {
+    delete doc.elementFromPoint;
+  });
+
+  function button(id: string, parent: Element = document.body): HTMLButtonElement {
+    const el = document.createElement('button');
+    el.id = id;
+    el.textContent = 'Go';
+    parent.appendChild(el);
+    return el;
+  }
+  function watchScroll(el: Element): Element[] {
+    const scrolled: Element[] = [];
+    el.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    return scrolled;
+  }
+  const resolve = (selector: string, force: boolean): Json =>
+    evalExpr<Json>(buildClickResolveJs({ selector, force }));
+
+  test('display:none target: no-box without force, a no_box answer with force, never a point', () => {
+    const el = button('hidden-btn');
+    el.style.display = 'none';
+    const scrolled = watchScroll(el);
+    expect(resolve('#hidden-btn', false)).toEqual(NO_BOX);
+    expect(resolve('#hidden-btn', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    // Nothing is scrolled for a target that will not be clicked by pointer.
+    expect(scrolled).toEqual([]);
+  });
+
+  test('a target inside a display:none ancestor has no box either', () => {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'none';
+    document.body.appendChild(wrap);
+    button('inner-btn', wrap);
+    expect(resolve('#inner-btn', false)).toEqual(NO_BOX);
+    expect(resolve('#inner-btn', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+  });
+
+  test('visibility:hidden (own or inherited) is no box although layout gives it a rect', () => {
+    const own = button('own-hidden');
+    own.style.visibility = 'hidden';
+    giveBox(own);
+    expect(resolve('#own-hidden', false)).toEqual(NO_BOX);
+    expect(resolve('#own-hidden', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    const wrap = document.createElement('div');
+    wrap.style.visibility = 'hidden';
+    document.body.appendChild(wrap);
+    giveBox(button('inherited-hidden', wrap));
+    expect(resolve('#inherited-hidden', false)).toEqual(NO_BOX);
+  });
+
+  test('a zero-height anchor whose descendant is hit keeps the HEAD path: allowed at its own position', () => {
+    // An inline <a> whose only content is an absolutely positioned child:
+    // its own client rect has no height, the child takes the click.
+    const link = document.createElement('a');
+    link.id = 'wrap-link';
+    link.href = '#';
+    const child = document.createElement('span');
+    link.appendChild(child);
+    document.body.appendChild(link);
+    giveBox(link, { left: 100, top: 200, width: 50, height: 0 });
+    doc.elementFromPoint = (x, y) => (x === 125 && y === 200 ? child : null);
+    expect(resolve('#wrap-link', false)).toEqual({ ok: true, x: 125, y: 200, tag: 'a' });
+  });
+
+  test('a zero-size target hitting something else is retargeted or occluded exactly as at HEAD', () => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wrapper';
+    document.body.appendChild(wrapper);
+    giveBox(button('zero', wrapper), { left: 40, top: 50, width: 0, height: 0 });
+    doc.elementFromPoint = () => wrapper;
+    expect(resolve('#zero', false)).toEqual({
+      ok: false,
+      reason: 'retargeted',
+      hit_element: 'div.wrapper',
+    });
+    doc.elementFromPoint = () => corner;
+    expect(resolve('#zero', false)).toEqual({
+      ok: false,
+      reason: 'occluded',
+      blocker: 'div#corner',
+    });
+    // force: clicked by pointer at its own position, naming what is there.
+    expect(resolve('#zero', true)).toEqual({
+      ok: true,
+      x: 40,
+      y: 50,
+      tag: 'button',
+      hit_element: 'div#corner',
+    });
+  });
+
+  test('an empty rect at the top document origin is no box: never a click at (0,0)', () => {
+    giveBox(button('at-origin'), { left: 0, top: 0, width: 0, height: 0 });
+    expect(resolve('#at-origin', false)).toEqual(NO_BOX);
+    expect(resolve('#at-origin', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+  });
+
+  test('a box that only touches the origin (not empty) is clicked as at HEAD', () => {
+    const el = button('corner-btn');
+    giveBox(el, { left: -10, top: -10, width: 20, height: 20 });
+    doc.elementFromPoint = () => el;
+    expect(resolve('#corner-btn', false)).toEqual({ ok: true, x: 0, y: 0, tag: 'button' });
+  });
+
+  test('the browser says not visible (content of a closed <details>): no box', () => {
+    // Chrome's own answer: checkVisibility() is false for an element whose
+    // ancestor hides it from rendering (content-visibility, a closed
+    // <details>), even where layout still reports a rect. jsdom has no
+    // checkVisibility, so the test supplies Chrome's answer.
+    const details = document.createElement('details');
+    document.body.appendChild(details);
+    const inner = button('in-details', details);
+    giveBox(inner);
+    const asked: unknown[] = [];
+    (inner as unknown as { checkVisibility: (o: unknown) => boolean }).checkVisibility = (o) => {
+      asked.push(o);
+      return false;
+    };
+    expect(resolve('#in-details', false)).toEqual(NO_BOX);
+    expect(resolve('#in-details', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    // visibility:hidden counts; opacity is not asked for (see the next test).
+    expect(asked[0]).toEqual({ visibilityProperty: true });
+  });
+
+  test('an <option> of a <select> has no box of its own', () => {
+    document.body.innerHTML =
+      '<div id="corner"></div><select id="s"><option id="o1">A</option><option id="o2">B</option></select>';
+    giveBox(document.getElementById('s')!);
+    expect(resolve('#o2', false)).toEqual(NO_BOX);
+    expect(resolve('#o2', true)).toEqual({ ok: true, no_box: true, tag: 'option' });
+  });
+
+  test('opacity:0 keeps its box: clicked at its position by pointer, as today', () => {
+    const el = button('clear-btn');
+    el.style.opacity = '0';
+    giveBox(el);
+    doc.elementFromPoint = () => el;
+    expect(resolve('#clear-btn', false)).toEqual({ ok: true, x: 140, y: 210, tag: 'button' });
+  });
+
+  test('the browser says visible and there is a box: clicked at its position', () => {
+    const el = button('shown');
+    giveBox(el);
+    (el as unknown as { checkVisibility: () => boolean }).checkVisibility = () => true;
+    doc.elementFromPoint = () => el;
+    expect(resolve('#shown', false)).toEqual({ ok: true, x: 140, y: 210, tag: 'button' });
+  });
+
+  test('a target below the viewport is scrolled into view and clicked at its new position', () => {
+    const el = button('far');
+    giveBox(el, { left: 100, top: 5000, width: 80, height: 20 });
+    el.scrollIntoView = () => giveBox(el, { left: 100, top: 300, width: 80, height: 20 });
+    doc.elementFromPoint = (x, y) => (x === 140 && y === 310 ? el : null);
+    expect(resolve('#far', false)).toEqual({ ok: true, x: 140, y: 310, tag: 'button' });
+  });
+
+  test('covered target with force is still clicked at its position, naming the cover', () => {
+    const el = button('covered');
+    giveBox(el);
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    document.body.appendChild(overlay);
+    doc.elementFromPoint = () => overlay;
+    expect(resolve('#covered', false)).toEqual({
+      ok: false,
+      reason: 'occluded',
+      blocker: 'div.modal-backdrop',
+    });
+    expect(resolve('#covered', true)).toEqual({
+      ok: true,
+      x: 140,
+      y: 210,
+      tag: 'button',
+      hit_element: 'div.modal-backdrop',
+    });
+  });
+
+  test('no-box by ref, with force, still says reresolved after a re-render', () => {
+    const win = window as unknown as Record<string, unknown>;
+    document.body.innerHTML = '<ul id="list"><li><button>Alpha</button></li></ul>';
+    win[OBSERVER_BINDING] = () => undefined;
+    try {
+      evalExpr(buildObserverInstallJs());
+      const handle = win[OBSERVER_GLOBAL] as { refFor: (el: Element) => string | null };
+      const ref = handle.refFor(document.querySelector('#list button')!)!;
+      document.getElementById('list')!.innerHTML = '<li><button>Alpha</button></li>';
+      expect(evalExpr<Json>(buildClickResolveJs({ ref, force: true }))).toEqual({
+        ok: true,
+        no_box: true,
+        tag: 'button',
+        reresolved: true,
+      });
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+});
+
+describe('buildProgrammaticClickJs (the force click on a target with no box, D4)', () => {
+  test('calls the element’s own click(): a click event, no mousedown, mouseup or pointer events', () => {
+    const el = document.createElement('button');
+    el.id = 'hidden-btn';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    const seen: string[] = [];
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'mousemove', 'click']) {
+      el.addEventListener(type, () => seen.push(type));
+    }
+    const result = evalExpr<Json>(buildProgrammaticClickJs({ selector: '#hidden-btn' }));
+    expect(result).toEqual({ ok: true });
+    expect(seen).toEqual(['click']);
+  });
+
+  test('a target that is gone fails like any other resolution and clicks nothing', () => {
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#nope' }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
+  test('an element without its own click() (SVG) still gets one click event, bubbling', () => {
+    document.body.innerHTML = '<div id="wrap"><svg><circle id="dot" r="2"></circle></svg></div>';
+    const seen: string[] = [];
+    document.getElementById('wrap')!.addEventListener('click', (e) => {
+      seen.push((e.target as Element).id);
+    });
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#dot' }))).toEqual({ ok: true });
+    expect(seen).toEqual(['dot']);
+  });
+
+  test('a disabled control (itself, or through a disabling ancestor fieldset) is refused and clicked on nothing', () => {
+    document.body.innerHTML =
+      '<button id="own" disabled>Own</button>' +
+      '<fieldset disabled><div><button id="inherited">Inherited</button></div></fieldset>' +
+      '<button id="enabled">Enabled</button>';
+    const seen: string[] = [];
+    const record = (e: Event): void => {
+      seen.push((e.target as Element).id);
+    };
+    document.addEventListener('click', record, true);
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#own' }))).toEqual({
+      ok: false,
+      reason: 'not-clickable',
+      why: 'disabled',
+    });
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#inherited' }))).toEqual({
+      ok: false,
+      reason: 'not-clickable',
+      why: 'disabled',
+    });
+    expect(seen).toEqual([]);
+    // An enabled control is still clicked, as before.
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#enabled' }))).toEqual({
+      ok: true,
+    });
+    expect(seen).toEqual(['enabled']);
+    document.removeEventListener('click', record, true);
+  });
+
+  test('an <option> or <optgroup> is refused: click() never selects it, so nothing is reported as clicked', () => {
+    document.body.innerHTML =
+      '<select id="s"><optgroup id="g" label="G"><option id="o1" value="a">A</option>' +
+      '<option id="o2" value="b">B</option></optgroup></select>';
+    const select = document.getElementById('s') as HTMLSelectElement;
+    const before = select.value;
+    for (const id of ['#o2', '#g']) {
+      expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: id }))).toEqual({
+        ok: false,
+        reason: 'not-clickable',
+        why: 'option',
+      });
+    }
+    expect(select.value).toBe(before);
+  });
+});
+
 describe('buildTypeResolveJs', () => {
   test('focuses an input nested in a shadow root and reports success', () => {
     const host = document.createElement('div');
@@ -674,6 +1022,131 @@ describe('buildFocusJs', () => {
   test('false when the selector matches nothing', () => {
     const focused = evalExpr<boolean>(buildFocusJs({ selector: '#does-not-exist' }));
     expect(focused).toBe(false);
+  });
+});
+
+/*
+ * `Input.insertText` and key events go to whatever has focus. When the
+ * element asked for does not take it, type and press used to report success
+ * and write into the previously focused field.
+ */
+describe('type and press act only on an element that took focus', () => {
+  let previous: HTMLInputElement;
+  beforeEach(() => {
+    previous = document.createElement('input');
+    previous.id = 'previous';
+    document.body.appendChild(previous);
+    previous.focus();
+  });
+  const typeAt = (selector: string, clear = false): Json =>
+    evalExpr<Json>(buildTypeResolveJs({ selector, clear }));
+  const pressAt = (selector: string): unknown => evalExpr(buildFocusJs({ selector }));
+  const notFocused = (why: string): Json => ({ ok: false, reason: 'not-focused', why });
+
+  test('a field with no visible box does not take focus: nothing is cleared, focus stays where it was', () => {
+    document.body.insertAdjacentHTML('beforeend', '<input id="hidden" value="keep" />');
+    const hidden = document.getElementById('hidden') as HTMLInputElement;
+    // Chrome refuses focus to an element that is not rendered; jsdom has no
+    // rendering and focuses it anyway, so the test gives it Chrome's answer.
+    hidden.focus = () => undefined;
+    expect(typeAt('#hidden', true)).toEqual(notFocused('it has no visible box'));
+    expect(hidden.value).toBe('keep');
+    expect(pressAt('#hidden')).toEqual(notFocused('it has no visible box'));
+    expect(document.activeElement).toBe(previous);
+  });
+
+  test('a disabled field does not take focus', () => {
+    document.body.insertAdjacentHTML('beforeend', '<input id="off" disabled />');
+    giveBox(document.getElementById('off')!);
+    expect(typeAt('#off')).toEqual(notFocused('it is disabled'));
+    expect(pressAt('#off')).toEqual(notFocused('it is disabled'));
+    expect(document.activeElement).toBe(previous);
+  });
+
+  test('a wrapper that is not focusable does not take focus', () => {
+    document.body.insertAdjacentHTML('beforeend', '<div id="wrap"><span>Name</span></div>');
+    giveBox(document.getElementById('wrap')!);
+    expect(typeAt('#wrap')).toEqual(notFocused('it is not focusable'));
+    expect(pressAt('#wrap')).toEqual(notFocused('it is not focusable'));
+  });
+
+  test('by ref the press resolver answers the same failure object', () => {
+    const win = window as unknown as Record<string, unknown>;
+    document.body.insertAdjacentHTML('beforeend', '<div id="wrap2" role="button">Go</div>');
+    giveBox(document.getElementById('wrap2')!);
+    win[OBSERVER_BINDING] = () => undefined;
+    try {
+      evalExpr(buildObserverInstallJs());
+      const handle = win[OBSERVER_GLOBAL] as { refFor: (el: Element) => string | null };
+      const ref = handle.refFor(document.getElementById('wrap2')!)!;
+      expect(evalExpr(buildFocusJs({ ref }))).toEqual(notFocused('it is not focusable'));
+      expect(evalExpr(buildTypeResolveJs({ ref, clear: false }))).toEqual(
+        notFocused('it is not focusable'),
+      );
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+
+  test('still works: an input inside an open shadow root', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    host.attachShadow({ mode: 'open' }).innerHTML = '<input id="in-shadow" />';
+    expect(typeAt('#in-shadow')).toEqual({ ok: true });
+    expect(pressAt('#in-shadow')).toBe(true);
+  });
+
+  test('still works: an input inside a same-origin iframe', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.contentDocument!.body.innerHTML = '<input id="in-frame" />';
+    expect(typeAt('#in-frame')).toEqual({ ok: true });
+    expect(pressAt('#in-frame')).toBe(true);
+  });
+
+  test('still works: a contenteditable element', () => {
+    document.body.insertAdjacentHTML('beforeend', '<div id="editor" contenteditable="true"></div>');
+    expect(typeAt('#editor')).toEqual({ ok: true });
+    expect(pressAt('#editor')).toBe(true);
+  });
+
+  test('still works: a paragraph inside the focused editing host', () => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div id="host-editor" contenteditable="true"><p id="para">x</p></div>',
+    );
+    const editor = document.getElementById('host-editor')!;
+    editor.focus();
+    // Chrome reports isContentEditable on an editing host; jsdom does not.
+    Object.defineProperty(editor, 'isContentEditable', { value: true });
+    expect(typeAt('#para')).toEqual({ ok: true });
+    expect(pressAt('#para')).toBe(true);
+    expect(document.activeElement).toBe(editor);
+  });
+
+  test('still works: a host whose shadow root delegates focus to an inner input', () => {
+    const host = document.createElement('x-field');
+    host.id = 'x-field';
+    document.body.appendChild(host);
+    host.attachShadow({ mode: 'open', delegatesFocus: true }).innerHTML = '<input />';
+    // jsdom does not implement delegatesFocus; Chrome moves focus to the
+    // first focusable element inside, which is what the stub does.
+    host.focus = () => host.shadowRoot!.querySelector('input')!.focus();
+    expect(typeAt('#x-field')).toEqual({ ok: true });
+    expect(pressAt('#x-field')).toBe(true);
+  });
+
+  test('still works: a label whose focus goes to its control', () => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<label id="lbl" for="named">Name</label><input id="named" />',
+    );
+    const label = document.getElementById('lbl') as HTMLLabelElement;
+    // Chrome forwards focus() on a label to its control; jsdom does not.
+    label.focus = () => (document.getElementById('named') as HTMLInputElement).focus();
+    expect(typeAt('#lbl')).toEqual({ ok: true });
+    expect(pressAt('#lbl')).toBe(true);
   });
 });
 
@@ -831,6 +1304,350 @@ describe('buildSettleJs', () => {
   });
 });
 
+/**
+ * Owner decision D5: settle watches open shadow roots, the closed roots the
+ * page observer holds and same-origin iframe documents like the main
+ * document, and says when part of the page could not be watched. Timing: the
+ * mutation lands at MUTATE_AT, after the quiet period would have started; a
+ * settle that sees it finishes no earlier than MUTATE_AT + QUIET.
+ */
+describe('buildSettleJs: shadow roots and frames (D5)', () => {
+  const QUIET = 30;
+  const MUTATE_AT = 20;
+  const settleJs = () => buildSettleJs({ settle_ms: QUIET, settle_timeout_ms: 1000 });
+
+  interface DeepSettleResult {
+    settled: boolean;
+    duration_ms: number;
+    mutation_count: number;
+    frame_mutation_count?: number;
+    unobserved?: { cross_origin_frames?: number; shadow_roots?: string; hint: string };
+  }
+
+  function settleWhile(mutate: () => void, at = MUTATE_AT): Promise<DeepSettleResult> {
+    const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+    setTimeout(mutate, at);
+    return pending;
+  }
+
+  /** Install the page observer in a window, as the host does at document start. */
+  function installObserver(win: Window = window, opts: { version?: number } = {}): void {
+    (win as unknown as { eval(src: string): unknown }).eval(buildObserverInstallJs(opts));
+  }
+
+  function openShadowHost(): ShadowRoot {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<span id="inner">x</span>';
+    return shadow;
+  }
+
+  function sameOriginFrame(withObserver = true): Document {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    if (withObserver) installObserver(frame.contentWindow!);
+    const doc = frame.contentDocument!;
+    doc.body.innerHTML = '<p id="inner">x</p>';
+    return doc;
+  }
+
+  function crossOriginFrame(access: 'null' | 'throws'): HTMLIFrameElement {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    // Chrome answers contentDocument with null for a document that is not
+    // same origin-domain (HTML spec, the iframe contentDocument getter);
+    // jsdom has no cross-origin frames, so the getter is stubbed to answer
+    // that. 'throws' models an engine that throws instead.
+    Object.defineProperty(frame, 'contentDocument', {
+      configurable: true,
+      get: () => {
+        if (access === 'throws') throw new DOMException('Blocked a frame', 'SecurityError');
+        return null;
+      },
+    });
+    return frame;
+  }
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+  });
+
+  describe('with the page observer', () => {
+    beforeEach(() => {
+      installObserver();
+    });
+
+    test('a mutation inside an open shadow root is counted and delays settled', async () => {
+      const shadow = openShadowHost();
+      const result = await settleWhile(() =>
+        shadow.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a mutation inside a nested open shadow root is counted', async () => {
+      const outer = openShadowHost();
+      const innerHost = document.createElement('div');
+      outer.appendChild(innerHost);
+      const inner = innerHost.attachShadow({ mode: 'open' });
+      inner.innerHTML = '<b>y</b>';
+      const result = await settleWhile(() => inner.querySelector('b')!.setAttribute('data-x', '1'));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a closed root attached before settle started, known to the observer, is counted', async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a root attached during the wait is counted through the observer; settle patches nothing', async () => {
+      const before = Element.prototype.attachShadow;
+      const openHost = document.createElement('div');
+      const closedHost = document.createElement('div');
+      document.body.append(openHost, closedHost);
+      let open: ShadowRoot | null = null;
+      let closed: ShadowRoot | null = null;
+      let during: unknown = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        during = Element.prototype.attachShadow;
+        open = openHost.attachShadow({ mode: 'open' });
+        closed = closedHost.attachShadow({ mode: 'closed' });
+      }, 5);
+      setTimeout(() => {
+        open!.appendChild(document.createElement('i'));
+        closed!.appendChild(document.createElement('i'));
+      }, MUTATE_AT);
+      const result = await pending;
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(during).toBe(before);
+      expect(Element.prototype.attachShadow).toBe(before);
+    });
+
+    test('a closed root inside an element inserted after settle started is counted', async () => {
+      // Built off the page before settle started: its host was not in the
+      // page then, so the root comes from the observer when the host lands.
+      const host = document.createElement('div');
+      const closed = host.attachShadow({ mode: 'closed' });
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => document.body.appendChild(host), 5);
+      setTimeout(() => closed.appendChild(document.createElement('i')), MUTATE_AT);
+      const result = await pending;
+      // The insertion of the host (1) and the insertion inside its root (1).
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a mutation inside a same-origin iframe document is counted and delays settled', async () => {
+      const doc = sameOriginFrame();
+      const result = await settleWhile(() =>
+        doc.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a closed root inside a same-origin iframe, known to its observer, is counted', async () => {
+      const doc = sameOriginFrame();
+      const host = doc.createElement('div');
+      doc.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(doc.createElement('i')));
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+      });
+    });
+
+    test('an iframe added after settle started is watched', async () => {
+      let frame: HTMLIFrameElement | null = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        frame = document.createElement('iframe');
+        document.body.appendChild(frame);
+        installObserver(frame.contentWindow!);
+      }, 5);
+      setTimeout(() => {
+        frame!.contentDocument!.body.appendChild(frame!.contentDocument!.createElement('p'));
+      }, MUTATE_AT);
+      const result = await pending;
+      // The iframe insertion in the top document (1) and the insertion inside it (1).
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 2,
+        frame_mutation_count: 1,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a cross-origin iframe is reported as not watched', async () => {
+      crossOriginFrame('null');
+      crossOriginFrame('throws');
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: { cross_origin_frames: 2, hint: UNOBSERVED_FRAMES_HINT },
+      });
+    });
+
+    test('a cross-origin iframe nested in a closed root and in a same-origin frame is reported', async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const inShadow = document.createElement('iframe');
+      closed.appendChild(inShadow);
+      Object.defineProperty(inShadow, 'contentDocument', { configurable: true, get: () => null });
+      const doc = sameOriginFrame();
+      const inFrame = doc.createElement('iframe');
+      doc.body.appendChild(inFrame);
+      Object.defineProperty(inFrame, 'contentDocument', { configurable: true, get: () => null });
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual({ cross_origin_frames: 2, hint: UNOBSERVED_FRAMES_HINT });
+    });
+
+    test('known limit: a closed root attached before the observer was installed is not seen', async () => {
+      // Also a declarative shadowrootmode="closed" root, which the parser
+      // creates without calling attachShadow: nothing in the page can reach
+      // it, so its changes are neither counted nor reported.
+      evalExpr(buildObserverTeardownJs());
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      installObserver();
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 0 });
+    });
+
+    test('a page with no shadow roots or frames gives exactly the fields it always gave', async () => {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const result = await settleWhile(() => target.setAttribute('data-x', '1'));
+      expect(Object.keys(result)).toEqual(['settled', 'duration_ms', 'mutation_count']);
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+    });
+
+    test('a shadow root that keeps mutating past the cap gives settled:false', async () => {
+      const shadow = openShadowHost();
+      const span = shadow.getElementById('inner')!;
+      const interval = setInterval(() => span.setAttribute('data-x', String(Date.now())), 10);
+      const result = await evalExpr<Promise<DeepSettleResult>>(
+        buildSettleJs({ settle_ms: 40, settle_timeout_ms: 120 }),
+      );
+      clearInterval(interval);
+      expect(result.settled).toBe(false);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(120);
+      expect(result.mutation_count).toBeGreaterThan(0);
+    });
+  });
+
+  describe('without a current page observer (fallback)', () => {
+    const OPEN_ONLY = { shadow_roots: 'open-only', hint: UNOBSERVED_SHADOW_HINT };
+
+    test('observer absent: open roots are scanned and the result says closed and late roots were not watched', async () => {
+      const before = Element.prototype.attachShadow;
+      const shadow = openShadowHost();
+      const result = await settleWhile(() =>
+        shadow.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        unobserved: OPEN_ONLY,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(Element.prototype.attachShadow).toBe(before);
+    });
+
+    test('observer absent: a root attached during the wait is not watched, and the marker says so', async () => {
+      const before = Element.prototype.attachShadow;
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      let during: unknown = null;
+      let root: ShadowRoot | null = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        during = Element.prototype.attachShadow;
+        root = host.attachShadow({ mode: 'open' });
+      }, 5);
+      setTimeout(() => root!.appendChild(document.createElement('i')), MUTATE_AT);
+      const result = await pending;
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: OPEN_ONLY,
+      });
+      expect(during).toBe(before);
+    });
+
+    test('an older observer (version 4) is not used: same fallback and marker', async () => {
+      installObserver(window, { version: 4 });
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: OPEN_ONLY,
+      });
+    });
+
+    test('an observer with partial coverage is not used: same fallback and marker', async () => {
+      installObserver();
+      (window as unknown as Record<string, { coverage: string }>)[OBSERVER_GLOBAL].coverage =
+        'partial';
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual(OPEN_ONLY);
+    });
+
+    test('a same-origin frame without an observer gets the marker even when the top has one', async () => {
+      installObserver();
+      const doc = sameOriginFrame(false);
+      const result = await settleWhile(() =>
+        doc.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+        unobserved: OPEN_ONLY,
+      });
+    });
+
+    test('cross-origin frames and the fallback together give both counts and both hints', async () => {
+      crossOriginFrame('null');
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual({
+        cross_origin_frames: 1,
+        shadow_roots: 'open-only',
+        hint: `${UNOBSERVED_FRAMES_HINT} ${UNOBSERVED_SHADOW_HINT}`,
+      });
+    });
+  });
+});
+
 describe('buildStateJs', () => {
   interface StateResult {
     url: string;
@@ -934,8 +1751,8 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     shadow.innerHTML = '<div id="card">Card</div><div id="column">Column</div>';
     const card = shadow.getElementById('card')!;
     const column = shadow.getElementById('column')!;
-    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
-    column.getBoundingClientRect = () => ({ left: 100, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(card, { left: 10, top: 20, width: 30, height: 10 });
+    giveBox(column, { left: 100, top: 20, width: 30, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
@@ -954,7 +1771,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="drop-target">Drop here</div>';
     const target = idoc.getElementById('drop-target')!;
-    target.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(target, { left: 10, top: 20, width: 30, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_x: 5, from_y: 5, to_selector: '#drop-target' }),
@@ -990,7 +1807,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
   test('to_selector not found returns a descriptive err', () => {
     const src = document.createElement('div');
     document.body.appendChild(src);
-    src.getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    giveBox(src, { left: 0, top: 0, width: 10, height: 10 });
     src.id = 'src';
 
     const result = evalExpr<DragProbeResult>(
@@ -1012,7 +1829,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<img id="thumb" src="x.png" />';
     const img = idoc.getElementById('thumb')!;
-    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 20 }) as DOMRect;
+    giveBox(img, { left: 0, top: 0, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#thumb', to_x: 100, to_y: 100 }),
@@ -1031,7 +1848,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="offscreen">Offscreen</div>';
     const el = idoc.getElementById('offscreen')!;
-    el.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+    giveBox(el, { left: 10, top: 10, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#offscreen', to_x: 1, to_y: 1 }),
@@ -1049,12 +1866,12 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="card">Card</div>';
     const card = idoc.getElementById('card')!;
-    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(card, { left: 10, top: 20, width: 30, height: 10 });
 
     const column = document.createElement('div');
     column.id = 'column';
     document.body.appendChild(column);
-    column.getBoundingClientRect = () => ({ left: 700, top: 50, width: 40, height: 20 }) as DOMRect;
+    giveBox(column, { left: 700, top: 50, width: 40, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
@@ -1075,7 +1892,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const docA = frameA.contentDocument!;
     docA.body.innerHTML = '<div id="src">Source</div>';
     const src = docA.getElementById('src')!;
-    src.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+    giveBox(src, { left: 10, top: 10, width: 20, height: 20 });
 
     const frameB = document.createElement('iframe');
     document.body.appendChild(frameB);
@@ -1084,7 +1901,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const docB = frameB.contentDocument!;
     docB.body.innerHTML = '<div id="dst">Destination</div>';
     const dst = docB.getElementById('dst')!;
-    dst.getBoundingClientRect = () => ({ left: 30, top: 40, width: 20, height: 20 }) as DOMRect;
+    giveBox(dst, { left: 30, top: 40, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#src', to_selector: '#dst' }),
@@ -1101,7 +1918,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     link.href = 'https://example.com/page';
     link.textContent = 'Drag me';
     document.body.appendChild(link);
-    link.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(link, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#drag-link', to_x: 100, to_y: 100 }),
@@ -1116,7 +1933,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     anchor.id = 'no-href';
     anchor.textContent = 'Not a link';
     document.body.appendChild(anchor);
-    anchor.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(anchor, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#no-href', to_x: 100, to_y: 100 }),
@@ -1131,7 +1948,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     div.id = 'custom-drag';
     div.draggable = true;
     document.body.appendChild(div);
-    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(div, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#custom-drag', to_x: 100, to_y: 100 }),
@@ -1145,7 +1962,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const div = document.createElement('div');
     div.id = 'plain';
     document.body.appendChild(div);
-    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(div, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#plain', to_x: 100, to_y: 100 }),
@@ -1153,6 +1970,90 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     expect('err' in result).toBe(false);
     if ('err' in result) return;
     expect(result.draggable).toBe(false);
+  });
+
+  test('a source with no visible box fails naming the source, not a point at its frame origin (D4)', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.getBoundingClientRect = () =>
+      ({ left: 200, top: 300, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<div id="card" style="display:none">Card</div>';
+    const scrolled: Element[] = [];
+    idoc.getElementById('card')!.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#card', to_x: 100, to_y: 100 })),
+    ).toEqual({
+      err:
+        'from_selector #card has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag from: make it visible first',
+    });
+    expect(scrolled).toEqual([]);
+  });
+
+  test('a destination with no visible box fails naming the destination (D4)', () => {
+    const src = document.createElement('div');
+    src.id = 'src';
+    document.body.appendChild(src);
+    giveBox(src, { left: 10, top: 10, width: 20, height: 20 });
+    const dst = document.createElement('div');
+    dst.id = 'dst';
+    dst.style.visibility = 'hidden';
+    document.body.appendChild(dst);
+    giveBox(dst, { left: 300, top: 300, width: 20, height: 20 });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#src', to_selector: '#dst' })),
+    ).toEqual({
+      err:
+        'to_selector #dst has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag to: make it visible first',
+    });
+  });
+
+  test('an endpoint that is an empty rect at the top viewport origin is no box, on either side (same guard as click)', () => {
+    const ok = document.createElement('div');
+    ok.id = 'ok';
+    document.body.appendChild(ok);
+    giveBox(ok, { left: 10, top: 10, width: 20, height: 20 });
+    const empty = document.createElement('div');
+    empty.id = 'empty';
+    document.body.appendChild(empty);
+    giveBox(empty, { left: 0, top: 0, width: 0, height: 0 });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#empty', to_selector: '#ok' })),
+    ).toEqual({
+      err:
+        'from_selector #empty has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag from: make it visible first',
+    });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#ok', to_selector: '#empty' })),
+    ).toEqual({
+      err:
+        'to_selector #empty has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag to: make it visible first',
+    });
+  });
+
+  test('a real box that only touches the origin still drags; an empty rect elsewhere is a box', () => {
+    const corner = document.createElement('div');
+    corner.id = 'corner';
+    document.body.appendChild(corner);
+    giveBox(corner, { left: -10, top: -10, width: 20, height: 20 });
+    const dot = document.createElement('div');
+    dot.id = 'dot';
+    document.body.appendChild(dot);
+    giveBox(dot, { left: 40, top: 50, width: 0, height: 0 });
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#corner', to_selector: '#dot' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from).toEqual({ x: 0, y: 0, in_viewport: true });
+    expect(result.to.x).toBe(40);
+    expect(result.to.y).toBe(50);
   });
 });
 
@@ -1419,6 +2320,24 @@ function buildBaselinePage(): void {
 
 const baseline = baselineFixture as Record<string, unknown>;
 
+/**
+ * The pre-ref output each baseline case must still produce. The one case
+ * that is cut (`max_interactive: 2` on a page with 6 entries) also says so
+ * since owner decision D6: the fixture plus the `truncated` report, nothing
+ * else changed. Every uncut case is the fixture as captured.
+ */
+const expectedBaseline = (name: string): unknown =>
+  name === 'snapshot_max_interactive'
+    ? {
+        ...(baseline[name] as Record<string, unknown>),
+        truncated: {
+          interactive: 4,
+          next_offset: { interactive: 2, headings: 1 },
+          hint: SNAPSHOT_CUT_HINT,
+        },
+      }
+    : baseline[name];
+
 function captureBaselineOutputs(): Record<string, unknown> {
   buildBaselinePage();
   const out: Record<string, unknown> = {};
@@ -1447,7 +2366,7 @@ describe('snapshot, find and state without the page observer (baseline pin)', ()
     expect(Object.keys(actual)).toEqual(Object.keys(baseline));
     for (const name of Object.keys(baseline)) {
       // JSON.stringify keeps key order, so this pins field order too.
-      expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+      expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(expectedBaseline(name)));
     }
   });
 });
@@ -1569,7 +2488,7 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
     try {
       const actual = captureBaselineOutputs();
       for (const name of Object.keys(baseline)) {
-        expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(baseline[name]));
+        expect(JSON.stringify(actual[name]), name).toBe(JSON.stringify(expectedBaseline(name)));
       }
     } finally {
       g.dead = false;
@@ -1592,7 +2511,9 @@ describe('snapshot, find and state with the page observer (refs, doc_id, snapsho
       return value;
     };
     for (const name of Object.keys(baseline)) {
-      expect(JSON.stringify(strip(actual[name])), name).toBe(JSON.stringify(baseline[name]));
+      expect(JSON.stringify(strip(actual[name])), name).toBe(
+        JSON.stringify(expectedBaseline(name)),
+      );
     }
     const capped = actual.snapshot_max_interactive as { interactive: Json[] };
     expect(capped.interactive.length).toBe(2);
@@ -1798,8 +2719,25 @@ describe('buildSnapshotJs — since diff', () => {
   });
 
   test('a snapshot without since keeps its shape and still records for a later since', () => {
+    // Cut by max_interactive, so it says so (owner decision D6) before doc_id.
     const full = evalExpr<Json>(buildSnapshotJs({ max_interactive: 1 }));
     expect(Object.keys(full)).toEqual([
+      'title',
+      'url',
+      'interactive',
+      'headings',
+      'truncated',
+      'doc_id',
+      'snapshot_id',
+    ]);
+    expect((full.interactive as Json[]).length).toBe(1);
+    expect(full.truncated).toEqual({
+      interactive: 1,
+      next_offset: { interactive: 1, headings: 1 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const whole = evalExpr<Json>(buildSnapshotJs({}));
+    expect(Object.keys(whole)).toEqual([
       'title',
       'url',
       'interactive',
@@ -1807,7 +2745,6 @@ describe('buildSnapshotJs — since diff', () => {
       'doc_id',
       'snapshot_id',
     ]);
-    expect((full.interactive as Json[]).length).toBe(1);
     const diff = evalExpr<Json>(buildSnapshotJs({ since: sid(1) }));
     expect(diff.added).toEqual([]);
     expect(diff.removed).toEqual([]);
@@ -1849,6 +2786,11 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
       null;
   }
+  // A click target needs a box (see giveBox); without one it is refused or
+  // clicked programmatically (owner decision D4).
+  const boxEveryButton = (): void => {
+    for (const el of document.querySelectorAll('#list button')) giveBox(el);
+  };
   const second = (): HTMLElement =>
     document.querySelectorAll<HTMLElement>('#list li')[1].firstElementChild as HTMLElement;
   const refOfSecond = (): string => (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(second())!;
@@ -1866,6 +2808,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
 
   test('click by a live ref gives the same result as by selector and targets that node', () => {
     install(BUTTONS);
+    boxEveryButton();
     const ref = refOfSecond();
     const bySelector = evalExpr<Json>(
       buildClickResolveJs({ selector: '#list li:nth-of-type(2) button', force: false }),
@@ -1885,6 +2828,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     const ref = refOfSecond();
     const old = second();
     rerender(BUTTONS);
+    boxEveryButton();
     const fresh = second();
     expect(fresh).not.toBe(old);
     let scrolled: Element | null = null;
@@ -1892,7 +2836,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       scrolled = this;
     };
     const resolved = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
-    expect(resolved).toEqual({ ok: true, x: 0, y: 0, tag: 'button', reresolved: true });
+    expect(resolved).toEqual({ ok: true, x: 140, y: 210, tag: 'button', reresolved: true });
     expect(scrolled).toBe(fresh);
     // The rebind is done: the next resolution is a plain live hit.
     expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false })).reresolved).toBeUndefined();
@@ -2056,10 +3000,31 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     expect(wait('visible')).toBe(false);
     expect(wait('hidden')).toBe(true);
     removeSecond();
-    expect(wait('attached')).toBe(false);
+    // Gone: `detached` and `hidden` are met; `visible` and `attached` answer
+    // the failure (not false) so the caller can say the element is gone.
+    const gone = { ok: false, reason: 'ref-stale', ref, doc_id: docId, doc_changed: false };
+    expect(wait('attached')).toEqual(gone);
     expect(wait('detached')).toBe(true);
     expect(wait('hidden')).toBe(true);
-    expect(wait('visible')).toBe(false);
+    expect(wait('visible')).toEqual(gone);
+  });
+
+  test('wait_for by a ref of another document: doc_changed says it can never come back', () => {
+    install(BUTTONS);
+    const foreign = 'zzzzzz:e1';
+    expect(docId.slice(0, 6)).not.toBe('zzzzzz');
+    for (const condition of ['visible', 'attached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref: foreign }, condition))).toEqual({
+        ok: false,
+        reason: 'ref-stale',
+        ref: foreign,
+        doc_id: docId,
+        doc_changed: true,
+      });
+    }
+    for (const condition of ['hidden', 'detached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref: foreign }, condition))).toBe(true);
+    }
   });
 
   test('wait_for by ref without the observer answers observer-unavailable, never a boolean', () => {
@@ -2287,5 +3252,822 @@ describe('find by semantic key and semantic_key on find results', () => {
     const snapshot = evalExpr<{ interactive: Json[] }>(buildSnapshotJs({}));
     expect(snapshot.interactive.length).toBe(3);
     for (const e of snapshot.interactive) expect(e).not.toHaveProperty('semantic_key');
+  });
+});
+
+/**
+ * Owner decision D6: a result that was cut says so, says how much was left
+ * out, says that more can be asked for and recommends narrowing the scope;
+ * `offset` asks for the rest. A result that was not cut is unchanged.
+ */
+describe('snapshot and find say when they cut (D6)', () => {
+  const pageTitle = 'Cut fixture';
+
+  function addButtons(count: number, label = 'Item'): void {
+    for (let i = 0; i < count; i++) {
+      const btn = document.createElement('button');
+      btn.id = 'b' + i;
+      btn.textContent = label + ' ' + i;
+      document.body.appendChild(btn);
+      makeVisible(btn);
+    }
+  }
+
+  function addHeadings(count: number): void {
+    for (let i = 0; i < count; i++) {
+      const h = document.createElement('h2');
+      h.textContent = 'Heading ' + i;
+      document.body.appendChild(h);
+      makeVisible(h);
+    }
+  }
+
+  /** jsdom has no layout, so no innerText: give the body one. */
+  function setBodyText(text: string): void {
+    Object.defineProperty(document.body, 'innerText', { value: text, configurable: true });
+  }
+
+  const buttonEntry = (i: number, label = 'Item'): Json => ({
+    tag: 'button',
+    role: 'button',
+    selector: '#b' + i,
+    text: label + ' ' + i,
+  });
+  const range = (from: number, to: number): number[] =>
+    Array.from({ length: to - from }, (_, k) => from + k);
+  const headingEntry = (i: number): Json => ({ level: 'H2', text: 'Heading ' + i });
+  const pattern = (length: number): string => 'abcdefghij'.repeat(length / 10);
+
+  beforeEach(() => {
+    document.title = pageTitle;
+  });
+
+  afterEach(() => {
+    delete (document.body as unknown as Record<string, unknown>).innerText;
+  });
+
+  // JSON.stringify keeps key order, so every comparison below pins field order too.
+  const same = (actual: unknown, expected: unknown): void =>
+    expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+
+  test('interactive: 130 elements with the default cap of 120 say 10 were left out', () => {
+    addButtons(130);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(0, 120).map((i) => buttonEntry(i)),
+      headings: [],
+      truncated: {
+        interactive: 10,
+        next_offset: { interactive: 120 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("interactive: exactly 120 elements is not cut and keeps today's shape", () => {
+    addButtons(120);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(0, 120).map((i) => buttonEntry(i)),
+      headings: [],
+    });
+  });
+
+  test('headings: 40 headings say 10 were left out', () => {
+    addButtons(1);
+    addHeadings(40);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0)],
+      headings: range(0, 30).map(headingEntry),
+      truncated: {
+        headings: 10,
+        next_offset: { interactive: 1, headings: 30 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("headings: exactly 30 headings is not cut and keeps today's shape", () => {
+    addButtons(1);
+    addHeadings(30);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0)],
+      headings: range(0, 30).map(headingEntry),
+    });
+  });
+
+  test('text: 10000 characters say 6000 characters were left out', () => {
+    const full = pattern(10000);
+    setBodyText(full);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full.slice(0, 4000),
+      truncated: {
+        text: 6000,
+        next_offset: { text: 4000 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test("text: exactly 4000 characters is not cut and keeps today's shape", () => {
+    const full = pattern(4000);
+    setBodyText(full);
+    same(evalExpr(buildSnapshotJs({})), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full,
+    });
+  });
+
+  test('only_interactive reports only the interactive cut', () => {
+    addButtons(3);
+    addHeadings(40);
+    setBodyText(pattern(10000));
+    same(evalExpr(buildSnapshotJs({ only_interactive: true, max_interactive: 2 })), {
+      title: pageTitle,
+      url: location.href,
+      interactive: [buttonEntry(0), buttonEntry(1)],
+      truncated: {
+        interactive: 1,
+        next_offset: { interactive: 2 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+  });
+
+  test('the hint says the result was cut, how to ask for the rest and how to narrow', () => {
+    expect(SNAPSHOT_CUT_HINT).toContain('left out');
+    expect(SNAPSHOT_CUT_HINT).toContain('offset set to truncated.next_offset');
+    expect(SNAPSHOT_CUT_HINT).toContain('within_selector');
+    expect(FIND_CUT_HINT).toContain('left out');
+    expect(FIND_CUT_HINT).toContain('offset set to truncated.next_offset');
+    expect(FIND_CUT_HINT).toContain('exact');
+  });
+
+  test('offset set to next_offset returns the rest of every part and nothing twice', () => {
+    addButtons(130);
+    addHeadings(40);
+    const full = pattern(10000);
+    setBodyText(full);
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    const cut = first.truncated as Json;
+    same(cut, {
+      interactive: 10,
+      headings: 10,
+      text: 6000,
+      next_offset: { interactive: 120, headings: 30, text: 4000 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const second = evalExpr<Json>(
+      buildSnapshotJs({ offset: cut.next_offset as Record<string, number> }),
+    );
+    same(second, {
+      title: pageTitle,
+      url: location.href,
+      interactive: range(120, 130).map((i) => buttonEntry(i)),
+      headings: range(30, 40).map(headingEntry),
+      text: full.slice(4000, 8000),
+      truncated: {
+        text: 2000,
+        next_offset: { interactive: 130, headings: 40, text: 8000 },
+        hint: SNAPSHOT_CUT_HINT,
+      },
+    });
+    const third = evalExpr<Json>(
+      buildSnapshotJs({ offset: (second.truncated as Json).next_offset as Record<string, number> }),
+    );
+    same(third, {
+      title: pageTitle,
+      url: location.href,
+      interactive: [],
+      headings: [],
+      text: full.slice(8000),
+    });
+    const selectors = [first, second, third].flatMap((r) =>
+      (r.interactive as Json[]).map((e) => e.selector),
+    );
+    expect(selectors).toEqual(range(0, 130).map((i) => '#b' + i));
+    const texts = [first, second, third].map((r) => (r.text as string | undefined) ?? '');
+    expect(texts.join('')).toBe(full);
+  });
+
+  test('an invalid offset counts as 0', () => {
+    addButtons(3);
+    for (const bad of [-1, 1.5, '2', null]) {
+      const r = evalExpr<Json>(
+        buildSnapshotJs({ offset: { interactive: bad as unknown as number } }),
+      );
+      expect((r.interactive as Json[]).map((e) => e.selector)).toEqual(['#b0', '#b1', '#b2']);
+    }
+  });
+
+  test('find: 8 matches with 5 candidates say 3 were left out', () => {
+    addButtons(8, 'Save');
+    same(evalExpr(buildFindJs({ text: 'Save' })), {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(0, 5).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+      truncated: {
+        candidates: 3,
+        next_offset: { candidates: 5 },
+        hint: FIND_CUT_HINT,
+      },
+    });
+  });
+
+  test("find: exactly 5 matches is not cut and keeps today's shape", () => {
+    addButtons(5, 'Save');
+    same(evalExpr(buildFindJs({ text: 'Save' })), {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(0, 5).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+    });
+  });
+
+  test('find: offset set to next_offset returns the remaining candidates and nothing twice', () => {
+    addButtons(12, 'Save');
+    const first = evalExpr<Json>(buildFindJs({ text: 'Save' }));
+    const next = (first.truncated as Json).next_offset as { candidates: number };
+    const second = evalExpr<Json>(buildFindJs({ text: 'Save', offset: next }));
+    same(second.truncated, {
+      candidates: 2,
+      next_offset: { candidates: 10 },
+      hint: FIND_CUT_HINT,
+    });
+    const third = evalExpr<Json>(
+      buildFindJs({
+        text: 'Save',
+        offset: (second.truncated as Json).next_offset as { candidates: number },
+      }),
+    );
+    same(third, {
+      matched: false,
+      reason: 'multiple-matches',
+      candidates: range(10, 12).map((i) => ({
+        selector: '#b' + i,
+        text: 'Save ' + i,
+        tag: 'button',
+      })),
+    });
+    const selectors = [first, second, third].flatMap((r) =>
+      (r.candidates as Json[]).map((c) => c.selector),
+    );
+    expect(selectors).toEqual(range(0, 12).map((i) => '#b' + i));
+  });
+
+  test('snapshot: offsets that leave every requested part empty say so; any part still returning items, an offset inside the list or no offset adds nothing', () => {
+    addButtons(3);
+    addHeadings(2);
+    const atEnd = evalExpr<Json>(
+      buildSnapshotJs({ only_interactive: true, offset: { interactive: 3 } }),
+    );
+    expect(atEnd.interactive).toEqual([]);
+    same(atEnd.offset_past_end, { interactive: { offset: 3, total: 3 } });
+    // The headings still return items: the empty interactive part is paging, not an empty page.
+    const stillItems = evalExpr<Json>(buildSnapshotJs({ offset: { interactive: 3 } }));
+    expect(stillItems.interactive).toEqual([]);
+    expect(stillItems.headings).toHaveLength(2);
+    expect(stillItems).not.toHaveProperty('offset_past_end');
+    const beyond = evalExpr<Json>(
+      buildSnapshotJs({ offset: { interactive: 50, headings: 2, text: 9 } }),
+    );
+    same(beyond.offset_past_end, {
+      interactive: { offset: 50, total: 3 },
+      headings: { offset: 2, total: 2 },
+      text: { offset: 9, total: 0 },
+    });
+    // Normal paging: finished parts sit at offset == total while text still returns.
+    setBodyText('abc');
+    const paging = evalExpr<Json>(
+      buildSnapshotJs({ offset: { interactive: 3, headings: 2, text: 1 } }),
+    );
+    expect(paging.text).toBe('bc');
+    expect(paging).not.toHaveProperty('offset_past_end');
+    setBodyText('');
+    const inside = evalExpr<Json>(buildSnapshotJs({ offset: { interactive: 2, headings: 1 } }));
+    expect(inside).not.toHaveProperty('offset_past_end');
+    expect((inside.interactive as Json[]).map((e) => e.selector)).toEqual(['#b2']);
+    expect(evalExpr<Json>(buildSnapshotJs({}))).not.toHaveProperty('offset_past_end');
+    expect(evalExpr<Json>(buildSnapshotJs({ offset: {} }))).not.toHaveProperty('offset_past_end');
+  });
+
+  test('find: an offset at or past the end of the candidates says so; inside the list or absent, nothing is added', () => {
+    addButtons(8, 'Save');
+    const atEnd = evalExpr<Json>(buildFindJs({ text: 'Save', offset: { candidates: 8 } }));
+    expect(atEnd.candidates).toEqual([]);
+    same(atEnd.offset_past_end, { candidates: { offset: 8, total: 8 } });
+    expect(atEnd).not.toHaveProperty('truncated');
+    const inside = evalExpr<Json>(buildFindJs({ text: 'Save', offset: { candidates: 7 } }));
+    expect(inside).not.toHaveProperty('offset_past_end');
+    expect((inside.candidates as Json[]).map((c) => c.selector)).toEqual(['#b7']);
+    expect(evalExpr<Json>(buildFindJs({ text: 'Save' }))).not.toHaveProperty('offset_past_end');
+  });
+
+  test('text: a window never ends between the halves of a surrogate pair; the pages concatenate to the text', () => {
+    const full = 'a'.repeat(3999) + '😀' + 'b'.repeat(100);
+    expect(full.charCodeAt(3999)).toBe(0xd83d);
+    setBodyText(full);
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    expect(first.text).toBe('a'.repeat(3999));
+    same(first.truncated, {
+      text: 102,
+      next_offset: { text: 3999 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const second = evalExpr<Json>(buildSnapshotJs({ offset: { text: 3999 } }));
+    expect(second.text).toBe('😀' + 'b'.repeat(100));
+    expect(second).not.toHaveProperty('truncated');
+    expect((first.text as string) + (second.text as string)).toBe(full);
+  });
+
+  test('text: a pair that ends exactly on the window, or a cut with no pair at the boundary, is cut as before', () => {
+    const whole = 'a'.repeat(3998) + '😀' + 'b'.repeat(10);
+    setBodyText(whole);
+    const ends = evalExpr<Json>(buildSnapshotJs({}));
+    expect(ends.text).toBe(whole.slice(0, 4000));
+    same((ends.truncated as Json).next_offset, { text: 4000 });
+    const plain = 'a'.repeat(4000) + '😀';
+    setBodyText(plain);
+    const cut = evalExpr<Json>(buildSnapshotJs({}));
+    expect(cut.text).toBe('a'.repeat(4000));
+    same((cut.truncated as Json).next_offset, { text: 4000 });
+    expect((cut.truncated as Json).text).toBe(2);
+  });
+
+  describe('with since (diff)', () => {
+    const win = window as unknown as Record<string, unknown>;
+    let docId = '';
+
+    beforeEach(() => {
+      win[OBSERVER_BINDING] = () => undefined;
+      evalExpr(buildObserverInstallJs());
+      docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+    });
+
+    afterEach(() => {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    });
+
+    test('a diff cut by max_interactive keeps overflow, says so and offset returns the rest', () => {
+      addButtons(1);
+      evalExpr(buildSnapshotJs({ only_interactive: true }));
+      const holder = document.createElement('div');
+      document.body.appendChild(holder);
+      for (const id of ['c', 'd', 'e']) {
+        const btn = document.createElement('button');
+        btn.id = id;
+        btn.textContent = id;
+        holder.appendChild(btn);
+        makeVisible(btn);
+      }
+      const since = docId + ':s1';
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since, only_interactive: true, max_interactive: 1 }),
+      );
+      expect((diff.added as Json[]).map((e) => e.selector)).toEqual(['#c']);
+      expect(diff.changed).toEqual([]);
+      expect(diff.overflow).toBe(2);
+      same(diff.truncated, {
+        interactive: 2,
+        next_offset: { interactive: 1 },
+        hint: SNAPSHOT_CUT_HINT,
+      });
+      expect(Object.keys(diff).slice(-2)).toEqual(['overflow', 'truncated']);
+      const rest = evalExpr<Json>(
+        buildSnapshotJs({
+          since,
+          only_interactive: true,
+          max_interactive: 1,
+          offset: { interactive: 1 },
+        }),
+      );
+      expect((rest.added as Json[]).map((e) => e.selector)).toEqual(['#d']);
+      const last = evalExpr<Json>(
+        buildSnapshotJs({
+          since,
+          only_interactive: true,
+          max_interactive: 1,
+          offset: { interactive: 2 },
+        }),
+      );
+      expect((last.added as Json[]).map((e) => e.selector)).toEqual(['#e']);
+      expect('overflow' in last).toBe(false);
+      expect('truncated' in last).toBe(false);
+    });
+
+    test('a diff of a page past 500 entries says how many entries it did not compare', () => {
+      addButtons(510);
+      evalExpr(buildSnapshotJs({ only_interactive: true }));
+      const late = document.createElement('button');
+      late.id = 'late';
+      late.textContent = 'Late';
+      document.body.appendChild(late);
+      makeVisible(late);
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since: docId + ':s1', only_interactive: true }),
+      );
+      expect(diff.added).toEqual([]);
+      expect(diff.removed).toEqual([]);
+      expect(diff.changed).toEqual([]);
+      // 11 entries of this snapshot and 10 of the recorded one past 500.
+      same(diff.truncated, { not_compared: 21, hint: SNAPSHOT_NOT_COMPARED_HINT });
+    });
+
+    test("an uncut diff keeps today's shape", () => {
+      addButtons(2);
+      evalExpr(buildSnapshotJs({}));
+      const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+      expect(Object.keys(diff)).toEqual([
+        'title',
+        'url',
+        'doc_id',
+        'snapshot_id',
+        'since',
+        'added',
+        'removed',
+        'changed',
+      ]);
+    });
+  });
+});
+
+/**
+ * A diff compares headings and text only on their first windows (30
+ * headings, 4000 characters). When either snapshot held more, the diff says
+ * that changes beyond them were not looked at; otherwise it is unchanged.
+ */
+describe('a since diff says when it did not look at headings or text (D6)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  let docId = '';
+
+  function addHeadings(count: number): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (let i = 0; i < count; i++) {
+      const h = document.createElement('h2');
+      h.textContent = 'Heading ' + i;
+      document.body.appendChild(h);
+      makeVisible(h);
+      out.push(h);
+    }
+    return out;
+  }
+  function setBodyText(text: string): void {
+    Object.defineProperty(document.body, 'innerText', { value: text, configurable: true });
+  }
+
+  beforeEach(() => {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    docId = (win[OBSERVER_GLOBAL] as ObserverHandle).doc_id;
+  });
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+    delete win[OBSERVER_BINDING];
+    delete (document.body as unknown as Record<string, unknown>).innerText;
+  });
+
+  test('40 headings: a change in heading 35 is not looked at and the diff says so', () => {
+    const hs = addHeadings(40);
+    evalExpr(buildSnapshotJs({}));
+    hs[35].textContent = 'Changed';
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect('headings' in diff).toBe(false);
+    // 10 headings past the first 30 in this snapshot and 10 in the recorded one.
+    expect(JSON.stringify(diff.truncated)).toBe(
+      JSON.stringify({ not_compared_headings: 20, hint: SNAPSHOT_NOT_COMPARED_TEXT_HINT }),
+    );
+  });
+
+  test('5000 characters of text: the 1000 past 4000 of each snapshot are not looked at', () => {
+    setBodyText('a'.repeat(5000));
+    evalExpr(buildSnapshotJs({}));
+    setBodyText('a'.repeat(4999) + 'b');
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect('text' in diff).toBe(false);
+    expect(JSON.stringify(diff.truncated)).toBe(
+      JSON.stringify({ not_compared_text: 2000, hint: SNAPSHOT_NOT_COMPARED_TEXT_HINT }),
+    );
+  });
+
+  test("exactly 30 headings and 4000 characters: the diff keeps today's shape", () => {
+    addHeadings(30);
+    setBodyText('a'.repeat(4000));
+    evalExpr(buildSnapshotJs({}));
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1' }));
+    expect(Object.keys(diff)).toEqual([
+      'title',
+      'url',
+      'doc_id',
+      'snapshot_id',
+      'since',
+      'added',
+      'removed',
+      'changed',
+    ]);
+  });
+
+  test('only_interactive never reports headings or text as not compared', () => {
+    addHeadings(40);
+    evalExpr(buildSnapshotJs({ only_interactive: true }));
+    const diff = evalExpr<Json>(buildSnapshotJs({ since: docId + ':s1', only_interactive: true }));
+    expect('truncated' in diff).toBe(false);
+  });
+});
+
+/**
+ * The deep-query depth guard (more than 20 nested shadow roots or frames)
+ * must not cut silently: snapshot, find, state and the click / type
+ * resolvers say that part of the page was not walked, only when it fired.
+ */
+describe('results say when part of the page was not walked (depth guard)', () => {
+  function nest(levels: number, label: string): HTMLButtonElement {
+    let scope: Element | ShadowRoot = document.body;
+    for (let i = 0; i < levels; i++) {
+      const host = document.createElement('div');
+      makeVisible(host);
+      scope.appendChild(host);
+      scope = host.attachShadow({ mode: 'open' });
+    }
+    const btn = document.createElement('button');
+    btn.id = 'deepest';
+    btn.textContent = label;
+    scope.appendChild(btn);
+    makeVisible(btn);
+    return btn;
+  }
+
+  test('snapshot: 22 nested roots say not_walked; 21 do not and list the button', () => {
+    nest(22, 'Deep');
+    const cut = evalExpr<Json>(buildSnapshotJs({}));
+    expect(cut.interactive).toEqual([]);
+    expect(cut.not_walked).toBe(NOT_WALKED_NOTE);
+    expect(Object.keys(cut)).toEqual(['title', 'url', 'interactive', 'headings', 'not_walked']);
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    const whole = evalExpr<Json>(buildSnapshotJs({}));
+    expect((whole.interactive as Json[]).length).toBe(1);
+    expect('not_walked' in whole).toBe(false);
+  });
+
+  test('find: a not-found under a depth cut says part of the page was not walked', () => {
+    nest(22, 'Deep');
+    expect(NOT_WALKED_NOTE).toMatch(/not walked/);
+    expect(evalExpr(buildFindJs({ text: 'Deep' }))).toHaveProperty('not_walked');
+    expect(evalExpr(buildFindJs({ text: 'Deep' }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    const found = evalExpr<Json>(buildFindJs({ text: 'Deep' }));
+    expect(found.matched).toBe(true);
+    expect('not_walked' in found).toBe(false);
+  });
+
+  test('state: says not_walked only under a depth cut', () => {
+    nest(22, 'Deep');
+    expect(evalExpr<Json>(buildStateJs())).toHaveProperty('not_walked', NOT_WALKED_NOTE);
+    document.body.innerHTML = '';
+    nest(21, 'Deep');
+    expect('not_walked' in evalExpr<Json>(buildStateJs())).toBe(false);
+  });
+
+  test('click and type resolvers: a not-found under a depth cut carries not_walked', () => {
+    nest(22, 'Deep');
+    expect(evalExpr(buildClickResolveJs({ selector: '#deepest', force: false }))).toHaveProperty(
+      'not_walked',
+    );
+    expect(evalExpr(buildTypeResolveJs({ selector: '#deepest', clear: false }))).toHaveProperty(
+      'not_walked',
+    );
+    expect(evalExpr(buildClickResolveJs({ selector: '#deepest', force: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    expect(evalExpr(buildTypeResolveJs({ selector: '#deepest', clear: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+      not_walked: NOT_WALKED_NOTE,
+    });
+    document.body.innerHTML = '<p>flat</p>';
+    expect(evalExpr(buildClickResolveJs({ selector: '#nope', force: false }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+});
+
+describe('password values: shown by default, hidden by a setting (D12)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const SECRET = 'hunter2-SECRET';
+
+  /** A visible, filled field appended to the body. */
+  function filled(html: string, value: string): HTMLInputElement {
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    const el = holder.firstElementChild as HTMLInputElement;
+    document.body.appendChild(el);
+    makeVisible(el);
+    el.value = value;
+    return el;
+  }
+
+  function entries(result: Json): Json[] {
+    return result.interactive as Json[];
+  }
+
+  test('by default a snapshot returns the text of a filled password field (pinned default)', () => {
+    filled('<input id="pw" type="password" name="pw">', SECRET);
+    const result = evalExpr<Json>(buildSnapshotJs({}));
+    expect(entries(result)).toEqual([
+      { tag: 'input', role: 'input', selector: '#pw', value: SECRET, name: 'pw', type: 'password' },
+    ]);
+    expect('values_hidden' in result).toBe(false);
+  });
+
+  test('by default find matches a password field by its text and quotes it (pinned default)', () => {
+    filled('<input id="pw" type="password">', SECRET);
+    const match = evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'textbox' }));
+    expect(match).toMatchObject({ matched: true, selector: '#pw' });
+    const miss = evalExpr<FindNoMatch>(buildFindJs({ text: 'hunter2', role: 'button' }));
+    expect(JSON.stringify(miss)).toContain(SECRET);
+  });
+
+  test('setting on: the entry says filled, N characters in place of value, and the result says why', () => {
+    filled('<input id="pw" type="password" name="pw">', SECRET);
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)).toEqual([
+      {
+        tag: 'input',
+        role: 'input',
+        selector: '#pw',
+        value_hidden: 'filled, 14 characters',
+        name: 'pw',
+        type: 'password',
+      },
+    ]);
+    expect(Object.keys(entries(result)[0])).toEqual([
+      'tag',
+      'role',
+      'selector',
+      'value_hidden',
+      'name',
+      'type',
+    ]);
+    expect(result.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+    expect(typeof result.values_hidden).toBe('string');
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+
+  test('setting on: one character is singular, and the count is in characters, not code units', () => {
+    filled('<input id="a" type="password">', 'x');
+    filled('<input id="b" type="password">', '\u{1F511}é');
+    const shown = entries(evalExpr<Json>(buildSnapshotJs({ hide_password_values: true })));
+    expect(shown.map((e) => e.value_hidden)).toEqual([
+      'filled, 1 character',
+      'filled, 2 characters',
+    ]);
+  });
+
+  test.each(['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'])(
+    'setting on: a field marked autocomplete="%s" is hidden too',
+    (token) => {
+      filled(`<input id="f" type="text" autocomplete="section-x ${token.toUpperCase()}">`, SECRET);
+      const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+      expect(entries(result)[0]).toMatchObject({ value_hidden: 'filled, 14 characters' });
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    },
+  );
+
+  test('setting on: a password field a show-password button turned into text stays hidden', () => {
+    const pw = filled('<input id="pw" type="password">', SECRET);
+    evalExpr(buildSnapshotJs({ hide_password_values: true }));
+    pw.type = 'text';
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toMatchObject({ value_hidden: 'filled, 14 characters' });
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+    expect(
+      evalExpr<Json>(buildFindJs({ text: 'hunter2', hide_password_values: true })),
+    ).toMatchObject({ matched: false, reason: 'not-found' });
+  });
+
+  test('setting on: a field the page does not mark sensitive keeps its value', () => {
+    filled('<input id="q" type="search" name="password">', 'shoes');
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toMatchObject({ value: 'shoes' });
+    expect('value_hidden' in entries(result)[0]).toBe(false);
+  });
+
+  test('setting on: an empty password field carries neither value nor value_hidden', () => {
+    filled('<input id="pw" type="password">', '');
+    const [entry] = entries(evalExpr<Json>(buildSnapshotJs({ hide_password_values: true })));
+    expect(entry).toEqual({ tag: 'input', role: 'input', selector: '#pw', type: 'password' });
+  });
+
+  test('setting on: a sensitive textarea shows neither its value nor its text', () => {
+    const area = document.createElement('textarea');
+    area.id = 'otp';
+    area.setAttribute('autocomplete', 'one-time-code');
+    area.textContent = SECRET;
+    document.body.appendChild(area);
+    makeVisible(area);
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toEqual({
+      tag: 'textarea',
+      role: 'textarea',
+      selector: '#otp',
+      value_hidden: 'filled, 14 characters',
+    });
+  });
+
+  test('setting on: find never matches on a hidden value, nor quotes it in near_misses or the error', () => {
+    filled('<input id="pw" type="password" placeholder="Your password">', SECRET);
+    const hide = { hide_password_values: true } as const;
+    expect(evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'textbox', ...hide }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      values_hidden: PASSWORD_VALUES_HIDDEN_NOTE,
+    });
+    const miss = evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'button', ...hide }));
+    expect(JSON.stringify(miss)).not.toContain('hunter2');
+    // Still found by what the page shows: its placeholder.
+    expect(
+      evalExpr<Json>(buildFindJs({ text: 'password', role: 'textbox', ...hide })),
+    ).toMatchObject({ matched: true, selector: '#pw', values_hidden: PASSWORD_VALUES_HIDDEN_NOTE });
+    // A near miss quotes the placeholder, never the value.
+    const near = evalExpr<FindNoMatch>(
+      buildFindJs({ text: 'your password', exact: true, role: 'button', ...hide }),
+    );
+    expect(JSON.stringify(near)).not.toContain('hunter2');
+    expect(near.near_misses?.[0]?.text).toBe('Your password');
+  });
+
+  test('setting on: multiple-matches candidates carry no value', () => {
+    filled('<input id="a" type="password" aria-label="Password field">', SECRET);
+    filled('<input id="b" type="password" aria-label="Password field">', SECRET);
+    const many = evalExpr<Json>(
+      buildFindJs({ text: 'password field', hide_password_values: true }),
+    );
+    expect(many.reason).toBe('multiple-matches');
+    expect(JSON.stringify(many)).not.toContain('hunter2');
+    expect(many.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+  });
+
+  test('setting on: a since diff lists a changed password field without its text', () => {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    try {
+      const pw = filled('<input id="pw" type="password">', 'old-SECRET');
+      const first = evalExpr<Json>(buildSnapshotJs({}));
+      expect(entries(first)[0]).toMatchObject({ value: 'old-SECRET' });
+      pw.value = SECRET;
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since: first.snapshot_id as string, hide_password_values: true }),
+      );
+      expect(diff.changed).toEqual([
+        expect.objectContaining({ selector: '#pw', value_hidden: 'filled, 14 characters' }),
+      ]);
+      expect(diff.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+      expect(JSON.stringify(diff)).not.toContain('SECRET');
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+
+  test('setting off: the expression and every result are exactly as without the option', () => {
+    filled('<input id="pw" type="password">', SECRET);
+    filled('<input id="q" type="search">', 'shoes');
+    expect(buildSnapshotJs({ hide_password_values: false })).toBe(buildSnapshotJs({}));
+    expect(buildFindJs({ text: 'hunter2', hide_password_values: false })).toBe(
+      buildFindJs({ text: 'hunter2' }),
+    );
+    const snap = evalExpr<Json>(buildSnapshotJs({}));
+    expect(entries(snap).map((e) => e.value)).toEqual([SECRET, 'shoes']);
+    expect(JSON.stringify(snap)).not.toContain('values_hidden');
   });
 });

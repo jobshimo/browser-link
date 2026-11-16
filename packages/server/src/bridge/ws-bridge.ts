@@ -186,6 +186,9 @@ export interface WsBridgeOptions {
   /** Whether a repair hand-off is in progress (`/version` `repairing`).
    * Absent → always false. */
   isRepairing?: () => boolean;
+  /** Agent sessions using this primary (`/version` `sessions`). Absent, or
+   * answering `undefined` → the field is left out. */
+  getSessionCount?: () => number | undefined;
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
@@ -208,7 +211,8 @@ export interface AdminHandlers {
   action: (req: {
     id: string;
     value?: string | number | boolean;
-    confirm?: boolean;
+    /** The code a preview of this exact action issued (admin/confirmation.ts). */
+    code?: string;
     language?: AdminRequestLanguage;
   }) => Promise<AdminActionResult>;
 }
@@ -269,7 +273,7 @@ export function startWsBridge(
         void answerHandshakeCheck(req, res);
         return;
       }
-      handleBridgeHttpRequest(req, res, version, options.isRepairing);
+      handleBridgeHttpRequest(req, res, version, options.isRepairing, options.getSessionCount);
     });
     const wss = new WebSocketServer({
       server: httpServer,
@@ -504,9 +508,10 @@ export function startWsBridge(
         // local trail" is the intended boundary.
         //
         // `admin.describe` / `admin.action`: same boundary. The action side is
-        // a closed allowlist with a confirm step for every disk write
-        // (admin/actions.ts), so the socket can only reach the writes the
-        // console already offers. Async (doctor, update check): the reply goes
+        // a closed allowlist, and every disk write needs the single-use code
+        // its own preview issued (admin/actions.ts, admin/confirmation.ts), so
+        // the socket can only reach the writes the console already offers,
+        // and only in two steps. Async (doctor, update check): the reply goes
         // out only while the socket is still open.
         const reply = routeRequestMessage(msg, options.admin);
         if (reply instanceof Promise) {
@@ -832,13 +837,21 @@ export async function handleAdminMessage(
   if (!admin) return fail(ADMIN_UNAVAILABLE);
   const raw: unknown = msg.id;
   if (typeof raw !== 'string') return fail('admin.action: id must be a string');
+  const code: unknown = msg.code;
+  // Refused with a reply rather than dropped: a write sent with a malformed
+  // code must not silently degrade into a preview the caller never sees.
+  if (code !== undefined && typeof code !== 'string') {
+    return fail('admin.action: code must be a string');
+  }
   const value: unknown = msg.value;
   const req = {
     id: raw,
     ...(typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
       ? { value }
       : {}),
-    ...(msg.confirm === true ? { confirm: true } : {}),
+    // A `confirm` flag, which older extensions sent, is not forwarded: only
+    // the code a preview issued can apply a write (D11).
+    ...(typeof code === 'string' ? { code } : {}),
     ...requestedAdminLanguage(msg.language),
   };
   try {

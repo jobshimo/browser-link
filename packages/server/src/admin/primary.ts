@@ -6,6 +6,7 @@ import { readInstalledVersion } from '../version.js';
 import type { AdminHandlers } from '../bridge/ws-bridge.js';
 import type { Language } from '../commands/welcome.js';
 import { applyAdminAction } from './actions.js';
+import { createConfirmationCodes } from './confirmation.js';
 import { adminLanguage, buildAdminState, type AdminInput } from './descriptor.js';
 import { gatherAdminInput } from './sources.js';
 
@@ -36,6 +37,8 @@ export function createPrimaryAdminHandlers(opts: PrimaryAdminOptions): AdminHand
   const check = opts.checkUpdates ?? checkForUpdates;
   let update: { latest: string | null; isNewer: boolean } | null = null;
   let backgroundCheck: Promise<void> | null = null;
+  // One store for every socket of this primary (see confirmation.ts).
+  const confirmations = createConfirmationCodes();
 
   const input = (): Promise<AdminInput> =>
     gatherAdminInput({
@@ -84,6 +87,7 @@ export function createPrimaryAdminHandlers(opts: PrimaryAdminOptions): AdminHand
         input,
         doctor: opts.doctor ?? runDoctorLines,
         checkUpdates: checkUpdatesLines,
+        confirmations,
       }),
   };
 }

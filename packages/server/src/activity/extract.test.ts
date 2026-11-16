@@ -9,6 +9,7 @@ import {
   extractSelector,
   extractTabId,
   SENSITIVE_PAYLOAD_MARKER,
+  UNIDENTIFIED_FIELD_MARKER,
   serializedBytes,
   transportFor,
 } from './extract.js';
@@ -168,6 +169,7 @@ describe('buildRow', () => {
       args: { tab_id: 'tab_1', selector: '#pw', text: 'hunter2' },
       caller,
       durationMs: 5,
+      result: { typed: 7, sensitive_field: false },
       recordPayloads: false,
     });
     expect(row.payload).toBeNull();
@@ -190,11 +192,12 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
     '%s on a sensitive field stores the marker, payloads on or off',
     (tool, args, result) => {
       for (const recordPayloads of [true, false]) {
+        const expected = SENSITIVE_PAYLOAD_MARKER;
         const raw = buildRow({ ...base, tool, args, result, recordPayloads });
-        expect(raw.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(raw.payload).toBe(expected);
         // The same result inside an MCP envelope reads the same.
         const wrapped = buildRow({ ...base, tool, args, result: mcp(result), recordPayloads });
-        expect(wrapped.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(wrapped.payload).toBe(expected);
         expect(raw.selector).toBe('#pw');
       }
     },
@@ -212,7 +215,23 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
     ).toBeNull();
   });
 
-  test('an executor that reports no field type is stored as today, without error', () => {
+  test('an executor that reports no field type: hidden as not identified (D13), without error', () => {
+    for (const result of [{ typed: 7, selector: '#pw' }, undefined, mcp('not an object'), 42]) {
+      for (const recordPayloads of [true, false]) {
+        const row = buildRow({
+          ...base,
+          tool: 'browser.type',
+          args: typeArgs,
+          result,
+          recordPayloads,
+        });
+        expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
+        expect(row.outcome).toBe('ok');
+      }
+    }
+  });
+
+  test('an executor that reports no field type, stored unhidden: as before the hide setting', () => {
     for (const result of [{ typed: 7, selector: '#pw' }, undefined, mcp('not an object'), 42]) {
       const on = buildRow({
         ...base,
@@ -220,6 +239,7 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
         args: typeArgs,
         result,
         recordPayloads: true,
+        hideSensitive: false,
       });
       expect(on.payload).toBe('hunter2');
       expect(on.outcome).toBe('ok');
@@ -229,6 +249,7 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
         args: typeArgs,
         result,
         recordPayloads: false,
+        hideSensitive: false,
       });
       expect(off.payload).toBeNull();
     }
@@ -269,7 +290,7 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
     ['browser.type', typeArgs],
     ['browser.press', pressArgs],
   ] as const)(
-    '%s failing after the field was reported sensitive stores the marker',
+    '%s failing after the field was reported sensitive stores the marker, payloads on or off',
     (tool, args) => {
       const error = new SensitiveFieldError('expectation not met: url_changed after 150ms');
       for (const recordPayloads of [true, false]) {
@@ -281,7 +302,22 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
     },
   );
 
-  test('a plain error (plain field, or an older extension) is stored as today', () => {
+  test('a plain error (plain field, field not reached, or an older extension): hidden as not identified (D13)', () => {
+    const error = new Error('expectation not met: url_changed after 150ms');
+    for (const recordPayloads of [true, false]) {
+      const row = buildRow({
+        ...base,
+        tool: 'browser.type',
+        args: typeArgs,
+        error,
+        recordPayloads,
+      });
+      expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
+      expect(row.error).toBe('expectation not met: url_changed after 150ms');
+    }
+  });
+
+  test('a plain error, stored unhidden: as before the hide setting', () => {
     const error = new Error('expectation not met: url_changed after 150ms');
     const on = buildRow({
       ...base,
@@ -289,6 +325,7 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
       args: typeArgs,
       error,
       recordPayloads: true,
+      hideSensitive: false,
     });
     expect(on.payload).toBe('hunter2');
     expect(on.error).toBe('expectation not met: url_changed after 150ms');
@@ -298,8 +335,282 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
       args: typeArgs,
       error,
       recordPayloads: false,
+      hideSensitive: false,
     });
     expect(off.payload).toBeNull();
+  });
+});
+
+describe('buildRow — a sensitive row hides the value in every column (D13)', () => {
+  const SECRET = 'hunter2 SECRET';
+  const base = { caller, durationMs: 5, recordPayloads: true };
+  const typeArgs = { tab_id: 'tab_1', selector: '#pw', text: SECRET };
+  const sensitive = { typed: 14, selector: '#pw', sensitive_field: true };
+  /** The page the call ended on: a login form sent by GET echoes the
+   * password in the query string, and the title quotes it. */
+  const page = {
+    url: 'https://bank.example.com/login?user=ana&pw=hunter2+SECRET#hunter2%20SECRET',
+    title: 'Welcome back, hunter2 secret',
+  };
+
+  test('hide (the default): payload, url, title, selector and error never hold the value', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, selector: 'input[data-last="hunter2 SECRET"]' },
+      error: new SensitiveFieldError('expectation not met: text_appears "hunter2 SECRET"'),
+      page,
+    });
+    expect(row).toMatchObject({
+      tool: 'browser.type',
+      payload: SENSITIVE_PAYLOAD_MARKER,
+      url: 'https://bank.example.com/login',
+      title: `Welcome back, ${SENSITIVE_PAYLOAD_MARKER}`,
+      selector: `input[data-last="${SENSITIVE_PAYLOAD_MARKER}"]`,
+      error: `expectation not met: text_appears "${SENSITIVE_PAYLOAD_MARKER}"`,
+      outcome: 'error',
+    });
+    expect(JSON.stringify(row).toLowerCase()).not.toContain('hunter2');
+  });
+
+  test('hide: the value is found also URL-encoded, form-encoded and JSON-escaped', () => {
+    const quoted = 'p"w d/1';
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: quoted },
+      result: { ...sensitive, typed: quoted.length },
+      page: {
+        url: `https://x.example.com/${encodeURIComponent(quoted)}/done`,
+        title: `t ${JSON.stringify(quoted)} ${'p%22w+d%2F1'}`,
+      },
+    });
+    expect(row.url).toBe(`https://x.example.com/${SENSITIVE_PAYLOAD_MARKER}/done`);
+    expect(row.title).toBe(`t "${SENSITIVE_PAYLOAD_MARKER}" ${SENSITIVE_PAYLOAD_MARKER}`);
+  });
+
+  test('hide: a successful sensitive row keeps url origin and path, and an unchanged title', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      result: sensitive,
+      page: { url: 'https://bank.example.com/login?next=%2Fhome', title: 'Login' },
+    });
+    expect(row).toMatchObject({
+      payload: SENSITIVE_PAYLOAD_MARKER,
+      url: 'https://bank.example.com/login',
+      title: 'Login',
+      selector: '#pw',
+      error: null,
+    });
+  });
+
+  test('hide: a press on a sensitive field hides its key in payload and the query of url; a key is not searched for elsewhere', () => {
+    for (const key of ['q', 'Enter']) {
+      const row = buildRow({
+        ...base,
+        tool: 'browser.press',
+        args: { tab_id: 'tab_1', selector: '#pw', key },
+        result: { key, modifiers: [], sensitive_field: true },
+        // Enter sent the form by GET: the password typed before is in the URL.
+        page: { url: 'https://x.example.com/a?pw=hunter2#q', title: 'Quiz: Enter your code' },
+        error: undefined,
+      });
+      expect(row).toMatchObject({
+        payload: SENSITIVE_PAYLOAD_MARKER,
+        url: 'https://x.example.com/a',
+        title: 'Quiz: Enter your code',
+        selector: '#pw',
+      });
+    }
+  });
+
+  test.each([
+    ['failed before the field was found', new Error('Element not found: #pw'), undefined],
+    ['timed out at the bridge', new Error('Tool call timed out after 15000ms'), undefined],
+    ['answered by an executor that reports no field type', undefined, { typed: 14 }],
+  ])(
+    'hide: a type that %s is not identified, so its value is hidden as well',
+    (_case, error, result) => {
+      for (const recordPayloads of [true, false]) {
+        const row = buildRow({
+          ...base,
+          recordPayloads,
+          tool: 'browser.type',
+          args: typeArgs,
+          ...(error ? { error } : { result }),
+          page,
+        });
+        expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
+        expect(row.url).toBe('https://bank.example.com/login');
+        expect(row.title).toBe(`Welcome back, ${UNIDENTIFIED_FIELD_MARKER}`);
+        expect(JSON.stringify(row).toLowerCase()).not.toContain('hunter2');
+      }
+    },
+  );
+
+  test('hide: a plain field (sensitive_field: false) is stored exactly as before', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      result: { ...sensitive, sensitive_field: false },
+      page,
+    });
+    expect(row).toMatchObject({ payload: SECRET, url: page.url, title: page.title });
+  });
+
+  test('hide: tools other than type and press are stored exactly as before', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.navigate',
+      args: { tab_id: 'tab_1', url: page.url },
+      result: { url: page.url },
+      page,
+    });
+    expect(row).toMatchObject({ payload: page.url, url: page.url, title: page.title });
+  });
+
+  test('store unhidden: a sensitive row is stored like any other row, in every column', () => {
+    const error = new SensitiveFieldError('expectation not met: text_appears "hunter2 SECRET"');
+    const on = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      error,
+      page,
+      hideSensitive: false,
+    });
+    expect(on).toMatchObject({
+      payload: SECRET,
+      url: page.url,
+      title: page.title,
+      selector: '#pw',
+      error: 'expectation not met: text_appears "hunter2 SECRET"',
+    });
+    const off = buildRow({
+      ...base,
+      recordPayloads: false,
+      tool: 'browser.type',
+      args: typeArgs,
+      result: sensitive,
+      page,
+      hideSensitive: false,
+    });
+    expect(off).toMatchObject({ payload: null, url: page.url, title: page.title });
+    const unknown = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: typeArgs,
+      error: new Error('Element not found: #pw'),
+      hideSensitive: false,
+    });
+    expect(unknown.payload).toBe(SECRET);
+  });
+
+  test('hide: a value typed into a URL path as a browser encodes a path (encodeURI form) is found', () => {
+    const typed = 'p@ss w0rd!';
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: typed },
+      result: sensitive,
+      page: { url: 'https://x.test/p@ss%20w0rd!/a', title: 'Login' },
+    });
+    expect(row.url).toBe(`https://x.test/${SENSITIVE_PAYLOAD_MARKER}/a`);
+    expect(JSON.stringify(row)).not.toContain('w0rd');
+  });
+
+  test('hide: a title in the other Unicode normalization form is found', () => {
+    const nfc = 'contraseña-ñandú';
+    const nfd = nfc.normalize('NFD');
+    expect(nfd).not.toBe(nfc);
+    for (const [typed, title] of [
+      [nfc, `Hola ${nfd}`],
+      [nfd, `Hola ${nfc}`],
+    ]) {
+      const row = buildRow({
+        ...base,
+        tool: 'browser.type',
+        args: { ...typeArgs, text: typed },
+        result: sensitive,
+        page: { url: 'https://x.test/', title },
+      });
+      expect(row.title).toBe(`Hola ${SENSITIVE_PAYLOAD_MARKER}`);
+    }
+  });
+
+  test('hide: a value of fewer than 4 characters is not searched for; title and error become the marker whole', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'a', selector: 'input[name=a]' },
+      error: new SensitiveFieldError('expectation not met: text_appears "a"'),
+      page: { url: 'https://example.com/a/path?q=a#a', title: 'A page about apples' },
+    });
+    expect(row).toMatchObject({
+      payload: SENSITIVE_PAYLOAD_MARKER,
+      url: 'https://example.com/a/path',
+      title: SENSITIVE_PAYLOAD_MARKER,
+      selector: 'input[name=a]',
+      error: SENSITIVE_PAYLOAD_MARKER,
+    });
+  });
+
+  test('hide: a 2-character value in a title, not identified: the title is the marker, null columns stay null', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'xy' },
+      error: new Error('Element not found: #pw'),
+      page: { url: 'https://xylophone.example/', title: 'Xylophones' },
+    });
+    expect(row.title).toBe(UNIDENTIFIED_FIELD_MARKER);
+    expect(row.url).toBe('https://xylophone.example/');
+    expect(row.error).toBe(UNIDENTIFIED_FIELD_MARKER);
+    const noTitle = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'xy' },
+      result: sensitive,
+    });
+    expect(noTitle).toMatchObject({ title: null, error: null, url: null });
+  });
+
+  test('hide: a value of exactly 4 characters still gets the substring replacement', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'abcd' },
+      result: sensitive,
+      page: { url: 'https://x.test/', title: 'Typed abcd here' },
+    });
+    expect(row.title).toBe(`Typed ${SENSITIVE_PAYLOAD_MARKER} here`);
+  });
+
+  test('payloads off: a sensitive row keeps its marker, a not-identified row stores null; the other columns are scrubbed in both', () => {
+    for (const [result, error, marker] of [
+      [sensitive, undefined, SENSITIVE_PAYLOAD_MARKER],
+      [undefined, new Error('Element not found: #pw'), UNIDENTIFIED_FIELD_MARKER],
+    ] as const) {
+      const row = buildRow({
+        ...base,
+        recordPayloads: false,
+        tool: 'browser.type',
+        args: typeArgs,
+        ...(error ? { error } : { result }),
+        page,
+      });
+      expect(row.payload).toBe(marker === SENSITIVE_PAYLOAD_MARKER ? marker : null);
+      expect(row.url).toBe('https://bank.example.com/login');
+      expect(row.title).toBe(`Welcome back, ${marker}`);
+    }
+  });
+
+  test('without page, url and title stay null (cdp-direct tabs, tabless tools)', () => {
+    const row = buildRow({ ...base, tool: 'browser.type', args: typeArgs, result: sensitive });
+    expect(row).toMatchObject({ url: null, title: null, payload: SENSITIVE_PAYLOAD_MARKER });
   });
 });
 
@@ -369,7 +680,10 @@ describe('classifyFlag — thrown errors', () => {
       'retargeted',
     ],
     ['retargeted: click would land on an ancestor', 'retargeted'],
-    ['ref-stale: e12 not found in document d3', 'ref-stale'],
+    [
+      'ref-stale: e12 not found in document d3: the element is gone, take a new snapshot',
+      'ref-stale',
+    ],
     ['expectation not met: url_changed after 3000ms', 'expect-failed'],
     ["Tool 'browser.click' timed out after 30000ms", 'timeout'],
     ['Element not found: #missing', 'not-found'],
@@ -503,7 +817,9 @@ describe('buildActivityRow', () => {
         caller,
         durationMs: 9,
         recordPayloads: true,
-        error: new Error('ref-stale: e1 not found in document d1'),
+        error: new Error(
+          'ref-stale: e1 not found in document d1: the element is gone, take a new snapshot',
+        ),
       },
     );
     expect(row.outcome).toBe('error');
@@ -529,7 +845,8 @@ describe('buildActivityRow', () => {
       tabId: 'tab_1',
       transport: 'extension',
       selector: '#pw',
-      payload: 'hunter2',
+      // No result says which field it was: hidden by default (D13).
+      payload: UNIDENTIFIED_FIELD_MARKER,
       agent: 'claude-code',
       agentPid: 4242,
       outcome: 'ok',

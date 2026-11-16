@@ -30,6 +30,14 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildSnapshotJs({ since: 'abc123:s1' })).toBe(
       ext.buildSnapshotJs({ since: 'abc123:s1' }),
     );
+    const offset = { interactive: 120, headings: 30, text: 4000 };
+    expect(srv.buildSnapshotJs({ offset })).toBe(ext.buildSnapshotJs({ offset }));
+  });
+
+  test('the cut hints of snapshot and find (owner decision D6)', () => {
+    expect(srv.SNAPSHOT_CUT_HINT).toBe(ext.SNAPSHOT_CUT_HINT);
+    expect(srv.SNAPSHOT_NOT_COMPARED_HINT).toBe(ext.SNAPSHOT_NOT_COMPARED_HINT);
+    expect(srv.FIND_CUT_HINT).toBe(ext.FIND_CUT_HINT);
   });
 
   test('buildFindJs', () => {
@@ -40,6 +48,28 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildFindJs({ key })).toBe(ext.buildFindJs({ key }));
     const bare = { key: { role: 'link', name: 'Docs' } };
     expect(srv.buildFindJs(bare)).toBe(ext.buildFindJs(bare));
+    const paged = { text: 'Save', offset: { candidates: 5 } };
+    expect(srv.buildFindJs(paged)).toBe(ext.buildFindJs(paged));
+  });
+
+  test('snapshot and find with the hide-password-values setting (owner decision D12)', () => {
+    expect(srv.PASSWORD_VALUES_HIDDEN_NOTE).toBe(ext.PASSWORD_VALUES_HIDDEN_NOTE);
+    expect(srv.SENSITIVE_FIELD_JS).toBe(ext.SENSITIVE_FIELD_JS);
+    const hide = { hide_password_values: true } as const;
+    expect(srv.buildSnapshotJs(hide)).toBe(ext.buildSnapshotJs(hide));
+    expect(srv.buildSnapshotJs({ since: 'abc123:s1', ...hide })).toBe(
+      ext.buildSnapshotJs({ since: 'abc123:s1', ...hide }),
+    );
+    for (const opts of [
+      { text: 'Save', role: 'textbox', ...hide },
+      { ref: 'k3x9ab:e7', ...hide },
+      { key: { role: 'link', name: 'Docs' }, ...hide },
+    ]) {
+      expect(srv.buildFindJs(opts)).toBe(ext.buildFindJs(opts));
+    }
+    expect(srv.withValuesHiddenNote({ ok: true }, true)).toEqual(
+      ext.withValuesHiddenNote({ ok: true }, true),
+    );
   });
 
   test('buildClickResolveJs', () => {
@@ -47,6 +77,19 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildClickResolveJs(opts)).toBe(ext.buildClickResolveJs(opts));
     const byRef = { ref: 'k3x9ab:e7', force: true };
     expect(srv.buildClickResolveJs(byRef)).toBe(ext.buildClickResolveJs(byRef));
+  });
+
+  test('FOCUS_REFUSAL_JS (type and press act only on an element that took focus)', () => {
+    expect(srv.FOCUS_REFUSAL_JS).toBe(ext.FOCUS_REFUSAL_JS);
+  });
+
+  test('buildProgrammaticClickJs (owner decision D4)', () => {
+    expect(srv.buildProgrammaticClickJs({ selector: '#btn' })).toBe(
+      ext.buildProgrammaticClickJs({ selector: '#btn' }),
+    );
+    expect(srv.buildProgrammaticClickJs({ ref: 'k3x9ab:e7' })).toBe(
+      ext.buildProgrammaticClickJs({ ref: 'k3x9ab:e7' }),
+    );
   });
 
   test('buildTypeResolveJs (clear true and false)', () => {

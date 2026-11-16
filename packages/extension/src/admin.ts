@@ -26,6 +26,7 @@ import {
   adminUi,
   fallbackAdminUi,
   buildAdminRows,
+  createConsoleInfo,
   describeAdminError,
   initialConfirmState,
   reduceConfirm,
@@ -142,6 +143,9 @@ function renderAdminRows(rows: AdminRow[]): void {
       label.textContent = row.label;
       line.appendChild(label);
     }
+    // A setting only the console changes says so, next to its label.
+    const info = row.consoleOnly === true ? createConsoleInfo(document, lang.t, row.itemId) : null;
+    if (info) line.appendChild(info.button);
     line.appendChild(adminControlFor(row));
     body.appendChild(line);
     // Description, console hint and restart flag stay visible under the row
@@ -157,6 +161,7 @@ function renderAdminRows(rows: AdminRow[]): void {
       el.textContent = note;
       body.appendChild(el);
     }
+    if (info) body.appendChild(info.panel);
   }
 }
 

@@ -599,3 +599,36 @@ describe('composedContains', () => {
     expect(host.contains(inner)).toBe(false);
   });
 });
+
+/**
+ * The depth guard (more than 20 nested roots) must not cut silently: it
+ * sets `deepDepthLimited` only when a root it refused to enter exists.
+ */
+describe('depth guard', () => {
+  /** A chain of `levels` nested open shadow roots, a button in the deepest. */
+  function nest(levels: number): void {
+    let scope: Element | ShadowRoot = document.body;
+    for (let i = 0; i < levels; i++) {
+      const host = document.createElement('div');
+      scope.appendChild(host);
+      scope = host.attachShadow({ mode: 'open' });
+    }
+    const btn = document.createElement('button');
+    btn.id = 'deepest';
+    scope.appendChild(btn);
+  }
+
+  test('21 nested roots are walked whole and the flag stays false', () => {
+    nest(21);
+    const g = loadDeepQuery();
+    expect(g.deepQueryAll('#deepest').length).toBe(1);
+    expect((globalThis as unknown as { deepDepthLimited: boolean }).deepDepthLimited).toBe(false);
+  });
+
+  test('22 nested roots: the deepest is not walked and the flag says so', () => {
+    nest(22);
+    const g = loadDeepQuery();
+    expect(g.deepQueryAll('#deepest').length).toBe(0);
+    expect((globalThis as unknown as { deepDepthLimited: boolean }).deepDepthLimited).toBe(true);
+  });
+});

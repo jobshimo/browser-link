@@ -53,7 +53,7 @@ describe('createPrimaryAdminHandlers', () => {
     expect(checkUpdates).toHaveBeenCalledTimes(1);
   });
 
-  test('updates.check forces a fresh check and returns its lines', async () => {
+  test('updates.check previews, then forces a fresh check with its code and returns its lines', async () => {
     const checkUpdates = vi.fn(() =>
       Promise.resolve({ current: '0.42.0', latest: '0.42.0', isNewer: false }),
     );
@@ -63,7 +63,11 @@ describe('createPrimaryAdminHandlers', () => {
       connectedExtensionVersion: () => null,
       checkUpdates,
     });
-    const result = await admin.action({ id: 'updates.check' });
+    const preview = await admin.action({ id: 'updates.check' });
+    if (!preview.ok || preview.applied) throw new Error('no preview');
+    expect(checkUpdates).not.toHaveBeenCalled();
+    const result = await admin.action({ id: 'updates.check', code: preview.code });
+    expect(checkUpdates).toHaveBeenCalledTimes(1);
     expect(checkUpdates).toHaveBeenCalledWith({ force: true });
     expect(result).toMatchObject({ ok: true, applied: true });
     if (!result.ok || !result.applied) throw new Error('not applied');
@@ -86,7 +90,7 @@ describe('createPrimaryAdminHandlers', () => {
     expect(result.state?.ui.language).toBe('es');
   });
 
-  test('the bridge router refuses the elevating settings with confirm:true and writes nothing', async () => {
+  test('the bridge router refuses the elevating settings with a code and writes nothing', async () => {
     // Mocked so no case can reach the real client configs in the home folder.
     const cli = [
       vi.spyOn(toolsCommand, 'enableTools').mockReturnValue(''),
@@ -113,7 +117,7 @@ describe('createPrimaryAdminHandlers', () => {
     try {
       for (const [id, value] of cases) {
         const reply = await routeRequestMessage(
-          { kind: 'admin.action', request_id: id, id, value, confirm: true },
+          { kind: 'admin.action', request_id: id, id, value, code: 'x' },
           admin,
         );
         expect(reply).toMatchObject({

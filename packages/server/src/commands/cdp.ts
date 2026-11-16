@@ -10,6 +10,7 @@ import {
 import { isChromeDevtoolsEndpoint } from '../cdp/targets.js';
 import { CFG_I18N, parseGrantTtlArg } from './config.js';
 import type { Language } from './welcome.js';
+import { readArgs } from '../cli-args.js';
 
 /**
  * `browser-link cdp` — the human-only side of cdp-direct's permission
@@ -107,12 +108,6 @@ const CDP_I18N: Record<Language, CdpI18n> = {
   },
 };
 
-function parseMinutesFlag(argv: string[]): string | undefined {
-  const idx = argv.indexOf('--minutes');
-  if (idx === -1 || idx === argv.length - 1) return undefined;
-  return argv[idx + 1];
-}
-
 function formatExpiry(expiresAt: number | null, t: CdpI18n): string {
   if (expiresAt === null) return t.never;
   return new Date(expiresAt).toISOString();
@@ -125,8 +120,10 @@ function formatExpiry(expiresAt: number | null, t: CdpI18n): string {
  * a grant that never expires. */
 export function allowCdpDirect(argv: string[], language: Language = 'en'): string {
   const t = CDP_I18N[language];
+  // `--minutes N` and `--minutes=N` are the same; a `--minutes` without its
+  // value, or any other word, is refused before a grant is recorded.
+  const rawMinutes = readArgs('cdp allow', argv, language).value('minutes');
   const cfg = loadConfig();
-  const rawMinutes = parseMinutesFlag(argv);
   const { minutes: parsedMinutes, note } =
     rawMinutes !== undefined
       ? parseGrantTtlArg(rawMinutes, CFG_I18N[language])
@@ -219,7 +216,7 @@ export async function runCdpCommand(argv: string[], language: Language = 'en'): 
   const rest = argv.slice(1);
   if (action === undefined) throw new Error(t.usage);
   if (action === 'allow') return allowCdpDirect(rest, language);
-  if (action === 'revoke') return revokeCdpDirect(language);
-  if (action === 'status') return cdpDirectStatus(language);
-  throw new Error(t.unknownAction(action));
+  if (action !== 'revoke' && action !== 'status') throw new Error(t.unknownAction(action));
+  readArgs(`cdp ${action}`, rest, language);
+  return action === 'revoke' ? revokeCdpDirect(language) : cdpDirectStatus(language);
 }
