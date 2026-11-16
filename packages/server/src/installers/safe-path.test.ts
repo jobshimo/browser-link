@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,7 +23,7 @@ import {
   type McpConfigFile,
 } from './json-config.js';
 import type { TextEdit } from './json-edit.js';
-import { firstInvalidUtf8Offset } from './safe-file.js';
+import { atomicWrite, firstInvalidUtf8Offset } from './safe-file.js';
 import type { Installer } from './types.js';
 
 /**
@@ -352,4 +353,33 @@ describe('MCP config: a UTF-8 byte order mark', () => {
       expect(readFileSync(c.file()).equals(original)).toBe(true);
     },
   );
+});
+
+describe('atomicWrite keeps the permission bits of a file it replaces', () => {
+  // Windows has no POSIX permission bits (chmod only toggles read-only), so
+  // there is nothing to keep or to check there.
+  const posix = process.platform !== 'win32';
+
+  test.skipIf(!posix)('an existing 0644 file is still 0644 after the write', () => {
+    const path = join(fakeHome, 'kept.json');
+    writeFileSync(path, '{}\n');
+    chmodSync(path, 0o644);
+    atomicWrite(path, '{"a":1}\n');
+    expect(statSync(path).mode & 0o7777).toBe(0o644);
+    expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
+  });
+
+  test.skipIf(!posix)('an existing 0640 file is still 0640 after the write', () => {
+    const path = join(fakeHome, 'kept.json');
+    writeFileSync(path, '{}\n');
+    chmodSync(path, 0o640);
+    atomicWrite(path, '{}\n');
+    expect(statSync(path).mode & 0o7777).toBe(0o640);
+  });
+
+  test.skipIf(!posix)('a new file is created 0600, as before', () => {
+    const path = join(fakeHome, 'new.json');
+    atomicWrite(path, '{}\n');
+    expect(statSync(path).mode & 0o7777).toBe(0o600);
+  });
 });

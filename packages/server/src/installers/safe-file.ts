@@ -1,5 +1,6 @@
 import {
   closeSync,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -8,6 +9,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
@@ -177,18 +179,32 @@ export function assertWritable(filePath: string, options: WriteGuardOptions = {}
   assertNotSymlink(filePath, options.symlinkBlock);
 }
 
+/** Permission bits of an existing file, or null when there is none. */
+function existingMode(filePath: string): number | null {
+  try {
+    return statSync(filePath).mode & 0o7777;
+  } catch {
+    return null;
+  }
+}
+
 /** Atomic write via a sibling temp file + fsync + rename, so a crash or a
  * full disk leaves either the old file or the new one, never a truncated
  * one. Creates the parent directory. Cleans up the temp file on failure. The
- * 0o600 create-mode keeps the temp file private while it lives. */
+ * 0o600 create-mode keeps the temp file private while it is written; a file
+ * that already exists keeps its own permission bits, a new one stays 0o600. */
 export function atomicWrite(filePath: string, content: string): void {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
   const tmp = join(dir, `.${basename(filePath)}.${process.pid}-${Date.now()}.tmp`);
+  const keptMode = existingMode(filePath);
   let fd: number | null = null;
   try {
     fd = openSync(tmp, 'w', 0o600);
     writeSync(fd, content, null, 'utf8');
+    // The permission bits are the user's: the replacement keeps them. The
+    // temp file stays private until its content is complete.
+    if (keptMode !== null) fchmodSync(fd, keptMode);
     fsyncSync(fd);
     closeSync(fd);
     fd = null;

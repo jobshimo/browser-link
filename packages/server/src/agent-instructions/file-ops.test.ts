@@ -171,12 +171,12 @@ describe('uninstallAt', () => {
     expect(text).not.toContain('body');
   });
 
-  test('collapses the multi-blank gap left behind into a single blank', () => {
+  test('leaves the blank lines around a block in the middle as the user had them', () => {
+    // D16: the old collapse of every 3+ line-end run is gone; only our span goes.
     const initial = `Before.\n\n${beginMarker()}\nbody\n${END_MARKER}\n\nAfter.\n`;
     writeFileSync(file, initial, 'utf8');
     uninstallAt(file, 'Test Client');
-    const text = readFileSync(file, 'utf8');
-    expect(text).not.toMatch(/\n\n\n/);
+    expect(readFileSync(file, 'utf8')).toBe('Before.\n\n\nAfter.\n');
   });
 });
 
@@ -379,10 +379,10 @@ describe('D16: refuse and change nothing, keep every byte that is not ours', () 
     expect(readFileSync(file, 'utf8')).toBe(before + block(VERSION, '\r\n') + after);
   });
 
-  test('CRLF: uninstall keeps every byte around the block (previous behaviour)', () => {
+  test('CRLF: uninstall keeps every byte around the block', () => {
     writeFileSync(file, `# Mine\r\n\r\n${block(VERSION, '\r\n')}\r\nUser tail.\r\n`, 'utf8');
     uninstallAt(file, 'Test Client');
-    expect(readFileSync(file, 'utf8')).toBe('# Mine\r\n\r\nUser tail.\r\n');
+    expect(readFileSync(file, 'utf8')).toBe('# Mine\r\n\r\n\r\nUser tail.\r\n');
   });
 
   test('a file that is not valid UTF-8 is refused by install and uninstall, unchanged', () => {
@@ -434,6 +434,72 @@ describe('D16: refuse and change nothing, keep every byte that is not ours', () 
     installAt(file, 'Test Client');
     expect(readFileSync(file, 'utf8')).toBe(`# Mine\n\n${block(VERSION)}`);
     uninstallAt(file, 'Test Client');
-    expect(readFileSync(file, 'utf8')).toBe('# Mine\n\n');
+    // The block was last in the file: the one line end before it goes too.
+    expect(readFileSync(file, 'utf8')).toBe('# Mine\n');
+  });
+});
+
+describe('D16: uninstall gives back every byte that is not ours', () => {
+  // Rule: install appends after the user's text exactly one line end (none
+  // into an empty file), then the block, which ends with its own line end.
+  // Uninstall removes the block span and, only when the block is the last
+  // thing in the file, that one line end before it. Nothing else changes.
+  const LF_FILES = [
+    'top\n\n\n\nmid\n\n\n\nbottom',
+    'top\n\n\n\nmid\n\n\n\nbottom\n',
+    'notes\n\n\n\n\n',
+    'one line, no newline',
+    '\n',
+    '\n\n\n',
+    '',
+  ];
+  const FILES = [...LF_FILES, ...LF_FILES.map((t) => t.replace(/\n/g, '\r\n'))];
+
+  test.each(FILES.map((t) => [JSON.stringify(t), t]))(
+    'uninstall(install(%s)) is the original',
+    (_label, original) => {
+      writeFileSync(file, original, 'utf8');
+      installAt(file, 'Test Client');
+      expect(detectAt(file).state.kind).toBe('installed');
+      uninstallAt(file, 'Test Client');
+      expect(readFileSync(file, 'utf8')).toBe(original);
+    },
+  );
+
+  test('a block in the middle (old install, moved by hand) is cut out alone', () => {
+    const before = 'top\n\n\n\n';
+    const after = 'mid\n\n\n\nbottom';
+    writeFileSync(file, `${before}${block('0.0.1')}${after}`, 'utf8');
+    uninstallAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(before + after);
+  });
+
+  test('a block the old code appended at the end loses only the line end before it', () => {
+    writeFileSync(file, `user\r\n\r\n\r\n\r\n${block('0.0.1', '\r\n')}`, 'utf8');
+    uninstallAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe('user\r\n\r\n\r\n');
+  });
+
+  test('a refresh keeps every byte around the block', () => {
+    const original = 'a\n\n\n\nb';
+    writeFileSync(file, original, 'utf8');
+    installAt(file, 'Test Client');
+    const once = readFileSync(file, 'utf8');
+    installAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(once);
+    expect(once).toBe(`${original}\n${block(VERSION)}`);
+  });
+});
+
+describe('install separator (one line end, none into an empty file)', () => {
+  test.each([
+    ['ends with a newline: one blank line, as before', 'x\n', `x\n\n${block(VERSION)}`],
+    ['no final newline: the block starts on the next line', 'x', `x\n${block(VERSION)}`],
+    ['ends with a blank line: kept, plus one line end', 'x\n\n', `x\n\n\n${block(VERSION)}`],
+    ['empty file: the block alone', '', block(VERSION)],
+  ])('%s', (_label, original, expected) => {
+    writeFileSync(file, original, 'utf8');
+    installAt(file, 'Test Client');
+    expect(readFileSync(file, 'utf8')).toBe(expected);
   });
 });
