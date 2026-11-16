@@ -138,6 +138,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       'An `ok` result can still mean the action missed. The fields that say so:',
       '- `hit_element` on `click` (and flow click steps) appears when a `pointer-events: none` target passes the click on, or on `force: true`; it names the real receiver: if it is not your target or inside it, the click missed → do not proceed; `find` the element that receives clicks by its text.',
       '- `retargeted` error on `click`: the click would land on an ancestor of your target (clipped or covered by its own container) → scroll or expand the container, or `find` the element that receives clicks; `force: true` clicks there anyway.',
+      "- `no visible box` error on `click`: the target is not rendered or visibility-hidden; it is never clicked at (0,0) → make it visible first; `force: true` calls the element's own click() instead, and the result says so in `programmatic_click` (no pointer, hover, mousedown or mouseup).",
       '- `mutation_count: 0` or `settle.settled: false` → `expect` or `wait_for` the effect you need.',
       '- `since_status` on `snapshot`: you received a full snapshot → keep its new `snapshot_id`.',
       '- `reresolved: true`: the node was replaced by a re-render and re-found (never a look-alike that already existed) → fine.',

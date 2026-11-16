@@ -112,6 +112,42 @@ export function retargetedClickMessage(hitElement: string, target: string): stri
   );
 }
 
+/** The error text for a click on a target with no visible box (the in-page
+ * resolve reports `reason: 'no-box'`, see `hasVisibleBox` in
+ * `inpage/deep-query.ts`): owner decision D4, never a pointer click at
+ * (0,0). Shared by both transports' `performClick`. `target` is the
+ * selector or ref as given. */
+export function noBoxClickMessage(target: string): string {
+  return (
+    `Element ${target} has no visible box (not rendered, visibility-hidden, or an option of a select), ` +
+    'so there is no point to click: make it visible first (open its menu, dialog or section), ' +
+    "or pass force: true to call the element's own click() with no pointer"
+  );
+}
+
+/** The error text for a `type` / `press` whose target did not take focus
+ * (the in-page resolve reports `reason: 'not-focused'`, see
+ * `FOCUS_REFUSAL_JS` in `inpage/builders.ts`): the text or key would have
+ * gone to whatever had focus before, so nothing was sent. Shared by both
+ * transports. `target` is the selector or ref as given; `why` is the
+ * in-page guess at the cause. */
+export function notFocusedMessage(
+  target: string,
+  why: string,
+  action: 'typed' | 'pressed',
+): string {
+  return (
+    `Element ${target} did not take focus (${why}), so nothing was ${action}: ` +
+    'the input would have gone to whatever had focus before; target the field itself'
+  );
+}
+
+/** The value of `programmatic_click` on a click result (owner decision D4):
+ * a `force` click on a target with no visible box called the element's own
+ * `click()` instead of the mouse. */
+export const PROGRAMMATIC_CLICK_NOTE =
+  'the target has no visible box, so its own click() was called: no pointer, no mouse events, no coordinates';
+
 /** Hard cap on steps per flow — mirrors the `maxItems: 20` on the MCP
  * schema (`browser-definitions.ts`) and the server-side validation
  * (`browser-dispatch.ts`). Enforced again here so neither the extension
@@ -185,6 +221,10 @@ export interface ClickStepResult {
    * whatever covers the point (see `buildClickResolveJs`). Omitted when
    * the click lands on the target itself. */
   hit_element?: string;
+  /** Present only when a `force` click found no visible box on the target
+   * and called its own `click()` instead of the mouse; the value is
+   * `PROGRAMMATIC_CLICK_NOTE` (owner decision D4). */
+  programmatic_click?: string;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
@@ -528,12 +568,14 @@ function compactActionResult(result: {
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
   hit_element?: string;
+  programmatic_click?: string;
   drag_mode?: string;
 }): {
   ok: true;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
   hit_element?: string;
+  programmatic_click?: string;
   drag_mode?: string;
 } {
   return {
@@ -541,6 +583,7 @@ function compactActionResult(result: {
     ...(result.settle ? { settle: result.settle } : {}),
     ...(result.expect ? { expect: result.expect } : {}),
     ...(result.hit_element ? { hit_element: result.hit_element } : {}),
+    ...(result.programmatic_click ? { programmatic_click: result.programmatic_click } : {}),
     ...(result.drag_mode ? { drag_mode: result.drag_mode } : {}),
   };
 }

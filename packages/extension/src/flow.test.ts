@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  PROGRAMMATIC_CLICK_NOTE,
+  noBoxClickMessage,
   notWalkedSuffix,
   refFailureMessage,
   retargetedClickMessage,
@@ -193,6 +195,41 @@ describe('runFlow — happy path', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected success');
     expect(result.results).toEqual([{ ok: true, hit_element: 'div.overlay' }, { ok: true }]);
+  });
+
+  test('a force click step on a target with no box says so in its entry (D4)', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            result: { clicked: '#x', tag: 'button', programmatic_click: PROGRAMMATIC_CLICK_NOTE },
+          }) satisfies ActionOutcome<ClickStepResult>,
+      ),
+    });
+    const result = await runFlow([{ click: { selector: '#x', force: true } }], deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([{ ok: true, programmatic_click: PROGRAMMATIC_CLICK_NOTE }]);
+    expect(deps.performClick).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: '#x', force: true }),
+    );
+  });
+
+  test('a click step on a target with no box fails with the standalone message (D4)', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(
+        async () =>
+          ({ ok: false, error: noBoxClickMessage('#x') }) satisfies ActionOutcome<ClickStepResult>,
+      ),
+    });
+    const result = await runFlow([{ click: { selector: '#x' } }], deps);
+    expect(result).toMatchObject({
+      ok: false,
+      failed_step: 0,
+      step_kind: 'click',
+      error: noBoxClickMessage('#x'),
+    });
   });
 });
 

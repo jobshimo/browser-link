@@ -15,7 +15,8 @@ import {
   buildObserverChangesJs,
   buildObserverMarkJs,
 } from './inpage/observer.js';
-import { buildFocusedFieldJs, buildSettleJs } from './inpage/builders.js';
+import { buildFocusedFieldJs, buildProgrammaticClickJs, buildSettleJs } from './inpage/builders.js';
+import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
 import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
@@ -1120,6 +1121,199 @@ describe('callCdpTool — page observer', () => {
     const mark = seen.find((s) => s.params.expression === buildObserverMarkJs());
     expect(mark).toBeDefined();
     expect(mark?.params.userGesture).toBeUndefined();
+  });
+
+  test('a force click on a target with no box calls its own click() after the mark, with no mouse events, and settles like a pointer click (D4)', async () => {
+    const seen: Seen[] = [];
+    const order: string[] = [];
+    let noBox = false;
+    const page = observerPage(seen);
+    const programmatic = buildProgrammaticClickJs({ selector: '#go' });
+    const { port, targetId } = await startFakeTarget({
+      ...page,
+      'Input.dispatchMouseEvent': (params) => {
+        order.push(`input:${(params as { type: string }).type}`);
+        return {};
+      },
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          order.push('programmatic');
+          return { result: { value: { ok: true } } };
+        }
+        if (noBox && expression.includes("reason: 'invalid-selector'")) {
+          return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+        }
+        if (expression === buildObserverMarkJs()) order.push('mark');
+        return page['Runtime.evaluate'](params);
+      },
+    });
+    grantAccess(port);
+    const pointer = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: unknown;
+    };
+    order.length = 0;
+    noBox = true;
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', force: true });
+    expect(result).toEqual({
+      clicked: '#go',
+      tag: 'button',
+      programmatic_click: PROGRAMMATIC_CLICK_NOTE,
+      settle: pointer.settle,
+    });
+    expect(order).toEqual(['mark', 'programmatic']);
+  });
+
+  test('a target with no box without force fails with the no-box message and nothing is clicked (D4)', async () => {
+    const order: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Input.dispatchMouseEvent': (params) => {
+        order.push(`input:${(params as { type: string }).type}`);
+        return {};
+      },
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === buildProgrammaticClickJs({ selector: '#hidden' })) {
+          order.push('programmatic');
+        }
+        return { result: { value: { ok: false, reason: 'no-box' } } };
+      },
+    });
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'click', { selector: '#hidden' })).rejects.toThrow(
+      noBoxClickMessage('#hidden'),
+    );
+    expect(noBoxClickMessage('#hidden')).toBe(
+      'Element #hidden has no visible box (not rendered, visibility-hidden, or an option of a select), ' +
+        'so there is no point to click: make it visible first (open its menu, dialog or section), ' +
+        "or pass force: true to call the element's own click() with no pointer",
+    );
+    expect(order).toEqual([]);
+  });
+
+  test('expect is checked around a programmatic click exactly as around a pointer click (D4)', async () => {
+    let clicked = false;
+    const mouse: string[] = [];
+    const programmatic = buildProgrammaticClickJs({ ref: 'k3x9ab:e7' });
+    const { port, targetId } = await startFakeTarget({
+      'Input.dispatchMouseEvent': (params) => {
+        mouse.push((params as { type: string }).type);
+        return {};
+      },
+      'Runtime.evaluate': (params: unknown) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          clicked = true;
+          return { result: { value: { ok: true } } };
+        }
+        if (expression.includes('function resolveTarget')) {
+          return {
+            result: { value: { ok: true, no_box: true, tag: 'a', reresolved: true } },
+          };
+        }
+        return { result: { value: { url: 'u', selector_appears: clicked } } };
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      ref: 'k3x9ab:e7',
+      force: true,
+      settle_ms: 0,
+      expect: { selector_appears: '#done', timeout_ms: 2000 },
+    });
+    expect(result).toEqual({
+      clicked: 'k3x9ab:e7',
+      tag: 'a',
+      ref: 'k3x9ab:e7',
+      reresolved: true,
+      programmatic_click: PROGRAMMATIC_CLICK_NOTE,
+      expect: { met: true, elapsed_ms: expect.any(Number) },
+    });
+    expect(mouse).toEqual([]);
+  });
+
+  describe('type and press act only on an element that took focus', () => {
+    function refusingPage(sent: string[]): Record<string, Handler> {
+      const record =
+        (method: string): Handler =>
+        () => {
+          sent.push(method);
+          return {};
+        };
+      return {
+        'Input.insertText': record('Input.insertText'),
+        'Input.dispatchKeyEvent': record('Input.dispatchKeyEvent'),
+        'Runtime.evaluate': () => ({
+          result: { value: { ok: false, reason: 'not-focused', why: 'it is disabled' } },
+        }),
+      };
+    }
+
+    test('type by selector and by ref types nothing and says why', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget(refusingPage(sent));
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'type', { selector: '#off', text: 'secret' }),
+      ).rejects.toThrow(notFocusedMessage('#off', 'it is disabled', 'typed'));
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'type', { ref: 'k3x9ab:e7', text: 'secret' }),
+      ).rejects.toThrow(notFocusedMessage('k3x9ab:e7', 'it is disabled', 'typed'));
+      expect(notFocusedMessage('#off', 'it is disabled', 'typed')).toBe(
+        'Element #off did not take focus (it is disabled), so nothing was typed: ' +
+          'the input would have gone to whatever had focus before; target the field itself',
+      );
+      expect(sent).toEqual([]);
+    });
+
+    test('press by selector and by ref sends no key and says why', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget(refusingPage(sent));
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'press', { selector: '#off', key: 'Enter' }),
+      ).rejects.toThrow(notFocusedMessage('#off', 'it is disabled', 'pressed'));
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'press', { ref: 'k3x9ab:e7', key: 'Enter' }),
+      ).rejects.toThrow(notFocusedMessage('k3x9ab:e7', 'it is disabled', 'pressed'));
+      expect(sent).toEqual([]);
+    });
+
+    test('press by selector that took focus still sends the key', async () => {
+      const sent: string[] = [];
+      const { port, targetId } = await startFakeTarget({
+        ...refusingPage(sent),
+        'Runtime.evaluate': () => ({ result: { value: true } }),
+      });
+      grantAccess(port);
+      await callCdpTool(`cdp:${targetId}`, 'press', {
+        selector: '#in',
+        key: 'Enter',
+        settle_ms: 0,
+      });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(new Set(sent)).toEqual(new Set(['Input.dispatchKeyEvent']));
+    });
+  });
+
+  test('a programmatic click whose target is gone by then fails as not found (D4)', async () => {
+    const programmatic = buildProgrammaticClickJs({ selector: '#go' });
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params: unknown) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === programmatic) {
+          return { result: { value: { ok: false, reason: 'not-found' } } };
+        }
+        if (expression.includes('function resolveTarget')) {
+          return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', force: true, settle_ms: 0 }),
+    ).rejects.toThrow('Element not found: #go');
   });
 
   test('a mark the observer refuses yields changes: null and keeps the settle fields', async () => {
