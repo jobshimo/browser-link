@@ -92,7 +92,7 @@ browser-link install                       # register in every detected client
 browser-link install --client claude       # register only in Claude Code
 browser-link extension                     # show the Chrome extension assets path + steps
 browser-link doctor                        # diagnose current setup (running vs installed version, live processes); every probe runs in parallel
-browser-link stop                          # stop every live browser-link server, one line per process
+browser-link stop                          # stop the browser-link server the OS confirms on the bridge port
 browser-link tools                         # show which of the 40 MCP tools are enabled
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link map                           # list apps the persistent UI map knows about
@@ -105,6 +105,31 @@ browser-link help                          # list every subcommand
 After `install`, restart your MCP client. After `extension`, load the
 unpacked extension as instructed, then click "Connect this tab" on every
 tab you want the agent to reach.
+
+`browser-link stop` stops only what the operating system confirms: the holder
+of the bridge port (17529) or the IPC port (17530) when it is a browser-link
+server. It says "already free" only after a lookup that worked; a failed lookup
+is reported as such and stops nothing. Other processes that only look like a
+bridge are listed with their command and left running.
+`browser-link stop --pid <PID>` shows one process and stops exactly that one;
+it refuses a PID the operating system does not list, this command or its
+ancestors, and a process that neither holds a browser-link port nor runs as a
+browser-link server.
+
+The command line is strict. `--opt value` and `--opt=value` mean the same.
+`--help` or `-h` after any command prints that command's help and does nothing
+else. An unknown, repeated or value-less option, or an extra word, makes the
+command refuse, touch nothing and exit with code 2, saying what it did not
+understand.
+
+`install` and `uninstall` edit only the `browser-link` entry of the client's
+config and keep the rest of the file byte for byte, line ends included. The
+write is atomic and makes no backup copy. A config that is a symlink, is not
+valid UTF-8, does not parse, has the wrong shape or repeats the key is refused
+and left unchanged, with a message saying what was found. `instructions
+install` and `uninstall` do the same for the instructions file; one that is not
+valid UTF-8, or has a begin marker with no end marker, is refused and left
+unchanged.
 
 ## The 40 tools, at a glance
 
@@ -136,6 +161,10 @@ browser-link map forget <app> --flow <name> # delete just one named flow
 browser-link map export --out map.json      # back up the map as JSON
 browser-link map import map.json            # restore it (merge by default, --replace to overwrite)
 ```
+
+`map forget <app>` never deletes a whole app when the identifier matches more
+than one: it lists the candidates and deletes nothing, with or without `--yes`.
+The dry run's confirm command repeats the identifier you typed.
 
 ### The map learns by itself
 
@@ -219,7 +248,8 @@ it prints the draft and creates nothing.
   for how it works.
 - **Updates take effect by themselves**: a newer browser-link that starts
   displaces an older primary (it reads `GET /version` on the bridge port),
-  `browser-link stop` stops every live server, `doctor` and `list_tabs`
+  `browser-link stop` stops the holder of the bridge port when the operating
+  system confirms it is a browser-link server, `doctor` and `list_tabs`
   show "running X / installed Y", and the extension popup has a "Repair
   connection" button. `/version` answers only a loopback `Host` header
   (`127.0.0.1`, `localhost`, `[::1]`; anything else gets `403`) and
@@ -230,8 +260,8 @@ it prints the draft and creates nothing.
   [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
 - **Admin panel**: the console's status view and the extension popup's
   Admin section render the same server-built sections and labels (English
-  or Spanish). Every change that writes to disk shows a one-line preview and
-  waits for your confirmation; stopping or updating the server stays a
+  or Spanish). Every change that writes to disk shows a one-line preview with
+  a single-use code, and the server applies it only with that code; stopping or updating the server stays a
   console command. See
   [Admin panel](https://github.com/jobshimo/browser-link#admin-panel-console-and-popup).
 - **cdp-direct mode** (off by default): an extension-free transport gated
