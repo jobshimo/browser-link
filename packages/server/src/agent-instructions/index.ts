@@ -123,4 +123,9 @@ export type {
   InstructionsState,
 } from './types.js';
 
-export { CorruptBlockError, OutsideHomeError, SymlinkRefusedError } from './errors.js';
+export {
+  CorruptBlockError,
+  InvalidUtf8Error,
+  OutsideHomeError,
+  SymlinkRefusedError,
+} from './errors.js';
