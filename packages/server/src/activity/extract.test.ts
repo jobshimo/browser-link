@@ -192,11 +192,12 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
     '%s on a sensitive field stores the marker, payloads on or off',
     (tool, args, result) => {
       for (const recordPayloads of [true, false]) {
+        const expected = SENSITIVE_PAYLOAD_MARKER;
         const raw = buildRow({ ...base, tool, args, result, recordPayloads });
-        expect(raw.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(raw.payload).toBe(expected);
         // The same result inside an MCP envelope reads the same.
         const wrapped = buildRow({ ...base, tool, args, result: mcp(result), recordPayloads });
-        expect(wrapped.payload).toBe(SENSITIVE_PAYLOAD_MARKER);
+        expect(wrapped.payload).toBe(expected);
         expect(raw.selector).toBe('#pw');
       }
     },
@@ -224,7 +225,7 @@ describe('buildRow — fields the page declares sensitive (S2)', () => {
           result,
           recordPayloads,
         });
-        expect(row.payload).toBe(UNIDENTIFIED_FIELD_MARKER);
+        expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
         expect(row.outcome).toBe('ok');
       }
     }
@@ -289,7 +290,7 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
     ['browser.type', typeArgs],
     ['browser.press', pressArgs],
   ] as const)(
-    '%s failing after the field was reported sensitive stores the marker',
+    '%s failing after the field was reported sensitive stores the marker, payloads on or off',
     (tool, args) => {
       const error = new SensitiveFieldError('expectation not met: url_changed after 150ms');
       for (const recordPayloads of [true, false]) {
@@ -311,7 +312,7 @@ describe('buildRow — a failed call on a sensitive field (S2)', () => {
         error,
         recordPayloads,
       });
-      expect(row.payload).toBe(UNIDENTIFIED_FIELD_MARKER);
+      expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
       expect(row.error).toBe('expectation not met: url_changed after 150ms');
     }
   });
@@ -441,7 +442,7 @@ describe('buildRow — a sensitive row hides the value in every column (D13)', (
           ...(error ? { error } : { result }),
           page,
         });
-        expect(row.payload).toBe(UNIDENTIFIED_FIELD_MARKER);
+        expect(row.payload).toBe(recordPayloads ? UNIDENTIFIED_FIELD_MARKER : null);
         expect(row.url).toBe('https://bank.example.com/login');
         expect(row.title).toBe(`Welcome back, ${UNIDENTIFIED_FIELD_MARKER}`);
         expect(JSON.stringify(row).toLowerCase()).not.toContain('hunter2');
@@ -506,6 +507,105 @@ describe('buildRow — a sensitive row hides the value in every column (D13)', (
       hideSensitive: false,
     });
     expect(unknown.payload).toBe(SECRET);
+  });
+
+  test('hide: a value typed into a URL path as a browser encodes a path (encodeURI form) is found', () => {
+    const typed = 'p@ss w0rd!';
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: typed },
+      result: sensitive,
+      page: { url: 'https://x.test/p@ss%20w0rd!/a', title: 'Login' },
+    });
+    expect(row.url).toBe(`https://x.test/${SENSITIVE_PAYLOAD_MARKER}/a`);
+    expect(JSON.stringify(row)).not.toContain('w0rd');
+  });
+
+  test('hide: a title in the other Unicode normalization form is found', () => {
+    const nfc = 'contraseña-ñandú';
+    const nfd = nfc.normalize('NFD');
+    expect(nfd).not.toBe(nfc);
+    for (const [typed, title] of [
+      [nfc, `Hola ${nfd}`],
+      [nfd, `Hola ${nfc}`],
+    ]) {
+      const row = buildRow({
+        ...base,
+        tool: 'browser.type',
+        args: { ...typeArgs, text: typed },
+        result: sensitive,
+        page: { url: 'https://x.test/', title },
+      });
+      expect(row.title).toBe(`Hola ${SENSITIVE_PAYLOAD_MARKER}`);
+    }
+  });
+
+  test('hide: a value of fewer than 4 characters is not searched for; title and error become the marker whole', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'a', selector: 'input[name=a]' },
+      error: new SensitiveFieldError('expectation not met: text_appears "a"'),
+      page: { url: 'https://example.com/a/path?q=a#a', title: 'A page about apples' },
+    });
+    expect(row).toMatchObject({
+      payload: SENSITIVE_PAYLOAD_MARKER,
+      url: 'https://example.com/a/path',
+      title: SENSITIVE_PAYLOAD_MARKER,
+      selector: 'input[name=a]',
+      error: SENSITIVE_PAYLOAD_MARKER,
+    });
+  });
+
+  test('hide: a 2-character value in a title, not identified: the title is the marker, null columns stay null', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'xy' },
+      error: new Error('Element not found: #pw'),
+      page: { url: 'https://xylophone.example/', title: 'Xylophones' },
+    });
+    expect(row.title).toBe(UNIDENTIFIED_FIELD_MARKER);
+    expect(row.url).toBe('https://xylophone.example/');
+    expect(row.error).toBe(UNIDENTIFIED_FIELD_MARKER);
+    const noTitle = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'xy' },
+      result: sensitive,
+    });
+    expect(noTitle).toMatchObject({ title: null, error: null, url: null });
+  });
+
+  test('hide: a value of exactly 4 characters still gets the substring replacement', () => {
+    const row = buildRow({
+      ...base,
+      tool: 'browser.type',
+      args: { ...typeArgs, text: 'abcd' },
+      result: sensitive,
+      page: { url: 'https://x.test/', title: 'Typed abcd here' },
+    });
+    expect(row.title).toBe(`Typed ${SENSITIVE_PAYLOAD_MARKER} here`);
+  });
+
+  test('payloads off: a sensitive row keeps its marker, a not-identified row stores null; the other columns are scrubbed in both', () => {
+    for (const [result, error, marker] of [
+      [sensitive, undefined, SENSITIVE_PAYLOAD_MARKER],
+      [undefined, new Error('Element not found: #pw'), UNIDENTIFIED_FIELD_MARKER],
+    ] as const) {
+      const row = buildRow({
+        ...base,
+        recordPayloads: false,
+        tool: 'browser.type',
+        args: typeArgs,
+        ...(error ? { error } : { result }),
+        page,
+      });
+      expect(row.payload).toBe(marker === SENSITIVE_PAYLOAD_MARKER ? marker : null);
+      expect(row.url).toBe('https://bank.example.com/login');
+      expect(row.title).toBe(`Welcome back, ${marker}`);
+    }
   });
 
   test('without page, url and title stay null (cdp-direct tabs, tabless tools)', () => {
