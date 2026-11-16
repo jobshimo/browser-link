@@ -17,10 +17,10 @@
 // E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe).
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
@@ -49,6 +49,11 @@ import {
 
 const CALL_TIMEOUT_MS = 45_000;
 const TOTAL_TIMEOUT_MS = 180_000;
+const REPORT_BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7 + 3) % 256));
+const ATTACHMENTS = {
+  '/file.bin': { name: 'e2e-report.bin', bytes: REPORT_BYTES },
+  '/other.bin': { name: 'e2e-other.bin', bytes: Buffer.from(REPORT_BYTES).reverse() },
+};
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
 
 class StepFailure extends Error {
@@ -117,7 +122,19 @@ async function main() {
 
   // The test page over http (a real origin, like an app; not file://).
   const html = readFileSync(PAGE_FILE);
-  state.http = createServer((_q, r) => {
+  // Two attachment files for the download steps (answered again on every GET:
+  // selector mode re-fetches the URL Chrome reported); everything else is the page.
+  state.http = createServer((q, r) => {
+    const file = ATTACHMENTS[(q.url ?? '/').split('?')[0]];
+    if (file) {
+      r.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-disposition': `attachment; filename="${file.name}"`,
+        'content-length': file.bytes.length,
+      });
+      r.end(file.bytes);
+      return;
+    }
     r.writeHead(200, { 'content-type': 'text/html' });
     r.end(html);
   });
@@ -337,6 +354,14 @@ async function main() {
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
 
+  await downloadChecks({
+    T,
+    origin: new URL(page).origin,
+    downloadsDir: join(dataDir, 'downloads'),
+    cdp,
+    swSession,
+  });
+
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
   // connected tab and the nine calls above prove that this browser's
@@ -351,6 +376,194 @@ async function main() {
   const keylessId =
     loadedKeylessId ?? (await cdp.send('Extensions.loadUnpacked', { path: keylessDir })).id;
   await refusedExtension(cdp, swSession, page, keylessId);
+}
+
+/** Names of the files in `dir` (empty when it does not exist yet). */
+const listDir = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : []);
+
+/** Chrome's own download list, read from the extension's worker. */
+const chromeDownloads = (cdp, swSession) =>
+  cdp.evaluate(
+    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, state: d.state, error: d.error ?? null })))',
+    swSession,
+  );
+
+/** Print `label ok ms`, or fail it when E2E_EXPECT_FAIL names it. */
+function stepDone(label, t) {
+  const short = label.replace(/^browser\./, '');
+  if (EXPECT_FAIL === short) throw new StepFailure(short, 'forced failure (E2E_EXPECT_FAIL)');
+  console.log(`${label} ok ${String(Math.round(now() - t))}`);
+}
+
+/** A saved path lies directly inside the downloads dir (case-insensitive on Windows). */
+function insideDir(path, dir) {
+  const norm = (p) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+  return typeof path === 'string' && norm(join(path, '..')) === norm(dir);
+}
+
+/** The step's failure: the reason, what the tool said, and the whole result,
+ * so a product failure (state / error / chrome_download) reads differently
+ * from a harness one. */
+function downloadFailure(label, why, res) {
+  const b = json(res);
+  const seen = b
+    ? `state=${String(b.state)} error=${String(b.error)} chrome_download=${String(b.chrome_download)}`
+    : 'no JSON result';
+  return new StepFailure(
+    label.replace(/^browser\./, ''),
+    `${why}; ${seen}; full result: ${text(res).slice(0, 1500)}`,
+  );
+}
+
+/** What is wrong with a saved download: right place, right bytes, no leftovers. */
+function savedProblems(b, downloadsDir, files) {
+  const wrong = [];
+  if (b?.ok !== true) wrong.push(`ok is ${String(b?.ok)}`);
+  if (b?.state !== 'complete') wrong.push(`state is ${String(b?.state)}`);
+  if (b?.bytes !== REPORT_BYTES.length) {
+    wrong.push(`bytes is ${String(b?.bytes)}, served ${String(REPORT_BYTES.length)}`);
+  }
+  if (!insideDir(b?.path, downloadsDir)) {
+    wrong.push(`path ${String(b?.path)} is not inside ${downloadsDir}`);
+  } else if (!existsSync(b.path)) {
+    wrong.push(`path ${b.path} does not exist`);
+  } else if (!readFileSync(b.path).equals(REPORT_BYTES)) {
+    wrong.push('file content differs from the served bytes');
+  }
+  const found = listDir(downloadsDir);
+  if (found.some((n) => /\.(part|crdownload|tmp)$/i.test(n)) || found.length !== files) {
+    wrong.push(
+      `downloads dir holds [${found.join(', ')}], expected ${String(files)} finished file(s)`,
+    );
+  }
+  return wrong;
+}
+
+/**
+ * `browser.download`, three ways. The first decides whether the selector
+ * capture works on this Chrome at all: it needs the clicked tab's own debugger
+ * session to receive `Page.downloadWillBegin`.
+ */
+async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
+  const fileUrl = `${origin}/file.bin`;
+  const otherUrl = `${origin}/other.bin`;
+  const quiet = (label) => ({ print: false, label });
+
+  // 1. Selector mode: the click starts the download, the tab reports it.
+  let label = 'browser.download.selector';
+  let t = now();
+  let res = await call(
+    'browser.download',
+    { tab_id: T, selector: '#dl', timeout_ms: 10_000 },
+    undefined,
+    quiet(label),
+  );
+  let b = json(res);
+  let wrong = savedProblems(b, downloadsDir, 1);
+  if (b?.chrome_download !== 'removed') {
+    wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
+  }
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  try {
+    const left = (await chromeDownloads(cdp, swSession)).filter((d) => d.url === fileUrl);
+    if (left.length) {
+      throw downloadFailure(label, `Chrome's list still holds ${JSON.stringify(left)}`, res);
+    }
+  } catch (e) {
+    if (e instanceof StepFailure) throw e;
+    console.log(
+      `${label} note: Chrome's download list unreadable (${e.message}); erase not verified`,
+    );
+  }
+  stepDone(label, t);
+
+  // 2. URL mode on the same file: Chrome's download manager is not involved.
+  label = 'browser.download.url';
+  t = now();
+  res = await call(
+    'browser.download',
+    { tab_id: T, url: fileUrl, timeout_ms: 10_000 },
+    undefined,
+    quiet(label),
+  );
+  wrong = savedProblems(json(res), downloadsDir, 2);
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  stepDone(label, t);
+
+  // 3. A download that is not the tab's, while a selector that starts none
+  //    waits. Another file opened in a second tab (its own target, no debugger
+  //    of ours on it): Chrome starts a download, the clicked tab reports none.
+  //    Browser.setDownloadBehavior is not used: it would change how the
+  //    extension sees downloads.
+  label = 'browser.download.unrelated';
+  t = now();
+  const before = listDir(downloadsDir);
+  const waiting = call(
+    'browser.download',
+    { tab_id: T, selector: '#idle', timeout_ms: 8000 },
+    undefined,
+    quiet(label),
+  ).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  await sleep(1500); // the click is done and the capture is waiting
+  let otherTarget;
+  try {
+    ({ targetId: otherTarget } = await cdp.send('Target.createTarget', { url: otherUrl }));
+  } catch (e) {
+    await waiting;
+    throw new StepFailure(
+      'download.unrelated',
+      `harness: could not open the second tab: ${e.message}`,
+    );
+  }
+  const answered = await waiting;
+  if (answered.error) throw answered.error;
+  res = answered.value;
+  b = json(res);
+  wrong = [];
+  const unattributed =
+    b?.state === 'interrupted' &&
+    b?.chrome_download === 'left_in_chrome' &&
+    /capture failed/.test(String(b?.error));
+  const nothingSeen = b?.state === 'timeout' && b?.chrome_download === undefined;
+  if (b?.ok !== false || !(unattributed || nothingSeen)) {
+    wrong.push(
+      'expected ok:false with interrupted + left_in_chrome + "capture failed", or a timeout',
+    );
+  }
+  const after = listDir(downloadsDir);
+  if (after.join('|') !== before.join('|')) {
+    wrong.push(`downloads dir changed from [${before.join(', ')}] to [${after.join(', ')}]`);
+  }
+  let chromeNote;
+  try {
+    let item;
+    const t0 = now();
+    while (!item && now() - t0 < 5000) {
+      item = (await chromeDownloads(cdp, swSession)).find((d) => d.url === otherUrl);
+      if (!item) await sleep(200);
+    }
+    if (!item) {
+      wrong.push(`harness: Chrome never listed ${otherUrl}, so nothing was proven`);
+    } else if (item.state === 'interrupted' || item.error) {
+      wrong.push(`the unrelated download was cancelled: ${JSON.stringify(item)}`);
+    }
+    chromeNote = item ? `Chrome kept it (${item.state})` : 'not listed by Chrome';
+  } catch (e) {
+    chromeNote = `Chrome list unreadable (${e.message}), not verified`;
+  }
+  try {
+    await cdp.send('Target.closeTarget', { targetId: otherTarget });
+  } catch {
+    // a download tab may close itself
+  }
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  console.log(
+    `${label} outcome: ${unattributed ? 'unattributed (interrupted, left_in_chrome)' : 'timeout, nothing seen'}; ${chromeNote}`,
+  );
+  stepDone(label, t);
 }
 
 /** Chrome with the extension loaded. `Extensions.loadUnpacked` when this

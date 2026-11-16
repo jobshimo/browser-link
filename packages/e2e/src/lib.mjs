@@ -4,7 +4,15 @@
 // pick free ports, find the owner's running primary, clean up.
 // Derived from packages/plan/lab/2026-11-09-e2e-net/lib.mjs.
 import { spawn, execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -130,6 +138,23 @@ export function extensionCopy(wsPort, { withoutKey = false } = {}) {
  * that still honours the flag, such as Chrome for Testing). */
 export function launchChrome({ chromePath, port, loadExtensions = [] }) {
   const profile = mkdtempSync(join(tmpdir(), 'bl-e2e-profile-'));
+  // Downloads Chrome itself keeps (the ones browser-link must leave alone) go
+  // inside the temp profile, without a prompt, never into the owner's real
+  // Downloads folder. Chrome reads this file when it starts.
+  const downloadDir = join(profile, 'chrome-downloads');
+  mkdirSync(downloadDir);
+  mkdirSync(join(profile, 'Default'));
+  writeFileSync(
+    join(profile, 'Default', 'Preferences'),
+    JSON.stringify({
+      download: {
+        default_directory: downloadDir,
+        prompt_for_download: false,
+        directory_upgrade: true,
+      },
+      savefile: { default_directory: downloadDir },
+    }),
+  );
   const args = [
     '--headless=new',
     `--remote-debugging-port=${String(port)}`,
@@ -152,7 +177,7 @@ export function launchChrome({ chromePath, port, loadExtensions = [] }) {
     stdio: 'ignore',
     detached: process.platform !== 'win32',
   });
-  return { proc, profile };
+  return { proc, profile, downloadDir };
 }
 
 export async function waitHttp(url, timeoutMs) {
