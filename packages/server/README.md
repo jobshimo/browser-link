@@ -158,7 +158,8 @@ returns the rest. `snapshot` and `find` return the value of password fields
 unless you run `browser-link config set hide-password-values on`. In the
 activity trail, `browser-link config set activity.hide-sensitive <on|off>`
 decides whether what was typed into a sensitive field is hidden in every column
-of its row (it applies after a restart); see
+of its row (it applies after a restart). The extension's Admin window shows
+both settings but does not change them; see
 [The activity trail](https://github.com/jobshimo/browser-link#the-activity-trail).
 
 ## `browser-link map` — inspect and manage the persistent map

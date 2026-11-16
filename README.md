@@ -411,9 +411,12 @@ of them:
 
 Still available from the Admin window: console language, multi-agent,
 auto-reelect, the instructions auto-refresh, the activity trail switches,
-the two hide settings (password values for agents, sensitive values in the
-trail), `doctor`, the update check, and installing or removing the instructions block per
-client. The cdp-direct port and the downloads folder were already readouts.
+`doctor`, the update check, and installing or removing the instructions block per
+client. The two hide settings (password values for agents, sensitive values in
+the trail) are changed from the console only, with
+`browser-link config set hide-password-values <on|off>` and
+`browser-link config set activity.hide-sensitive <on|off>`; the window shows
+their current state. The cdp-direct port and the downloads folder were already readouts.
 
 ### The activity trail
 
@@ -824,8 +827,8 @@ action target: see [`ref` as a target](#ref-as-a-target--stable-identity-for-thi
 
 **Password values.** `snapshot` and `find` return the `value` of filled
 inputs, password fields included, so the agent can type and check them.
-`browser-link config set hide-password-values on` hides them (the Admin window
-has the same toggle). The setting is read on every call, so it applies to the
+`browser-link config set hide-password-values on` hides them; the Admin window
+shows the setting but does not change it. The setting is read on every call, so it applies to the
 next one, with no restart. For a password field (an `<input type="password">`,
 an `autocomplete` containing `current-password`, `new-password`,
 `one-time-code`, `cc-number` or `cc-csc`, or a field an earlier call with the
@@ -2085,18 +2088,24 @@ over the extension's existing connection, so it needs at least one connected
 tab; without one it says so.
 
 From the Admin window you can switch the console language; toggle multi-agent,
-auto-reelect, the instructions auto-refresh and the activity trail; hide
-password values from agents and sensitive values in the trail; run `doctor`
+auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
 and an update check; and install or remove the instructions block per client.
-The status section shows which of the two hide settings is active, with the
-console command that flips it.
-Since 1.0.0 it only **shows** the settings that widen what an agent may do: each
-MCP tool, cdp-direct on or off, its grant lifetime and MCP client registration
-appear as a value plus the console command that changes it
+Since 1.0.0 it only **shows** the settings that widen what an agent may see or
+do: each MCP tool, cdp-direct on or off, its port and grant lifetime, MCP client
+registration, and the two hide settings (password values, sensitive values in the
+trail) appear as a value plus the console command that changes it
 (`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
+`browser-link config set cdp-direct.port <port>`,
 `browser-link config set cdp-direct.grant-ttl <minutes>`,
-`browser-link install --client <id>`), and the server refuses a write for them
-if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
+`browser-link install --client <id>`,
+`browser-link config set hide-password-values <on|off>`,
+`browser-link config set activity.hide-sensitive <on|off>`), and the server
+refuses a write for them if one arrives, with or without a confirmation code.
+Each of these rows has an info control next to its label. On hover, keyboard
+focus or click it says: "This setting is changed from the console, not from
+here: it changes what agents can see or do." Turning either hide setting off
+widens what an agent can read, so the rule covers both. See
+[Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
   one-line preview (for example "Turn off: Record the activity trail") and
@@ -2123,7 +2132,8 @@ if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
   updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
   server that answers the popup, so they appear as the console commands to
   run. The same goes for the tool set, cdp-direct (on or off, grant lifetime and
-  port), MCP client registration and the downloads folder, shown with their
+  port), MCP client registration, the two hide settings and the downloads
+  folder, shown with their
   console command; idle disconnect and flow recording keep their own popup
   controls.
 
