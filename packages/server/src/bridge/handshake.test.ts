@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
+import { getAllowedBrowsers } from '../auth/allowlist.js';
 import { PINNED_EXTENSION_ORIGIN } from '../auth/extension-id.js';
 import {
   PEER_LOOKUP_MAX_IN_FLIGHT,
@@ -15,7 +16,11 @@ import { MAX_CONCURRENT_HANDSHAKE_CHECKS, evaluateHandshake } from './handshake.
 /* The gate through the shared peer-lookup limiter (S5.4). The reason codes
  * and log lines of every other refusal are pinned in ws-bridge.test.ts. */
 
-const CHROMIUM: PeerLookupResult = { ok: true, peer: { pid: 4321, binaryName: 'chrome.exe' } };
+// The allowlist is per operating system, so the fixture takes its name from it.
+const CHROMIUM: PeerLookupResult = {
+  ok: true,
+  peer: { pid: 4321, binaryName: getAllowedBrowsers()[0] ?? 'chrome' },
+};
 
 function request(origin: string | undefined = PINNED_EXTENSION_ORIGIN): IncomingMessage {
   return {
