@@ -236,7 +236,7 @@ browser-link map export --out map.json     # export the map (or one app) as JSON
 browser-link map import map.json           # import an export (merge by default, --replace to overwrite)
 browser-link multi-agent disable           # opt out of the default shared-bridge mode
 browser-link multi-agent auto-reelect enable
-browser-link stop                          # stop every live browser-link server (17529 owner included), one line each
+browser-link stop                          # stop the browser-link server the OS confirms on the bridge port; stop --pid <PID> stops one process
 browser-link updates                       # check the npm registry for a newer version
 browser-link about                         # the full help page
 browser-link help                          # list every subcommand
@@ -244,6 +244,23 @@ browser-link help                          # list every subcommand
 
 `browser-link version` prints the version and returns at once: it does not
 load the config, so a corrupt config never warns there.
+
+**The command line is strict.** `--opt value` and `--opt=value` mean the same
+everywhere. `--help` or `-h` after any command prints that command's help and
+does nothing else. An unknown option, a repeated option, an option without its
+value or an extra word makes the command refuse: it touches nothing, says what
+it did not understand and exits with code 2. `map forget <app>` never deletes a
+whole app when the identifier matches more than one: it lists the candidates
+and deletes nothing, with or without `--yes`. The dry run's confirm command
+repeats the identifier you typed.
+
+**Registration edits only its own entry.** `install` and `uninstall` change the
+`browser-link` entry of the client's config and keep the rest of the file byte
+for byte, line ends included. The write is atomic and makes no backup copy. A
+config that is a symlink, lies outside your home directory (unless
+`COPILOT_HOME` points there), is not valid UTF-8, does not parse, has the wrong
+shape or repeats the key is refused and left unchanged, with a message saying
+what was found.
 
 `doctor` starts its slow checks together (both port probes, the running
 server's `/version`, the Chrome debugger-flag scan and the live-process
@@ -412,8 +429,7 @@ client. The cdp-direct port and the downloads folder were already readouts.
   `activity.db`. To remove it, purge the trail (see [Purging](#purging)):
   `browser-link activity clear --from 2000-01-01 --yes` deletes every row and
   then reclaims the disk space. Plain `browser-link activity clear --yes` also
-  deletes every row but does not shrink the file, so deleted text can stay in
-  free pages.
+  deletes every row and compacts the file.
 - **What is not detected.** Only a field the page itself marks is detected. These
   are stored as before:
   - `browser.evaluate` expressions;
@@ -1699,9 +1715,10 @@ browser-link activity clear --from 2026-07-01 --to 2026-07-31 --yes
 browser-link activity clear --from 2000-01-01 --yes  # every row, then reclaim the space
 ```
 
-A date range (`--from` / `--to`) vacuums the file, so the deleted text is gone
-from disk. `browser-link activity clear --yes` (the whole trail) and
-`--older-than` delete the rows but do not vacuum.
+Every form of `activity clear` that goes ahead (a date range, `--older-than`,
+or the whole trail with `--yes`) compacts the database file afterwards, so the
+deleted text is gone from disk. If the compaction fails, the command says the
+rows were deleted but the file could not be compacted, and exits 1.
 
 ### Friction report (v0.43.0)
 
@@ -1836,8 +1853,18 @@ if one arrives. See [Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
   one-line preview (for example "Turn off: Record the activity trail") and
-  applies it only after you confirm. `doctor` and the update check only read,
-  so they run straight away.
+  applies it only after you confirm. Each preview carries a single-use code,
+  bound to that exact change and valid for two minutes. The server applies the
+  change only with that code: a `confirm` flag alone writes nothing, and a
+  changed value, a second use or an expired code is refused. The forced update
+  check writes `update-check.json`, so it asks first. `doctor` runs straight
+  away.
+- **What the code does not prove.** It stops one-frame writes, replays and a
+  value changed after the preview. It does not prove that a person clicked.
+  A process that has already passed the bridge's checks runs as your OS user
+  and could already edit `config.json` by hand. The update check that starts
+  when the Admin window opens can refresh its own cache file,
+  `update-check.json`, without a code.
 - **Same write path as the CLI.** The server applies a change through the
   helpers `browser-link multi-agent`, `config set` and `instructions` use,
   with their validation, and accepts only the entries it described: an unknown
@@ -1861,14 +1888,19 @@ reason to call `browser.snapshot` when you say "the button is broken". The
 manual reaches the agent through three channels, all rendered from one
 source in the server:
 
-1. **Connect-time core** (`initialize.instructions`, at most 3,800
-   characters). Claude Code shows about 4,090 characters of it, so the core
-   holds only what must change behaviour from the first call: when to look
-   at the browser, the rules that avoid wasted calls, and where the rest is.
-2. **Installed block** (core plus four topics, about 11.6 KB).
+1. **Connect-time core** (`initialize.instructions`). The core is at most
+   2,000 characters (2,300 with the refresh notice), and it comes first in
+   that text because hosts truncate it. It holds only what must change
+   behaviour from the first call: when to look at the browser, the rules that
+   avoid wasted calls, and where the rest is. The first browser tool call of
+   each agent session returns the same rules as a second text block.
+2. **Installed block** (a trigger of under 600 characters; with
+   `--with-core`, the trigger plus the core, about 2,700 characters).
    `browser-link instructions install` writes it, fenced by HTML-comment
    markers with a version stamp, into the agent's **global** instructions
-   markdown:
+   markdown. The trigger says what browser-link is and when to use it. The
+   core joins it in the file only with `--with-core`; the block records that
+   mode and the start-time refresh keeps it:
 
    | Client             | File                                                 |
    | ------------------ | ---------------------------------------------------- |
@@ -1877,7 +1909,11 @@ source in the server:
    | GitHub Copilot CLI | `~/.copilot/AGENTS.md` (override via `COPILOT_HOME`) |
 
    Reinstall overwrites in place and uninstall removes exactly the span we
-   manage. `browser-link doctor` shows `⚠ outdated` until you re-run install
+   manage. Everything else in the file is kept byte for byte, and a file with
+   CRLF line ends keeps them. The write is atomic and makes no backup copy.
+   A file that is not valid UTF-8, or that holds a begin marker with no end
+   marker after it, is refused and left unchanged; the message says what was
+   found. `browser-link doctor` shows `⚠ outdated` until you re-run install
    or the server refreshes it at its next start.
 
 3. **`browser.manual` on demand.** No arguments returns the index (server
@@ -1962,7 +1998,8 @@ path (`peerExecutablePaths`) applies to the WebSocket port only, not to this
 one.
 
 **Auto-reelect on primary close**: if the primary's MCP client closes,
-secondary proxies enter a 5-second reconnect window — in-flight
+secondary proxies enter a reconnect window of two full reconnect attempts
+(24 seconds by default) — in-flight
 requests get a `-32001 "temporarily unavailable"` envelope while the
 proxy waits for the new primary to bind the WS port. When it appears,
 the proxy hot-swaps and traffic resumes.
@@ -2002,7 +2039,17 @@ installedVersion, repairing }`; answered only when the `Host` header is
   `403`, so a web page reaching the port under its own host name never
   reads it). If the primary is older, it is stopped (Unix
   `SIGTERM`, then `SIGKILL` after 3 s; Windows `taskkill /F`) and the new
-  process binds in its place. A primary from before 0.41.0 has no
+  process binds in its place. The pid in that `/version` body is only a claim:
+  before it stops anything, the new process asks the operating system (Windows
+  `netstat`, macOS and Linux `lsof`) which process listens on the port, and
+  stops it only when that process is the one the primary named, runs under a
+  Node-family runtime and its command line runs this package as a server. If
+  the operating system cannot be asked, names another process, or shows a
+  process that is not a browser-link server, nothing is stopped: the new
+  process defers, and the [server log](#what-now-stops-a-connection) names the
+  holder (PID and name) and the command `browser-link stop --pid <PID>` that
+  stops it. When the lookup itself failed, the log says so and points to
+  `browser-link stop`. A primary from before 0.41.0 has no
   `/version`: it is replaced when its process started before the installed
   `dist/cli.js` was last written, because then it is necessarily running
   stale code. Same or newer version: nothing changes (proxy in multi-agent
@@ -2012,12 +2059,25 @@ installedVersion, repairing }`; answered only when the `Host` header is
   step-down never targets the starting process itself or one of its
   ancestors (the shell or MCP client that launched it). The connected tabs
   reconnect by themselves.
-- **`browser-link stop` stops every live server**, not only the one
-  holding port 17529: the IPC port owner and every process whose command
-  line runs this package with no subcommand (or `start`). It never touches
-  itself, the shell that launched it, or short commands such as `doctor`.
-  It prints one line per process (PID, command, result) and also ends a
-  setup UI running in another console.
+- **`browser-link stop` stops only what the operating system confirms.** It
+  asks the operating system which process listens on port 17529 and on the IPC
+  port 17530, and stops a holder only when it is a browser-link server: a
+  Node-family runtime whose command line runs this package with no subcommand
+  (or `start`). It never touches itself or the shell that launched it. It says
+  the port is "already free" only when that lookup ran and found no listener;
+  if the lookup failed, it says so, stops nothing and exits with code 2.
+  A holder that is not a browser-link server is left running and shown with its
+  PID, name and the command to stop it. Other processes that only look like a
+  bridge (proxies, strays, a setup UI in another console) hold no port the
+  operating system can confirm them by: `stop` lists each with its command and
+  does not stop them.
+- **`browser-link stop --pid <PID>` stops exactly one process you name.** It
+  prints the process as the operating system reports it, then stops that one
+  process, in one step with no `--yes`. It refuses, stopping nothing, when the
+  operating system does not list the PID, when the PID is this command or one
+  of the processes that started it, or when the process neither holds port
+  17529 or 17530 nor runs as a browser-link server. A PID that is not a
+  positive whole number is refused with exit code 2.
 - **"Running X / installed Y" is visible everywhere.** `browser-link
 doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   with what to do, and lists the live browser-link processes;
