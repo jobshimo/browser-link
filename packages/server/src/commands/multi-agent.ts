@@ -1,5 +1,6 @@
 import { loadConfig, saveConfig } from '../config.js';
 import type { Language } from './welcome.js';
+import { readArgs } from '../cli-args.js';
 
 /* Scriptable surface of the multi-agent feature. Mirrors what the
  * Multi-agent screen does in the Ink UI:
@@ -123,8 +124,15 @@ export function disableAutoReelect(language: Language = 'en'): string {
 
 export function runMultiAgentCommand(argv: string[], language: Language = 'en'): string {
   const t = MA_I18N[language];
-  const [action, ...rest] = argv;
-  if (!action || action === 'list') return listMultiAgentStatus(language);
+  const [action, ...words] = argv;
+  if (!action) return listMultiAgentStatus(language);
+  if (!['list', 'enable', 'disable', 'auto-reelect'].includes(action)) {
+    throw new Error(t.unknownAction(action));
+  }
+  // Plain words only: an option or a word too many is refused before any
+  // setting changes.
+  const rest = readArgs(`multi-agent ${action}`, words, language).positionals;
+  if (action === 'list') return listMultiAgentStatus(language);
   if (action === 'enable') return enableMultiAgent(language);
   if (action === 'disable') return disableMultiAgent(language);
   if (action === 'auto-reelect') {

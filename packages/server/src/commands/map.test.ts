@@ -226,7 +226,7 @@ describe('map forget', () => {
       payload: { selector: '#a' },
     });
     expect(() => runMapCommand(['forget', 'my-app', '--flow'])).toThrowError(
-      /--flow requires a flow name/,
+      'browser-link map forget: option --flow needs a value',
     );
     // Nothing was deleted, and the whole-app dry-run text never printed —
     // there's nothing to assert it against since the call throws, but the
@@ -244,7 +244,7 @@ describe('map forget', () => {
       payload: { selector: '#a' },
     });
     expect(() => runMapCommand(['forget', 'my-app', '--flow', '--yes'])).toThrowError(
-      /--flow requires a flow name/,
+      'browser-link map forget: option --flow needs a value',
     );
     expect(listApps()).toHaveLength(1);
   });
@@ -758,7 +758,7 @@ describe('es locale', () => {
       payload: { selector: '#a' },
     });
     expect(() => runMapCommand(['forget', 'my-app', '--flow'], 'es')).toThrowError(
-      /--flow requiere un nombre de flow/,
+      'browser-link map forget: la opción --flow necesita un valor',
     );
     expect(listApps()).toHaveLength(1);
   });

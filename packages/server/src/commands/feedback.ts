@@ -9,6 +9,7 @@ import { getActivityDb } from '../activity/db.js';
 import { getFeedback, listFeedback, type FeedbackRow } from '../activity/feedback.js';
 import { VERSION } from '../version.js';
 import type { Language } from './welcome.js';
+import { formatArgProblem, parseCommandLine } from '../cli-args.js';
 
 /**
  * `browser-link feedback` — what agents reported about browser-link itself.
@@ -175,16 +176,26 @@ export async function runFeedbackCommand(
     ((line: string) => {
       console.log(line);
     });
-  const db = deps.db ?? getActivityDb();
-  const sub = argv.at(0);
-
-  if (sub === 'help' || argv.includes('--help')) {
+  // The line is parsed whole before the database is opened: `--help`/`-h`
+  // anywhere is the usage and nothing else, a refused line touches nothing.
+  const line = parseCommandLine('feedback', argv);
+  if (line === undefined || line.kind === 'unknown-subcommand') {
+    print(t.usage);
+    return 2;
+  }
+  if (line.kind === 'error') {
+    for (const l of formatArgProblem(line.path, line.problem, language)) print(l);
+    return 2;
+  }
+  if (line.kind === 'help' || line.subcommand === 'help') {
     print(t.usage);
     return 0;
   }
+  const { subcommand: sub, args } = line;
+  const db = deps.db ?? getActivityDb();
 
   if (sub === 'issue') {
-    const id = parsePositiveInt(argv.at(1), Number.MAX_SAFE_INTEGER);
+    const id = parsePositiveInt(args.positionals.at(0), Number.MAX_SAFE_INTEGER);
     if (id === null) {
       print(t.issueUsage);
       return 2;
@@ -239,15 +250,10 @@ export async function runFeedbackCommand(
     }
   }
 
-  if (sub !== undefined && sub !== '--limit') {
-    print(t.usage);
-    return 2;
-  }
-
   let limit: number | undefined;
-  const at = argv.indexOf('--limit');
-  if (at !== -1) {
-    const n = parsePositiveInt(argv.at(at + 1), MAX_LIMIT);
+  const rawLimit = args.value('limit');
+  if (rawLimit !== undefined) {
+    const n = parsePositiveInt(rawLimit, MAX_LIMIT);
     if (n === null) {
       print(t.badLimit);
       return 2;
