@@ -112,11 +112,11 @@ export function installAt(
   const eol = detectEol(text);
   const fresh = block(VERSION, eol, blockOpts);
   if (!span) {
-    // Append. Ensure a blank line separator from prior content, matching
-    // the file's dominant line ending.
-    const doubleEol = `${eol}${eol}`;
-    const separator =
-      text.length === 0 || text.endsWith(doubleEol) ? '' : text.endsWith(eol) ? eol : doubleEol;
+    // Append after exactly one line end (none into an empty file), in the
+    // file's dominant line ending. A fixed separator is what lets uninstall
+    // give the user's bytes back exactly: it removes that one line end and
+    // nothing else, whatever the text ended with.
+    const separator = text.length === 0 ? '' : eol;
     atomicWrite(filePath, text + separator + fresh);
     return `Appended the browser-link instructions block to ${filePath} (${displayName}).`;
   }
@@ -152,15 +152,11 @@ export function uninstallAt(
   }
   const before = text.slice(0, span.startIndex);
   const after = text.slice(span.endIndex);
-  // Collapse double blank lines created by removing the block, but keep the
-  // user's own content. A single trailing newline at EOF is restored,
-  // matching whatever EOL the remaining content uses.
-  const remaining = before + after;
-  const eol = detectEol(remaining);
-  const collapsePattern = eol === '\r\n' ? /(?:\r\n){3,}/g : /\n{3,}/g;
-  const doubleEol = `${eol}${eol}`;
-  let next = remaining.replace(collapsePattern, doubleEol);
-  if (next.length > 0 && !next.endsWith(eol)) next += eol;
-  atomicWrite(filePath, next);
+  // Every byte that is not ours stays. When the block is the last thing in
+  // the file, the one line end install put before it goes too (in the
+  // block's own line ending); a block anywhere else is cut out alone.
+  const blockEol = text.slice(span.startIndex, span.endIndex).includes('\r\n') ? '\r\n' : '\n';
+  const atEnd = after.length === 0 && before.endsWith(blockEol);
+  atomicWrite(filePath, (atEnd ? before.slice(0, -blockEol.length) : before) + after);
   return `Removed the browser-link instructions block from ${filePath} (${displayName}).`;
 }

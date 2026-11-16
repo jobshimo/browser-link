@@ -148,6 +148,39 @@ describe('matchBrowserLinkCommand', () => {
     expect(matchBrowserLinkCommand('bash -c "browser-link/dist/cli.js"')).toBeNull();
     expect(matchBrowserLinkCommand('')).toBeNull();
   });
+
+  test.each([
+    [
+      'a Windows folder that only ends in browser-link',
+      'node C:\\x\\notbrowser-link\\dist\\cli.js',
+    ],
+    ['a Unix folder that only ends in browser-link', 'node /opt/notbrowser-link/dist/cli.js'],
+    [
+      'a scope glued to another name',
+      'node /n/npm/bin/npx-cli.js evil@jobshimo/browser-link@latest',
+    ],
+    [
+      'a package name that only starts with browser-link',
+      'node /m/@jobshimo/browser-link-evil/x.js',
+    ],
+    ['a Windows bin-like name with a prefix', 'node C:\\bin\\notbrowser-link'],
+  ])('needs a path boundary: %s is not browser-link', (_label, command) => {
+    expect(matchBrowserLinkCommand(command)).toBeNull();
+  });
+
+  test.each([
+    ['Windows global npm install', `${NODE_WIN} ${CLI_WIN}`],
+    ['Unix global npm install', 'node /usr/lib/node_modules/@jobshimo/browser-link/dist/cli.js'],
+    ['a checkout with forward slashes', 'node /opt/browser-link/dist/cli.js'],
+    ['a checkout with backslashes', 'node C:\\src\\browser-link\\dist\\cli.js'],
+    ['a relative checkout path', 'node browser-link/dist/cli.js'],
+    ['the Unix bin shim', 'node /usr/local/bin/browser-link'],
+    ['the bin shim as browser-link.js', 'node C:\\bin\\browser-link.js'],
+    ['npx with a version spec', 'node /n/npm/bin/npx-cli.js -y @jobshimo/browser-link@latest'],
+    ['npx without a version spec', 'node /n/npm/bin/npx-cli.js @jobshimo/browser-link'],
+  ])('still recognises %s', (_label, command) => {
+    expect(matchBrowserLinkCommand(command)).toEqual({ subcommand: null });
+  });
 });
 
 describe('findBridgeProcesses', () => {

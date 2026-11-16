@@ -39,6 +39,8 @@ export interface InstallReport {
   displayName: string;
   installedClient: boolean;
   message: string;
+  /** Set when the installer refused this client; nothing was written to it. */
+  refused?: true;
 }
 
 export function installFor(client: ClientId, mode: 'bin' | 'absolute' = 'bin'): InstallReport {
@@ -57,6 +59,27 @@ export function installFor(client: ClientId, mode: 'bin' | 'absolute' = 'bin'): 
   return { client, displayName: inst.displayName, installedClient: true, message };
 }
 
+/** Every client, in order. A refused client is reported with its reason
+ * and does not stop the others; any refusal sets the exit code to 1 so the
+ * command never reports as complete what it did not do. */
 export function installAll(mode: 'bin' | 'absolute' = 'bin'): InstallReport[] {
-  return INSTALLERS.map((i) => installFor(i.id, mode));
+  return INSTALLERS.map((i) => {
+    try {
+      return installFor(i.id, mode);
+    } catch (err) {
+      process.exitCode = 1;
+      return {
+        client: i.id,
+        displayName: i.displayName,
+        installedClient: false,
+        message: refusedMessage(err),
+        refused: true,
+      };
+    }
+  });
+}
+
+/** The line printed for a client the installer refused. */
+export function refusedMessage(err: unknown): string {
+  return `Refused, nothing written: ${err instanceof Error ? err.message : String(err)}`;
 }

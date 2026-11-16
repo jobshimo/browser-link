@@ -260,10 +260,18 @@ const RUNTIMES = new Set(['node', 'node.exe', 'nodejs', 'bun', 'bun.exe']);
 /** npm's own entry scripts: the package spec is a later argument. */
 const NPM_ENTRIES = new Set(['npx-cli.js', 'npm-cli.js']);
 
+/** The npm package, as a path segment or a package spec: a path boundary
+ * (start or `/`) before the scope, and the end, `/` or a version spec after
+ * the name, so `@notjobshimo/…` and `browser-link-evil` never match. */
+const PACKAGE_RE = /(?:^|\/)@jobshimo\/browser-link(?=$|\/|@)/;
+/** A checkout's compiled entry: `browser-link` must be a whole folder name. */
+const CHECKOUT_ENTRY_RE = /(?:^|\/)browser-link\/dist\/cli\.js$/;
+
 function isBrowserLinkEntry(token: string): boolean {
+  // `normalise` turns every `\` into `/`, so the boundaries cover both forms.
   const n = normalise(token);
-  if (n.includes('@jobshimo/browser-link')) return true;
-  if (n.endsWith('browser-link/dist/cli.js')) return true;
+  if (PACKAGE_RE.test(n)) return true;
+  if (CHECKOUT_ENTRY_RE.test(n)) return true;
   // The global bin shim (a symlink on Unix): `node /usr/local/bin/browser-link`.
   const base = basename(token);
   return n.includes('/') && (base === 'browser-link' || base === 'browser-link.js');
