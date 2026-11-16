@@ -172,7 +172,27 @@ function targetJson(opts: TargetOpts): Record<string, string | undefined> {
  *     the last 4 records (evicted, or never issued).
  * A `within_selector` miss ignores `since` and keeps the miss shape (plus
  * `doc_id`).
+ *
+ * Cuts (owner decision D6): the interactive list (`max_interactive`, default
+ * 120, at most 500; in a diff, `added` + `changed`), the headings (30) and
+ * the text (4000 characters) are windows starting at `offset.<part>`
+ * (default 0). When anything is left out AFTER a window, the result carries
+ *   truncated: { interactive?, headings?, text?, not_compared?, next_offset?, hint }
+ * where each part counts what it left out (entries; characters for text,
+ * all counted exactly from the full scan, which runs anyway), `next_offset`
+ * holds, for every non-empty part of the result, where the next call should
+ * start (pass it back as `offset` to get the rest and nothing twice), and
+ * `hint` says how to narrow or continue. `not_compared` (diff only) counts
+ * the entries of this snapshot and of the recorded one past the first 500,
+ * which a diff never compares. A result that left nothing out carries no
+ * `truncated`, so it is unchanged.
  */
+export interface SnapshotOffset {
+  interactive?: number;
+  headings?: number;
+  text?: number;
+}
+
 export interface SnapshotOpts {
   within_selector?: string;
   only_interactive?: boolean;
@@ -180,9 +200,29 @@ export interface SnapshotOpts {
   max_interactive?: number;
   /** `snapshot_id` of an earlier snapshot of this document to diff against. */
   since?: string;
+  /** Where each window starts: `truncated.next_offset` of an earlier call. */
+  offset?: SnapshotOffset;
+}
+
+/** The `hint` of a cut snapshot (see `buildSnapshotJs`). */
+export const SNAPSHOT_CUT_HINT =
+  'Not everything was returned: truncated counts what was left out (entries; characters for text). Narrow the scope with within_selector, exclude or only_interactive, or get the rest by calling again with offset set to truncated.next_offset (max_interactive goes up to 500).';
+
+/** The `hint` of a diff that could not compare every entry. */
+export const SNAPSHOT_NOT_COMPARED_HINT =
+  'A diff compares only the first 500 entries of each snapshot: not_compared were left out. Narrow the scope with within_selector to compare the rest.';
+
+/** The `hint` of a cut `multiple-matches` find (see `buildFindJs`). */
+export const FIND_CUT_HINT =
+  'More elements match than are listed: truncated counts the candidates left out. Narrow with exact, role or a longer text, or get the rest by calling again with offset set to truncated.next_offset.';
+
+/** A window start: a non-negative integer, anything else is 0. */
+function offsetValue(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
+  const offset = opts.offset ?? {};
   const optsJson = JSON.stringify({
     withinSelector: typeof opts.within_selector === 'string' ? opts.within_selector : null,
     onlyInteractive: opts.only_interactive === true,
@@ -192,6 +232,12 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
         ? Math.min(opts.max_interactive, 500)
         : 120,
     since: typeof opts.since === 'string' ? opts.since : null,
+    offset: {
+      interactive: offsetValue(offset.interactive),
+      headings: offsetValue(offset.headings),
+      text: offsetValue(offset.text),
+    },
+    hints: { cut: SNAPSHOT_CUT_HINT, notCompared: SNAPSHOT_NOT_COMPARED_HINT },
   });
   return `
 (() => {
@@ -273,7 +319,11 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (frame) entry.frame = frame;
     interactive.push(entry);
   });
+  const HEADING_LIMIT = 30;
+  const TEXT_LIMIT = 4000;
+  let allHeadings = null;
   let headings = null;
+  let allText = '';
   let visibleText = '';
   if (!opts.onlyInteractive) {
     const found = [];
@@ -283,24 +333,69 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
       const t = shortText(h);
       if (t) found.push({ level: h.tagName, text: t });
     });
-    headings = found.slice(0, 30);
+    allHeadings = found;
+    headings = found.slice(opts.offset.headings, opts.offset.headings + HEADING_LIMIT);
     const textRoot = (root === document) ? (document.body || document) : root;
-    visibleText = (textRoot && textRoot.innerText) ? textRoot.innerText.slice(0, 4000) : '';
+    allText = (textRoot && textRoot.innerText) ? String(textRoot.innerText) : '';
+    visibleText = allText.slice(opts.offset.text, opts.offset.text + TEXT_LIMIT);
   }
+  // What a diff compares headings and text by: the first windows, whatever
+  // the offset, exactly as before offsets existed.
+  const headingsHash = allHeadings ? JSON.stringify(allHeadings.slice(0, HEADING_LIMIT)) : null;
+  const textHash = opts.onlyInteractive ? null : allText.slice(0, TEXT_LIMIT);
   let snapshotId = null;
   if (withDocId({}).doc_id && typeof pageObserver.nextSnapshotId === 'function') {
     const issued = pageObserver.nextSnapshotId();
     if (typeof issued === 'string') snapshotId = issued;
   }
+  // One window of a part: total is the full count (entries, or characters
+  // for text), returned what this result holds from offset on.
+  function windowOf(name, total, returned) {
+    return { name: name, total: total, from: opts.offset[name], returned: returned };
+  }
+  // The truncated report (owner decision D6), or null when nothing after a
+  // window was left out and no entry went uncompared.
+  function cutReport(parts, notCompared) {
+    const report = {};
+    const next = {};
+    let cut = false;
+    for (const part of parts) {
+      const omitted = Math.max(0, part.total - part.from - part.returned);
+      if (omitted > 0) {
+        report[part.name] = omitted;
+        cut = true;
+      }
+      if (part.total > 0) next[part.name] = part.from + part.returned;
+    }
+    if (notCompared > 0) report.not_compared = notCompared;
+    if (!cut && notCompared === 0) return null;
+    if (cut) report.next_offset = next;
+    const hints = [];
+    if (cut) hints.push(opts.hints.cut);
+    if (notCompared > 0) hints.push(opts.hints.notCompared);
+    report.hint = hints.join(' ');
+    return report;
+  }
   function fullResult() {
+    const shown = interactive.slice(
+      opts.offset.interactive,
+      opts.offset.interactive + opts.maxInteractive,
+    );
     const result = {
       title: document.title,
       url: location.href,
-      interactive: interactive.slice(0, opts.maxInteractive),
+      interactive: shown,
     };
-    if (headings) result.headings = headings;
+    const parts = [windowOf('interactive', interactive.length, shown.length)];
+    if (headings) {
+      result.headings = headings;
+      parts.push(windowOf('headings', allHeadings.length, headings.length));
+      parts.push(windowOf('text', allText.length, visibleText.length));
+    }
     if (visibleText) result.text = visibleText;
     if (notice) result.notice = notice;
+    const cut = cutReport(parts, 0);
+    if (cut) result.truncated = cut;
     withDocId(result);
     if (snapshotId) result.snapshot_id = snapshotId;
     return result;
@@ -317,17 +412,25 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     sinceCut >= 0 && withDocId({}).doc_id === opts.since.slice(0, sinceCut);
   const previous = store && sinceSameDoc ? store.getSnapshot(opts.since) : null;
   const current = new Map();
-  const headingsHash = headings ? JSON.stringify(headings) : null;
-  const textHash = opts.onlyInteractive ? null : visibleText;
+  // Entries with a ref past the first 500: recorded nowhere, never compared.
+  let unrecorded = 0;
   if (store) {
     for (const entry of interactive) {
-      if (current.size >= 500) break;
       if (typeof entry.ref !== 'string') continue;
+      if (current.size >= 500) {
+        unrecorded++;
+        continue;
+      }
       const copy = {};
       for (const key of Object.keys(entry)) if (key !== 'ref') copy[key] = entry[key];
       current.set(entry.ref, { hash: JSON.stringify(copy), entry });
     }
-    store.recordSnapshot(snapshotId, { entries: current, headings_hash: headingsHash, text_hash: textHash });
+    store.recordSnapshot(snapshotId, {
+      entries: current,
+      headings_hash: headingsHash,
+      text_hash: textHash,
+      unrecorded: unrecorded,
+    });
   }
   if (opts.since === null) return fullResult();
   if (!store) {
@@ -359,18 +462,30 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   // max_interactive applies after diffing (added first, then changed), so
   // a window shift never masquerades as change.
   const listed = added.concat(changed);
-  const kept = listed.slice(0, opts.maxInteractive);
+  const start = opts.offset.interactive;
+  const kept = listed.slice(start, start + opts.maxInteractive);
   const diff = withDocId({ title: document.title, url: location.href });
   diff.snapshot_id = snapshotId;
   diff.since = opts.since;
-  diff.added = kept.slice(0, Math.min(added.length, kept.length));
+  diff.added = kept.slice(0, Math.max(0, Math.min(added.length - start, kept.length)));
   diff.removed = removed;
   diff.changed = kept.slice(diff.added.length);
-  if (listed.length > kept.length) diff.overflow = listed.length - kept.length;
+  const after = listed.length - start - kept.length;
+  if (after > 0) diff.overflow = after;
+  const parts = [windowOf('interactive', listed.length, kept.length)];
   if (!opts.onlyInteractive) {
-    if (headingsHash !== previous.headings_hash) diff.headings = headings;
-    if (textHash !== previous.text_hash) diff.text = visibleText;
+    if (headingsHash !== previous.headings_hash) {
+      diff.headings = headings;
+      parts.push(windowOf('headings', allHeadings.length, headings.length));
+    }
+    if (textHash !== previous.text_hash) {
+      diff.text = visibleText;
+      parts.push(windowOf('text', allText.length, visibleText.length));
+    }
   }
+  const previousUnrecorded = typeof previous.unrecorded === 'number' ? previous.unrecorded : 0;
+  const cut = cutReport(parts, unrecorded + previousUnrecorded);
+  if (cut) diff.truncated = cut;
   return diff;
 })()
 `;
@@ -379,7 +494,12 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
 /** Build the find-by-text expression. Returns one of:
  *   { matched: true, selector, ref?, coords:{x,y}, tag, text, frame?, ambiguous?, doc_id? }
  *   { matched: false, reason: 'not-found', error?, near_misses?: [{text,selector,ref?,role?}], doc_id? }
- *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], doc_id? }
+ *   { matched: false, reason: 'multiple-matches', candidates: [{selector,ref?,text,tag}], truncated?, doc_id? }
+ *
+ * `candidates` is a window of 5 matches starting at `offset.candidates`
+ * (default 0). When matches are left out after it (owner decision D6), the
+ * answer carries `truncated: { candidates, next_offset: { candidates }, hint }`
+ * with the exact count; pass `next_offset` back as `offset` for the rest.
  *
  * `ref`, `semantic_key` and `doc_id` are present only when the page observer
  * is installed (see `PAGE_OBSERVER_JS`). `semantic_key` is the observer's
@@ -451,6 +571,9 @@ export interface FindOpts {
   exact?: boolean;
   ref?: string;
   key?: FindKey;
+  /** Where the candidate window starts: `truncated.next_offset` of an
+   * earlier `multiple-matches` answer (text mode). */
+  offset?: { candidates?: number };
 }
 
 /** Only the documented key fields reach the built source, as JSON data. */
@@ -470,6 +593,8 @@ export function buildFindJs(opts: FindOpts): string {
     role: typeof opts.role === 'string' && opts.role.length > 0 ? opts.role : null,
     exact: opts.exact === true,
     candidateLimit: 5,
+    candidateOffset: offsetValue(opts.offset?.candidates),
+    cutHint: FIND_CUT_HINT,
     nearMissLimit: 3,
     ...(typeof opts.ref === 'string' && opts.ref.length > 0 ? { ref: opts.ref } : {}),
     ...(opts.key ? { key: findKeyJson(opts.key) } : {}),
@@ -667,10 +792,12 @@ export function buildFindJs(opts: FindOpts): string {
     return withDocId(result);
   }
   if (matches.length > 1) {
-    return withDocId({
+    const from = opts.candidateOffset;
+    const shown = matches.slice(from, from + opts.candidateLimit);
+    const result = {
       matched: false,
       reason: 'multiple-matches',
-      candidates: matches.slice(0, opts.candidateLimit).map((el) => {
+      candidates: shown.map((el) => {
         const candidate = { selector: genSelector(el) };
         const ref = refOf(el);
         if (ref) candidate.ref = ref;
@@ -678,7 +805,17 @@ export function buildFindJs(opts: FindOpts): string {
         candidate.tag = el.tagName.toLowerCase();
         return candidate;
       }),
-    });
+    };
+    // Owner decision D6: the count is exact (every match was scanned).
+    const omitted = matches.length - from - shown.length;
+    if (omitted > 0) {
+      result.truncated = {
+        candidates: omitted,
+        next_offset: { candidates: from + shown.length },
+        hint: opts.cutHint,
+      };
+    }
+    return withDocId(result);
   }
   const el = matches[0];
   return singleMatch(el, refOf(el), false);

@@ -23,6 +23,7 @@ import {
   buildElementRectJs,
   buildWaitForSelectorJs,
   type FindKey,
+  type SnapshotOffset,
   type WaitForSelectorCondition,
 } from './inpage/builders.js';
 import {
@@ -1657,7 +1658,14 @@ async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
 
 async function performFind(
   tabId: number,
-  params: { text?: string; role?: string; exact?: boolean; ref?: string; key?: FindKey },
+  params: {
+    text?: string;
+    role?: string;
+    exact?: boolean;
+    ref?: string;
+    key?: FindKey;
+    offset?: { candidates?: number };
+  },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
@@ -1674,7 +1682,7 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       tabId,
-      buildFindJs({ text, role: params.role, exact: params.exact === true }),
+      buildFindJs({ text, role: params.role, exact: params.exact === true, offset: params.offset }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -2379,6 +2387,10 @@ async function handleSnapshot(
         : undefined,
       max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
       since: optStr('since'),
+      offset:
+        typeof p.offset === 'object' && p.offset !== null
+          ? (p.offset as SnapshotOffset)
+          : undefined,
     }),
   );
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
@@ -3146,6 +3158,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           exact: p.exact === true,
           ref: optStr('ref'),
           key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
+          offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };

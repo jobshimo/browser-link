@@ -1102,6 +1102,81 @@ describe('action-tool claim enforcement', () => {
     });
   });
 
+  test('snapshot forwards offset (truncated.next_offset, D6) and omits it when absent', async () => {
+    const deps = makeDeps();
+    const offset = { interactive: 120, headings: 30, text: 4000 };
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1', offset }, deps, TEST_CALLER);
+    expect(deps.callBrowserTool).toHaveBeenCalledWith(
+      'tab_1',
+      'snapshot',
+      expect.objectContaining({ offset }),
+    );
+    const plain = makeDeps();
+    await handleBrowserTool('browser.snapshot', { tab_id: 'tab_1' }, plain, TEST_CALLER);
+    const forwarded = (plain.callBrowserTool as ReturnType<typeof vi.fn>).mock
+      .calls[0][2] as Record<string, unknown>;
+    expect('offset' in forwarded).toBe(false);
+  });
+
+  test('snapshot rejects an invalid offset instead of answering the first window again', async () => {
+    const cases: [unknown, string][] = [
+      [5, 'browser.snapshot: offset must be an object like truncated.next_offset'],
+      [[1], 'browser.snapshot: offset must be an object like truncated.next_offset'],
+      [{ rows: 1 }, 'browser.snapshot: offset.rows is not one of interactive, headings, text'],
+      [{ interactive: -1 }, 'browser.snapshot: offset.interactive must be a non-negative integer'],
+      [{ text: 1.5 }, 'browser.snapshot: offset.text must be a non-negative integer'],
+      [{ headings: '2' }, 'browser.snapshot: offset.headings must be a non-negative integer'],
+    ];
+    for (const [offset, message] of cases) {
+      const deps = makeDeps();
+      await expect(
+        handleBrowserTool('browser.snapshot', { tab_id: 'tab_1', offset }, deps, TEST_CALLER),
+      ).rejects.toThrow(message);
+      expect(deps.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
+  test('find forwards offset in text mode and rejects it elsewhere or when invalid', async () => {
+    const deps = makeDeps();
+    await handleBrowserTool(
+      'browser.find',
+      { tab_id: 'tab_1', text: 'Save', offset: { candidates: 5 } },
+      deps,
+      TEST_CALLER,
+    );
+    expect(deps.callBrowserTool).toHaveBeenCalledWith('tab_1', 'find', {
+      text: 'Save',
+      role: undefined,
+      exact: false,
+      offset: { candidates: 5 },
+    });
+    const rejected: [Record<string, unknown>, string][] = [
+      [
+        { ref: 'k3x9ab:e6', offset: { candidates: 5 } },
+        'browser.find: offset applies to text mode only',
+      ],
+      [
+        { key: { role: 'button', name: 'Save' }, offset: { candidates: 5 } },
+        'browser.find: offset applies to text mode only',
+      ],
+      [
+        { text: 'Save', offset: { interactive: 5 } },
+        'browser.find: offset.interactive is not one of candidates',
+      ],
+      [
+        { text: 'Save', offset: { candidates: -5 } },
+        'browser.find: offset.candidates must be a non-negative integer',
+      ],
+    ];
+    for (const [args, message] of rejected) {
+      const other = makeDeps();
+      await expect(
+        handleBrowserTool('browser.find', { tab_id: 'tab_1', ...args }, other, TEST_CALLER),
+      ).rejects.toThrow(message);
+      expect(other.callBrowserTool).not.toHaveBeenCalled();
+    }
+  });
+
   test('find forwards text + role + exact to the bridge', async () => {
     const deps = makeDeps();
     await handleBrowserTool(

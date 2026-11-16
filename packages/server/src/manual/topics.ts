@@ -96,6 +96,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- Several actions in a row (find → click → wait_for → type → press) → ONE `browser.flow({ steps })`. A `find` step feeds the next click/type/press that omits `selector`; a failed step returns a `recovery_snapshot`. Use separate calls only to branch on an intermediate result.',
       '- `find` returned `not-found` → read `near_misses` before giving up; when `error` names a role mismatch, drop `role` or use the near-miss role.',
       '- Smaller snapshots: `within_selector`, `only_interactive`, `exclude: ["nav","footer"]`, `max_interactive`. With `since`, a changed neighbour may be listed because its selector changed: use the current one.',
+      '- A snapshot or find result with `truncated` was cut: it counts what was left out, so an element absent from it may still exist. Narrow the scope first; pass `offset: truncated.next_offset` only when you need the rest.',
       '- Where am I (dialog open, focus, scroll)? → `browser.state`, cheaper than a snapshot.',
       '- Reading N values → ONE `evaluate` returning an object: `(() => ({ a: document.querySelector("#a").value, b: ... }))()`.',
       '- Scrolling → `evaluate` with `pane.scrollTop = N` or `el.scrollIntoView({ block: "center" })`.',

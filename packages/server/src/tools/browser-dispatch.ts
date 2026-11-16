@@ -355,6 +355,37 @@ const MAX_EXPECT_TIMEOUT_MS = 10_000;
 /** Longest `snapshot({ since })` id forwarded; matches the tool schema's maxLength. */
 const MAX_SNAPSHOT_SINCE_LENGTH = 64;
 
+/** The parts an `offset` may name, per tool: the windows the page cuts. */
+const SNAPSHOT_OFFSET_PARTS = ['interactive', 'headings', 'text'] as const;
+const FIND_OFFSET_PARTS = ['candidates'] as const;
+
+/**
+ * Validate an `offset` (owner decision D6: `truncated.next_offset` of an
+ * earlier answer, passed back to get the rest). Rejected rather than
+ * dropped: a dropped offset would silently answer the first window again.
+ */
+function offsetArg(
+  tool: string,
+  value: unknown,
+  parts: readonly string[],
+): Record<string, number> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${tool}: offset must be an object like truncated.next_offset`);
+  }
+  const out: Record<string, number> = {};
+  for (const [part, start] of Object.entries(value)) {
+    if (!parts.includes(part)) {
+      throw new Error(`${tool}: offset.${part} is not one of ${parts.join(', ')}`);
+    }
+    if (typeof start !== 'number' || !Number.isInteger(start) || start < 0) {
+      throw new Error(`${tool}: offset.${part} must be a non-negative integer`);
+    }
+    out[part] = start;
+  }
+  return out;
+}
+
 const EXPECT_CONDITION_KEYS = [
   'url_changed',
   'selector_appears',
@@ -2140,14 +2171,16 @@ async function dispatchBrowserTool(
       return knowledge ? withExtras(result, { knowledge }) : result;
     }
     case 'browser.snapshot': {
-      const { within_selector, only_interactive, exclude, max_interactive, since } = (args ??
-        {}) as {
-        within_selector?: string;
-        only_interactive?: boolean;
-        exclude?: unknown;
-        max_interactive?: number;
-        since?: unknown;
-      };
+      const { within_selector, only_interactive, exclude, max_interactive, since, offset } =
+        (args ?? {}) as {
+          within_selector?: string;
+          only_interactive?: boolean;
+          exclude?: unknown;
+          max_interactive?: number;
+          since?: unknown;
+          offset?: unknown;
+        };
+      const snapshotOffset = offsetArg('browser.snapshot', offset, SNAPSHOT_OFFSET_PARTS);
       const filterExclude = Array.isArray(exclude)
         ? exclude.filter((v): v is string => typeof v === 'string')
         : undefined;
@@ -2164,26 +2197,33 @@ async function dispatchBrowserTool(
           exclude: filterExclude,
           max_interactive,
           since: sinceId,
+          ...(snapshotOffset ? { offset: snapshotOffset } : {}),
         },
         deps,
       );
     }
     case 'browser.find': {
-      const { text, role, exact, ref, key } = (args ?? {}) as {
+      const { text, role, exact, ref, key, offset } = (args ?? {}) as {
         text?: unknown;
         role?: unknown;
         exact?: unknown;
         ref?: unknown;
         key?: unknown;
+        offset?: unknown;
       };
       requireValidRef('browser.find', ref);
-      // The three modes are strictly exclusive, and role/exact only refine a
-      // text search: an option a mode would ignore is rejected, never dropped.
+      // The three modes are strictly exclusive, and role/exact/offset only
+      // refine a text search: an option a mode would ignore is rejected,
+      // never dropped.
       const modes = [text, ref, key].filter((mode) => mode !== undefined).length;
       if (modes > 1) throw new Error('browser.find needs exactly one of text, ref or key');
       if ((ref !== undefined || key !== undefined) && (role !== undefined || exact !== undefined)) {
         throw new Error('browser.find: role and exact apply to text mode only');
       }
+      if ((ref !== undefined || key !== undefined) && offset !== undefined) {
+        throw new Error('browser.find: offset applies to text mode only');
+      }
+      const findOffset = offsetArg('browser.find', offset, FIND_OFFSET_PARTS);
       if (key !== undefined) {
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
@@ -2208,7 +2248,12 @@ async function dispatchBrowserTool(
         );
       }
       // find is a read tool: no claim enforcement, no userGesture concerns.
-      return routeToolCall('find', requireTabId(args), { text, role, exact: exact === true }, deps);
+      return routeToolCall(
+        'find',
+        requireTabId(args),
+        { text, role, exact: exact === true, ...(findOffset ? { offset: findOffset } : {}) },
+        deps,
+      );
     }
     case 'browser.state':
       // state is a read tool, same bucket as find/snapshot: no claim
