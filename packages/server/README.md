@@ -126,10 +126,15 @@ understand.
 config and keep the rest of the file byte for byte, line ends included. The
 write is atomic and makes no backup copy. A config that is a symlink, is not
 valid UTF-8, does not parse, has the wrong shape or repeats the key is refused
-and left unchanged, with a message saying what was found. `instructions
+and left unchanged, with a message saying what was found. Without `--client`, both report every client. A client
+that is refused shows `Refused, nothing written: <reason>` and does not stop
+the others; the exit code is 1 when any client was refused. A replaced file
+keeps its permission bits. `instructions
 install` and `uninstall` do the same for the instructions file; one that is not
 valid UTF-8, or has a begin marker with no end marker, is refused and left
-unchanged.
+unchanged. Install puts exactly one line end before the block (none into an
+empty file); uninstall removes the block and, when it is last in the file, that
+one line end, and nothing else.
 
 ## The 40 tools, at a glance
 
