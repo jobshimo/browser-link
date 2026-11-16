@@ -91,6 +91,35 @@ describe('GET /version', () => {
     expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ repairing: true });
   });
 
+  test('sessions carries the number the primary reads, and follows it (D18)', async () => {
+    let sessions: number | undefined = 1;
+    const wss = await startWsBridge(new Map(), new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '0.40.0',
+      getSessionCount: () => sessions,
+    });
+    bridges.push(wss);
+    const port = (wss.address() as AddressInfo).port;
+    expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ sessions: 1 });
+    sessions = 3;
+    expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ sessions: 3 });
+    sessions = 0;
+    expect(JSON.parse((await get(port, '/version')).body)).toMatchObject({ sessions: 0 });
+  });
+
+  test('no number to report: the field is absent, never a guess', async () => {
+    const wss = await startWsBridge(new Map(), new Map(), new BridgeEventLog(), {
+      port: 0,
+      version: '0.40.0',
+      getSessionCount: () => undefined,
+    });
+    bridges.push(wss);
+    const port = (wss.address() as AddressInfo).port;
+    expect(Object.keys(JSON.parse((await get(port, '/version')).body) as object)).not.toContain(
+      'sessions',
+    );
+  });
+
   test('answers only a loopback Host header; any other Host is 403 (A5)', async () => {
     const port = await bridgePort('0.40.0');
     const loopback = [
@@ -149,6 +178,14 @@ describe('buildVersionInfo', () => {
       repairing: false,
     });
     expect(buildVersionInfo('1.2.3', 42, 0, () => '1.2.4', true).repairing).toBe(true);
+  });
+
+  test('sessions is added only when a number was read', () => {
+    expect(buildVersionInfo('1.2.3', 42, 0, () => null, false, 2).sessions).toBe(2);
+    expect(buildVersionInfo('1.2.3', 42, 0, () => null, false, 0).sessions).toBe(0);
+    expect('sessions' in buildVersionInfo('1.2.3', 42, 0, () => null, false, undefined)).toBe(
+      false,
+    );
   });
 });
 

@@ -53,6 +53,10 @@ export interface VersionInfo {
   /** Since 0.44.0: a popup repair is handing the port over. Absent on older
    * primaries. */
   repairing?: boolean;
+  /** Agent sessions using this primary: its own MCP client plus the
+   * authenticated proxies. Absent on older primaries, and when the primary
+   * could not tell. Display only: the election never reads it. */
+  sessions?: number;
 }
 
 export type VersionProbe =
@@ -240,6 +244,15 @@ function isVersionInfo(v: unknown): v is VersionInfo {
   );
 }
 
+/** The body as `VersionInfo`: `sessions` is kept only when it is a
+ * non-negative integer, otherwise the field is absent (never an invalid body). */
+function readVersionInfo(body: VersionInfo): VersionInfo {
+  const { sessions, ...rest } = body as VersionInfo & { sessions?: unknown };
+  return typeof sessions === 'number' && Number.isInteger(sessions) && sessions >= 0
+    ? { ...rest, sessions }
+    : rest;
+}
+
 /** `GET http://<host>:<port>/version`. Never rejects. */
 export function probeVersion(
   port: number,
@@ -265,7 +278,11 @@ export function probeVersion(
           }
           try {
             const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            done(isVersionInfo(body) ? { kind: 'version', info: body } : { kind: 'no-endpoint' });
+            done(
+              isVersionInfo(body)
+                ? { kind: 'version', info: readVersionInfo(body) }
+                : { kind: 'no-endpoint' },
+            );
           } catch {
             done({ kind: 'no-endpoint' });
           }

@@ -306,7 +306,24 @@ async function electPrimary(deps: StartServerDeps): Promise<boolean> {
   }
 }
 
+/**
+ * Agent sessions using this primary, as `/version` reports them: its own MCP
+ * client (only while it is really connected) plus the proxies the IPC server
+ * counts (authenticated ones only; `null` when multi-agent is off).
+ */
+export function agentSessionCount(
+  ownClient: boolean,
+  ipc: { sessionCount(): number } | null,
+): number {
+  return (ownClient ? 1 : 0) + (ipc ? ipc.sessionCount() : 0);
+}
+
 async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
+  // Whether this primary's own MCP client is there: it has completed the
+  // MCP handshake and its stdin has not ended. A primary started without a
+  // client (or one left serving after its client went away) reports none.
+  let ownClient = false;
+  let reportSessions: () => number | undefined = () => undefined;
   const tabs = new Map<string, TabSession>();
   const pendingRequests = new Map<string, PendingRequest>();
   const events = new BridgeEventLog();
@@ -341,6 +358,7 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   const wss = await startWsBridge(tabs, pendingRequests, events, {
     onRepair: () => repair.start(),
     isRepairing: () => repair.inProgress,
+    getSessionCount: () => reportSessions(),
     // Admin panel (popup): describe/act on this primary's settings through
     // the same helpers the console uses. Doctor runs only on its button.
     admin: createPrimaryAdminHandlers({
@@ -659,6 +677,19 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
       ipcServer = null;
     }
   }
+
+  // The stdio transport never notices its stdin ending, so watch it here.
+  mcpServer.server.oninitialized = () => {
+    ownClient = true;
+  };
+  mcpServer.server.onclose = () => {
+    ownClient = false;
+  };
+  process.stdin.once('end', () => {
+    ownClient = false;
+  });
+  const ipcForCount = ipcServer;
+  reportSessions = () => agentSessionCount(ownClient, ipcForCount);
 
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);

@@ -697,6 +697,43 @@ describe('readUpdatePlan — what the preview can truthfully say', () => {
     });
   });
 
+  test('the number of agent sessions is the one /version sent, only when it sent one (D18)', async () => {
+    const info = {
+      name: 'browser-link',
+      version: '1.0.2',
+      pid: 20,
+      startedAt: 'x',
+      installedVersion: '1.0.2',
+    };
+    const table = async () => [self, { pid: 20, ppid: 2, startedAt: null, command: BRIDGE }];
+    const withSessions = await readUpdatePlan({
+      os: 'win32',
+      selfPid: 10,
+      probe: async () => ({ kind: 'version', info: { ...info, sessions: 3 } }),
+      processTable: table,
+    });
+    expect(withSessions.server).toEqual({
+      kind: 'running',
+      version: '1.0.2',
+      pid: 20,
+      sessions: 3,
+    });
+    const zero = await readUpdatePlan({
+      os: 'win32',
+      selfPid: 10,
+      probe: async () => ({ kind: 'version', info: { ...info, sessions: 0 } }),
+      processTable: table,
+    });
+    expect(zero.server).toMatchObject({ sessions: 0 });
+    const older = await readUpdatePlan({
+      os: 'win32',
+      selfPid: 10,
+      probe: async () => ({ kind: 'version', info }),
+      processTable: table,
+    });
+    expect('sessions' in older.server).toBe(false);
+  });
+
   test('nothing answers and no browser-link process is listed: no server', async () => {
     const plan = await readUpdatePlan({
       os: 'linux',

@@ -51,14 +51,14 @@ export function stopsServerOn(os: NodeJS.Platform): boolean {
 /**
  * What an update would do, read before anything is touched so the screen can
  * say it and ask. Only what was read: the server is the one that answered
- * `/version`; how many agent sessions use it is not readable out of process
- * (the primary keeps that count), so it is not here.
+ * `/version`; how many agent sessions use it is what that body said
+ * (`sessions`), and absent when the primary is older and sent none.
  */
 export interface UpdatePlan {
   /** Whether the running server will be stopped (`stopsServerOn`). */
   stopsServer: boolean;
   server:
-    | { kind: 'running'; version: string; pid: number }
+    | { kind: 'running'; version: string; pid: number; sessions?: number }
     /** Nothing answered and the OS lists no browser-link process. */
     | { kind: 'none' }
     /** Nothing usable answered, yet a server may be running. */
@@ -93,7 +93,12 @@ export async function readUpdatePlan(deps: UpdatePlanDeps = {}): Promise<UpdateP
   );
   let server: UpdatePlan['server'];
   if (probe.kind === 'version') {
-    server = { kind: 'running', version: probe.info.version, pid: probe.info.pid };
+    server = {
+      kind: 'running',
+      version: probe.info.version,
+      pid: probe.info.pid,
+      ...(probe.info.sessions === undefined ? {} : { sessions: probe.info.sessions }),
+    };
   } else if (probe.kind === 'unreachable' && readable && bridges.length === 0) {
     server = { kind: 'none' };
   } else {

@@ -186,6 +186,9 @@ export interface WsBridgeOptions {
   /** Whether a repair hand-off is in progress (`/version` `repairing`).
    * Absent → always false. */
   isRepairing?: () => boolean;
+  /** Agent sessions using this primary (`/version` `sessions`). Absent, or
+   * answering `undefined` → the field is left out. */
+  getSessionCount?: () => number | undefined;
   /** The admin panel (admin/descriptor.ts, admin/actions.ts), wired by the
    * primary. Absent → `admin.*` is answered with `ok: false`. */
   admin?: AdminHandlers;
@@ -270,7 +273,7 @@ export function startWsBridge(
         void answerHandshakeCheck(req, res);
         return;
       }
-      handleBridgeHttpRequest(req, res, version, options.isRepairing);
+      handleBridgeHttpRequest(req, res, version, options.isRepairing, options.getSessionCount);
     });
     const wss = new WebSocketServer({
       server: httpServer,

@@ -31,7 +31,36 @@ describe('createMcpServer', () => {
   });
 });
 
-const { startServer } = await import('./server.js');
+const { agentSessionCount, startServer } = await import('./server.js');
+
+/* D18: the number `/version` reports is the primary's own MCP client (only
+ * while it is really there) plus the proxies the IPC server counts. */
+describe('agentSessionCount', () => {
+  const ipc = (n: number) => ({ sessionCount: () => n });
+
+  test('0 proxies → 1 session; 2 proxies → 3', () => {
+    expect(agentSessionCount(true, ipc(0))).toBe(1);
+    expect(agentSessionCount(true, ipc(2))).toBe(3);
+  });
+
+  test('a proxy that disconnects lowers the count', () => {
+    let proxies = 2;
+    const live = { sessionCount: () => proxies };
+    expect(agentSessionCount(true, live)).toBe(3);
+    proxies = 1;
+    expect(agentSessionCount(true, live)).toBe(2);
+  });
+
+  test('no own client (never initialised, or its stdin ended): only the proxies count', () => {
+    expect(agentSessionCount(false, ipc(0))).toBe(0);
+    expect(agentSessionCount(false, ipc(2))).toBe(2);
+  });
+
+  test('multi-agent off (no IPC server): the own client alone', () => {
+    expect(agentSessionCount(true, null)).toBe(1);
+    expect(agentSessionCount(false, null)).toBe(0);
+  });
+});
 const { AddrInUseError } = await import('./bridge/ws-bridge.js');
 
 /*

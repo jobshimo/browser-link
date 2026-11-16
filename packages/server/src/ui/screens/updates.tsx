@@ -46,6 +46,7 @@ const UPDATES_I18N: Record<
     serverNone: string;
     serverUnreadable: string;
     sessionsUnreadable: string;
+    sessionsInUse: (n: number) => string;
     others: (n: number) => string;
     othersUnreadable: string;
     willStop: string;
@@ -86,6 +87,7 @@ const UPDATES_I18N: Record<
     serverNone: 'No browser-link server is running.',
     serverUnreadable: 'Could not read whether a browser-link server is running.',
     sessionsUnreadable: 'How many agent sessions use it cannot be read from this console.',
+    sessionsInUse: (n) => `It is in use by ${n} agent ${n === 1 ? 'session' : 'sessions'}.`,
     others: (n) =>
       n === 0
         ? 'No other browser-link process is running.'
@@ -132,6 +134,8 @@ const UPDATES_I18N: Record<
     serverNone: 'No hay ningún servidor browser-link corriendo.',
     serverUnreadable: 'No se pudo leer si hay un servidor browser-link corriendo.',
     sessionsUnreadable: 'Desde esta consola no se puede leer cuántas sesiones de agentes lo usan.',
+    sessionsInUse: (n) =>
+      `Está en uso por ${n} ${n === 1 ? 'sesión de agente' : 'sesiones de agentes'}.`,
     others: (n) =>
       n === 0
         ? 'No hay otros procesos de browser-link corriendo.'
@@ -204,7 +208,9 @@ function planLines(plan: UpdatePlan, target: string, t: UpdatesStrings): string[
   if (server.kind === 'running') lines.push(t.serverRunning(server.version, server.pid));
   else if (server.kind === 'none') lines.push(t.serverNone);
   else lines.push(t.serverUnreadable);
-  if (server.kind !== 'none') lines.push(t.sessionsUnreadable);
+  if (server.kind === 'running' && server.sessions !== undefined) {
+    lines.push(t.sessionsInUse(server.sessions));
+  } else if (server.kind !== 'none') lines.push(t.sessionsUnreadable);
   lines.push(plan.otherProcesses === null ? t.othersUnreadable : t.others(plan.otherProcesses));
   if (!plan.stopsServer) lines.push(t.noStop);
   else if (server.kind === 'none') lines.push(t.nothingWillStop);

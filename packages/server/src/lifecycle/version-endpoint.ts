@@ -40,6 +40,7 @@ export function buildVersionInfo(
   startedAt: number = PROCESS_STARTED_AT,
   installed: () => string | null = readInstalledVersion,
   repairing = false,
+  sessions?: number,
 ): VersionInfo {
   return {
     name: PACKAGE_NAME,
@@ -48,6 +49,7 @@ export function buildVersionInfo(
     startedAt: new Date(startedAt).toISOString(),
     installedVersion: installed(),
     repairing,
+    ...(sessions === undefined ? {} : { sessions }),
   };
 }
 
@@ -62,12 +64,15 @@ export function isLoopbackHost(host: string | undefined): boolean {
 }
 
 /** The bridge's plain-HTTP handler: `/version` (loopback `Host` only, else
- * 403) or 404. `isRepairing` reports a repair hand-off in progress. */
+ * 403) or 404. `isRepairing` reports a repair hand-off in progress;
+ * `getSessionCount` the agent sessions using this primary (`undefined`: not
+ * known, the field is left out). */
 export function handleBridgeHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   version: string,
   isRepairing: () => boolean = () => false,
+  getSessionCount: () => number | undefined = () => undefined,
 ): void {
   const path = (req.url ?? '').split('?')[0];
   if (req.method === 'GET' && path === '/version') {
@@ -78,7 +83,16 @@ export function handleBridgeHttpRequest(
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
-      JSON.stringify(buildVersionInfo(version, undefined, undefined, undefined, isRepairing())),
+      JSON.stringify(
+        buildVersionInfo(
+          version,
+          undefined,
+          undefined,
+          undefined,
+          isRepairing(),
+          getSessionCount(),
+        ),
+      ),
     );
     return;
   }

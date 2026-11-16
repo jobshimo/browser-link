@@ -162,6 +162,49 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
     unmount();
   });
 
+  test('the preview says in use by how many agent sessions when the count was read (D18)', async () => {
+    const cases: ['en' | 'es', number | undefined, string | null, string | null][] = [
+      ['en', 3, 'in use by 3 agent sessions', 'cannot be read'],
+      ['en', 1, 'in use by 1 agent session.', 'agent sessions'],
+      ['en', 0, 'in use by 0 agent sessions', 'cannot be read'],
+      ['es', 3, 'en uso por 3 sesiones de agentes', 'no se puede leer'],
+      ['es', 1, 'en uso por 1 sesión de agente.', 'sesiones de agentes'],
+      ['es', 0, 'en uso por 0 sesiones de agentes', 'no se puede leer'],
+    ];
+    for (const [language, sessions, present, absent] of cases) {
+      const run = controllableRun();
+      const plan: UpdatePlan = {
+        ...WINDOWS_PLAN,
+        server: { kind: 'running', version: '1.0.2', pid: 4242, sessions },
+      };
+      const { stdin, lastFrame, unmount } = renderScreen(language, plan, run.runUpdate);
+      await tick();
+      stdin.write('u');
+      await tick();
+      const frame = flat(lastFrame());
+      expect(frame).toContain(present);
+      if (absent !== null) expect(frame).not.toContain(absent);
+      unmount();
+    }
+  });
+
+  test('a primary that sent no count keeps the cannot-be-read line, in both languages', async () => {
+    for (const [language, line] of [
+      ['en', 'How many agent sessions use it cannot be read from this console.'],
+      ['es', 'Desde esta consola no se puede leer cuántas sesiones de agentes lo usan.'],
+    ] as const) {
+      const run = controllableRun();
+      const { stdin, lastFrame, unmount } = renderScreen(language, WINDOWS_PLAN, run.runUpdate);
+      await tick();
+      stdin.write('u');
+      await tick();
+      const frame = flat(lastFrame());
+      expect(frame).toContain(line);
+      expect(frame).not.toMatch(/in use by|en uso por/);
+      unmount();
+    }
+  });
+
   test('a preview that could not read the server says so, with no number', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen(

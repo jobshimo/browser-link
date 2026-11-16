@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import {
@@ -21,8 +22,12 @@ import type { PortHolder } from './port-holder.js';
  * no test here kills a process, and every bridge binds port 0. */
 
 const running: WebSocketServer[] = [];
+const plain: Server[] = [];
 
 afterEach(async () => {
+  await Promise.all(
+    plain.splice(0).map((s) => new Promise<void>((resolve) => s.close(() => resolve()))),
+  );
   await Promise.all(
     running.splice(0).map((wss) => new Promise<void>((resolve) => wss.close(() => resolve()))),
   );
@@ -205,6 +210,44 @@ describe('probeVersion', () => {
       pid: process.pid,
     });
     expect(Number.isFinite(Date.parse(probe.info.startedAt))).toBe(true);
+  });
+
+  /** A plain HTTP server on port 0 that answers `/version` with `body`. */
+  async function serveBody(body: object): Promise<number> {
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    plain.push(server);
+    return (server.address() as AddressInfo).port;
+  }
+
+  const OLD_BODY = {
+    name: '@jobshimo/browser-link',
+    version: '1.0.2',
+    pid: 4242,
+    startedAt: '2026-11-16T00:00:00.000Z',
+    installedVersion: '1.0.2',
+  };
+
+  test('an older primary that sends no sessions is accepted exactly as before', async () => {
+    const probe = await probeVersion(await serveBody(OLD_BODY));
+    expect(probe).toEqual({ kind: 'version', info: OLD_BODY });
+  });
+
+  test('sessions is read when it is a non-negative integer', async () => {
+    for (const sessions of [0, 1, 7]) {
+      const probe = await probeVersion(await serveBody({ ...OLD_BODY, sessions }));
+      expect(probe).toEqual({ kind: 'version', info: { ...OLD_BODY, sessions } });
+    }
+  });
+
+  test('a sessions value that is not a non-negative integer drops the field, not the body', async () => {
+    for (const sessions of [-1, 1.5, '3', null, true, {}, [2]]) {
+      const probe = await probeVersion(await serveBody({ ...OLD_BODY, sessions }));
+      expect(probe).toEqual({ kind: 'version', info: OLD_BODY });
+    }
   });
 
   test('nothing listening → unreachable', async () => {
