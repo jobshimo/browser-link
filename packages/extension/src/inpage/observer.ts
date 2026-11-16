@@ -23,7 +23,7 @@
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */
-export const OBSERVER_VERSION = 4;
+export const OBSERVER_VERSION = 5;
 
 /** Name of the `Runtime.addBinding` function the observer pushes messages through. */
 export const OBSERVER_BINDING = '__blPageObserverPush';
@@ -88,6 +88,12 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
  * included); closed roots attached before install are not reachable.
  * `resolveRef(ref)` is `resolveRefDetailed(ref)?.el ?? null`. `keyForRef(ref)`
  * returns a copy of the stored key or `null`. None of these throws.
+ * For settle (owner decision D5, since version 5): `liveRoots()` returns the
+ * document and every root this instance observes (closed ones included)
+ * whose host is in the page; `shadowRootOf(el)` the root observed on a host,
+ * or `null`; `onRoot(cb)` calls `cb` with each root observed from then on
+ * and returns a stop function (nothing after teardown). Frame documents are
+ * not tracked here: each same-origin frame runs its own instance.
  * `nextSnapshotId()`
  * issues `<doc_id>:s<N>` (N monotonic per document instance, from 1) for each
  * `snapshot` result and returns `null` once the instance is torn down; the
@@ -138,6 +144,9 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
   };
   const observers = [];
   const observed = new WeakSet();
+  // Settle (owner decision D5) reads the roots held here and hears of new ones.
+  const rootListeners = new Set();
+  const rootOfHost = new WeakMap();
   let refs = new WeakMap();
   const refNodes = new Map();
   // Semantic key captured when each ref is issued; kept while the ref lives so
@@ -278,7 +287,11 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       observers.push({ mo: mo, kind: kind, root: root });
       g.roots++;
     } catch (e) {}
+    if (root.nodeType === 11 && root.host) rootOfHost.set(root.host, root);
     watchIdentity(root);
+    for (const cb of Array.from(rootListeners)) {
+      try { cb(root); } catch (e) {}
+    }
   }
 
   // Identity history (owner decision D3): a ref rebinds only to an element
@@ -775,6 +788,30 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     return record === undefined ? null : record;
   };
 
+  // Roots for settle (owner decision D5). liveRoots: the document and every
+  // root observed here (closed ones included) whose host is in the page.
+  // shadowRootOf: the root observed on a host, open or closed, or null.
+  // onRoot: calls cb with each root observed from now on; returns a stop
+  // function. Frame documents are not here: each runs its own instance.
+  g.liveRoots = function () {
+    const out = [];
+    for (const o of observers) {
+      const r = o.root;
+      if (r.nodeType === 9 || (r.host && r.host.isConnected)) out.push(r);
+    }
+    return out;
+  };
+  g.shadowRootOf = function (el) {
+    return (el && rootOfHost.get(el)) || null;
+  };
+  g.onRoot = function (cb) {
+    if (g.dead || typeof cb !== 'function') return function () {};
+    rootListeners.add(cb);
+    return function () {
+      rootListeners.delete(cb);
+    };
+  };
+
   g.mark = function () {
     flush();
     const mark = g.seq;
@@ -842,6 +879,7 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
       try { o.mo.disconnect(); } catch (e) {}
     }
     observers.length = 0;
+    rootListeners.clear();
     if (patchedAttach && proto.attachShadow === patchedAttach) {
       try { proto.attachShadow = originalAttach; } catch (e) {}
     }

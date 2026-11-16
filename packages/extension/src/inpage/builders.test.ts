@@ -5,6 +5,8 @@ import {
   SNAPSHOT_CUT_HINT,
   SNAPSHOT_NOT_COMPARED_HINT,
   SNAPSHOT_NOT_COMPARED_TEXT_HINT,
+  UNOBSERVED_FRAMES_HINT,
+  UNOBSERVED_SHADOW_HINT,
   buildClickResolveJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -1253,6 +1255,350 @@ describe('buildSettleJs', () => {
       buildSettleJs({ settle_ms: 10, settle_timeout_ms: 200 }),
     );
     expect(result.focus_moved).toBeUndefined();
+  });
+});
+
+/**
+ * Owner decision D5: settle watches open shadow roots, the closed roots the
+ * page observer holds and same-origin iframe documents like the main
+ * document, and says when part of the page could not be watched. Timing: the
+ * mutation lands at MUTATE_AT, after the quiet period would have started; a
+ * settle that sees it finishes no earlier than MUTATE_AT + QUIET.
+ */
+describe('buildSettleJs: shadow roots and frames (D5)', () => {
+  const QUIET = 30;
+  const MUTATE_AT = 20;
+  const settleJs = () => buildSettleJs({ settle_ms: QUIET, settle_timeout_ms: 1000 });
+
+  interface DeepSettleResult {
+    settled: boolean;
+    duration_ms: number;
+    mutation_count: number;
+    frame_mutation_count?: number;
+    unobserved?: { cross_origin_frames?: number; shadow_roots?: string; hint: string };
+  }
+
+  function settleWhile(mutate: () => void, at = MUTATE_AT): Promise<DeepSettleResult> {
+    const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+    setTimeout(mutate, at);
+    return pending;
+  }
+
+  /** Install the page observer in a window, as the host does at document start. */
+  function installObserver(win: Window = window, opts: { version?: number } = {}): void {
+    (win as unknown as { eval(src: string): unknown }).eval(buildObserverInstallJs(opts));
+  }
+
+  function openShadowHost(): ShadowRoot {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<span id="inner">x</span>';
+    return shadow;
+  }
+
+  function sameOriginFrame(withObserver = true): Document {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    if (withObserver) installObserver(frame.contentWindow!);
+    const doc = frame.contentDocument!;
+    doc.body.innerHTML = '<p id="inner">x</p>';
+    return doc;
+  }
+
+  function crossOriginFrame(access: 'null' | 'throws'): HTMLIFrameElement {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    // Chrome answers contentDocument with null for a document that is not
+    // same origin-domain (HTML spec, the iframe contentDocument getter);
+    // jsdom has no cross-origin frames, so the getter is stubbed to answer
+    // that. 'throws' models an engine that throws instead.
+    Object.defineProperty(frame, 'contentDocument', {
+      configurable: true,
+      get: () => {
+        if (access === 'throws') throw new DOMException('Blocked a frame', 'SecurityError');
+        return null;
+      },
+    });
+    return frame;
+  }
+
+  afterEach(() => {
+    evalExpr(buildObserverTeardownJs());
+  });
+
+  describe('with the page observer', () => {
+    beforeEach(() => {
+      installObserver();
+    });
+
+    test('a mutation inside an open shadow root is counted and delays settled', async () => {
+      const shadow = openShadowHost();
+      const result = await settleWhile(() =>
+        shadow.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a mutation inside a nested open shadow root is counted', async () => {
+      const outer = openShadowHost();
+      const innerHost = document.createElement('div');
+      outer.appendChild(innerHost);
+      const inner = innerHost.attachShadow({ mode: 'open' });
+      inner.innerHTML = '<b>y</b>';
+      const result = await settleWhile(() => inner.querySelector('b')!.setAttribute('data-x', '1'));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a closed root attached before settle started, known to the observer, is counted', async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a root attached during the wait is counted through the observer; settle patches nothing', async () => {
+      const before = Element.prototype.attachShadow;
+      const openHost = document.createElement('div');
+      const closedHost = document.createElement('div');
+      document.body.append(openHost, closedHost);
+      let open: ShadowRoot | null = null;
+      let closed: ShadowRoot | null = null;
+      let during: unknown = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        during = Element.prototype.attachShadow;
+        open = openHost.attachShadow({ mode: 'open' });
+        closed = closedHost.attachShadow({ mode: 'closed' });
+      }, 5);
+      setTimeout(() => {
+        open!.appendChild(document.createElement('i'));
+        closed!.appendChild(document.createElement('i'));
+      }, MUTATE_AT);
+      const result = await pending;
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(during).toBe(before);
+      expect(Element.prototype.attachShadow).toBe(before);
+    });
+
+    test('a closed root inside an element inserted after settle started is counted', async () => {
+      // Built off the page before settle started: its host was not in the
+      // page then, so the root comes from the observer when the host lands.
+      const host = document.createElement('div');
+      const closed = host.attachShadow({ mode: 'closed' });
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => document.body.appendChild(host), 5);
+      setTimeout(() => closed.appendChild(document.createElement('i')), MUTATE_AT);
+      const result = await pending;
+      // The insertion of the host (1) and the insertion inside its root (1).
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a mutation inside a same-origin iframe document is counted and delays settled', async () => {
+      const doc = sameOriginFrame();
+      const result = await settleWhile(() =>
+        doc.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a closed root inside a same-origin iframe, known to its observer, is counted', async () => {
+      const doc = sameOriginFrame();
+      const host = doc.createElement('div');
+      doc.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(doc.createElement('i')));
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+      });
+    });
+
+    test('an iframe added after settle started is watched', async () => {
+      let frame: HTMLIFrameElement | null = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        frame = document.createElement('iframe');
+        document.body.appendChild(frame);
+        installObserver(frame.contentWindow!);
+      }, 5);
+      setTimeout(() => {
+        frame!.contentDocument!.body.appendChild(frame!.contentDocument!.createElement('p'));
+      }, MUTATE_AT);
+      const result = await pending;
+      // The iframe insertion in the top document (1) and the insertion inside it (1).
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 2,
+        frame_mutation_count: 1,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+    });
+
+    test('a cross-origin iframe is reported as not watched', async () => {
+      crossOriginFrame('null');
+      crossOriginFrame('throws');
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: { cross_origin_frames: 2, hint: UNOBSERVED_FRAMES_HINT },
+      });
+    });
+
+    test('a cross-origin iframe nested in a closed root and in a same-origin frame is reported', async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const inShadow = document.createElement('iframe');
+      closed.appendChild(inShadow);
+      Object.defineProperty(inShadow, 'contentDocument', { configurable: true, get: () => null });
+      const doc = sameOriginFrame();
+      const inFrame = doc.createElement('iframe');
+      doc.body.appendChild(inFrame);
+      Object.defineProperty(inFrame, 'contentDocument', { configurable: true, get: () => null });
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual({ cross_origin_frames: 2, hint: UNOBSERVED_FRAMES_HINT });
+    });
+
+    test('known limit: a closed root attached before the observer was installed is not seen', async () => {
+      // Also a declarative shadowrootmode="closed" root, which the parser
+      // creates without calling attachShadow: nothing in the page can reach
+      // it, so its changes are neither counted nor reported.
+      evalExpr(buildObserverTeardownJs());
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      installObserver();
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 0 });
+    });
+
+    test('a page with no shadow roots or frames gives exactly the fields it always gave', async () => {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const result = await settleWhile(() => target.setAttribute('data-x', '1'));
+      expect(Object.keys(result)).toEqual(['settled', 'duration_ms', 'mutation_count']);
+      expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
+    });
+
+    test('a shadow root that keeps mutating past the cap gives settled:false', async () => {
+      const shadow = openShadowHost();
+      const span = shadow.getElementById('inner')!;
+      const interval = setInterval(() => span.setAttribute('data-x', String(Date.now())), 10);
+      const result = await evalExpr<Promise<DeepSettleResult>>(
+        buildSettleJs({ settle_ms: 40, settle_timeout_ms: 120 }),
+      );
+      clearInterval(interval);
+      expect(result.settled).toBe(false);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(120);
+      expect(result.mutation_count).toBeGreaterThan(0);
+    });
+  });
+
+  describe('without a current page observer (fallback)', () => {
+    const OPEN_ONLY = { shadow_roots: 'open-only', hint: UNOBSERVED_SHADOW_HINT };
+
+    test('observer absent: open roots are scanned and the result says closed and late roots were not watched', async () => {
+      const before = Element.prototype.attachShadow;
+      const shadow = openShadowHost();
+      const result = await settleWhile(() =>
+        shadow.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        unobserved: OPEN_ONLY,
+      });
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(Element.prototype.attachShadow).toBe(before);
+    });
+
+    test('observer absent: a root attached during the wait is not watched, and the marker says so', async () => {
+      const before = Element.prototype.attachShadow;
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      let during: unknown = null;
+      let root: ShadowRoot | null = null;
+      const pending = evalExpr<Promise<DeepSettleResult>>(settleJs());
+      setTimeout(() => {
+        during = Element.prototype.attachShadow;
+        root = host.attachShadow({ mode: 'open' });
+      }, 5);
+      setTimeout(() => root!.appendChild(document.createElement('i')), MUTATE_AT);
+      const result = await pending;
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: OPEN_ONLY,
+      });
+      expect(during).toBe(before);
+    });
+
+    test('an older observer (version 4) is not used: same fallback and marker', async () => {
+      installObserver(window, { version: 4 });
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 0,
+        unobserved: OPEN_ONLY,
+      });
+    });
+
+    test('an observer with partial coverage is not used: same fallback and marker', async () => {
+      installObserver();
+      (window as unknown as Record<string, { coverage: string }>)[OBSERVER_GLOBAL].coverage =
+        'partial';
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual(OPEN_ONLY);
+    });
+
+    test('a same-origin frame without an observer gets the marker even when the top has one', async () => {
+      installObserver();
+      const doc = sameOriginFrame(false);
+      const result = await settleWhile(() =>
+        doc.getElementById('inner')!.setAttribute('data-x', '1'),
+      );
+      expect(result).toEqual({
+        settled: true,
+        duration_ms: expect.any(Number),
+        mutation_count: 1,
+        frame_mutation_count: 1,
+        unobserved: OPEN_ONLY,
+      });
+    });
+
+    test('cross-origin frames and the fallback together give both counts and both hints', async () => {
+      crossOriginFrame('null');
+      const result = await evalExpr<Promise<DeepSettleResult>>(settleJs());
+      expect(result.unobserved).toEqual({
+        cross_origin_frames: 1,
+        shadow_roots: 'open-only',
+        hint: `${UNOBSERVED_FRAMES_HINT} ${UNOBSERVED_SHADOW_HINT}`,
+      });
+    });
   });
 });
 

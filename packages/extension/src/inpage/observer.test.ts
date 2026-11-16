@@ -491,28 +491,28 @@ describe('page observer: snapshot store', () => {
     expect(g.getSnapshot('s2')).toBeNull();
   });
 });
-describe('page observer: version 4 install rule', () => {
-  test('OBSERVER_VERSION is 4', () => {
-    expect(OBSERVER_VERSION).toBe(4);
+describe('page observer: version 5 install rule', () => {
+  test('OBSERVER_VERSION is 5', () => {
+    expect(OBSERVER_VERSION).toBe(5);
   });
 
-  test('an installed version 3 instance is torn down and replaced by version 4', () => {
+  test('an installed version 4 instance is torn down and replaced by version 5', () => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
-      version: 3,
+      version: 4,
       doc_id: 'old-doc',
       coverage: 'full',
       teardown,
     };
     const result = evalExpr(buildObserverInstallJs());
     expect(teardown).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ ok: true, installed: true, version: 4 });
+    expect(result).toMatchObject({ ok: true, installed: true, version: 5 });
     expect(instance().doc_id).not.toBe('old-doc');
     expect(typeof instance().refFor).toBe('function');
     expect(typeof instance().resolveRefDetailed).toBe('function');
   });
 
-  test.each([4, 5])('an installed version %i instance is left alone', (version) => {
+  test.each([5, 6])('an installed version %i instance is left alone', (version) => {
     const teardown = vi.fn();
     (window as unknown as Record<string, unknown>)[OBSERVER_GLOBAL] = {
       version,
@@ -532,12 +532,12 @@ describe('page observer: version 4 install rule', () => {
     expect(pushed.filter((m) => m.type === 'doc_start')).toHaveLength(0);
   });
 
-  test('doc_start keeps its exact payload shape with version 4', () => {
+  test('doc_start keeps its exact payload shape with version 5', () => {
     evalExpr(buildObserverInstallJs());
     const starts = pushed.filter((m) => m.type === 'doc_start');
     expect(starts).toHaveLength(1);
     expect(Object.keys(starts[0]).sort()).toEqual(['coverage', 'doc_id', 'type', 'url', 'version']);
-    expect(starts[0]).toMatchObject({ version: 4, coverage: 'full', url: location.href });
+    expect(starts[0]).toMatchObject({ version: 5, coverage: 'full', url: location.href });
   });
 
   test('mark and changes keep their exact result shapes alongside refs', () => {
@@ -1255,5 +1255,69 @@ describe('page observer: doc_info (build fingerprint and view signature)', () =>
     evalExpr(buildObserverTeardownJs());
     vi.advanceTimersByTime(1000);
     expect(docInfos()).toHaveLength(0);
+  });
+});
+
+describe('page observer: roots for settle (D5)', () => {
+  interface RootsApi {
+    liveRoots(): Node[];
+    shadowRootOf(el: Element): ShadowRoot | null;
+    onRoot(cb: (root: Node) => void): () => void;
+  }
+  const api = () => instance() as unknown as RootsApi;
+
+  test('liveRoots holds the document and every root it observes, closed ones included', () => {
+    const openHost = document.createElement('div');
+    document.body.appendChild(openHost);
+    const open = openHost.attachShadow({ mode: 'open' });
+    evalExpr(buildObserverInstallJs());
+    const closedHost = document.createElement('div');
+    document.body.appendChild(closedHost);
+    const closed = closedHost.attachShadow({ mode: 'closed' });
+    expect(api().liveRoots()).toEqual([document, open, closed]);
+    expect(api().shadowRootOf(closedHost)).toBe(closed);
+    expect(api().shadowRootOf(openHost)).toBe(open);
+    expect(api().shadowRootOf(document.body)).toBeNull();
+  });
+
+  test('liveRoots leaves out a root whose host is not in the page', () => {
+    evalExpr(buildObserverInstallJs());
+    const host = document.createElement('div');
+    const closed = host.attachShadow({ mode: 'closed' });
+    expect(api().liveRoots()).toEqual([document]);
+    document.body.appendChild(host);
+    expect(api().liveRoots()).toEqual([document, closed]);
+  });
+
+  test('onRoot hears of each root observed later until it is stopped', () => {
+    evalExpr(buildObserverInstallJs());
+    const heard: Node[] = [];
+    const stop = api().onRoot((root) => heard.push(root));
+    const a = document.createElement('div');
+    const rootA = a.attachShadow({ mode: 'closed' });
+    stop();
+    document.createElement('div').attachShadow({ mode: 'open' });
+    expect(heard).toEqual([rootA]);
+  });
+
+  test('a listener that throws does not stop the observer or other listeners', () => {
+    evalExpr(buildObserverInstallJs());
+    const heard: Node[] = [];
+    api().onRoot(() => {
+      throw new Error('boom');
+    });
+    api().onRoot((root) => heard.push(root));
+    const root = document.createElement('div').attachShadow({ mode: 'open' });
+    expect(heard).toEqual([root]);
+  });
+
+  test('after teardown onRoot hears nothing', () => {
+    evalExpr(buildObserverInstallJs());
+    const g = api();
+    const heard: Node[] = [];
+    g.onRoot((root) => heard.push(root));
+    evalExpr(buildObserverTeardownJs());
+    document.createElement('div').attachShadow({ mode: 'open' });
+    expect(heard).toEqual([]);
   });
 });

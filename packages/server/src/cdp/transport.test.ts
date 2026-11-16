@@ -15,7 +15,12 @@ import {
   buildObserverChangesJs,
   buildObserverMarkJs,
 } from './inpage/observer.js';
-import { buildFocusedFieldJs, buildProgrammaticClickJs, buildSettleJs } from './inpage/builders.js';
+import {
+  UNOBSERVED_FRAMES_HINT,
+  buildFocusedFieldJs,
+  buildProgrammaticClickJs,
+  buildSettleJs,
+} from './inpage/builders.js';
 import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
@@ -1121,6 +1126,93 @@ describe('callCdpTool — page observer', () => {
     const mark = seen.find((s) => s.params.expression === buildObserverMarkJs());
     expect(mark).toBeDefined();
     expect(mark?.params.userGesture).toBeUndefined();
+  });
+
+  /** A page whose settle wait answers `settle` instead of QUIET. */
+  function settlePage(seen: Seen[], settle: unknown, changes?: unknown): Record<string, Handler> {
+    const page = observerPage(seen, changes === undefined ? {} : { changes });
+    return {
+      ...page,
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression === DEFAULT_SETTLE_JS) return { result: { value: settle } };
+        return page['Runtime.evaluate'](params);
+      },
+    };
+  }
+
+  test('records the settle wait saw inside same-origin frames are added to the observer count (D5)', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      settlePage(seen, { ...QUIET, mutation_count: 3, frame_mutation_count: 2 }),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      settled: true,
+      duration_ms: 150,
+      // 4 observer records (top document and its shadow roots) + 2 in frames.
+      mutation_count: 6,
+      url_changed: 'https://example.com/#done',
+      changes: {
+        records: 4,
+        targets: 2,
+        kinds: { childList: 3, attributes: 1, characterData: 0 },
+        roots: { document: true, shadow: false, frame: false },
+        descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+        overflow: 0,
+      },
+    });
+  });
+
+  test('without the observer the settle count already holds frames and the internal field is dropped (D5)', async () => {
+    const seen: Seen[] = [];
+    const { port, targetId } = await startFakeTarget(
+      settlePage(
+        seen,
+        { ...QUIET, mutation_count: 3, frame_mutation_count: 2 },
+        { ok: false, reason: 'doc-changed' },
+      ),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      ...QUIET,
+      mutation_count: 3,
+      changes: null,
+      observer: 'doc-changed',
+    });
+  });
+
+  test('the unobserved marker of the settle wait reaches the click result (D5)', async () => {
+    const seen: Seen[] = [];
+    const unobserved = { cross_origin_frames: 1, hint: UNOBSERVED_FRAMES_HINT };
+    const { port, targetId } = await startFakeTarget(
+      settlePage(seen, { settled: true, duration_ms: 150, mutation_count: 0, unobserved }),
+    );
+    grantAccess(port);
+    const result = (await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go' })) as {
+      settle: Record<string, unknown>;
+    };
+    expect(result.settle).toEqual({
+      settled: true,
+      duration_ms: 150,
+      mutation_count: 4,
+      unobserved,
+      url_changed: 'https://example.com/#done',
+      changes: {
+        records: 4,
+        targets: 2,
+        kinds: { childList: 3, attributes: 1, characterData: 0 },
+        roots: { document: true, shadow: false, frame: false },
+        descriptors: [{ tag: 'div', id: 'status', path: 'body>div#status' }],
+        overflow: 0,
+      },
+    });
   });
 
   test('a force click on a target with no box calls its own click() after the mark, with no mouse events, and settles like a pointer click (D4)', async () => {

@@ -43,6 +43,16 @@ import { OBSERVER_GLOBAL } from './observer.js';
 export const NOT_WALKED_NOTE =
   'Part of the page was not walked: shadow roots or frames nest deeper than 20 levels. Target the inner part with within_selector or a ref.';
 
+/** Hint of the settle `unobserved` marker, added only when the page holds
+ * frames whose document cannot be read (owner decision D5). */
+export const UNOBSERVED_FRAMES_HINT =
+  'Cross-origin frames cannot be watched: changes inside them are not in mutation_count and did not delay settled. Check that part of the page with browser.screenshot.';
+
+/** Hint of the settle `unobserved.shadow_roots: 'open-only'` marker, added
+ * when a document had no current page observer (owner decision D5). */
+export const UNOBSERVED_SHADOW_HINT =
+  'No current page observer here, so settle watched only open shadow roots: changes inside closed shadow roots, and inside roots attached during the wait to elements already in the page, are not in mutation_count and did not delay settled.';
+
 export const PAGE_OBSERVER_JS = `
   const pageObserver = (() => {
     try {
@@ -1358,12 +1368,25 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
 /**
  * Build the settle-await expression shared by `browser.click`, `.type` and
  * `.press`. Called AFTER the action's CDP input events have been
- * dispatched: installs one `MutationObserver` on `document` (subtree,
- * childList, attributes, characterData) and resolves once no mutation has
+ * dispatched: installs one `MutationObserver` (subtree, childList,
+ * attributes, characterData) on `document`, its shadow roots and every
+ * same-origin iframe document, including those that appear during the wait,
+ * and resolves once no mutation has
  * landed for `settle_ms` consecutive milliseconds, or once `settle_timeout_ms`
- * total has elapsed — whichever comes first. Returned as a Promise so the
- * caller's `evaluateInTab` (CDP `Runtime.evaluate` with `awaitPromise: true`)
- * waits for it naturally.
+ * total has elapsed — whichever comes first. Returned as a Promise so
+ * background.ts's `evaluateInTab` (CDP `Runtime.evaluate` with
+ * `awaitPromise: true`) waits for it naturally.
+ *
+ * Shadow roots (owner decision D5): in a document whose page observer is
+ * current (version >= `SETTLE_OBSERVER_MIN_VERSION`, full coverage), the
+ * roots come from it (`liveRoots`, open and closed), roots it observes during
+ * the wait arrive through `onRoot`, and only iframes are looked for inside
+ * each root. Without one (absent, older, or partial coverage) settle scans
+ * for open roots itself and patches nothing, so it cannot see closed roots
+ * or roots attached during the wait to elements already in the page: the
+ * result then carries `unobserved.shadow_roots: 'open-only'`. A closed root
+ * attached before the observer was installed, or created by the parser
+ * (`shadowrootmode="closed"`), cannot be known at all and is not reported.
  *
  * Baseline `url`/`activeElement` are captured at the TOP of this
  * expression — i.e. right after the action's own focus/navigation side
@@ -1372,7 +1395,11 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
  * the settle window, not the action's own expected effect.
  *
  * The result omits `url_changed` / `focus_moved` when they did not change
- * — token-lean by construction, no post-filtering needed.
+ * — token-lean by construction, no post-filtering needed. Also absent on
+ * the common path: `frame_mutation_count` (the part of `mutation_count` seen
+ * inside frame documents, for the host to add to the observer's count),
+ * present only when it is not 0, and `unobserved: { cross_origin_frames?,
+ * shadow_roots?, hint }`, present only when part of the page was not watched.
  */
 export interface SettleOpts {
   /** Quiet-period length in ms. Caller is expected to have already
@@ -1383,36 +1410,169 @@ export interface SettleOpts {
   settle_timeout_ms: number;
 }
 
+/** The first page observer version that gives settle its roots
+ * (`liveRoots`, `shadowRootOf`, `onRoot`). */
+export const SETTLE_OBSERVER_MIN_VERSION = 5;
+
 export function buildSettleJs(opts: SettleOpts): string {
   const optsJson = JSON.stringify({
     settleMs: Math.max(0, opts.settle_ms),
     timeoutMs: Math.max(0, opts.settle_timeout_ms),
+    key: OBSERVER_GLOBAL,
+    minVersion: SETTLE_OBSERVER_MIN_VERSION,
+    framesHint: UNOBSERVED_FRAMES_HINT,
+    shadowHint: UNOBSERVED_SHADOW_HINT,
   });
   return `
 (() => {
   const opts = ${optsJson};
   const startUrl = location.href;
   const startActiveEl = document.activeElement;
-  const state = { mutationCount: 0, lastMutationAt: Date.now() };
+  const state = { mutationCount: 0, frameMutationCount: 0, lastMutationAt: Date.now() };
+  let done = false;
+  let openOnly = false;
+  const watched = new Set();
+  const frames = new Set();
+  const observers = new Map();
+  const stops = [];
   const observer = new MutationObserver((mutations) => {
     state.mutationCount += mutations.length;
     state.lastMutationAt = Date.now();
+    for (const m of mutations) {
+      const owner = m.target.nodeType === 9 ? m.target : m.target.ownerDocument;
+      if (owner !== document) state.frameMutationCount++;
+      if (m.type !== 'childList') continue;
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1) discover(n);
+      }
+    }
   });
-  observer.observe(document, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    characterData: true,
-  });
+  // The page observer of a document when it can give settle its roots, else
+  // null; settle then scans for open roots itself and says so.
+  function observerOf(doc) {
+    if (observers.has(doc)) return observers.get(doc);
+    let g = null;
+    try { g = doc.defaultView ? doc.defaultView[opts.key] : null; } catch (e) { g = null; }
+    const usable = !!g && !g.dead && typeof g.version === 'number' && g.version >= opts.minVersion &&
+      g.coverage === 'full' && typeof g.liveRoots === 'function' &&
+      typeof g.shadowRootOf === 'function' && typeof g.onRoot === 'function';
+    if (!usable) {
+      g = null;
+      openOnly = true;
+    }
+    observers.set(doc, g);
+    return g;
+  }
+  function frameDoc(frame) {
+    try { return frame.contentDocument || null; } catch (e) { return null; }
+  }
+  // Watch every root reachable from start (a document, a shadow root, or an
+  // added element), iteratively and each root once. With the observer, a
+  // document's roots come from it and only iframes are looked for inside a
+  // root; without it, every element is checked for an open root.
+  function discover(start) {
+    const queue = [start];
+    for (let i = 0; i < queue.length; i++) {
+      const scope = queue[i];
+      const isRoot = scope.nodeType === 9 || scope.nodeType === 11;
+      if (isRoot) {
+        if (watched.has(scope)) continue;
+        watched.add(scope);
+        try {
+          observer.observe(scope, { subtree: true, childList: true, attributes: true, characterData: true });
+        } catch (e) {}
+      }
+      const g = observerOf(scope.nodeType === 9 ? scope : scope.ownerDocument);
+      if (scope.nodeType === 9 && g) {
+        try {
+          for (const r of g.liveRoots()) queue.push(r);
+          stops.push(g.onRoot((r) => {
+            if (!done) {
+              try { discover(r); } catch (e) {}
+            }
+          }));
+        } catch (e) {}
+      }
+      let els;
+      try { els = scope.querySelectorAll(isRoot && g ? 'iframe' : '*'); } catch (e) { continue; }
+      if (!isRoot) els = [scope].concat(Array.from(els));
+      for (const el of els) {
+        if (!(isRoot && g)) {
+          let sr = el.shadowRoot;
+          if (!sr && g) {
+            try { sr = g.shadowRootOf(el); } catch (e) { sr = null; }
+          }
+          if (sr) queue.push(sr);
+        }
+        if (el.tagName === 'IFRAME') {
+          frames.add(el);
+          const doc = frameDoc(el);
+          if (doc) queue.push(doc);
+        }
+      }
+    }
+  }
+  // A frame that loaded a new document since it was seen: watch the new one.
+  function refreshFrames() {
+    for (const frame of frames) {
+      const doc = frameDoc(frame);
+      if (doc && !watched.has(doc)) discover(doc);
+    }
+  }
+  // Frames in the page now whose document cannot be read: cross-origin (or
+  // sandboxed without same-origin). A frame counts while it is connected to
+  // the top document or to a frame document reachable from it.
+  function crossOriginFrames() {
+    if (frames.size === 0) return 0;
+    const live = new Set([document]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const frame of frames) {
+        if (!frame.isConnected || !live.has(frame.ownerDocument)) continue;
+        const doc = frameDoc(frame);
+        if (doc && !live.has(doc)) {
+          live.add(doc);
+          grew = true;
+        }
+      }
+    }
+    let count = 0;
+    for (const frame of frames) {
+      if (frame.isConnected && live.has(frame.ownerDocument) && !frameDoc(frame)) count++;
+    }
+    return count;
+  }
+  discover(document);
   const start = Date.now();
   return new Promise((resolve) => {
     function finish(settled) {
+      done = true;
       observer.disconnect();
+      for (const stop of stops) {
+        try { stop(); } catch (e) {}
+      }
       const result = {
         settled: settled,
         duration_ms: Date.now() - start,
         mutation_count: state.mutationCount,
       };
+      if (state.frameMutationCount > 0) result.frame_mutation_count = state.frameMutationCount;
+      const unobserved = {};
+      const hints = [];
+      const hidden = crossOriginFrames();
+      if (hidden > 0) {
+        unobserved.cross_origin_frames = hidden;
+        hints.push(opts.framesHint);
+      }
+      if (openOnly) {
+        unobserved.shadow_roots = 'open-only';
+        hints.push(opts.shadowHint);
+      }
+      if (hints.length > 0) {
+        unobserved.hint = hints.join(' ');
+        result.unobserved = unobserved;
+      }
       if (location.href !== startUrl) result.url_changed = location.href;
       if (document.activeElement !== startActiveEl) result.focus_moved = true;
       resolve(result);
@@ -1422,6 +1582,7 @@ export function buildSettleJs(opts: SettleOpts): string {
       return;
     }
     (function check() {
+      refreshFrames();
       const now = Date.now();
       const quietFor = now - state.lastMutationAt;
       if (quietFor >= opts.settleMs) {
