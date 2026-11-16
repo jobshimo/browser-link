@@ -330,19 +330,20 @@ describe('describeAdminError', () => {
 describe('nextAction', () => {
   const request = { id: 'multiAgent', value: true };
 
-  test('needsConfirm shows the preview with confirm/cancel and prepares the confirmed re-send', () => {
+  test('needsConfirm shows the preview with confirm/cancel and re-sends the same action with its code', () => {
     const result: AdminActionResult = {
       ok: true,
       applied: false,
       needsConfirm: true,
       preview: 'Activar multi-agente para todos los agentes',
+      code: 'k1',
     };
     expect(nextAction(result, request, UI_ES, ES)).toEqual({
       type: 'confirm',
       preview: 'Activar multi-agente para todos los agentes',
       confirmLabel: 'Confirmar',
       cancelLabel: 'Cancelar',
-      resend: { id: 'multiAgent', value: true, confirm: true },
+      resend: { id: 'multiAgent', value: true, code: 'k1' },
     });
   });
 
@@ -367,6 +368,28 @@ describe('nextAction', () => {
     ).toEqual({ type: 'applied', message: 'Cambiado', output: ['ok: port 9876'], refresh: true });
   });
 
+  test("a refused code shows the server's own sentence, in either language", () => {
+    for (const [error, ui, t] of [
+      [
+        'This confirmation is no longer valid: it expired, was already used or was for a different change. Nothing was changed; try again.',
+        UI_ES,
+        EN,
+      ],
+      [
+        'Esta confirmación ya no es válida: caducó, ya se usó o correspondía a otro cambio. No se cambió nada; vuelva a intentarlo.',
+        UI_ES,
+        ES,
+      ],
+    ] as const) {
+      expect(
+        nextAction({ ok: false, error }, { id: 'language', value: 'en', code: 'k' }, ui, t),
+      ).toEqual({
+        type: 'error',
+        message: error,
+      });
+    }
+  });
+
   test('an error is shown, not-connected localised', () => {
     expect(nextAction({ ok: false, error: 'unknown action' }, request, UI_ES, ES)).toEqual({
       type: 'error',
@@ -384,11 +407,12 @@ describe('nextAction', () => {
       applied: false,
       needsConfirm: true,
       preview: 'p',
+      code: 'k2',
     };
     const action = nextAction(result, { id: 'instructions.install:claude-code' }, UI_ES, ES);
     expect(action.type === 'confirm' && action.resend).toEqual({
       id: 'instructions.install:claude-code',
-      confirm: true,
+      code: 'k2',
     });
   });
 });
@@ -400,6 +424,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     applied: false,
     needsConfirm: true,
     preview: 'Cambiar idioma a English',
+    code: 'k3',
   };
 
   test('starts idle', () => {
@@ -418,7 +443,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     ).toEqual({
       phase: 'confirming',
       preview: 'Cambiar idioma a English',
-      pendingRequest: { id: 'language', value: 'en', confirm: true },
+      pendingRequest: { id: 'language', value: 'en', code: 'k3' },
     });
   });
 
@@ -444,7 +469,7 @@ describe('reduceConfirm (idle → confirming → applied | error)', () => {
     expect(
       reduceConfirm(confirming, {
         type: 'result',
-        request: { ...request, confirm: true },
+        request: { ...request, code: 'k3' },
         result: { ok: true, applied: true },
         ui: UI_ES,
         t: ES,

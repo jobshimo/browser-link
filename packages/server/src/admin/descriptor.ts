@@ -286,7 +286,8 @@ function button(id: string, label: string, writesDisk: boolean): AdminItem {
 function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
   const items: AdminItem[] = [
     button('doctor', t.doctor, false),
-    button('updates.check', t.updatesCheck, false),
+    // Writes update-check.json, so it previews and needs its code (D11).
+    button('updates.check', t.updatesCheck, true),
   ];
   for (const s of input.instructions) {
     // A corrupt file is the CLI's business: the installers refuse to touch it.

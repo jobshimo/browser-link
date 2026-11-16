@@ -345,7 +345,7 @@ describe('buildAdminState — setup section', () => {
 });
 
 describe('buildAdminState — diagnose section', () => {
-  test('ids and kinds: doctor and update check are read-only buttons, writers are flagged', () => {
+  test('ids and kinds: doctor is a read-only button; the update check and the writers are flagged', () => {
     const sec = section(buildAdminState(input()), 'diagnose');
     expect(shape(sec)).toEqual([
       ['doctor', 'button'],
@@ -358,7 +358,8 @@ describe('buildAdminState — diagnose section', () => {
       ['selfUpdate', 'readout'],
     ]);
     expect(item(sec, 'doctor').writesDisk).toBe(false);
-    expect(item(sec, 'updates.check').writesDisk).toBe(false);
+    // It writes update-check.json, so it previews and needs its code (D11).
+    expect(item(sec, 'updates.check').writesDisk).toBe(true);
     expect(item(sec, 'instructions.install.claude').writesDisk).toBe(true);
     expect(item(sec, 'instructions.uninstall.claude').writesDisk).toBe(true);
     expect(item(sec, 'client.register.claude').writesDisk).toBe(false);
