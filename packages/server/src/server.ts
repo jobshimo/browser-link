@@ -33,7 +33,7 @@ import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
-import { findPidOnPort, imageNameOf, isNodeImage } from './commands/free-port.js';
+import { inspectPortHolder } from './lifecycle/port-holder.js';
 import {
   probeVersion,
   retryBind,
@@ -192,14 +192,12 @@ function startWithConfig(cfg: BrowserLinkConfig): Promise<void> {
     election: {
       localVersion: VERSION,
       probe: () => probeVersion(WS_PORT),
-      findOwnerPid: () => findPidOnPort(WS_PORT),
+      // The OS-verified holder of the port: the take-over kills only it, and
+      // only when it is a browser-link server (D14).
+      inspectHolder: () => Promise.resolve(inspectPortHolder(WS_PORT)),
       processStartTime: (pid) => readProcessStartTime(pid),
       installedCodeMtime: () => readInstalledCodeMtime(),
-      stepDown: async (pid) => {
-        // Same safety rule as `browser-link stop`: only a node process.
-        if (!isNodeImage(imageNameOf(pid))) throw new Error(`PID ${pid} is not a node process`);
-        await stepDownProcess(pid);
-      },
+      stepDown: (pid) => stepDownProcess(pid),
     },
     log,
   });

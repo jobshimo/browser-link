@@ -1,6 +1,8 @@
 import { request } from 'node:http';
 import { platform } from 'node:os';
+import { BRIDGE_PORT } from '../bridge/protocol.js';
 import { compareSemver } from '../utils/semver.js';
+import { LOOKUP_FAILURE_TEXT, type PortHolder } from './port-holder.js';
 import {
   defaultExecFile,
   listProcesses as listProcessesReal,
@@ -30,7 +32,11 @@ import {
  *
  * Deferring is the existing behaviour: proxy mode with multi-agent on, the
  * existing error otherwise. Taking over = step the owner down (a kill: old
- * primaries understand no step-down frame), then bind with retries. The hard
+ * primaries understand no step-down frame), then bind with retries. The kill
+ * happens only when the operating system confirms that the process really
+ * holds the port and is a browser-link server (`port-holder.ts`, owner
+ * decision D14); otherwise nothing is killed and the reason names the holder
+ * and the command that stops it. The hard
  * kill closes the extension sockets uncleanly, which is exactly what the
  * extension's auto-reconnect waits for.
  *
@@ -127,22 +133,71 @@ export function decideElection(input: DecideInput): ElectionOutcome {
 export interface ElectionDeps {
   localVersion: string;
   probe: () => Promise<VersionProbe>;
-  /** Pid listening on the bridge port; used only when `/version` is absent. */
-  findOwnerPid: () => number | null;
+  /** The holder of the bridge port as the operating system reports it
+   * (`port-holder.ts`). A take-over steps down only this process, and only
+   * when it is a browser-link server (owner decision D14). */
+  inspectHolder: () => Promise<PortHolder>;
   processStartTime: (pid: number) => number | null;
   installedCodeMtime: () => number | null;
   stepDown: (pid: number) => Promise<void>;
 }
 
-/** Probe, decide and, on take-over, step the owner down. The caller binds
- * afterwards (see `retryBind`). A step-down that fails turns into `defer`. */
+const BRIDGE_ADDRESS = `127.0.0.1:${BRIDGE_PORT}`;
+
+/**
+ * Why a take-over of `target` must not kill anything, or null when the OS
+ * confirms `target` holds the bridge port and is a browser-link server.
+ * `claimed` is the pid the holder reported in its `/version` body (null
+ * when it has none): it is only compared, never trusted.
+ */
+export function takeOverRefusal(
+  target: number,
+  claimed: number | null,
+  holder: PortHolder,
+): string | null {
+  const nothing = 'Nothing was stopped.';
+  const claim =
+    claimed === null ? '' : ` The server answering there says it is PID ${claimed}, unverified.`;
+  if (holder.kind === 'free') {
+    return `take-over refused: the operating system lists no process listening on ${BRIDGE_ADDRESS}. ${nothing}`;
+  }
+  if (holder.kind === 'unknown') {
+    return (
+      `take-over refused: could not verify through the operating system which process holds ` +
+      `${BRIDGE_ADDRESS} (${LOOKUP_FAILURE_TEXT[holder.reason]}).${claim} ${nothing} ` +
+      `Run \`browser-link stop\` to look again.`
+    );
+  }
+  const { pid, imageName } = holder.process;
+  const who = `PID ${pid} (${imageName ?? 'name unknown'})`;
+  const command = `To stop it: browser-link stop --pid ${pid}`;
+  if (pid !== target) {
+    return (
+      `take-over refused: the server answering on ${BRIDGE_ADDRESS} says it is PID ${target}, ` +
+      `but the operating system says ${who} holds the port. ${nothing} ${command}`
+    );
+  }
+  if (!holder.isBrowserLink) {
+    return (
+      `take-over refused: ${who} holds ${BRIDGE_ADDRESS}, but the operating system does not ` +
+      `show it as a browser-link server. ${nothing} ${command}`
+    );
+  }
+  return null;
+}
+
+/** Probe, decide and, on take-over, step the owner down once the OS
+ * verified it. The caller binds afterwards (see `retryBind`). A refused or
+ * failed step-down turns into `defer`. */
 export async function runElection(deps: ElectionDeps): Promise<ElectionOutcome> {
   const probe = await deps.probe();
+  let holder: PortHolder | null = null;
   let ownerPid: number | null = null;
   let ownerStartedAt: number | null = null;
   let installedCodeMtime: number | null = null;
   if (probe.kind === 'no-endpoint') {
-    ownerPid = deps.findOwnerPid();
+    holder = await deps.inspectHolder();
+    ownerPid = holder.kind === 'process' ? holder.process.pid : null;
     ownerStartedAt = ownerPid === null ? null : deps.processStartTime(ownerPid);
     installedCodeMtime = deps.installedCodeMtime();
   }
@@ -154,6 +209,10 @@ export async function runElection(deps: ElectionDeps): Promise<ElectionOutcome> 
     installedCodeMtime,
   });
   if (outcome.decision !== 'take-over' || outcome.pid === null) return outcome;
+  holder ??= await deps.inspectHolder();
+  const claimed = probe.kind === 'version' ? probe.info.pid : null;
+  const refusal = takeOverRefusal(outcome.pid, claimed, holder);
+  if (refusal !== null) return { decision: 'defer', pid: outcome.pid, reason: refusal };
   try {
     await deps.stepDown(outcome.pid);
     return outcome;

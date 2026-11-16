@@ -300,6 +300,19 @@ function isBridgeSubcommand(subcommand: string | null): boolean {
   return subcommand === null || subcommand === 'start';
 }
 
+/** Whether a command line runs a browser-link server (the MCP server or the
+ * TUI, never a short-lived subcommand such as `stop` or `doctor`). */
+export function isBridgeCommand(command: string): boolean {
+  const match = matchBrowserLinkCommand(command);
+  return match !== null && isBridgeSubcommand(match.subcommand);
+}
+
+/** Whether an executable name or path is one of the runtimes browser-link
+ * runs under, by its exact base name: `nodemon` or `node-debug` are not. */
+export function isRuntimeName(name: string): boolean {
+  return RUNTIMES.has(basename(name));
+}
+
 /** `selfPid` and every ancestor reachable through `ppid` in `list`. */
 export function selfAndAncestors(list: readonly ProcessEntry[], selfPid: number): Set<number> {
   const byPid = new Map(list.map((p) => [p.pid, p]));
@@ -319,11 +332,7 @@ export function findBridgeProcesses(
   selfPid: number,
 ): ProcessEntry[] {
   const excluded = selfAndAncestors(list, selfPid);
-  return list.filter((p) => {
-    if (excluded.has(p.pid)) return false;
-    const match = matchBrowserLinkCommand(p.command);
-    return match !== null && isBridgeSubcommand(match.subcommand);
-  });
+  return list.filter((p) => !excluded.has(p.pid) && isBridgeCommand(p.command));
 }
 
 export function listBridgeProcesses(

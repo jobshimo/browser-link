@@ -61,6 +61,7 @@ interface CliI18n {
   unknownCommand: (cmd: string) => string;
   unknownClient: (val: string) => string;
   unknownInstructionsAction: (val: string) => string;
+  invalidPid: (val: string) => string[];
   instructionsInstallNext: string;
   instructionsUninstallDone: string;
   instructionsModeHeader: string;
@@ -210,10 +211,17 @@ Uso:
   browser-link instructions uninstall
   browser-link instructions uninstall --client <id>
                                 Quita el bloque, deja el resto del archivo intacto.
-  browser-link stop             Mata el proceso browser-link que esté ocupando el
-                                puerto ${BRIDGE_PORT} (útil si un cliente MCP quedó zombie)
-                                y todos los demás servidores browser-link vivos,
-                                una línea por proceso.
+  browser-link stop             Detiene el servidor browser-link que ocupa el puerto
+                                ${BRIDGE_PORT} (útil si un cliente MCP dejó un proceso
+                                zombie), solo cuando el sistema operativo confirma
+                                que ocupa el puerto y ejecuta browser-link. Cualquier
+                                otro proceso, y cualquier otro proceso browser-link,
+                                sigue en ejecución y se muestra con el comando
+                                siguiente.
+  browser-link stop --pid <PID> Muestra ese proceso tal como lo informa el sistema
+                                operativo y lo detiene, sin tocar ningún otro. Debe
+                                ocupar un puerto de browser-link o ejecutarse como
+                                servidor browser-link.
   browser-link about            Muestra la explicación completa.
   browser-link version          Muestra la versión instalada (también: --version, -v).
                                 Es inmediato: no lee la configuración.
@@ -370,10 +378,15 @@ Usage:
   browser-link instructions uninstall --client <id>
                                 Remove the block, leaving the rest of the file
                                 intact.
-  browser-link stop             Kill the browser-link process holding port ${BRIDGE_PORT}
-                                (useful when an MCP client left a zombie behind)
-                                and every other live browser-link server, one
-                                line per process.
+  browser-link stop             Stop the browser-link server holding port ${BRIDGE_PORT}
+                                (useful when an MCP client left a zombie behind),
+                                only once the operating system confirms that it
+                                holds the port and runs browser-link. Any other
+                                holder, and any other browser-link process, is
+                                left running and listed with the command below.
+  browser-link stop --pid <PID> Show that process as the operating system reports
+                                it and stop it, and nothing else. It must hold a
+                                browser-link port or run as a browser-link server.
   browser-link about            Show the full explanation of what this is and how it works.
   browser-link version          Print the installed version (also: --version, -v).
                                 Instant: does not load the config.
@@ -405,6 +418,10 @@ const CLI_I18N: Record<Language, CliI18n> = {
     unknownClient: (val) => `Unknown --client value: ${val}. Use claude, opencode or copilot.`,
     unknownInstructionsAction: (val) =>
       `Unknown instructions action: ${val}. Use install, uninstall or no arg for status.`,
+    invalidPid: (val) => [
+      `browser-link stop: --pid needs a process number (got ${val})`,
+      'Nothing was done. See: browser-link stop --help',
+    ],
     instructionsInstallNext:
       'Restart your MCP client so it picks up the new instructions on its next session.',
     instructionsUninstallDone: 'Block removed. The rest of each file was left untouched.',
@@ -424,6 +441,10 @@ const CLI_I18N: Record<Language, CliI18n> = {
       `Valor de --client desconocido: ${val}. Usá claude, opencode o copilot.`,
     unknownInstructionsAction: (val) =>
       `Acción de instructions desconocida: ${val}. Usá install, uninstall, o ningún argumento para status.`,
+    invalidPid: (val) => [
+      `browser-link stop: --pid necesita un número de proceso (se recibió ${val})`,
+      'No se hizo nada. Consulte: browser-link stop --help',
+    ],
     instructionsInstallNext:
       'Reiniciá tu cliente MCP para que tome las nuevas instrucciones en la próxima sesión.',
     instructionsUninstallDone: 'Bloque eliminado. El resto del archivo quedó intacto.',
@@ -528,6 +549,14 @@ export function commandHelp(fullHelp: string, command: string): string {
     if (inBlock) picked.push(line);
   }
   return [lines[headerAt], ...picked].join('\n');
+}
+
+/** A process number as typed after `--pid`: digits only, a positive safe
+ * integer; null for anything else. */
+function parsePid(text: string): number | null {
+  if (!/^\d+$/.test(text)) return null;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
 export async function dispatch(argv: string[]): Promise<void> {
@@ -721,8 +750,15 @@ export async function dispatch(argv: string[]): Promise<void> {
       return;
     }
     case 'stop': {
-      const { runFreePort } = await import('./commands/free-port.js');
-      const result = runFreePort(language);
+      const pidText = args.value('pid');
+      const pid = pidText === undefined ? undefined : parsePid(pidText);
+      if (pid === null) {
+        for (const l of t.invalidPid(pidText ?? '')) console.error(l);
+        process.exit(2);
+        return;
+      }
+      const { runFreePort, runStopPid } = await import('./commands/free-port.js');
+      const result = pid === undefined ? runFreePort(language) : runStopPid(pid, language);
       console.log(result.message);
       if (!result.ok) process.exit(2);
       return;

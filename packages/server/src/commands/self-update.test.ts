@@ -7,7 +7,13 @@ import { resolveNpmCliJs, runSelfUpdate, type SelfUpdateProgress } from './self-
 // Never run the real `stop` from a test: since 0.41.0 it ends every live
 // browser-link process on the machine, not only the port owner.
 vi.mock('./free-port.js', () => ({
-  runFreePort: vi.fn(() => ({ ok: true, pid: null, imageName: null, message: 'free' })),
+  runFreePort: vi.fn(() => ({
+    portState: 'free',
+    ok: true,
+    pid: null,
+    imageName: null,
+    message: 'free',
+  })),
 }));
 
 /**
@@ -123,6 +129,46 @@ describe('runSelfUpdate', () => {
       'installing',
       'done',
     ]);
+  });
+
+  /* D14: the stop step shows "not running" only when the OS lookup ran and
+   * found the port free; a failed lookup is shown as it is. */
+  async function stopMessageFor(result: object): Promise<string | undefined> {
+    const { runFreePort } = await import('./free-port.js');
+    vi.mocked(runFreePort).mockReturnValueOnce(result as ReturnType<typeof runFreePort>);
+    const events: SelfUpdateProgress[] = [];
+    await runSelfUpdate('latest', 'en', (e) => events.push(e), {
+      packageName: '@example/pkg',
+      spawnImpl: vi.fn(() =>
+        makeFakeChild({ exitCode: 0 }),
+      ) as unknown as typeof import('node:child_process').spawn,
+    });
+    return events.find((e) => e.stage === 'stopping-primary')?.message;
+  }
+
+  test('a failed port lookup is shown as it is, never as "not running"', async () => {
+    const lookupFailed =
+      '✗ Could not check through the operating system which process holds port ' +
+      '127.0.0.1:17529: the lookup timed out. Nothing was stopped.';
+    const message = await stopMessageFor({
+      ok: false,
+      portState: 'unknown',
+      pid: null,
+      imageName: null,
+      message: lookupFailed,
+    });
+    expect(message).toBe(lookupFailed);
+  });
+
+  test('a lookup that found the port free still shows "not running"', async () => {
+    const message = await stopMessageFor({
+      ok: true,
+      portState: 'free',
+      pid: null,
+      imageName: null,
+      message: 'Port 127.0.0.1:17529 is already free — nothing to stop.',
+    });
+    expect(message).toBe('No primary running — port is already free.');
   });
 
   test('returns ok=false and captures stderr when npm install exits non-zero', async () => {

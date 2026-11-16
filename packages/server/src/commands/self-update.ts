@@ -255,7 +255,9 @@ export async function runSelfUpdate(
     let stopMessage: string;
     try {
       const freed = runFreePort(language);
-      stopMessage = freed.pid == null ? t.notRunning : freed.message;
+      // "Not running" only when the OS lookup ran and found the port free;
+      // anything else (a failed lookup included) is shown as `stop` said it.
+      stopMessage = freed.portState === 'free' ? t.notRunning : freed.message;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       stopMessage = t.stopFailed(reason);

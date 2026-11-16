@@ -340,6 +340,25 @@ describe('parseCommandLine: help, subcommands and refusals', () => {
     });
   });
 
+  test('stop takes one value option, --pid, in both spellings, and nothing else (D14)', () => {
+    for (const argv of [['--pid', '4242'], ['--pid=4242']]) {
+      const line = parseCommandLine('stop', argv);
+      expect(line?.kind === 'ok' && line.args.value('pid')).toBe('4242');
+    }
+    const bare = parseCommandLine('stop', []);
+    expect(bare?.kind === 'ok' && bare.args.has('pid')).toBe(false);
+    expect(parseCommandLine('stop', ['--pid'])).toEqual({
+      kind: 'error',
+      path: 'stop',
+      problem: { kind: 'missing-value', option: 'pid' },
+    });
+    expect(parseCommandLine('stop', ['4242'])).toEqual({
+      kind: 'error',
+      path: 'stop',
+      problem: { kind: 'unexpected-argument', token: '4242' },
+    });
+  });
+
   test('an unknown command has no grammar', () => {
     expect(parseCommandLine('nosuchcmd', [])).toBeUndefined();
     expect(parseCommandLine('toString', [])).toBeUndefined();
