@@ -384,7 +384,7 @@ const listDir = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : []);
 /** Chrome's own download list, read from the extension's worker. */
 const chromeDownloads = (cdp, swSession) =>
   cdp.evaluate(
-    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, state: d.state, error: d.error ?? null })))',
+    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, state: d.state, error: d.error ?? null, startTime: d.startTime ?? null })))',
     swSession,
   );
 
@@ -498,6 +498,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
   label = 'browser.download.unrelated';
   t = now();
   const before = listDir(downloadsDir);
+  const waitStart = Date.now();
   const waiting = call(
     'browser.download',
     { tab_id: T, selector: '#idle', timeout_ms: 8000 },
@@ -519,24 +520,25 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
     );
   }
   const answered = await waiting;
+  const waitEnd = Date.now();
   if (answered.error) throw answered.error;
   res = answered.value;
   b = json(res);
   wrong = [];
   const unattributed =
+    b?.ok === false &&
     b?.state === 'interrupted' &&
     b?.chrome_download === 'left_in_chrome' &&
     /capture failed/.test(String(b?.error));
-  const nothingSeen = b?.state === 'timeout' && b?.chrome_download === undefined;
-  if (b?.ok !== false || !(unattributed || nothingSeen)) {
-    wrong.push(
-      'expected ok:false with interrupted + left_in_chrome + "capture failed", or a timeout',
-    );
-  }
   const after = listDir(downloadsDir);
   if (after.join('|') !== before.join('|')) {
     wrong.push(`downloads dir changed from [${before.join(', ')}] to [${after.join(', ')}]`);
   }
+  // Did Chrome itself create the unrelated download during the wait? Its own
+  // list answers (the item's startTime against the wait's wall-clock window);
+  // `null` when the list could not say.
+  let createdDuringWait = null;
+  let harness = null;
   let chromeNote;
   try {
     let item;
@@ -546,9 +548,19 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
       if (!item) await sleep(200);
     }
     if (!item) {
-      wrong.push(`harness: Chrome never listed ${otherUrl}, so nothing was proven`);
-    } else if (item.state === 'interrupted' || item.error) {
-      wrong.push(`the unrelated download was cancelled: ${JSON.stringify(item)}`);
+      createdDuringWait = false;
+      harness = `Chrome never listed ${otherUrl}, so no download was created during the wait`;
+    } else {
+      const started = Date.parse(String(item.startTime));
+      if (Number.isFinite(started)) {
+        createdDuringWait = started >= waitStart - 1000 && started <= waitEnd + 1000;
+        if (!createdDuringWait) {
+          harness = `Chrome lists ${otherUrl} but it started at ${String(item.startTime)}, outside the wait`;
+        }
+      }
+      if (item.state === 'interrupted' || item.error) {
+        wrong.push(`the unrelated download was cancelled: ${JSON.stringify(item)}`);
+      }
     }
     chromeNote = item ? `Chrome kept it (${item.state})` : 'not listed by Chrome';
   } catch (e) {
@@ -559,10 +571,31 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
   } catch {
     // a download tab may close itself
   }
+  // Only the unattributed outcome passes. A timeout is what a capture that
+  // saw nothing answers, so it proves nothing about attribution: it is a
+  // harness failure when no download was created during the wait, and a
+  // product failure when Chrome shows one was.
+  if (!unattributed) {
+    if (createdDuringWait === true) {
+      wrong.push(
+        'Chrome shows the unrelated download was created during the wait, so only the unattributed outcome passes (ok:false, interrupted, left_in_chrome, "capture failed")',
+      );
+    } else {
+      harness ??= `the capture did not answer unattributed (state ${String(b?.state)}) and Chrome's list could not show whether a download was created during the wait`;
+    }
+  }
+  if (harness) {
+    console.log(
+      `${label} note: nothing was proven about attribution (${harness}); outcome ${String(b?.state)}; ${chromeNote}`,
+    );
+    throw downloadFailure(
+      label,
+      `harness: ${harness}${wrong.length ? `; also: ${wrong.join('; ')}` : ''}`,
+      res,
+    );
+  }
   if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
-  console.log(
-    `${label} outcome: ${unattributed ? 'unattributed (interrupted, left_in_chrome)' : 'timeout, nothing seen'}; ${chromeNote}`,
-  );
+  console.log(`${label} outcome: unattributed (interrupted, left_in_chrome); ${chromeNote}`);
   stepDone(label, t);
 }
 
