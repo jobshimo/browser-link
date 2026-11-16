@@ -129,6 +129,26 @@ export function noBoxClickMessage(target: string): string {
   );
 }
 
+/** The error text for a `force` click on a target with no visible box whose
+ * own `click()` could do nothing (the in-page programmatic click reports
+ * `reason: 'not-clickable'`, see `buildProgrammaticClickJs`): a disabled
+ * control (the element or a disabling ancestor fieldset), or an `<option>` /
+ * `<optgroup>`, which `click()` never selects. Nothing was clicked. Shared
+ * by both transports' `performClick`. `target` is the selector or ref as
+ * given. */
+export function notClickableMessage(target: string, why: string): string {
+  if (why === 'option') {
+    return (
+      `Element ${target} is an <option> (or <optgroup>): clicking an option does nothing ` +
+      "and it never selects it, so nothing was clicked; the select's value must be set instead"
+    );
+  }
+  return (
+    `Element ${target} is disabled, so its own click() does nothing and nothing was clicked: ` +
+    'wait until it is enabled, or find the control that enables it'
+  );
+}
+
 /** The error text for a `type` / `press` whose target did not take focus
  * (the in-page resolve reports `reason: 'not-focused'`, see
  * `FOCUS_REFUSAL_JS` in `inpage/builders.ts`): the text or key would have
@@ -300,6 +320,10 @@ export interface WaitForStepResult {
    * condition was never given its full budget. Both perform* implementations
    * (`background.ts`, `cdp/transport.ts`) set this. */
   reason?: string;
+  /** Only on a timeout of a `wait_for` by ref (`visible` / `attached`) whose
+   * element was gone at the last poll: `<ref> not found in document
+   * <doc_id>: the element is gone, take a new snapshot`. */
+  ref_gone?: string;
 }
 
 /** Mirrors the standalone `browser.drag` tool's params exactly (minus
@@ -769,7 +793,9 @@ async function executeLeafStep(
       // a navigation race — a plain timeout is a genuine non-match.
       return {
         ok: false,
-        error: `wait_for: condition not met within timeout (${outcome.result.elapsed_ms}ms, ${outcome.result.checks} checks)`,
+        error:
+          `wait_for: condition not met within timeout (${outcome.result.elapsed_ms}ms, ${outcome.result.checks} checks)` +
+          (outcome.result.ref_gone ? ` — ${outcome.result.ref_gone}` : ''),
       };
     }
     state.lastSettleReason = undefined;

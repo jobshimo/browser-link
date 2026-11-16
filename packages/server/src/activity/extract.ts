@@ -340,13 +340,29 @@ export function buildRow({
   if (hideSensitive === false) return row;
   const verdict = fieldVerdict(tool, result, error);
   if (verdict === 'sensitive') {
-    return hideValueEverywhere(row, secretOf(tool, args), SENSITIVE_PAYLOAD_MARKER);
+    return hideValueEverywhere(row, secretOf(tool, args), SENSITIVE_PAYLOAD_MARKER, recordPayloads);
   }
   if (verdict === 'unknown') {
-    return hideValueEverywhere(row, secretOf(tool, args), UNIDENTIFIED_FIELD_MARKER);
+    return hideValueEverywhere(
+      row,
+      secretOf(tool, args),
+      UNIDENTIFIED_FIELD_MARKER,
+      recordPayloads,
+    );
   }
   return row;
 }
+
+/**
+ * A typed value shorter than this is never searched for as a substring. Text
+ * of one to three characters ("a", "ok", "123") occurs by coincidence in
+ * almost any url, title or error message, and replacing every occurrence
+ * mangles unrelated text (`https://example.com` becomes
+ * `https://ex[field not identified]mple.com`) without proving anything was
+ * hidden. For such a value the free-text columns that could echo it are
+ * replaced whole instead.
+ */
+const MIN_SEARCHABLE_SECRET_LENGTH = 4;
 
 /** The value to look for in the other columns: the text a `type` typed. A
  * `press` sends one key, at most one character of a value, and a single
@@ -358,27 +374,36 @@ function secretOf(tool: string, args: unknown): string | null {
 
 /**
  * Owner decision D13: a row marked sensitive hides the value in EVERY column
- * where it can appear. `payload` is the marker; `url` loses its query string
- * and fragment (a form sent by GET puts every field there, in encodings no
- * list can cover); then the value is replaced by the marker wherever it
- * still appears in `url`, `title`, `selector` and `error`, ignoring case,
- * also URL-encoded, form-encoded and JSON-escaped. Every other column holds
- * no free text.
+ * where it can appear. `payload` is the marker (with payloads off, only the
+ * sensitive marker is kept, as it is not a payload; the not-identified one
+ * becomes null, as before the setting); `url` loses its
+ * query string and fragment (a form sent by GET puts every field there, in
+ * encodings no list can cover); then the value is replaced by the marker
+ * wherever it still appears in `url`, `title`, `selector` and `error`,
+ * ignoring case, also URL-encoded (component and path forms), form-encoded,
+ * JSON-escaped and in either Unicode normalization form. A value shorter than
+ * `MIN_SEARCHABLE_SECRET_LENGTH` is not searched for: `title` and `error`
+ * become the marker whole. Every other column holds no free text.
  */
 function hideValueEverywhere(
   row: ActivityInput,
   secret: string | null,
   marker: string,
+  recordPayloads: boolean,
 ): ActivityInput {
+  const short = secret !== null && secret.length < MIN_SEARCHABLE_SECRET_LENGTH;
   const scrub = (text: string | null): string | null =>
-    text === null || secret === null ? text : replaceValue(text, secret, marker);
+    text === null || secret === null || short ? text : replaceValue(text, secret, marker);
+  const whole = (text: string | null): string | null => (text === null ? null : marker);
   return {
     ...row,
-    payload: marker,
+    // The sensitive marker is not a payload: it tells the user a sensitive field was typed,
+    // so it stays with payloads off (1.0.0). "Not identified" is stored as null there.
+    payload: recordPayloads || marker === SENSITIVE_PAYLOAD_MARKER ? marker : null,
     url: row.url === null ? null : scrub(withoutQuery(row.url)),
-    title: scrub(row.title),
+    title: short ? whole(row.title) : scrub(row.title),
     selector: scrub(row.selector),
-    error: scrub(row.error),
+    error: short ? whole(row.error) : scrub(row.error),
   };
 }
 
@@ -395,13 +420,22 @@ function escapeRegExp(text: string): string {
  * encodings a URL, a form or a JSON string give it, replaced in one pass. */
 function replaceValue(text: string, secret: string, marker: string): string {
   if (secret.length === 0) return text;
-  const encoded = encodeURIComponent(secret);
-  const forms = new Set([
-    secret,
-    encoded,
-    encoded.replace(/%20/g, '+'),
-    JSON.stringify(secret).slice(1, -1),
-  ]);
+  const forms = new Set<string>();
+  // A page may hold the text in either Unicode normalization form (a title
+  // typed on one platform, echoed by a server that normalizes the other way).
+  for (const variant of new Set([secret, secret.normalize('NFC'), secret.normalize('NFD')])) {
+    forms.add(variant);
+    forms.add(JSON.stringify(variant).slice(1, -1));
+    try {
+      const encoded = encodeURIComponent(variant);
+      forms.add(encoded);
+      forms.add(encoded.replace(/%20/g, '+'));
+      // The way a browser writes it inside a URL path: `@`, `!` and `:` stay.
+      forms.add(encodeURI(variant));
+    } catch {
+      // A lone surrogate has no URL form; the literal forms above still apply.
+    }
+  }
   const pattern = new RegExp(
     [...forms]
       .sort((a, b) => b.length - a.length)

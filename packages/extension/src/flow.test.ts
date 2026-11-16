@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
+  notClickableMessage,
   notWalkedSuffix,
   refFailureMessage,
   retargetedClickMessage,
@@ -230,6 +231,38 @@ describe('runFlow — happy path', () => {
       step_kind: 'click',
       error: noBoxClickMessage('#x'),
     });
+  });
+
+  test('a forced click step whose own click() cannot do anything fails with the standalone message', async () => {
+    for (const why of ['disabled', 'option']) {
+      const deps = makeDeps({
+        performClick: vi.fn(
+          async () =>
+            ({
+              ok: false,
+              error: notClickableMessage('#x', why),
+            }) satisfies ActionOutcome<ClickStepResult>,
+        ),
+      });
+      const result = await runFlow([{ click: { selector: '#x', force: true } }], deps);
+      expect(result).toMatchObject({
+        ok: false,
+        failed_step: 0,
+        step_kind: 'click',
+        error: notClickableMessage('#x', why),
+      });
+    }
+  });
+
+  test('notClickableMessage says nothing was clicked and, for an option, that the select value must be set', () => {
+    expect(notClickableMessage('#x', 'disabled')).toBe(
+      'Element #x is disabled, so its own click() does nothing and nothing was clicked: ' +
+        'wait until it is enabled, or find the control that enables it',
+    );
+    expect(notClickableMessage('#o', 'option')).toBe(
+      'Element #o is an <option> (or <optgroup>): clicking an option does nothing ' +
+        "and it never selects it, so nothing was clicked; the select's value must be set instead",
+    );
   });
 });
 

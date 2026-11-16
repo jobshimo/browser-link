@@ -386,7 +386,16 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     headings = found.slice(opts.offset.headings, opts.offset.headings + HEADING_LIMIT);
     const textRoot = (root === document) ? (document.body || document) : root;
     allText = (textRoot && textRoot.innerText) ? String(textRoot.innerText) : '';
-    visibleText = allText.slice(opts.offset.text, opts.offset.text + TEXT_LIMIT);
+    // The window never ends between the two halves of a surrogate pair: back
+    // off one code unit, so the next page starts on the whole character and
+    // the pages concatenate to the text exactly.
+    let textEnd = opts.offset.text + TEXT_LIMIT;
+    if (textEnd < allText.length) {
+      const before = allText.charCodeAt(textEnd - 1);
+      const after = allText.charCodeAt(textEnd);
+      if (before >= 0xD800 && before <= 0xDBFF && after >= 0xDC00 && after <= 0xDFFF) textEnd--;
+    }
+    visibleText = allText.slice(opts.offset.text, textEnd);
   }
   // What a diff compares headings and text by: the first windows, whatever
   // the offset, exactly as before offsets existed.
@@ -435,6 +444,23 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     report.hint = hints.join(' ');
     return report;
   }
+  // An offset given and NOTHING returned in any requested part: the empty
+  // answer is caused by the offsets and could be read as "the page has
+  // nothing". Say which parts were asked at or past their end. Null when any
+  // part returned items (the normal paging path, where finished parts sit at
+  // offset == total) and for a call without an offset.
+  function pastEnd(parts) {
+    const past = {};
+    let any = false;
+    for (const part of parts) {
+      if (part.returned > 0) return null;
+      if (part.from > 0 && part.from >= part.total) {
+        past[part.name] = { offset: part.from, total: part.total };
+        any = true;
+      }
+    }
+    return any ? past : null;
+  }
   function fullResult() {
     const shown = interactive.slice(
       opts.offset.interactive,
@@ -455,6 +481,8 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
     if (notice) result.notice = notice;
     const cut = cutReport(parts, null);
     if (cut) result.truncated = cut;
+    const past = pastEnd(parts);
+    if (past) result.offset_past_end = past;
     withDocId(result);
     if (snapshotId) result.snapshot_id = snapshotId;
     return result;
@@ -555,6 +583,8 @@ export function buildSnapshotJs(opts: SnapshotOpts = {}): string {
   }
   const cut = cutReport(parts, skipped);
   if (cut) diff.truncated = cut;
+  const past = pastEnd(parts);
+  if (past) diff.offset_past_end = past;
   return diff;
 })()
 `;
@@ -889,6 +919,11 @@ export function buildFindJs(opts: FindOpts): string {
         return candidate;
       }),
     };
+    // An offset at or past the end lists nothing: say so, so the empty list
+    // is not read as "no candidates".
+    if (from > 0 && from >= matches.length) {
+      result.offset_past_end = { candidates: { offset: from, total: matches.length } };
+    }
     // Owner decision D6: the count is exact (every match was scanned).
     const omitted = matches.length - from - shown.length;
     if (omitted > 0) {
@@ -1007,8 +1042,12 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
  * coordinates. The transports run it where they would dispatch the mouse
  * events, so the settle mark and the `expect` baseline are taken before it
  * exactly as before a pointer click. An element without its own `click()`
- * (SVG) gets the same single bubbling `click` event. Returns:
+ * (SVG) gets the same single bubbling `click` event. A target on which
+ * `click()` cannot do anything is refused before it is called. Returns:
  *   { ok: true }
+ *   { ok: false, reason: 'not-clickable', why: 'disabled' | 'option' }
+ *     (`:disabled`, which includes a disabling ancestor fieldset; an
+ *     `<option>` or `<optgroup>`, which click() never selects)
  *   or the target failure of `resolveTarget`, unchanged.
  */
 export function buildProgrammaticClickJs(opts: TargetOpts): string {
@@ -1022,6 +1061,17 @@ export function buildProgrammaticClickJs(opts: TargetOpts): string {
   const target = resolveTarget(opts);
   if (!target.ok) return target;
   const el = target.el;
+  // click() does nothing on these: refuse before calling it, so the tool
+  // never reports as clicked something that cannot have been.
+  const tagName = el.tagName ? el.tagName.toLowerCase() : '';
+  if (tagName === 'option' || tagName === 'optgroup') {
+    return { ok: false, reason: 'not-clickable', why: 'option' };
+  }
+  let disabled = false;
+  try {
+    disabled = el.matches(':disabled');
+  } catch (e) {}
+  if (disabled) return { ok: false, reason: 'not-clickable', why: 'disabled' };
   if (typeof el.click === 'function') {
     el.click();
   } else {
@@ -1357,9 +1407,13 @@ export function actionFailure(
  * `target` is a selector string (the source built for it is unchanged) or
  * `{ ref }` (spec v4 §6.3). A ref resolves through the page observer on
  * every tick, re-resolving a replaced node by its semantic key; a stale ref
- * counts as a MISSING element (`attached` false, `detached` true, `hidden`
- * true, `visible` false), so waiting for a row to disappear by its ref
- * works. Without the observer a ref can never resolve, so the probe answers
+ * counts as a MISSING element for `detached` and `hidden` (true), so waiting
+ * for a row to disappear by its ref works. For `visible` and `attached` it
+ * answers `{ ok: false, reason: 'ref-stale', ref, doc_id, doc_changed }`:
+ * `doc_changed` true means the ref belongs to another document (it can never
+ * come back, the caller fails at once); false means the node is only gone and
+ * may be re-rendered (the caller keeps polling and, at the timeout, says the
+ * element is gone). Without the observer a ref can never resolve, so the probe answers
  * `{ ok: false, reason: 'observer-unavailable' }` instead of a boolean and
  * the caller fails the wait rather than reporting a misleading match.
  */
@@ -1379,6 +1433,19 @@ export function buildWaitForSelectorJs(
   const opts = ${refOptsJson};
   const target = resolveTarget(opts);
   if (!target.ok && target.reason === 'observer-unavailable') return target;
+  if (!target.ok && (opts.condition === 'visible' || opts.condition === 'attached')) {
+    // A gone ref can never be visible or attached as it stands: answer the
+    // failure (not false) so the caller says so instead of a bare timeout.
+    // doc_changed: the ref belongs to another document (its prefix is not the
+    // current observer's), which can never come back; false: the node is
+    // only detached and may be re-rendered, so the caller keeps polling.
+    target.doc_changed = !(
+      pageObserver &&
+      typeof pageObserver.doc_id === 'string' &&
+      opts.ref.startsWith(pageObserver.doc_id.slice(0, 6) + ':e')
+    );
+    return target;
+  }
   const el = target.ok ? target.el : null;
   ${WAIT_FOR_CONDITION_JS}
 })()`;

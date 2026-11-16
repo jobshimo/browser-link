@@ -59,6 +59,7 @@ import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
+  notClickableMessage,
   notFocusedMessage,
   refFailureMessage,
   notWalkedSuffix,
@@ -1594,6 +1595,7 @@ type ProgrammaticClickResult =
   | { ok: true }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found'; not_walked?: string }
+  | { ok: false; reason: 'not-clickable'; why: string }
   | RefResolveFailure;
 
 /** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
@@ -1783,6 +1785,9 @@ async function performClick(
         buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
       );
       if (!clicked.ok) {
+        if (clicked.reason === 'not-clickable') {
+          return { ok: false, error: notClickableMessage(ref ?? selector ?? '', clicked.why) };
+        }
         const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
         return {
           ok: false,
@@ -2020,7 +2025,15 @@ async function performWaitFor(
     // Set when a ref probe reports that the page has no observer: the ref
     // can never resolve, so the wait fails instead of timing out (or, for
     // `detached` / `hidden`, matching a ref it never looked up).
-    const refProbe = { unavailable: false };
+    // `stale` is set while the last probe found the ref's element gone
+    // (`visible` / `attached` only; `hidden` / `detached` count it as met);
+    // `docChanged` says the ref belongs to another document, which can never
+    // come back, so the wait fails at once instead of polling.
+    const refProbe: {
+      unavailable: boolean;
+      stale: { reason: string; doc_id?: string } | null;
+      docChanged: boolean;
+    } = { unavailable: false, stale: null, docChanged: false };
     if (waitSelector !== undefined) {
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
@@ -2041,9 +2054,21 @@ async function performWaitFor(
         try {
           const result = await evaluateInTab(tabId, expr);
           if (typeof result === 'object' && result !== null) {
+            const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
+            if (probe.reason === 'ref-stale') {
+              refProbe.stale = {
+                reason: 'ref-stale',
+                ...(typeof probe.doc_id === 'string' ? { doc_id: probe.doc_id } : {}),
+              };
+              refProbe.docChanged = probe.doc_changed === true;
+              // A node that is merely detached may be re-attached or
+              // re-rendered, which is what the wait may be for: keep polling.
+              return refProbe.docChanged;
+            }
             refProbe.unavailable = true;
             return true;
           }
+          refProbe.stale = null;
           return result === true;
         } catch {
           return false;
@@ -2096,6 +2121,17 @@ async function performWaitFor(
         error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
       };
     }
+    // A ref of another document can never match: fail now with the owner's
+    // sentence. (A merely detached node keeps the timeout result, below.)
+    if (refProbe.stale !== null && params.ref !== undefined && refProbe.docChanged) {
+      return { ok: false, error: refFailureMessage(refProbe.stale, params.ref) ?? '' };
+    }
+    // The element the ref names was gone at the last poll: the timeout result
+    // keeps its shape and carries the sentence in `ref_gone`.
+    const refGone =
+      refProbe.stale !== null && params.ref !== undefined && !cancelled && !matched
+        ? (refFailureMessage(refProbe.stale, params.ref) ?? '').replace(/^ref-stale: /, '')
+        : '';
 
     // 'cancelled' is deliberately distinct from 'timeout': the step
     // executor turns a timeout into a flow FAILURE (with a recovery
@@ -2109,6 +2145,7 @@ async function performWaitFor(
           elapsed_ms: elapsedMs,
           checks,
           reason: cancelled ? 'cancelled' : 'timeout',
+          ...(refGone ? { ref_gone: refGone } : {}),
         };
     return { ok: true, result };
   } catch (err) {

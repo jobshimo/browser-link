@@ -278,6 +278,33 @@ describe('a sensitive row hides the value in every column, or none (D13)', () =>
     expect(JSON.stringify(viaTool)).not.toContain(SECRET);
   });
 
+  test('payloads off: a sensitive row keeps its marker, a not-identified row stores null, both scrubbed', async () => {
+    const notFound = (async () => {
+      throw new Error('Element not found: #pw');
+    }) as BrowserToolDeps['callBrowserTool'];
+    for (const failing of [sensitiveFailure, notFound]) {
+      await handleBrowserTool(
+        'browser.type',
+        TYPE_ARGS,
+        { ...echoDeps(failing), recordActivityPayloads: false },
+        CALLER,
+      ).catch(() => undefined);
+    }
+    const rows = storedRows();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.payload).sort()).toEqual([null, SENSITIVE_PAYLOAD_MARKER].sort());
+    for (const row of rows) {
+      expect(row.url).toBe('https://bank.example.com/login');
+      expect(JSON.stringify(row)).not.toContain(SECRET);
+    }
+    expect(rows.map((r) => r.title).sort()).toEqual(
+      [
+        `Wrong password ${UNIDENTIFIED_FIELD_MARKER}`,
+        `Wrong password ${SENSITIVE_PAYLOAD_MARKER}`,
+      ].sort(),
+    );
+  });
+
   test('by default a type whose field was never identified (not found) hides its value too', async () => {
     const notFound = (async () => {
       throw new Error('Element not found: #pw');

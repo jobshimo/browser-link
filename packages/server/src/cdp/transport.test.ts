@@ -1325,6 +1325,39 @@ describe('callCdpTool — page observer', () => {
     expect(order).toEqual([]);
   });
 
+  test.each([
+    ['disabled', /is disabled, so its own click\(\) does nothing and nothing was clicked/],
+    ['option', /is an <option> \(or <optgroup>\): clicking an option does nothing/],
+  ])(
+    'a force click whose programmatic click cannot do anything (%s) fails with a clear message and no mouse events',
+    async (why, message) => {
+      const order: string[] = [];
+      const programmatic = buildProgrammaticClickJs({ selector: '#hidden' });
+      const { port, targetId } = await startFakeTarget({
+        'Input.dispatchMouseEvent': (params) => {
+          order.push(`input:${(params as { type: string }).type}`);
+          return {};
+        },
+        'Runtime.evaluate': (params) => {
+          const expression = (params as { expression: string }).expression;
+          if (expression === programmatic) {
+            order.push('programmatic');
+            return { result: { value: { ok: false, reason: 'not-clickable', why } } };
+          }
+          if (expression.includes("reason: 'invalid-selector'")) {
+            return { result: { value: { ok: true, no_box: true, tag: 'button' } } };
+          }
+          return { result: { value: true } };
+        },
+      });
+      grantAccess(port);
+      await expect(
+        callCdpTool(`cdp:${targetId}`, 'click', { selector: '#hidden', force: true }),
+      ).rejects.toThrow(message);
+      expect(order).toEqual(['programmatic']);
+    },
+  );
+
   test('expect is checked around a programmatic click exactly as around a pointer click (D4)', async () => {
     let clicked = false;
     const mouse: string[] = [];
@@ -1716,6 +1749,104 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     ).rejects.toThrow(
       'observer-unavailable: ref k3x9ab:e7 cannot be resolved without the page observer',
     );
+  });
+
+  /** Answers the ref probe with `answers` in order (the last one repeats). */
+  function sequencePage(answers: unknown[], seen: string[]): Record<string, Handler> {
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"ref":"k3x9ab:e7"')) {
+          const value = answers[Math.min(seen.length, answers.length - 1)];
+          seen.push(expression);
+          return { result: { value } };
+        }
+        return { result: { value: true } };
+      },
+    };
+  }
+  const GONE_MESSAGE =
+    'ref-stale: k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot';
+
+  test('wait_for visible/attached by a ref of another document fails at once with the ref-stale message', async () => {
+    for (const condition of ['visible', 'attached']) {
+      const seen: string[] = [];
+      const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: true }], seen));
+      grantAccess(page.port);
+      await expect(
+        callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+          ref: 'k3x9ab:e7',
+          condition,
+          timeout_ms: 5_000,
+        }),
+      ).rejects.toThrow(GONE_MESSAGE);
+      expect(seen).toHaveLength(1);
+      resetConnectionsForTest();
+      wss?.close();
+    }
+  });
+
+  test('wait_for by a ref whose node is only detached keeps polling, then times out with the usual result plus ref_gone', async () => {
+    const seen: string[] = [];
+    const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: false }], seen));
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'visible',
+      timeout_ms: 300,
+      poll_interval_ms: 50,
+    });
+    expect(result).toEqual({
+      matched: false,
+      elapsed_ms: expect.any(Number),
+      checks: expect.any(Number),
+      reason: 'timeout',
+      ref_gone: 'k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    });
+    expect(seen.length).toBeGreaterThan(1);
+  });
+
+  test('a wait_for step in a flow on a gone ref fails as before, the failure text carrying the sentence', async () => {
+    const page = await startFakeTarget(sequencePage([{ ...STALE, doc_changed: false }], []));
+    grantAccess(page.port);
+    const result = (await callCdpTool(`cdp:${page.targetId}`, 'flow', {
+      steps: [{ wait_for: { ref: 'k3x9ab:e7', condition: 'attached', timeout_ms: 200 } }],
+    })) as { ok: boolean; error: string; failed_step: number };
+    expect(result).toMatchObject({ ok: false, failed_step: 0 });
+    expect(result.error).toMatch(
+      /^wait_for: condition not met within timeout \(\d+ms, \d+ checks\) — /,
+    );
+    expect(result.error).toContain(
+      'k3x9ab:e7 not found in document doc-1: the element is gone, take a new snapshot',
+    );
+  });
+
+  test('wait_for by a ref that is re-rendered while waiting matches (the polling is what makes it legitimate)', async () => {
+    const seen: string[] = [];
+    const page = await startFakeTarget(
+      sequencePage(
+        [{ ...STALE, doc_changed: false }, { ...STALE, doc_changed: false }, true],
+        seen,
+      ),
+    );
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'attached',
+      timeout_ms: 5_000,
+      poll_interval_ms: 50,
+    });
+    expect(result).toMatchObject({ matched: true, checks: 3 });
+  });
+
+  test('wait_for hidden/detached on a gone ref stays true', async () => {
+    const page = await startFakeTarget(sequencePage([true], []));
+    grantAccess(page.port);
+    const result = await callCdpTool(`cdp:${page.targetId}`, 'wait_for', {
+      ref: 'k3x9ab:e7',
+      condition: 'hidden',
+    });
+    expect(result).toMatchObject({ matched: true, checks: 1 });
   });
 
   test('click by selector is unchanged (no ref or reresolved key)', async () => {

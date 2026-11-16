@@ -915,6 +915,51 @@ describe('buildProgrammaticClickJs (the force click on a target with no box, D4)
     expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#dot' }))).toEqual({ ok: true });
     expect(seen).toEqual(['dot']);
   });
+
+  test('a disabled control (itself, or through a disabling ancestor fieldset) is refused and clicked on nothing', () => {
+    document.body.innerHTML =
+      '<button id="own" disabled>Own</button>' +
+      '<fieldset disabled><div><button id="inherited">Inherited</button></div></fieldset>' +
+      '<button id="enabled">Enabled</button>';
+    const seen: string[] = [];
+    const record = (e: Event): void => {
+      seen.push((e.target as Element).id);
+    };
+    document.addEventListener('click', record, true);
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#own' }))).toEqual({
+      ok: false,
+      reason: 'not-clickable',
+      why: 'disabled',
+    });
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#inherited' }))).toEqual({
+      ok: false,
+      reason: 'not-clickable',
+      why: 'disabled',
+    });
+    expect(seen).toEqual([]);
+    // An enabled control is still clicked, as before.
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#enabled' }))).toEqual({
+      ok: true,
+    });
+    expect(seen).toEqual(['enabled']);
+    document.removeEventListener('click', record, true);
+  });
+
+  test('an <option> or <optgroup> is refused: click() never selects it, so nothing is reported as clicked', () => {
+    document.body.innerHTML =
+      '<select id="s"><optgroup id="g" label="G"><option id="o1" value="a">A</option>' +
+      '<option id="o2" value="b">B</option></optgroup></select>';
+    const select = document.getElementById('s') as HTMLSelectElement;
+    const before = select.value;
+    for (const id of ['#o2', '#g']) {
+      expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: id }))).toEqual({
+        ok: false,
+        reason: 'not-clickable',
+        why: 'option',
+      });
+    }
+    expect(select.value).toBe(before);
+  });
 });
 
 describe('buildTypeResolveJs', () => {
@@ -1966,6 +2011,50 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
         'so there is no point to drag to: make it visible first',
     });
   });
+
+  test('an endpoint that is an empty rect at the top viewport origin is no box, on either side (same guard as click)', () => {
+    const ok = document.createElement('div');
+    ok.id = 'ok';
+    document.body.appendChild(ok);
+    giveBox(ok, { left: 10, top: 10, width: 20, height: 20 });
+    const empty = document.createElement('div');
+    empty.id = 'empty';
+    document.body.appendChild(empty);
+    giveBox(empty, { left: 0, top: 0, width: 0, height: 0 });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#empty', to_selector: '#ok' })),
+    ).toEqual({
+      err:
+        'from_selector #empty has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag from: make it visible first',
+    });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#ok', to_selector: '#empty' })),
+    ).toEqual({
+      err:
+        'to_selector #empty has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag to: make it visible first',
+    });
+  });
+
+  test('a real box that only touches the origin still drags; an empty rect elsewhere is a box', () => {
+    const corner = document.createElement('div');
+    corner.id = 'corner';
+    document.body.appendChild(corner);
+    giveBox(corner, { left: -10, top: -10, width: 20, height: 20 });
+    const dot = document.createElement('div');
+    dot.id = 'dot';
+    document.body.appendChild(dot);
+    giveBox(dot, { left: 40, top: 50, width: 0, height: 0 });
+    const result = evalExpr<DragProbeResult>(
+      buildDragProbeJs({ from_selector: '#corner', to_selector: '#dot' }),
+    );
+    expect('err' in result).toBe(false);
+    if ('err' in result) return;
+    expect(result.from).toEqual({ x: 0, y: 0, in_viewport: true });
+    expect(result.to.x).toBe(40);
+    expect(result.to.y).toBe(50);
+  });
 });
 
 describe('buildElementRectJs', () => {
@@ -2911,10 +3000,31 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     expect(wait('visible')).toBe(false);
     expect(wait('hidden')).toBe(true);
     removeSecond();
-    expect(wait('attached')).toBe(false);
+    // Gone: `detached` and `hidden` are met; `visible` and `attached` answer
+    // the failure (not false) so the caller can say the element is gone.
+    const gone = { ok: false, reason: 'ref-stale', ref, doc_id: docId, doc_changed: false };
+    expect(wait('attached')).toEqual(gone);
     expect(wait('detached')).toBe(true);
     expect(wait('hidden')).toBe(true);
-    expect(wait('visible')).toBe(false);
+    expect(wait('visible')).toEqual(gone);
+  });
+
+  test('wait_for by a ref of another document: doc_changed says it can never come back', () => {
+    install(BUTTONS);
+    const foreign = 'zzzzzz:e1';
+    expect(docId.slice(0, 6)).not.toBe('zzzzzz');
+    for (const condition of ['visible', 'attached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref: foreign }, condition))).toEqual({
+        ok: false,
+        reason: 'ref-stale',
+        ref: foreign,
+        doc_id: docId,
+        doc_changed: true,
+      });
+    }
+    for (const condition of ['hidden', 'detached'] as const) {
+      expect(evalExpr(buildWaitForSelectorJs({ ref: foreign }, condition))).toBe(true);
+    }
   });
 
   test('wait_for by ref without the observer answers observer-unavailable, never a boolean', () => {
@@ -3423,6 +3533,85 @@ describe('snapshot and find say when they cut (D6)', () => {
       (r.candidates as Json[]).map((c) => c.selector),
     );
     expect(selectors).toEqual(range(0, 12).map((i) => '#b' + i));
+  });
+
+  test('snapshot: offsets that leave every requested part empty say so; any part still returning items, an offset inside the list or no offset adds nothing', () => {
+    addButtons(3);
+    addHeadings(2);
+    const atEnd = evalExpr<Json>(
+      buildSnapshotJs({ only_interactive: true, offset: { interactive: 3 } }),
+    );
+    expect(atEnd.interactive).toEqual([]);
+    same(atEnd.offset_past_end, { interactive: { offset: 3, total: 3 } });
+    // The headings still return items: the empty interactive part is paging, not an empty page.
+    const stillItems = evalExpr<Json>(buildSnapshotJs({ offset: { interactive: 3 } }));
+    expect(stillItems.interactive).toEqual([]);
+    expect(stillItems.headings).toHaveLength(2);
+    expect(stillItems).not.toHaveProperty('offset_past_end');
+    const beyond = evalExpr<Json>(
+      buildSnapshotJs({ offset: { interactive: 50, headings: 2, text: 9 } }),
+    );
+    same(beyond.offset_past_end, {
+      interactive: { offset: 50, total: 3 },
+      headings: { offset: 2, total: 2 },
+      text: { offset: 9, total: 0 },
+    });
+    // Normal paging: finished parts sit at offset == total while text still returns.
+    setBodyText('abc');
+    const paging = evalExpr<Json>(
+      buildSnapshotJs({ offset: { interactive: 3, headings: 2, text: 1 } }),
+    );
+    expect(paging.text).toBe('bc');
+    expect(paging).not.toHaveProperty('offset_past_end');
+    setBodyText('');
+    const inside = evalExpr<Json>(buildSnapshotJs({ offset: { interactive: 2, headings: 1 } }));
+    expect(inside).not.toHaveProperty('offset_past_end');
+    expect((inside.interactive as Json[]).map((e) => e.selector)).toEqual(['#b2']);
+    expect(evalExpr<Json>(buildSnapshotJs({}))).not.toHaveProperty('offset_past_end');
+    expect(evalExpr<Json>(buildSnapshotJs({ offset: {} }))).not.toHaveProperty('offset_past_end');
+  });
+
+  test('find: an offset at or past the end of the candidates says so; inside the list or absent, nothing is added', () => {
+    addButtons(8, 'Save');
+    const atEnd = evalExpr<Json>(buildFindJs({ text: 'Save', offset: { candidates: 8 } }));
+    expect(atEnd.candidates).toEqual([]);
+    same(atEnd.offset_past_end, { candidates: { offset: 8, total: 8 } });
+    expect(atEnd).not.toHaveProperty('truncated');
+    const inside = evalExpr<Json>(buildFindJs({ text: 'Save', offset: { candidates: 7 } }));
+    expect(inside).not.toHaveProperty('offset_past_end');
+    expect((inside.candidates as Json[]).map((c) => c.selector)).toEqual(['#b7']);
+    expect(evalExpr<Json>(buildFindJs({ text: 'Save' }))).not.toHaveProperty('offset_past_end');
+  });
+
+  test('text: a window never ends between the halves of a surrogate pair; the pages concatenate to the text', () => {
+    const full = 'a'.repeat(3999) + '😀' + 'b'.repeat(100);
+    expect(full.charCodeAt(3999)).toBe(0xd83d);
+    setBodyText(full);
+    const first = evalExpr<Json>(buildSnapshotJs({}));
+    expect(first.text).toBe('a'.repeat(3999));
+    same(first.truncated, {
+      text: 102,
+      next_offset: { text: 3999 },
+      hint: SNAPSHOT_CUT_HINT,
+    });
+    const second = evalExpr<Json>(buildSnapshotJs({ offset: { text: 3999 } }));
+    expect(second.text).toBe('😀' + 'b'.repeat(100));
+    expect(second).not.toHaveProperty('truncated');
+    expect((first.text as string) + (second.text as string)).toBe(full);
+  });
+
+  test('text: a pair that ends exactly on the window, or a cut with no pair at the boundary, is cut as before', () => {
+    const whole = 'a'.repeat(3998) + '😀' + 'b'.repeat(10);
+    setBodyText(whole);
+    const ends = evalExpr<Json>(buildSnapshotJs({}));
+    expect(ends.text).toBe(whole.slice(0, 4000));
+    same((ends.truncated as Json).next_offset, { text: 4000 });
+    const plain = 'a'.repeat(4000) + '😀';
+    setBodyText(plain);
+    const cut = evalExpr<Json>(buildSnapshotJs({}));
+    expect(cut.text).toBe('a'.repeat(4000));
+    same((cut.truncated as Json).next_offset, { text: 4000 });
+    expect((cut.truncated as Json).text).toBe(2);
   });
 
   describe('with since (diff)', () => {
