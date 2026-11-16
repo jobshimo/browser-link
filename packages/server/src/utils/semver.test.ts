@@ -54,4 +54,59 @@ describe('compareSemver', () => {
     expect(() => compareSemver('1.2.x', '1.2.0')).not.toThrow();
     expect(compareSemver('1.2.x', '1.2.0')).toBe(0);
   });
+
+  describe('pre-releases (semver 2.0)', () => {
+    test('a pre-release ranks below its release', () => {
+      expect(compareSemver('1.1.0-beta.1', '1.1.0')).toBeLessThan(0);
+      expect(compareSemver('1.1.0-rc.2', '1.1.0')).toBeLessThan(0);
+      expect(compareSemver('1.1.0', '1.1.0-rc.2')).toBeGreaterThan(0);
+    });
+
+    test('a pre-release of a higher core still beats a lower release', () => {
+      expect(compareSemver('1.1.0-rc.1', '1.0.9')).toBeGreaterThan(0);
+    });
+
+    test('numeric identifiers compare numerically', () => {
+      expect(compareSemver('1.1.0-beta.2', '1.1.0-beta.11')).toBeLessThan(0);
+    });
+
+    test('alphanumeric identifiers compare lexically (ASCII)', () => {
+      expect(compareSemver('1.1.0-alpha', '1.1.0-beta')).toBeLessThan(0);
+      expect(compareSemver('1.1.0-Beta', '1.1.0-alpha')).toBeLessThan(0);
+    });
+
+    test('numeric identifiers rank below alphanumeric ones', () => {
+      expect(compareSemver('1.1.0-1', '1.1.0-alpha')).toBeLessThan(0);
+    });
+
+    test('a shorter set ranks lower when all preceding identifiers are equal', () => {
+      expect(compareSemver('1.1.0-alpha', '1.1.0-alpha.1')).toBeLessThan(0);
+    });
+
+    test('the semver 2.0 spec precedence chain holds', () => {
+      const chain = [
+        '1.0.0-alpha',
+        '1.0.0-alpha.1',
+        '1.0.0-alpha.beta',
+        '1.0.0-beta',
+        '1.0.0-beta.2',
+        '1.0.0-beta.11',
+        '1.0.0-rc.1',
+        '1.0.0',
+      ];
+      for (let i = 0; i < chain.length - 1; i++) {
+        expect(compareSemver(chain[i]!, chain[i + 1]!)).toBeLessThan(0);
+        expect(compareSemver(chain[i + 1]!, chain[i]!)).toBeGreaterThan(0);
+      }
+    });
+
+    test('build metadata is ignored', () => {
+      expect(compareSemver('1.1.0+build.5', '1.1.0')).toBe(0);
+      expect(compareSemver('1.1.0-rc.1+a', '1.1.0-rc.1+b')).toBe(0);
+    });
+
+    test('equal pre-releases are equal', () => {
+      expect(compareSemver('1.1.0-beta.1', '1.1.0-beta.1')).toBe(0);
+    });
+  });
 });

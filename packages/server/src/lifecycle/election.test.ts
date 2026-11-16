@@ -670,25 +670,44 @@ describe('take-over kills only an OS-verified browser-link holder (D14)', () => 
   });
 });
 
-/* Reported, unverified claim, checked and NOT fixed here: compareSemver
- * (utils/semver.ts) reads a dotted pre-release suffix as an extra number,
- * and the take-over decides "older" with it. This pins what it does today. */
-describe('pre-release ordering of the take-over (today, unchanged)', () => {
-  const at = (version: string): VersionProbe => ({
-    kind: 'version',
-    info: { name: 'x', version, pid: 9, startedAt: 's', installedVersion: null },
+describe('pre-release versions in the election', () => {
+  test('a starting pre-release does not take over a stable primary of the same number', () => {
+    const outcome = decideElection({
+      local: '1.1.0-rc.1',
+      probe: {
+        kind: 'version',
+        info: {
+          name: 'browser-link',
+          version: '1.1.0',
+          pid: 4242,
+          startedAt: '2026-11-16T00:00:00.000Z',
+          installedVersion: null,
+        },
+      },
+      ownerPid: null,
+      ownerStartedAt: null,
+      installedCodeMtime: null,
+    });
+    expect(outcome.decision).toBe('defer');
   });
-  const base = { ownerPid: null, ownerStartedAt: null, installedCodeMtime: null };
 
-  test('a starting 1.1.0-beta.1 takes over a running 1.1.0 (it ranks the beta above the release)', () => {
-    expect(decideElection({ ...base, local: '1.1.0-beta.1', probe: at('1.1.0') }).decision).toBe(
-      'take-over',
-    );
-  });
-
-  test('a starting 1.1.0 defers to a running 1.1.0-beta.1', () => {
-    expect(decideElection({ ...base, local: '1.1.0', probe: at('1.1.0-beta.1') }).decision).toBe(
-      'defer',
-    );
+  test('a stable start takes over a running pre-release of the same number', () => {
+    const outcome = decideElection({
+      local: '1.1.0',
+      probe: {
+        kind: 'version',
+        info: {
+          name: 'browser-link',
+          version: '1.1.0-rc.1',
+          pid: 4242,
+          startedAt: '2026-11-16T00:00:00.000Z',
+          installedVersion: null,
+        },
+      },
+      ownerPid: null,
+      ownerStartedAt: null,
+      installedCodeMtime: null,
+    });
+    expect(outcome.decision).toBe('take-over');
   });
 });
