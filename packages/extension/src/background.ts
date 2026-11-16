@@ -55,7 +55,11 @@ import {
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
-import { captureAround, createDownloadCapture } from './download-capture.js';
+import {
+  captureAround,
+  createDownloadCapture,
+  type TabDownloadSignals,
+} from './download-capture.js';
 import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
@@ -3173,23 +3177,38 @@ async function handleDialogRespond(
  * so only one `browser.download` may wait for a download at a time. */
 const downloadCapture = createDownloadCapture(chrome.downloads);
 
-/** The tab's origin for `mayComeFrom`, or undefined when it has none worth
- * matching (opaque `null` origins, unparseable URLs). */
-function downloadOriginOf(url: string): string | undefined {
-  try {
-    const origin = new URL(url).origin;
-    return origin === 'null' ? undefined : origin;
-  } catch {
-    return undefined;
-  }
+/** How long a captured download stays held after the wait, beyond the
+ * download's own budget: the server's fetch gets what the wait left plus one
+ * bridge slack (10 s), then writes and sends `download_settle`. A hold nobody
+ * settles is released untouched (see `download-capture.ts`). */
+const DOWNLOAD_HOLD_SLACK_MS = 30_000;
+
+/** The clicked tab's own `Page.downloadWillBegin` reports, read from the
+ * debugger session already attached to it (`Page.enable` at connect). */
+function tabDownloadSignals(tabId: number): TabDownloadSignals {
+  return {
+    subscribe(onDownloadWillBegin) {
+      const handler = (source: chrome.debugger.Debuggee, method: string, params?: object): void => {
+        if (source.tabId !== tabId || method !== 'Page.downloadWillBegin') return;
+        const url = (params as { url?: unknown } | undefined)?.url;
+        if (typeof url === 'string') onDownloadWillBegin(url);
+      };
+      chrome.debugger.onEvent.addListener(handler);
+      return () => {
+        chrome.debugger.onEvent.removeListener(handler);
+      };
+    },
+  };
 }
 
 /**
  * `browser.download`'s selector mode: arm the capture, click, and wait for
- * the download the click starts. The capture cancels that download before
- * Chrome can show "Save as" (see `download-capture.ts`) and hands its URL
- * back; the server then fetches the bytes in the page and writes the file.
- * A click that starts nothing within `timeout_ms` answers `state: "timeout"`.
+ * the download the click starts. Only a download the tab itself reported is
+ * taken; it is held (never cancelled here) and its URL handed back; the
+ * server fetches the bytes in the page, writes the file, then sends
+ * `download_settle`. A download that cannot be tied to the tab answers
+ * `state: "unattributed"` and is left alone; nothing at all answers
+ * `state: "timeout"`.
  */
 async function handleDownloadCapture(
   tabId: number,
@@ -3203,24 +3222,42 @@ async function handleDownloadCapture(
     return { kind: 'tool.response', id: msg.id, ok: false, error: 'download: timeout_ms required' };
   }
   const timeoutMs = p.timeout_ms;
-  // Narrow the capture to downloads that may come from this tab's origin —
-  // `chrome.downloads` items carry no tab id (see `mayComeFrom`).
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  const origin = tab?.url ? downloadOriginOf(tab.url) : undefined;
   const outcome = await captureAround(
     downloadCapture,
-    { timeoutMs, ...(origin ? { origin } : {}) },
+    { timeoutMs, holdMs: timeoutMs + DOWNLOAD_HOLD_SLACK_MS, tab: tabDownloadSignals(tabId) },
     // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
     () => performClick(tabId, { selector, settle_ms: 0 }),
   );
   if (!outcome.ok) {
     return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
   }
+  const result =
+    outcome.outcome.state === 'captured'
+      ? { state: 'captured', ...outcome.outcome.download }
+      : { state: outcome.outcome.state };
+  return { kind: 'tool.response', id: msg.id, ok: true, result };
+}
+
+/** The server's word on a held download: `saved` true only when the file was
+ * written. Answers what became of Chrome's own download. */
+async function handleDownloadSettle(
+  msg: ToolRequestMessage,
+  p: Record<string, unknown>,
+): Promise<ExtensionToServer> {
+  if (typeof p.download_id !== 'number' || typeof p.saved !== 'boolean') {
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: 'download_settle: download_id and saved required',
+    };
+  }
+  const chromeDownload = await downloadCapture.settle(p.download_id, p.saved);
   return {
     kind: 'tool.response',
     id: msg.id,
     ok: true,
-    result: outcome.captured ? { state: 'captured', ...outcome.captured } : { state: 'timeout' },
+    result: { chrome_download: chromeDownload },
   };
 }
 
@@ -3442,6 +3479,9 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'download':
         return await handleDownloadCapture(tabId, msg, p);
+
+      case 'download_settle':
+        return await handleDownloadSettle(msg, p);
 
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };

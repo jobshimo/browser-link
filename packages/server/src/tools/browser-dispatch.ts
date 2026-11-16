@@ -1938,12 +1938,28 @@ function handleActivity(args: unknown): unknown {
  * refused before anything reaches the page. */
 const DOWNLOAD_URL_SCHEMES = new Set(['http:', 'https:', 'blob:', 'data:']);
 
+/** The extension's answer to the `download` wire tool. `unattributed`: a
+ * download appeared in Chrome during the wait but could not be tied to the
+ * clicked tab with certainty, so it was left alone. `download_id` is present
+ * when the extension holds the captured download until `download_settle`
+ * (an older extension cancelled it already and sends none). */
 interface DownloadCapture {
-  state: 'captured' | 'timeout';
+  state: 'captured' | 'timeout' | 'unattributed';
+  download_id?: number;
   url?: string;
   filename?: string;
   mime?: string;
 }
+
+/** What became of Chrome's own download in selector mode: `removed` (cancelled
+ * and erased, only after the file was written), `cancelled` (the erase
+ * failed), `left_in_chrome` (untouched: Chrome carries on with it), or
+ * `unknown` (the extension could not be asked). */
+type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'unknown';
+
+type BrowserDownloadResult = DownloadResult & { chrome_download?: ChromeDownloadOutcome };
+
+const CHROME_DOWNLOAD_OUTCOMES = new Set(['removed', 'cancelled', 'left_in_chrome']);
 
 /**
  * `browser.download` — get a file onto disk without ever surfacing Chrome's
@@ -1966,7 +1982,7 @@ async function handleDownload(
   args: unknown,
   deps: BrowserToolDeps,
   caller: AgentCaller,
-): Promise<DownloadResult> {
+): Promise<BrowserDownloadResult> {
   const tabId = requireTabId(args);
   const { selector, url, filename, timeout_ms } = (args ?? {}) as {
     selector?: unknown;
@@ -2038,41 +2054,136 @@ async function runDownload(
   },
   deps: BrowserToolDeps,
   caller: AgentCaller,
-): Promise<DownloadResult> {
-  const { requested, timeoutMs, save } = opts;
+): Promise<BrowserDownloadResult> {
+  const { requested, timeoutMs } = opts;
   const deadline = Date.now() + timeoutMs;
-  let sourceUrl: string;
-  let suggested: string | undefined;
-  let capturedMime: string | null = null;
-  if ('selector' in source) {
-    const capture = (await runAction(
-      'download',
-      tabId,
-      { selector: source.selector, timeout_ms: timeoutMs },
-      deps,
-      caller,
-      timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
-    )) as DownloadCapture;
-    if (capture.state !== 'captured' || typeof capture.url !== 'string') {
-      return {
-        ok: false,
-        state: 'timeout',
-        path: null,
-        filename: requested ?? null,
-        bytes: 0,
-        mime: null,
-        url: null,
-        error: `no download started within ${timeoutMs}ms after clicking ${source.selector}`,
-      };
-    }
-    sourceUrl = capture.url;
-    suggested = capture.filename;
-    capturedMime = capture.mime ?? null;
-  } else {
-    sourceUrl = source.url;
+  if (!('selector' in source)) {
+    return fetchAndSave(tabId, { url: source.url, mime: null }, opts, deadline, deps, caller);
   }
+  const capture = (await runAction(
+    'download',
+    tabId,
+    { selector: source.selector, timeout_ms: timeoutMs },
+    deps,
+    caller,
+    timeoutMs + DOWNLOAD_BRIDGE_SLACK_MS,
+  )) as DownloadCapture;
+  if (capture.state === 'unattributed') {
+    return {
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      filename: requested ?? null,
+      bytes: 0,
+      mime: null,
+      url: null,
+      error: `the capture failed: a download appeared in Chrome within ${timeoutMs}ms after clicking ${source.selector}, but it could not be tied to this tab with certainty, so it was left alone in Chrome (not cancelled, not saved here). If it is the file you want, pass its link as url, or ask the user.`,
+      chrome_download: 'left_in_chrome',
+    };
+  }
+  if (capture.state !== 'captured' || typeof capture.url !== 'string') {
+    return {
+      ok: false,
+      state: 'timeout',
+      path: null,
+      filename: requested ?? null,
+      bytes: 0,
+      mime: null,
+      url: null,
+      error: `no download started within ${timeoutMs}ms after clicking ${source.selector}`,
+    };
+  }
+  const captured = { url: capture.url, suggested: capture.filename, mime: capture.mime ?? null };
+  const downloadId = capture.download_id;
+  // An older extension cancelled its download already and holds nothing.
+  if (typeof downloadId !== 'number') {
+    return fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+  }
+  // The extension holds Chrome's download until told what happened here:
+  // it is cancelled and erased only once the file is written, and released
+  // untouched otherwise — also when the fetch throws.
+  let result: BrowserDownloadResult | undefined;
+  try {
+    result = await fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+  } finally {
+    const chromeDownload = await settleHeldDownload(tabId, downloadId, result?.ok === true, deps);
+    if (result) result = withChromeDownload(result, chromeDownload);
+  }
+  return result;
+}
 
-  const sources = { url: sourceUrl, suggested, ...(requested !== undefined ? { requested } : {}) };
+/** Tell the extension whether the file was written; answer what became of
+ * Chrome's own download. Never throws: a failed settle is `unknown` (the
+ * extension then releases the download untouched when its hold expires). */
+async function settleHeldDownload(
+  tabId: string,
+  downloadId: number,
+  saved: boolean,
+  deps: BrowserToolDeps,
+): Promise<ChromeDownloadOutcome> {
+  try {
+    // Not through the claim check: this is the tail of the same call, and a
+    // refused settle would leave the user's browser holding the download.
+    const answer = (await routeToolCall(
+      'download_settle',
+      tabId,
+      { download_id: downloadId, saved },
+      deps,
+      DOWNLOAD_BRIDGE_SLACK_MS,
+    )) as { chrome_download?: unknown } | undefined;
+    const outcome = answer?.chrome_download;
+    return typeof outcome === 'string' && CHROME_DOWNLOAD_OUTCOMES.has(outcome)
+      ? (outcome as ChromeDownloadOutcome)
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const CHROME_DOWNLOAD_NOTES: Record<ChromeDownloadOutcome, string> = {
+  removed: '',
+  cancelled: '',
+  left_in_chrome:
+    "Chrome's own download was left untouched and continues in Chrome (Chrome may ask the user where to save it).",
+  unknown:
+    "the extension could not be told the outcome; it releases Chrome's own download untouched when its hold expires.",
+};
+
+function withChromeDownload(
+  result: BrowserDownloadResult,
+  chromeDownload: ChromeDownloadOutcome,
+): BrowserDownloadResult {
+  const note = CHROME_DOWNLOAD_NOTES[chromeDownload];
+  if (result.ok || !note) return { ...result, chrome_download: chromeDownload };
+  return {
+    ...result,
+    error: `${result.error ?? 'download did not complete'}; ${note}`,
+    chrome_download: chromeDownload,
+  };
+}
+
+/** Fetch `source.url` in the page within what is left of `deadline` and
+ * write it. */
+async function fetchAndSave(
+  tabId: string,
+  source: { url: string; suggested?: string; mime: string | null },
+  opts: {
+    requested: string | undefined;
+    timeoutMs: number;
+    save: (filename: string, data: Buffer) => string;
+  },
+  deadline: number,
+  deps: BrowserToolDeps,
+  caller: AgentCaller,
+): Promise<BrowserDownloadResult> {
+  const { requested, timeoutMs, save } = opts;
+  const sourceUrl = source.url;
+  const capturedMime = source.mime;
+  const sources = {
+    url: sourceUrl,
+    suggested: source.suggested,
+    ...(requested !== undefined ? { requested } : {}),
+  };
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) {
     return {

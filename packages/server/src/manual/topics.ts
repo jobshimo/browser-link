@@ -34,7 +34,8 @@ export const TOPICS: Record<TopicName, Topic> = {
     title: 'Downloads — never click a download button',
     body: lines(
       'A plain `browser.click` on a Download / Export button can open Chrome\'s native "Save as" dialog (when the user enabled "Ask where to save each file"). Nothing in CDP or the page can press that dialog, so the agent is stuck.',
-      "- `browser.download({ tab_id, selector })` captures the download the click starts, cancels it before Chrome can prompt, fetches the file in the page with the page's credentials and writes it into the human-configured downloads directory.",
+      "- `browser.download({ tab_id, selector })` captures the download the clicked tab starts and holds it so Chrome cannot prompt, fetches the file in the page with the page's credentials and writes it into the human-configured downloads directory. Chrome's own download is cancelled and erased only after the file is written; if the fetch or the write fails it is released untouched (`chrome_download` says which).",
+      '- A download the tab did not report itself (another tab, a new tab the click opened, a cross-origin iframe) is never touched: the call ends `interrupted` with "the capture failed". Pass the link as `url`, or ask the user.',
       '- With a known URL, pass `url` instead (this also works on `cdp:` tabs).',
       '- The result always says what happened: `state: "complete" | "interrupted" | "timeout"` with `path`, `bytes`, `mime`.',
     ),

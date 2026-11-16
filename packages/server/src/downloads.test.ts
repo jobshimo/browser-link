@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,6 +26,53 @@ import {
   writeDownloadFile,
   type FetchDownloadOutcome,
 } from './downloads.js';
+
+/**
+ * Fault injection for the file write: `failAfterBytes` makes the next data
+ * write put that many bytes on disk and then fail like a full disk;
+ * `linkError` makes `linkSync` fail with that code (a file system without
+ * hard links). Everything else is the real `node:fs`.
+ */
+const faults = vi.hoisted(() => ({
+  failAfterBytes: null as number | null,
+  linkError: null as string | null,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs')>();
+  const enospc = () =>
+    Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  return {
+    ...real,
+    writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+      const [path, data, opts] = args;
+      if (faults.failAfterBytes !== null && Buffer.isBuffer(data)) {
+        const n = faults.failAfterBytes;
+        faults.failAfterBytes = null;
+        real.writeFileSync(path, data.subarray(0, n), opts);
+        throw enospc();
+      }
+      real.writeFileSync(...args);
+    },
+    writeSync: (fd: number, buffer: Buffer, ...rest: unknown[]) => {
+      if (faults.failAfterBytes !== null && Buffer.isBuffer(buffer)) {
+        const n = faults.failAfterBytes;
+        faults.failAfterBytes = null;
+        real.writeSync(fd, buffer.subarray(0, n));
+        throw enospc();
+      }
+      return (real.writeSync as (...a: unknown[]) => number)(fd, buffer, ...rest);
+    },
+    linkSync: (...args: Parameters<typeof real.linkSync>) => {
+      if (faults.linkError !== null) {
+        throw Object.assign(new Error(`${faults.linkError}: link not supported`), {
+          code: faults.linkError,
+        });
+      }
+      real.linkSync(...args);
+    },
+  };
+});
 
 /** The two `fetch` init fields the in-page expression sets. */
 interface FetchInit {
@@ -182,7 +236,80 @@ describe('writeDownloadFile', () => {
     dir = mkdtempSync(join(tmpdir(), 'bl-dl-test-'));
   });
   afterEach(() => {
+    faults.failAfterBytes = null;
+    faults.linkError = null;
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a write that fails midway leaves nothing: no file under the final name, no temp file', () => {
+    faults.failAfterBytes = 3;
+    expect(() => writeDownloadFile(dir, 'a.txt', Buffer.from('hello world'))).toThrow(/ENOSPC/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test('a write that fails midway leaves the existing file and its name untouched', () => {
+    writeFileSync(join(dir, 'a.txt'), 'mine');
+    faults.failAfterBytes = 2;
+    expect(() => writeDownloadFile(dir, 'a.txt', Buffer.from('hello'))).toThrow(/ENOSPC/);
+    expect(readdirSync(dir)).toEqual(['a.txt']);
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('mine');
+  });
+
+  test('a successful write leaves only the final file', () => {
+    writeDownloadFile(dir, 'a.txt', Buffer.from('hello'));
+    expect(readdirSync(dir)).toEqual(['a.txt']);
+  });
+
+  test('the (n) naming goes on past several taken names and leaves no temp file', () => {
+    writeFileSync(join(dir, 'a.txt'), '0');
+    writeFileSync(join(dir, 'a (1).txt'), '1');
+    const path = writeDownloadFile(dir, 'a.txt', Buffer.from('two'));
+    expect(path).toBe(join(dir, 'a (2).txt'));
+    expect(readdirSync(dir).sort()).toEqual(['a (1).txt', 'a (2).txt', 'a.txt']);
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('0');
+  });
+
+  test('a name with no extension is uniquified as today', () => {
+    writeFileSync(join(dir, 'README'), 'x');
+    expect(writeDownloadFile(dir, 'README', Buffer.from('y'))).toBe(join(dir, 'README (1)'));
+  });
+
+  test('a file named like a temp file is a user file: never overwritten or removed', () => {
+    // Whatever the user keeps in the directory, including hidden .part files,
+    // is never a candidate and never cleaned up.
+    writeFileSync(join(dir, '.a.txt.part'), 'user');
+    writeDownloadFile(dir, 'a.txt', Buffer.from('new'));
+    expect(readdirSync(dir).sort()).toEqual(['.a.txt.part', 'a.txt']);
+    expect(readFileSync(join(dir, '.a.txt.part'), 'utf8')).toBe('user');
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a symlink at the name (even dangling) is never written through: the next number is used',
+    () => {
+      symlinkSync(join(dir, 'nowhere.txt'), join(dir, 'a.txt'));
+      const path = writeDownloadFile(dir, 'a.txt', Buffer.from('x'));
+      expect(path).toBe(join(dir, 'a (1).txt'));
+      expect(readdirSync(dir).sort()).toEqual(['a (1).txt', 'a.txt']);
+    },
+  );
+
+  test.each(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'])(
+    'without hard links (%s) the exclusive copy keeps the (n) naming and leaves no temp file',
+    (code) => {
+      faults.linkError = code;
+      writeFileSync(join(dir, 'a.txt'), 'mine');
+      const path = writeDownloadFile(dir, 'a.txt', Buffer.from('two'));
+      expect(path).toBe(join(dir, 'a (1).txt'));
+      expect(readFileSync(path, 'utf8')).toBe('two');
+      expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('mine');
+      expect(readdirSync(dir).sort()).toEqual(['a (1).txt', 'a.txt']);
+    },
+  );
+
+  test('a link that fails for another reason fails the write and leaves nothing', () => {
+    faults.linkError = 'EACCES';
+    expect(() => writeDownloadFile(dir, 'a.txt', Buffer.from('x'))).toThrow(/EACCES/);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   test('creates the directory and writes the bytes', () => {

@@ -3415,6 +3415,157 @@ describe('browser.download', () => {
     expect(out.state).toBe('complete');
   });
 
+  describe('selector mode: a held download is settled only after the write (D17)', () => {
+    const held = {
+      state: 'captured',
+      download_id: 41,
+      url: 'https://x.test/export?id=7',
+      filename: 'Export 7.xlsx',
+      mime: 'application/vnd.ms-excel',
+    };
+    const order: string[] = [];
+
+    function heldDeps(opts: {
+      fetch?: () => unknown;
+      settle?: () => unknown;
+      save?: (filename: string, data: Buffer) => string;
+    }) {
+      order.length = 0;
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string, params?: unknown) => {
+        order.push(tool);
+        if (tool === 'download') return held;
+        if (tool === 'download_settle') {
+          if (opts.settle) return opts.settle();
+          const { saved } = params as { saved: boolean };
+          return { chrome_download: saved ? 'removed' : 'left_in_chrome' };
+        }
+        return opts.fetch ? opts.fetch() : { ...okFetch, final_url: held.url };
+      });
+      const saveDownload = vi.fn((filename: string, data: Buffer) => {
+        order.push('save');
+        return opts.save ? opts.save(filename, data) : `/dl/${filename}`;
+      });
+      const { deps } = downloadDeps({ callBrowserTool, saveDownload });
+      return { deps, callBrowserTool, saveDownload };
+    }
+
+    const run = (deps: BrowserToolDeps) =>
+      handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', selector: '#export', timeout_ms: 5000 },
+        deps,
+        TEST_CALLER,
+      );
+
+    test('saved: the file is written first, then the extension is told saved: true', async () => {
+      const { deps, callBrowserTool } = heldDeps({});
+      const out = await run(deps);
+      expect(order).toEqual(['download', 'evaluate', 'save', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]).toEqual([
+        'tab_1',
+        'download_settle',
+        { download_id: 41, saved: true },
+        10_000,
+      ]);
+      expect(out).toEqual({
+        ok: true,
+        state: 'complete',
+        path: '/dl/Export 7.xlsx',
+        filename: 'Export 7.xlsx',
+        bytes: 3,
+        mime: 'text/csv',
+        url: held.url,
+        chrome_download: 'removed',
+      });
+    });
+
+    test('the fetch fails: saved: false, and the result says the original was left in Chrome', async () => {
+      const { deps, callBrowserTool, saveDownload } = heldDeps({
+        fetch: () => ({ state: 'interrupted', bytes: 0, error: 'HTTP 405' }),
+      });
+      const out = await run(deps);
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(order).toEqual(['download', 'evaluate', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+      expect(out).toMatchObject({
+        ok: false,
+        state: 'interrupted',
+        path: null,
+        chrome_download: 'left_in_chrome',
+        error: expect.stringMatching(/^HTTP 405; Chrome's own download was left untouched/),
+      });
+    });
+
+    test('the write fails: saved: false, the original is left in Chrome', async () => {
+      const { deps, callBrowserTool } = heldDeps({
+        save: () => {
+          throw new Error('ENOSPC: no space left on device');
+        },
+      });
+      const out = await run(deps);
+      expect(order).toEqual(['download', 'evaluate', 'save', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+      expect(out).toMatchObject({
+        ok: false,
+        path: null,
+        chrome_download: 'left_in_chrome',
+        error: expect.stringMatching(/could not write the file: ENOSPC.*left untouched/),
+      });
+    });
+
+    test('the fetch hop throws: the held download is still settled with saved: false', async () => {
+      const { deps, callBrowserTool } = heldDeps({
+        fetch: () => {
+          throw new Error('tab closed');
+        },
+      });
+      await expect(run(deps)).rejects.toThrow(/tab closed/);
+      expect(order).toEqual(['download', 'evaluate', 'download_settle']);
+      expect(callBrowserTool.mock.calls[2]?.[2]).toEqual({ download_id: 41, saved: false });
+    });
+
+    test('the settle cannot reach the extension: chrome_download unknown, the saved file still reported', async () => {
+      const { deps } = heldDeps({
+        settle: () => {
+          throw new Error('Unknown tool: download_settle');
+        },
+      });
+      const out = await run(deps);
+      expect(out).toMatchObject({ ok: true, state: 'complete', chrome_download: 'unknown' });
+    });
+
+    test('a capture that could not be attributed: no fetch, no write, no settle, the capture failed', async () => {
+      const callBrowserTool = vi.fn(async () => ({ state: 'unattributed' }));
+      const { deps, saveDownload } = downloadDeps({ callBrowserTool });
+      const out = await run(deps);
+      expect(callBrowserTool).toHaveBeenCalledOnce();
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(out).toEqual({
+        ok: false,
+        state: 'interrupted',
+        path: null,
+        filename: null,
+        bytes: 0,
+        mime: null,
+        url: null,
+        error: expect.stringMatching(
+          /^the capture failed: a download appeared in Chrome within 5000ms after clicking #export, but it could not be tied to this tab with certainty, so it was left alone in Chrome/,
+        ),
+        chrome_download: 'left_in_chrome',
+      });
+    });
+
+    test('an older extension (no download_id) is not sent a settle and gets no chrome_download field', async () => {
+      const callBrowserTool = vi.fn(async (_tab: string, tool: string) =>
+        tool === 'download' ? { ...held, download_id: undefined } : okFetch,
+      );
+      const { deps } = downloadDeps({ callBrowserTool });
+      const out = await run(deps);
+      expect(callBrowserTool.mock.calls.map((c) => c[1])).toEqual(['download', 'evaluate']);
+      expect(out).not.toHaveProperty('chrome_download');
+    });
+  });
+
   test('selector mode with no download within the timeout returns a timeout result, never nothing', async () => {
     const callBrowserTool = vi.fn(async () => ({ state: 'timeout' }));
     const { deps, saveDownload } = downloadDeps({ callBrowserTool });
@@ -3571,6 +3722,17 @@ describe('browser.download', () => {
         filename: 'f.csv',
       });
     });
+  });
+
+  test('the description promises only what the capture does: held, erased after the write, others left alone', () => {
+    const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.download');
+    expect(def?.description).toMatch(/cancelled and erased only after the file is written/);
+    expect(def?.description).toMatch(/released untouched/);
+    expect(def?.description).toMatch(/chrome_download/);
+    expect(def?.description).not.toMatch(/cancelled before it can prompt/);
+    const gotchas = (def as { doc?: { gotchas?: string[] } } | undefined)?.doc?.gotchas ?? [];
+    expect(gotchas.join('\n')).toMatch(/Page\.downloadWillBegin/);
+    expect(gotchas.join('\n')).not.toMatch(/no referrer\) can still be taken/);
   });
 
   test('the schema states the shared budget and the real worst case', () => {

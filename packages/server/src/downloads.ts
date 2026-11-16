@@ -1,4 +1,15 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  copyFileSync,
+  constants as fsConstants,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
 import { sanitizeDownloadsMaxMb } from './config.js';
 
@@ -199,26 +210,120 @@ export function resolveDownloadsDir(cfg: { downloadsDir?: unknown }, dataDir: st
 }
 
 /**
- * Write `data` as `filename` inside `dir`, creating `dir` if needed. Never
- * overwrites: an existing name becomes `name (1).ext`, `name (2).ext`, …
- * (the `wx` flag makes the existence check and the create one atomic step).
- * Returns the absolute path written.
+ * Write `data` as `filename` inside `dir`, creating `dir` if needed, so that
+ * a file under the final name is always a complete one (owner decision D17:
+ * nothing counts as saved until the file is).
+ *
+ *   1. The bytes go to a temporary file in `dir` (same file system, so step 2
+ *      needs no copy), created exclusively under a random name, then fsync'd.
+ *   2. The temporary file is hard-linked to the final name. `link` fails with
+ *      EEXIST when the name exists, file or symlink (a symlink, even a
+ *      dangling one, is never followed), so it is the same never-overwrite
+ *      step the old `wx` create was: an existing name becomes
+ *      `name (1).ext`, `name (2).ext`, … up to (999).
+ *   3. The temporary file is removed on every path, success or failure.
+ *
+ * Same pattern as `installers/safe-file.ts`'s `atomicWrite` (sibling temp
+ * file, fsync, cleanup on failure), but not that function: its `rename`
+ * replaces an existing file, and its home-directory and symlink guards do not
+ * apply here (the human chose `downloads.dir`; `link` never follows a symlink
+ * at the final name).
+ *
+ * Returns the absolute path written. Throws, leaving nothing behind, when
+ * the write fails.
  */
 export function writeDownloadFile(dir: string, filename: string, data: Buffer): string {
   mkdirSync(dir, { recursive: true });
-  const ext = extname(filename);
-  const stem = ext.length > 0 ? filename.slice(0, -ext.length) : filename;
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    const name = attempt === 0 ? filename : `${stem} (${attempt})${ext}`;
-    const path = join(dir, name);
+  const tmp = writeTempFile(dir, data);
+  try {
+    const ext = extname(filename);
+    const stem = ext.length > 0 ? filename.slice(0, -ext.length) : filename;
+    for (let attempt = 0; attempt < 1000; attempt++) {
+      const name = attempt === 0 ? filename : `${stem} (${attempt})${ext}`;
+      const path = join(dir, name);
+      try {
+        placeExclusive(tmp, path);
+        return path;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+    }
+    throw new Error(`could not find a free filename for ${filename} in ${dir}`);
+  } finally {
+    removeQuietly(tmp);
+  }
+}
+
+/** Codes `link` answers on a file system without hard links (FAT/exFAT,
+ * some network shares). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+
+/**
+ * Make `tmp`'s complete content appear under `path`, failing with EEXIST when
+ * `path` exists. Hard link first (atomic). Where hard links are not supported
+ * this falls back to an exclusive copy, which is NOT atomic: the name exists
+ * while the copy runs, so a copy that fails midway is removed here.
+ */
+function placeExclusive(tmp: string, path: string): void {
+  try {
+    linkSync(tmp, path);
+    return;
+  } catch (err) {
+    if (!NO_HARD_LINKS.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+  }
+  try {
+    copyFileSync(tmp, path, fsConstants.COPYFILE_EXCL);
+  } catch (err) {
+    // EEXIST is checked before anything is created: that file is not ours.
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') removeQuietly(path);
+    throw err;
+  }
+}
+
+/** Write `data` to a new temporary file in `dir` and return its path. The
+ * name is random and created exclusively, so it never replaces a user file,
+ * and its pattern (`.browser-link-<hex>.part`) is never a candidate of the
+ * `(n)` naming. On failure the temporary file is removed. */
+function writeTempFile(dir: string, data: Buffer): string {
+  let tmp = '';
+  let fd: number | null = null;
+  for (let attempt = 0; fd === null; attempt++) {
+    tmp = join(dir, `.browser-link-${randomBytes(8).toString('hex')}.part`);
     try {
-      writeFileSync(path, data, { flag: 'wx' });
-      return path;
+      fd = openSync(tmp, 'wx');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 9) throw err;
     }
   }
-  throw new Error(`could not find a free filename for ${filename} in ${dir}`);
+  try {
+    let written = 0;
+    while (written < data.length) {
+      written += writeSync(fd, data, written, data.length - written);
+    }
+    fsyncSync(fd);
+    const closing = fd;
+    fd = null;
+    closeSync(closing);
+    return tmp;
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // already on the error path
+      }
+    }
+    removeQuietly(tmp);
+    throw err;
+  }
+}
+
+function removeQuietly(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch {
+    // already gone, or never created
+  }
 }
 
 /** What the in-page fetch expression resolves to. */
