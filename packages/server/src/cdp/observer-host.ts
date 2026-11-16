@@ -333,8 +333,12 @@ function failureReason(changes: unknown): ObserverChangesFailure {
  * §5.4). With valid changes: attach `changes` (the `SettleChanges` shape),
  * recompute `mutation_count` from the observer's records, and replace
  * `url_changed` / `focus_moved` with the values baselined at the action
- * mark (present only when they changed). Otherwise keep every settle field
- * as `settleSafely` produced it and add `changes: null` plus
+ * mark (present only when they changed). The observer watches the top
+ * document and its shadow roots, not frame documents: the records the settle
+ * wait saw inside same-origin frames (`frame_mutation_count`) are added to
+ * `mutation_count`, and that internal field never reaches the result.
+ * Otherwise keep every settle field as `settleSafely` produced it (its
+ * `mutation_count` already includes frames) and add `changes: null` plus
  * `observer: <reason>`. A `null` settle (settle disabled) stays `null`.
  * Returns a new object; never throws.
  */
@@ -343,8 +347,11 @@ export function mergeSettleChanges(
   changes: unknown,
 ): SettleResultLike | null {
   if (settle === null) return null;
+  const frameRecords = isCount(settle.frame_mutation_count) ? settle.frame_mutation_count : 0;
+  const base: SettleResultLike = { ...settle };
+  delete base.frame_mutation_count;
   if (!isRecord(changes) || changes.ok !== true || !hasChangeCounts(changes)) {
-    return { ...settle, changes: null, observer: failureReason(changes) };
+    return { ...base, changes: null, observer: failureReason(changes) };
   }
   const summary: SettleChanges = {
     records: changes.records as number,
@@ -355,7 +362,7 @@ export function mergeSettleChanges(
     overflow: changes.overflow as number,
   };
   if (changes.truncated === true) summary.truncated = true;
-  const merged: SettleResultLike = { ...settle, mutation_count: summary.records };
+  const merged: SettleResultLike = { ...base, mutation_count: summary.records + frameRecords };
   delete merged.url_changed;
   delete merged.focus_moved;
   if (typeof changes.url_changed === 'string') merged.url_changed = changes.url_changed;
