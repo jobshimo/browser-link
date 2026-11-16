@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   readUpdatePlan,
+  loadsNativeSqlite,
+  neutralCwd,
+  readInstalledPackageVersion,
   resolveNpmCliJs,
   runSelfUpdate,
   SELF_UPDATE_TIMEOUT_MS,
+  type InstalledRead,
   type SelfUpdateProgress,
 } from './self-update.js';
 
@@ -41,6 +46,13 @@ function makeFakeChild(options: { exitCode?: number; stderr?: string } = {}): Ch
   return emitter;
 }
 
+/** The read-back of the installed version, injected: no test runs npm. For
+ * `latest` it answers a fixed version. */
+function readBack(target: string): () => Promise<InstalledRead> {
+  const version = target === 'latest' ? '9.9.9' : target;
+  return () => Promise.resolve({ kind: 'read', version });
+}
+
 describe('runSelfUpdate', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -52,6 +64,8 @@ describe('runSelfUpdate', () => {
 
     const result = await runSelfUpdate('0.5.3', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('0.5.3'),
+      consoleHoldsNativeModule: () => false,
       // Pin the binary AND the shell decision so the assertion below does
       // not depend on the runner OS (production resolves to 'npm.cmd' +
       // shell on Windows, 'npm' with no shell elsewhere). Before this was
@@ -69,6 +83,8 @@ describe('runSelfUpdate', () => {
     expect(events.map((e) => e.stage)).toEqual(['preflight', 'installing', 'done']);
     expect(spawnImpl).toHaveBeenCalledWith('npm', ['install', '-g', '@example/pkg@0.5.3'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      // A neutral directory, never the console's own (S5).
+      cwd: homedir(),
     });
   });
 
@@ -78,6 +94,8 @@ describe('runSelfUpdate', () => {
 
     await runSelfUpdate('0.5.3', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('0.5.3'),
+      consoleHoldsNativeModule: () => false,
       npmCliJs: null,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
@@ -101,6 +119,8 @@ describe('runSelfUpdate', () => {
 
     await runSelfUpdate('0.5.3', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('0.5.3'),
+      consoleHoldsNativeModule: () => false,
       npmCliJs: null,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
@@ -127,6 +147,8 @@ describe('runSelfUpdate', () => {
     // Windows: the only OS where the update stops the server (D18).
     await runSelfUpdate('latest', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       os: 'win32',
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -147,6 +169,8 @@ describe('runSelfUpdate', () => {
     const events: SelfUpdateProgress[] = [];
     await runSelfUpdate('latest', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       os: 'win32',
       spawnImpl: vi.fn(() =>
         makeFakeChild({ exitCode: 0 }),
@@ -193,6 +217,8 @@ describe('runSelfUpdate', () => {
 
     const result = await runSelfUpdate('0.5.3', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('0.5.3'),
+      consoleHoldsNativeModule: () => false,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -215,6 +241,8 @@ describe('runSelfUpdate', () => {
 
     const result = await runSelfUpdate('0.5.3', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('0.5.3'),
+      consoleHoldsNativeModule: () => false,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -229,6 +257,8 @@ describe('runSelfUpdate', () => {
 
     const result = await runSelfUpdate('latest', 'es', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -254,6 +284,8 @@ describe('runSelfUpdate — never-throws contract', () => {
 
     const result = await runSelfUpdate('latest', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -275,6 +307,8 @@ describe('runSelfUpdate — target and package validation', () => {
     const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
     const result = await runSelfUpdate(target, 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack(target),
+      consoleHoldsNativeModule: () => false,
       skipFreePort: true,
       spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
     });
@@ -293,6 +327,8 @@ describe('runSelfUpdate — target and package validation', () => {
     const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
     const result = await runSelfUpdate(target, 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack(target),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       skipFreePort: true,
@@ -332,6 +368,8 @@ describe('runSelfUpdate — permission failures get an actionable hint', () => {
     );
     const result = await runSelfUpdate('latest', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       skipFreePort: true,
@@ -350,6 +388,8 @@ describe('runSelfUpdate — permission failures get an actionable hint', () => {
     );
     const result = await runSelfUpdate('latest', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       skipFreePort: true,
@@ -372,6 +412,8 @@ describe('runSelfUpdate — preferred shell-free npm-cli.js path', () => {
 
       const result = await runSelfUpdate('latest', 'en', undefined, {
         packageName: '@example/pkg',
+        readInstalled: readBack('latest'),
+        consoleHoldsNativeModule: () => false,
         npmCliJs: '/opt/node/node_modules/npm/bin/npm-cli.js',
         skipFreePort: true,
         spawnImpl: spawnImpl as unknown as typeof import('node:child_process').spawn,
@@ -427,6 +469,12 @@ function fakeTimers() {
   };
 }
 
+/** S1: the last step of every confirmed install (here for 1.2.0). */
+const RELOAD_EN =
+  'Last step: reload the browser-link extension in chrome://extensions (the reload button on its card) so it runs 1.2.0 too. Once a tab reconnects, the extension popup and browser.list_tabs say whether the extension and the server run the same version; this console cannot see the extension, so it has not checked that.';
+const RELOAD_ES =
+  'Último paso: recargá la extensión browser-link en chrome://extensions (el botón de recarga de su tarjeta) para que también corra 1.2.0. Cuando una pestaña se reconecte, el popup de la extensión y browser.list_tabs dicen si la extensión y el servidor corren la misma versión; esta consola no ve la extensión, así que eso no lo comprobó.';
+
 const STOP_REPORT_WITH_OTHERS = [
   '✓ Stopped browser-link primary (PID 4242). Port 127.0.0.1:17529 is now free.',
   'Other browser-link processes, not stopped (they hold no browser-link port, so the operating system cannot confirm them through it):',
@@ -454,6 +502,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
 
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       os: 'win32',
@@ -476,6 +526,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
       'Other browser-link processes, not stopped (…):\n  PID 77  node browser-link  to stop it: browser-link stop --pid 77';
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       os: 'win32',
@@ -498,6 +550,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
       const events: SelfUpdateProgress[] = [];
       const result = await runSelfUpdate('1.2.0', 'en', (e) => events.push(e), {
         packageName: '@example/pkg',
+        readInstalled: readBack('1.2.0'),
+        consoleHoldsNativeModule: () => false,
         npmBin: 'npm',
         useShell: false,
         os,
@@ -508,7 +562,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
       expect(events.map((e) => e.stage)).toEqual(['preflight', 'installing', 'done']);
       expect(result.stopReport).toBe('Nothing was stopped.');
       expect(result.nextStep).toBe(
-        'A server that was already running keeps the old version until it restarts: restart your MCP clients, and the first one to start takes the port over with the new version.',
+        'A server that was already running keeps the old version until it restarts: restart your MCP clients, and the first one to start takes the port over with the new version.\n' +
+          RELOAD_EN,
       );
     },
   );
@@ -516,6 +571,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
   test('Spanish: nothing stopped and the next step', async () => {
     const result = await runSelfUpdate('1.2.0', 'es', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       os: 'linux',
@@ -524,7 +581,8 @@ describe('runSelfUpdate — D18: only what must be stopped, per OS', () => {
     });
     expect(result.stopReport).toBe('No se detuvo nada.');
     expect(result.nextStep).toBe(
-      'Un servidor que ya estaba corriendo sigue con la versión anterior hasta que se reinicie: reiniciá tus clientes MCP, y el primero que arranque toma el puerto con la versión nueva.',
+      'Un servidor que ya estaba corriendo sigue con la versión anterior hasta que se reinicie: reiniciá tus clientes MCP, y el primero que arranque toma el puerto con la versión nueva.\n' +
+        RELOAD_ES,
     );
   });
 });
@@ -536,6 +594,8 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     const events: SelfUpdateProgress[] = [];
     const pending = runSelfUpdate('1.2.0', 'en', (e) => events.push(e), {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       os: 'linux',
@@ -567,6 +627,8 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     const controller = new AbortController();
     const pending = runSelfUpdate('1.2.0', 'es', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       npmBin: 'npm',
       useShell: false,
       os: 'linux',
@@ -592,6 +654,8 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     const spawnImpl = vi.fn();
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       os: 'linux',
       signal: controller.signal,
       spawnImpl: spawnImpl as unknown as SpawnLike,
@@ -605,6 +669,8 @@ describe('runSelfUpdate — D18: the install has a time limit and can be cancell
     const { armed, timers } = fakeTimers();
     await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       os: 'linux',
       timers,
       spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
@@ -623,6 +689,8 @@ describe('runSelfUpdate — D18: the real error when the install fails', () => {
     ].join('\n');
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       os: 'linux',
       spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 1, stderr })) as unknown as SpawnLike,
     });
@@ -639,6 +707,8 @@ describe('runSelfUpdate — D18: the real error when the install fails', () => {
   test('an install that fails with no error output says its exit code', async () => {
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       os: 'linux',
       spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 1 })) as unknown as SpawnLike,
     });
@@ -650,6 +720,8 @@ describe('runSelfUpdate — D18: the real error when the install fails', () => {
       "npm error code EBUSY\nnpm error syscall rename\nnpm error EBUSY: resource busy or locked, rename 'C:\\npm\\node_modules\\@example\\pkg'";
     const result = await runSelfUpdate('1.2.0', 'en', undefined, {
       packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
       os: 'win32',
       stopServers: () => ({
         portState: 'free',
@@ -787,5 +859,332 @@ describe('resolveNpmCliJs', () => {
   test('returns null when it is not there, so the caller falls back', () => {
     // Volta and other shim-based managers do not lay npm out this way.
     expect(resolveNpmCliJs('/opt/node/bin/node', () => false)).toBeNull();
+  });
+});
+
+/* S1 and S5 (owner-priority 1.1.1): the update result ends with reloading the
+ * extension; the databases are closed before npm; npm runs in a neutral
+ * directory; "installed" only after the version on disk was read back. */
+describe('runSelfUpdate — S1: the result ends with reloading the extension', () => {
+  test('the next step of a confirmed install ends with the reload in chrome://extensions', async () => {
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
+      npmBin: 'npm',
+      useShell: false,
+      os: 'win32',
+      stopServers: () => ({
+        portState: 'free',
+        ok: true,
+        pid: null,
+        imageName: null,
+        message: 'free',
+      }),
+      spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
+    });
+    expect(result.outcome).toBe('installed');
+    expect(result.nextStep.split('\n').at(-1)).toBe(RELOAD_EN);
+  });
+
+  test('a failed install does not tell the user to reload anything', async () => {
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      packageName: '@example/pkg',
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
+      npmBin: 'npm',
+      useShell: false,
+      os: 'linux',
+      spawnImpl: vi.fn(() =>
+        makeFakeChild({ exitCode: 1, stderr: 'npm error code E404' }),
+      ) as unknown as SpawnLike,
+    });
+    expect(result.nextStep).not.toContain('chrome://extensions');
+  });
+});
+
+describe('runSelfUpdate — S5: close the DB, neutral cwd, read the version back', () => {
+  const base = {
+    packageName: '@example/pkg',
+    npmBin: 'npm',
+    useShell: false,
+    os: 'linux' as const,
+  };
+
+  test('the databases are closed before npm is spawned', async () => {
+    const order: string[] = [];
+    await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
+      closeDatabases: () => order.push('close'),
+      spawnImpl: vi.fn(() => {
+        order.push('spawn');
+        return makeFakeChild({ exitCode: 0 });
+      }) as unknown as SpawnLike,
+    });
+    expect(order).toEqual(['close', 'spawn']);
+  });
+
+  test('a refused target closes nothing and spawns nothing', async () => {
+    const closeDatabases = vi.fn();
+    const spawnImpl = vi.fn();
+    await runSelfUpdate('nope', 'en', undefined, {
+      ...base,
+      closeDatabases,
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    expect(closeDatabases).not.toHaveBeenCalled();
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test("npm runs in the home directory by default, never the console's own directory", async () => {
+    const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
+    await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    const opts = spawnImpl.mock.calls[0]![2] as { cwd?: string };
+    expect(opts.cwd).toBe(neutralCwd());
+    expect(neutralCwd()).toBe(homedir());
+    expect(opts.cwd).not.toBe(process.cwd());
+  });
+
+  test('installed only when the version read back is the requested one, and it is reported', async () => {
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      readInstalled: readBack('1.2.0'),
+      consoleHoldsNativeModule: () => false,
+      spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe('installed');
+    expect(result.installedVersion).toBe('1.2.0');
+    expect(result.message).toBe(
+      '✓ Installed browser-link@1.2.0 (read back from the installed package). Restart your MCP client (Claude Code, OpenCode, Copilot CLI, …) to load the new version.',
+    );
+  });
+
+  test('npm exit 0 with another version on disk is a failure, not "installed"', async () => {
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      readInstalled: () => Promise.resolve({ kind: 'read', version: '1.1.0' }),
+      spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('failed');
+    expect(result.installedVersion).toBe('1.1.0');
+    expect(result.message).toBe(
+      '✗ npm finished without an error, but the installed browser-link is 1.1.0, not 1.2.0.',
+    );
+    expect(result.nextStep).toBe(
+      'Run `npm install -g @example/pkg@1.2.0` in a terminal, then `npm ls -g @example/pkg` to see which version is installed.',
+    );
+  });
+
+  test('npm exit 0 with an unreadable version is unverified, never "installed"', async () => {
+    const events: SelfUpdateProgress[] = [];
+    const result = await runSelfUpdate('1.2.0', 'es', (e) => events.push(e), {
+      ...base,
+      readInstalled: () => Promise.resolve({ kind: 'unreadable', reason: 'sin package.json' }),
+      spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('unverified');
+    expect(result).not.toHaveProperty('installedVersion');
+    expect(result.message).toBe(
+      '✗ npm terminó sin error, pero no se pudo leer la versión instalada (sin package.json), así que la actualización no está confirmada.',
+    );
+    expect(events.at(-1)!.stage).toBe('failed');
+  });
+
+  test('for `latest` the version read back is reported as installed', async () => {
+    const result = await runSelfUpdate('latest', 'en', undefined, {
+      ...base,
+      readInstalled: readBack('latest'),
+      consoleHoldsNativeModule: () => false,
+      spawnImpl: vi.fn(() => makeFakeChild({ exitCode: 0 })) as unknown as SpawnLike,
+    });
+    expect(result.outcome).toBe('installed');
+    expect(result.installedVersion).toBe('9.9.9');
+    expect(result.message).toContain('browser-link@9.9.9');
+  });
+
+  test('on Windows, when this console has loaded the native module, it refuses before stopping or spawning anything', async () => {
+    const spawnImpl = vi.fn();
+    const stopServers = vi.fn();
+    const closeDatabases = vi.fn();
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      os: 'win32',
+      stopServers,
+      closeDatabases,
+      consoleHoldsNativeModule: () => true,
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(stopServers).not.toHaveBeenCalled();
+    expect(closeDatabases).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('refused');
+    expect(result.message).toBe(
+      '✗ Not updating from this console: it has loaded the map database module (Doctor or a map screen opened the map), and Windows keeps that file locked until this console exits, so npm could not replace it. Nothing was stopped or installed.',
+    );
+    expect(result.nextStep).toBe(
+      'Close this console. browser-link has no update command of its own, so in a new terminal run `browser-link stop` (it does not open the map), close your MCP clients, then run `npm install -g @example/pkg@1.2.0`.',
+    );
+  });
+
+  test('Spanish refusal', async () => {
+    const result = await runSelfUpdate('1.2.0', 'es', undefined, {
+      ...base,
+      os: 'win32',
+      consoleHoldsNativeModule: () => true,
+      spawnImpl: vi.fn() as unknown as SpawnLike,
+    });
+    expect(result.outcome).toBe('refused');
+    expect(result.message).toMatch(/^✗ No actualizo desde esta consola/);
+    expect(result.nextStep).toContain('`npm install -g @example/pkg@1.2.0`');
+  });
+
+  test('on Windows without the module loaded here, the install proceeds', async () => {
+    const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      os: 'win32',
+      skipFreePort: true,
+      consoleHoldsNativeModule: () => false,
+      readInstalled: readBack('1.2.0'),
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    expect(spawnImpl).toHaveBeenCalledOnce();
+    expect(result.outcome).toBe('installed');
+  });
+
+  test('off Windows the module being loaded does not stop the install', async () => {
+    const spawnImpl = vi.fn(() => makeFakeChild({ exitCode: 0 }));
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      consoleHoldsNativeModule: () => true,
+      readInstalled: readBack('1.2.0'),
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    expect(spawnImpl).toHaveBeenCalledOnce();
+    expect(result.outcome).toBe('installed');
+  });
+
+  test('a Windows lock without the module loaded here keeps the general lock advice', async () => {
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      ...base,
+      os: 'win32',
+      skipFreePort: true,
+      consoleHoldsNativeModule: () => false,
+      spawnImpl: vi.fn(() =>
+        makeFakeChild({ exitCode: 1, stderr: 'npm error code EBUSY' }),
+      ) as unknown as SpawnLike,
+    });
+    expect(result.nextStep).toMatch(/^A running process still holds browser-link's files/);
+  });
+});
+
+describe('readInstalledPackageVersion', () => {
+  function rootChild(stdout: string, exitCode = 0): ChildProcess {
+    const emitter = new EventEmitter() as ChildProcess;
+    const out = new EventEmitter() as NodeJS.ReadableStream;
+    emitter.stdout = out;
+    emitter.stderr = new EventEmitter() as NodeJS.ReadableStream;
+    setImmediate(() => {
+      out.emit('data', Buffer.from(stdout));
+      emitter.emit('close', exitCode);
+    });
+    return emitter;
+  }
+
+  test('runs `npm root -g` with the same npm and directory, then reads that package.json', async () => {
+    const spawnImpl = vi.fn(() => rootChild('/usr/lib/node_modules\n'));
+    const readVersion = vi.fn(() => '1.2.0');
+    const read = await readInstalledPackageVersion({
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+      command: '/usr/bin/node',
+      argvPrefix: ['/usr/lib/node_modules/npm/bin/npm-cli.js'],
+      useShell: false,
+      cwd: '/home/u',
+      packageName: '@scope/pkg',
+      readVersion,
+    });
+    expect(read).toEqual({ kind: 'read', version: '1.2.0' });
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/usr/bin/node',
+      ['/usr/lib/node_modules/npm/bin/npm-cli.js', 'root', '-g'],
+      { stdio: ['ignore', 'pipe', 'pipe'], cwd: '/home/u' },
+    );
+    expect(readVersion).toHaveBeenCalledWith(
+      join('/usr/lib/node_modules', '@scope', 'pkg', 'package.json'),
+    );
+  });
+
+  test('unreadable when npm root fails or the package.json has no version', async () => {
+    const failed = await readInstalledPackageVersion({
+      spawnImpl: vi.fn(() => rootChild('', 1)) as unknown as SpawnLike,
+      command: 'npm',
+      argvPrefix: [],
+      useShell: false,
+      cwd: '/home/u',
+      packageName: 'pkg',
+      readVersion: () => '1.0.0',
+    });
+    expect(failed).toEqual({ kind: 'unreadable', reason: '`npm root -g` exited with code 1' });
+    const missing = await readInstalledPackageVersion({
+      spawnImpl: vi.fn(() => rootChild('/g\n')) as unknown as SpawnLike,
+      command: 'npm',
+      argvPrefix: [],
+      useShell: false,
+      cwd: '/home/u',
+      packageName: 'pkg',
+      readVersion: () => null,
+    });
+    expect(missing).toEqual({
+      kind: 'unreadable',
+      reason: `no version in ${join('/g', 'pkg', 'package.json')}`,
+    });
+  });
+
+  test('the default install path reads back through the same npm (no injected read-back)', async () => {
+    const calls: string[][] = [];
+    const spawnImpl = vi.fn((_cmd: string, args: string[]) => {
+      calls.push(args);
+      return args.includes('root') ? rootChild('/nonexistent-global-root\n') : makeFakeChild();
+    });
+    const result = await runSelfUpdate('1.2.0', 'en', undefined, {
+      packageName: '@example/pkg',
+      npmBin: 'npm',
+      useShell: false,
+      os: 'linux',
+      spawnImpl: spawnImpl as unknown as SpawnLike,
+    });
+    expect(calls).toEqual([
+      ['install', '-g', '@example/pkg@1.2.0'],
+      ['root', '-g'],
+    ]);
+    // Nothing on disk there: never "installed".
+    expect(result.outcome).toBe('unverified');
+  });
+});
+
+describe('loadsNativeSqlite', () => {
+  test('true only when a better-sqlite3 .node file is among the loaded shared objects', () => {
+    expect(
+      loadsNativeSqlite(() => ({
+        sharedObjects: ['C:\\x\\node_modules\\better-sqlite3\\prebuilds\\win32-x64.node'],
+      })),
+    ).toBe(true);
+    expect(loadsNativeSqlite(() => ({ sharedObjects: ['C:\\Windows\\kernel32.dll'] }))).toBe(false);
+    expect(
+      loadsNativeSqlite(() => {
+        throw new Error('no report');
+      }),
+    ).toBe(false);
   });
 });

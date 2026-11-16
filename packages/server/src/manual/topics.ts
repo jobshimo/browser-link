@@ -153,6 +153,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- `ref-stale` → take a fresh `snapshot`/`find`; never retry the same ref.',
       '- `wait_for` returning `matched: false` is not an error → decide.',
       '- `extension_outdated: true` on `list_tabs` → extension older than server, fields may be missing: ask the user to update or reload the extension.',
+      '- `extension_newer: true` on `list_tabs` → extension newer than server: the server runs older code; ask the user to run `browser-link stop` and restart the agent. Either flag comes with `version_note`: relay it, it names what does not work until then.',
       '- "Tab not connected" → `browser.events` for the renamed tab_id, then retry.',
       '- One full `snapshot` per view, then `snapshot({ since: snapshot_id })` for every later look.',
       '- Before suggesting a UI code change or a click, `browser.snapshot` and verify the element exists.',

@@ -803,9 +803,16 @@
             <code id="version-server">—</code>
           </div>
         </div>
-        <div class="version-banner-hint" data-i18n="popupVersionHint">
+        <div id="version-hint" class="version-banner-hint" data-i18n="popupVersionHint">
           Reload the extension so both halves run the same code.
         </div>
+        <!-- Which side is behind, its remedy and what does not work until
+             then (version-status.ts `skewEffectLine`); replaces the generic
+             hint above whenever the direction is known. -->
+        <div id="version-skew-effect" class="version-banner-hint" hidden></div>
+        <!-- Shown instead of the chrome://extensions button when the extension
+             is the newer side: the server is what must be updated. -->
+        <div id="version-update-server" class="version-banner-hint" hidden></div>
         <button id="version-open-extensions" class="primary" data-i18n="popupOpenExtensions">
           Open chrome://extensions
         </button>

@@ -37,6 +37,9 @@ import { renderWorkerText } from './worker-messages.js';
 import {
   runningInstalledLine,
   shouldShowVersionBanner,
+  skewEffectLine,
+  updateServerLine,
+  versionBannerAction,
   type VersionCheck,
 } from './version-status.js';
 
@@ -215,6 +218,21 @@ function renderVersionBanner(check: VersionCheckResult): void {
   banner.hidden = false;
   $('version-extension').textContent = check.extension;
   $('version-server').textContent = check.server;
+  // Which side is behind and what does not work until it is fixed; the
+  // generic "reload the extension" hint stays only when the direction is
+  // unknown (the two differ in spelling alone), since it is wrong when the
+  // extension is the newer half.
+  const effect = $('version-skew-effect') as HTMLDivElement;
+  const known = skewEffectLine(check, lang.t) !== null;
+  effect.hidden = !known;
+  ($('version-hint') as HTMLDivElement).hidden = known;
+  lang.text(effect, (t) => skewEffectLine(check, t) ?? '');
+  // Reloading the extension does not help when it is the newer side.
+  const updatesServer = versionBannerAction(check) === 'update-server';
+  ($('version-open-extensions') as HTMLButtonElement).hidden = updatesServer;
+  const update = $('version-update-server') as HTMLDivElement;
+  update.hidden = !updatesServer;
+  lang.text(update, (t) => updateServerLine(check, t) ?? '');
 }
 
 /**

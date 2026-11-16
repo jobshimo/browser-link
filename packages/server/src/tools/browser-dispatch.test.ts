@@ -18,6 +18,7 @@ import {
 import { noteOrigin, notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
+  extensionSkewNote,
   handleBrowserTool,
   isBrowserTool,
   outdatedServerHint,
@@ -4385,6 +4386,63 @@ describe('list_tabs — extension version (S3)', () => {
     );
     expect(tabs[0]).not.toHaveProperty('extension_version');
     expect(tabs[0]).not.toHaveProperty('extension_outdated');
+    expect(tabs[0]).not.toHaveProperty('extension_newer');
+    expect(tabs[0]).not.toHaveProperty('version_note');
+  });
+
+  test('an extension NEWER than the server is flagged too, with a note naming what does not work', async () => {
+    const { VERSION } = await import('../version.js');
+    const [major, minor, patch] = VERSION.split('.').map(Number) as [number, number, number];
+    const newer = `${major}.${minor}.${patch + 1}`;
+    const tabs = await listWith([
+      { tab_id: 'tab_1', url: 'http://a', title: 'A', extension_version: newer },
+      { tab_id: 'tab_2', url: 'http://b', title: 'B', extension_version: VERSION },
+    ]);
+    const byId = new Map(tabs.map((t) => [t.tab_id, t]));
+    expect(byId.get('tab_1')!.extension_newer).toBe(true);
+    expect(byId.get('tab_1')).not.toHaveProperty('extension_outdated');
+    expect(byId.get('tab_1')!.version_note).toBe(extensionSkewNote('newer', newer, VERSION));
+    expect(byId.get('tab_2')).not.toHaveProperty('extension_newer');
+    expect(byId.get('tab_2')).not.toHaveProperty('version_note');
+  });
+
+  test('an extension OLDER than the server keeps extension_outdated and gains the note', async () => {
+    const { VERSION } = await import('../version.js');
+    const tabs = await listWith([
+      { tab_id: 'tab_1', url: 'http://a', title: 'A', extension_version: '0.0.1' },
+    ]);
+    expect(tabs[0]!.extension_outdated).toBe(true);
+    expect(tabs[0]).not.toHaveProperty('extension_newer');
+    expect(tabs[0]!.version_note).toBe(extensionSkewNote('older', '0.0.1', VERSION));
+  });
+});
+
+describe('extensionSkewNote', () => {
+  test('older extension: says to reload it and, across 1.1.0, what does not work', () => {
+    expect(extensionSkewNote('older', '1.0.2', '1.1.0')).toBe(
+      'extension 1.0.2 is older than server 1.1.0: ask the user to reload the extension in chrome://extensions. ' +
+        'Until then what changed after 1.0.2 may be missing: the Admin window applies no change, ' +
+        'snapshot and find answers are withheld while hide-password-values is on, ' +
+        "and a selector-mode download can erase Chrome's copy before the server saved the file",
+    );
+    expect(extensionSkewNote('older', '1.1.0', '1.1.1')).toBe(
+      'extension 1.1.0 is older than server 1.1.1: ask the user to reload the extension in chrome://extensions. ' +
+        'Until then what changed after 1.1.0 may be missing',
+    );
+  });
+
+  test('newer extension: says to restart the server and, across 1.1.0, what does not work', () => {
+    expect(extensionSkewNote('newer', '1.1.0', '1.0.2')).toBe(
+      'extension 1.1.0 is newer than server 1.0.2: ask the user to run browser-link stop and restart the agent, ' +
+        'so the installed server starts (update it first if it is older than 1.1.0). ' +
+        'Until then what changed after 1.0.2 may be missing: the Admin window shows the preview instead of applying a change, ' +
+        'and a download the extension holds for the server expires and Chrome saves it as well (a second copy)',
+    );
+    expect(extensionSkewNote('newer', '1.1.2', '1.1.1')).toBe(
+      'extension 1.1.2 is newer than server 1.1.1: ask the user to run browser-link stop and restart the agent, ' +
+        'so the installed server starts (update it first if it is older than 1.1.2). ' +
+        'Until then what changed after 1.1.1 may be missing',
+    );
   });
 });
 

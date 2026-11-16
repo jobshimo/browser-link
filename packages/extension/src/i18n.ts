@@ -75,6 +75,20 @@ const EN = {
   popupRepairing: 'Repairing…',
   popupRunningInstalled: (server: string, installed: string): string =>
     `Server running ${server} · installed ${installed}`,
+  popupSkewExtensionOlder: (extension: string, server: string, crosses110: boolean): string =>
+    `This extension (${extension}) is older than the server (${server}): reload it in chrome://extensions. ` +
+    (crosses110
+      ? 'Until then the Admin window saves nothing, snapshot and find answers are withheld while hide-password-values is on, ' +
+        "and a selector-mode download can erase Chrome's copy before the server saved the file."
+      : `Until then what the server changed after ${extension} may not work.`),
+  popupUpdateServer: (command: string): string =>
+    `To update the server, run ${command} in a terminal, then browser-link stop, and restart your agent.`,
+  popupSkewExtensionNewer: (extension: string, server: string, crosses110: boolean): string =>
+    `This extension (${extension}) is newer than the server (${server}): the server runs older code. ` +
+    `Run browser-link stop and restart your agent (update browser-link first if it is older than ${extension}). ` +
+    (crosses110
+      ? 'Until then the Admin window only previews changes, and a download held for the server expires and Chrome saves it as well (a second copy).'
+      : `Until then what the extension changed after ${server} may not work.`),
   popupMinutes: (minutes: number): string => `${String(minutes)} min`,
   popupMinutesCustom: (minutes: number): string => `${String(minutes)} min (custom)`,
   popupNever: 'Never',
@@ -312,6 +326,20 @@ const ES: Messages = {
   popupRepairing: 'Reparando…',
   popupRunningInstalled: (server: string, installed: string): string =>
     `Servidor en ejecución ${server} · instalado ${installed}`,
+  popupSkewExtensionOlder: (extension: string, server: string, crosses110: boolean): string =>
+    `Esta extensión (${extension}) es anterior al servidor (${server}): recárguela en chrome://extensions. ` +
+    (crosses110
+      ? 'Mientras tanto la ventana Admin no guarda nada, las respuestas de snapshot y find se retienen con hide-password-values activado, ' +
+        'y una descarga en modo selector puede borrar la copia de Chrome antes de que el servidor guarde el archivo.'
+      : `Mientras tanto lo que el servidor cambió después de ${extension} puede no funcionar.`),
+  popupUpdateServer: (command: string): string =>
+    `Para actualizar el servidor, ejecute ${command} en una terminal, después browser-link stop, y reinicie su agente.`,
+  popupSkewExtensionNewer: (extension: string, server: string, crosses110: boolean): string =>
+    `Esta extensión (${extension}) es más nueva que el servidor (${server}): el servidor ejecuta código anterior. ` +
+    `Ejecute browser-link stop y reinicie su agente (antes actualice browser-link si es anterior a ${extension}). ` +
+    (crosses110
+      ? 'Mientras tanto la ventana Admin solo muestra la vista previa de los cambios, y una descarga retenida para el servidor vence y Chrome también la guarda (una segunda copia).'
+      : `Mientras tanto lo que la extensión cambió después de ${server} puede no funcionar.`),
   popupMinutes: (minutes: number): string => `${String(minutes)} min`,
   popupMinutesCustom: (minutes: number): string => `${String(minutes)} min (personalizado)`,
   popupNever: 'Nunca',

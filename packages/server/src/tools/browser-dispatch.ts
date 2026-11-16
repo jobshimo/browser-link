@@ -129,19 +129,83 @@ export interface EnrichedTabSnapshot extends TabSnapshot {
   /** Present (always `true`) only when `extension_version` is a plain
    * MAJOR.MINOR.PATCH lower than the server's version. */
   extension_outdated?: true;
+  /** Present (always `true`) only when `extension_version` is a plain
+   * MAJOR.MINOR.PATCH higher than the server's version: the server runs older
+   * code than the extension (an update was installed, the server was not
+   * restarted). */
+  extension_newer?: true;
+  /** Present with `extension_outdated` or `extension_newer`: what to ask the
+   * user and what does not work until then (`extensionSkewNote`). */
+  version_note?: string;
   /** The start pack (see `map/queries.ts`'s `getKnowledge`): what the map
    * knows for this tab's app and path, ranked, with confidence and evidence.
    * Omitted when the map has nothing with evidence. */
   knowledge?: Knowledge;
 }
 
-/** True when an extension tab's reported version is a plain semver lower
- * than this server's. Missing or malformed versions are never "outdated":
- * there is nothing reliable to compare. */
-function isExtensionOutdated(t: TabSnapshot): boolean {
-  if (t.transport === 'cdp' || t.extension_version === undefined) return false;
-  if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return false;
-  return compareSemver(t.extension_version, VERSION) < 0;
+/** An extension tab's version against this server's: `older` or `newer` when
+ * `extension_version` is a plain semver that differs; `null` when equal,
+ * missing or malformed (nothing reliable to compare) and on cdp tabs. */
+function extensionSkew(t: TabSnapshot): 'older' | 'newer' | null {
+  if (t.transport === 'cdp' || t.extension_version === undefined) return null;
+  if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return null;
+  const order = compareSemver(t.extension_version, VERSION);
+  return order < 0 ? 'older' : order > 0 ? 'newer' : null;
+}
+
+/** The release where a skew stops being harmless: from 1.1.0 an admin action
+ * takes `code` instead of `confirm`, `hide-password-values` exists, and the
+ * extension holds a selector-mode download until the server settles it. */
+const SKEW_BREAK_VERSION = '1.1.0';
+
+/**
+ * The plain note `list_tabs` carries on a tab whose extension and server run
+ * different versions: what to ask the user and what does not work until
+ * then. Across 1.1.0 it names the known breakage (CHANGELOG 1.1.0, Breaking).
+ */
+export function extensionSkewNote(
+  direction: 'older' | 'newer',
+  extension: string,
+  server: string,
+): string {
+  const older = direction === 'older' ? extension : server;
+  const newer = direction === 'older' ? server : extension;
+  const crosses =
+    compareSemver(older, SKEW_BREAK_VERSION) < 0 && compareSemver(newer, SKEW_BREAK_VERSION) >= 0;
+  if (direction === 'older') {
+    return (
+      `extension ${extension} is older than server ${server}: ask the user to reload the extension in chrome://extensions. ` +
+      `Until then what changed after ${extension} may be missing` +
+      (crosses
+        ? ': the Admin window applies no change, snapshot and find answers are withheld while hide-password-values is on, ' +
+          "and a selector-mode download can erase Chrome's copy before the server saved the file"
+        : '')
+    );
+  }
+  return (
+    `extension ${extension} is newer than server ${server}: ask the user to run browser-link stop and restart the agent, ` +
+    `so the installed server starts (update it first if it is older than ${extension}). ` +
+    `Until then what changed after ${server} may be missing` +
+    (crosses
+      ? ': the Admin window shows the preview instead of applying a change, ' +
+        'and a download the extension holds for the server expires and Chrome saves it as well (a second copy)'
+      : '')
+  );
+}
+
+/** `extension_outdated` or `extension_newer`, plus `version_note`, for one
+ * tab; nothing when the versions match or cannot be compared. */
+function extensionSkewFields(
+  t: TabSnapshot,
+): Pick<EnrichedTabSnapshot, 'extension_outdated' | 'extension_newer' | 'version_note'> {
+  const skew = extensionSkew(t);
+  if (skew === null || t.extension_version === undefined) return {};
+  return {
+    ...(skew === 'older'
+      ? { extension_outdated: true as const }
+      : { extension_newer: true as const }),
+    version_note: extensionSkewNote(skew, t.extension_version, VERSION),
+  };
 }
 
 /**
@@ -1417,7 +1481,7 @@ async function handleListTabs(
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
       ...(hint ? { map: hint } : {}),
-      ...(isExtensionOutdated(t) ? { extension_outdated: true as const } : {}),
+      ...extensionSkewFields(t),
       ...(knowledge ? { knowledge } : {}),
     } satisfies EnrichedTabSnapshot;
   });
