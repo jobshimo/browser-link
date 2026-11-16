@@ -18,12 +18,15 @@ import {
   downloadMaxBytes,
   filenameFromContentDisposition,
   filenameFromUrl,
+  isExecutableFilename,
   pickFilename,
+  refetchMismatch,
   resolveDownloadsDir,
   sanitizeDerivedFilename,
   shapeDownloadResult,
   validateRequestedFilename,
   writeDownloadFile,
+  zoneIdentifierContent,
   type FetchDownloadOutcome,
 } from './downloads.js';
 
@@ -388,6 +391,253 @@ describe('shapeDownloadResult', () => {
     expect(res.state).toBe('interrupted');
     expect(res.error).toMatch(/EACCES/);
     expect(res.filename).toBe('f.bin');
+  });
+});
+
+describe('refetchMismatch (D17: erase only what is proven identical)', () => {
+  const fetched: FetchDownloadOutcome = {
+    state: 'complete',
+    mime: 'application/pdf',
+    final_url: 'https://x.test/r.pdf#page=2',
+    bytes: 5,
+  };
+  test('size reported and equal, type and URL equal: no mismatch', () => {
+    expect(
+      refetchMismatch(
+        { url: 'https://x.test/r.pdf', mime: 'application/pdf', totalBytes: 5 },
+        fetched,
+      ),
+    ).toBeNull();
+  });
+  test('a size Chrome did not report is a doubt, even when type and URL match', () => {
+    for (const totalBytes of [null, 0, -1, undefined]) {
+      expect(
+        refetchMismatch(
+          { url: 'https://x.test/r.pdf', mime: 'application/pdf', totalBytes },
+          fetched,
+        ),
+      ).toEqual(['Chrome did not report the size, so the re-fetch cannot be proven identical']);
+    }
+  });
+});
+
+describe('isExecutableFilename', () => {
+  test.each([
+    'setup.exe',
+    'SETUP.EXE',
+    'installer.msi',
+    'run.bat',
+    'run.cmd',
+    'x.com',
+    'script.ps1',
+    'module.psm1',
+    'shortcut.lnk',
+    'screen.scr',
+    'old.pif',
+    'a.js',
+    'a.jse',
+    'a.vbs',
+    'a.vbe',
+    'a.wsf',
+    'a.wsh',
+    'app.hta',
+    'panel.cpl',
+    'console.msc',
+    'tool.jar',
+    'keys.reg',
+    'pkg.appx',
+    'pkg.msix',
+    'invoice.pdf.exe',
+    'report.PDF.Exe',
+    'trailing.exe.',
+    'trailing.exe ',
+    'trailing.exe. . ',
+  ])('%s is executable', (name) => {
+    expect(isExecutableFilename(name)).toBe(true);
+  });
+
+  test.each(['report.pdf', 'data.csv', 'archive.zip', 'exe', 'notes.txt', 'exe.pdf', 'download'])(
+    '%s is not executable',
+    (name) => {
+      expect(isExecutableFilename(name)).toBe(false);
+    },
+  );
+});
+
+describe('zoneIdentifierContent', () => {
+  test('ZoneId=3 with the page as referrer and the download URL as host, CRLF lines', () => {
+    expect(
+      zoneIdentifierContent({
+        pageUrl: 'https://x.test/page',
+        downloadUrl: 'https://cdn.x.test/r.pdf',
+      }),
+    ).toBe(
+      '[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://x.test/page\r\nHostUrl=https://cdn.x.test/r.pdf\r\n',
+    );
+  });
+
+  test('an unknown or non-http(s) URL is left out, never a data:/blob: payload', () => {
+    expect(
+      zoneIdentifierContent({
+        pageUrl: null,
+        downloadUrl: 'data:application/pdf;base64,JVBERi0=',
+      }),
+    ).toBe('[ZoneTransfer]\r\nZoneId=3\r\n');
+    expect(
+      zoneIdentifierContent({
+        pageUrl: 'chrome://settings',
+        downloadUrl: 'blob:https://x.test/0f1e',
+      }),
+    ).toBe('[ZoneTransfer]\r\nZoneId=3\r\n');
+  });
+});
+
+describe('shapeDownloadResult: Mark-of-the-Web and executable types', () => {
+  const complete = (url = 'https://cdn.x.test/r.pdf'): FetchDownloadOutcome => ({
+    state: 'complete',
+    status: 200,
+    mime: 'application/pdf',
+    content_disposition: null,
+    final_url: url,
+    page_url: 'https://x.test/page',
+    bytes: 5,
+    data_b64: Buffer.from('%PDF-').toString('base64'),
+  });
+
+  test('on win32 the Zone.Identifier stream is written next to the saved file', () => {
+    const write = vi.fn();
+    const res = shapeDownloadResult(
+      complete(),
+      { url: 'https://cdn.x.test/r.pdf' },
+      () => '/dl/r.pdf',
+      {
+        markOfTheWeb: { platform: 'win32', write },
+      },
+    );
+    expect(write).toHaveBeenCalledWith(
+      '/dl/r.pdf',
+      '[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://x.test/page\r\nHostUrl=https://cdn.x.test/r.pdf\r\n',
+    );
+    expect(res).toMatchObject({ ok: true, path: '/dl/r.pdf', mark_of_the_web: 'written' });
+  });
+
+  test('on other platforms no stream is written and the result carries no such field', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      const write = vi.fn();
+      const res = shapeDownloadResult(
+        complete(),
+        { url: 'https://cdn.x.test/r.pdf' },
+        () => '/dl/r.pdf',
+        {
+          markOfTheWeb: { platform, write },
+        },
+      );
+      expect(write).not.toHaveBeenCalled();
+      expect(res.ok).toBe(true);
+      expect(res).not.toHaveProperty('mark_of_the_web');
+    }
+  });
+
+  test('a stream that cannot be written keeps the file and says so in the result', () => {
+    const res = shapeDownloadResult(
+      complete(),
+      { url: 'https://cdn.x.test/r.pdf' },
+      () => '/dl/r.pdf',
+      {
+        markOfTheWeb: {
+          platform: 'win32',
+          write: () => {
+            throw new Error('EINVAL: the volume has no alternate data streams');
+          },
+        },
+      },
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'complete',
+      path: '/dl/r.pdf',
+      mark_of_the_web: 'failed',
+      mark_of_the_web_error: expect.stringMatching(/EINVAL/),
+    });
+  });
+
+  test.runIf(process.platform === 'win32')(
+    'on this Windows machine the default writer puts a real Zone.Identifier stream on the file',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'browser-link-motw-'));
+      try {
+        const res = shapeDownloadResult(
+          complete(),
+          { url: 'https://cdn.x.test/r.pdf' },
+          (filename, data) => writeDownloadFile(dir, filename, data),
+          { markOfTheWeb: { platform: 'win32' } },
+        );
+        expect(res.mark_of_the_web).toBe('written');
+        expect(readFileSync(`${res.path}:Zone.Identifier`, 'utf8')).toContain('ZoneId=3\r\n');
+        expect(readFileSync(res.path as string, 'utf8')).toBe('%PDF-');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('an executable name is refused by default: nothing is written, the error names the setting', () => {
+    const save = vi.fn(() => '/dl/x');
+    const res = shapeDownloadResult(
+      complete('https://x.test/setup.exe'),
+      { url: 'https://x.test/setup.exe' },
+      save,
+      {},
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(res).toMatchObject({
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      filename: 'setup.exe',
+    });
+    expect(res.error).toMatch(/executable/);
+    expect(res.error).toMatch(/browser-link config set downloads\.allow-executables on/);
+  });
+
+  test('a double extension (invoice.pdf.exe) from Content-Disposition is refused', () => {
+    const save = vi.fn(() => '/dl/x');
+    const res = shapeDownloadResult(
+      { ...complete(), content_disposition: 'attachment; filename="invoice.pdf.exe"' },
+      { url: 'https://x.test/r' },
+      save,
+      {},
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(res.filename).toBe('invoice.pdf.exe');
+    expect(res.ok).toBe(false);
+  });
+
+  test('an executable name the agent asked for is refused too', () => {
+    const save = vi.fn(() => '/dl/x');
+    const res = shapeDownloadResult(
+      complete(),
+      { url: 'https://x.test/r.pdf', requested: 'r.CMD' },
+      save,
+      {},
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(res.ok).toBe(false);
+  });
+
+  test('allowed by the setting: the executable is saved, and on win32 it is marked', () => {
+    const write = vi.fn();
+    const res = shapeDownloadResult(
+      complete('https://x.test/setup.exe'),
+      { url: 'https://x.test/setup.exe' },
+      () => '/dl/setup.exe',
+      {
+        allowExecutables: true,
+        markOfTheWeb: { platform: 'win32', write },
+      },
+    );
+    expect(res).toMatchObject({ ok: true, path: '/dl/setup.exe', mark_of_the_web: 'written' });
+    expect(write).toHaveBeenCalledOnce();
   });
 });
 

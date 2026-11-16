@@ -162,6 +162,14 @@ of its row (it applies after a restart). The extension's Admin window shows
 both settings but does not change them; see
 [The activity trail](https://github.com/jobshimo/browser-link#the-activity-trail).
 
+`browser.download` refuses executable file types (`.exe`, `.msi`, `.bat`,
+`.ps1`, `.lnk`, `.js` and similar, also as `invoice.pdf.exe`) unless you run
+`browser-link config set downloads.allow-executables on`; the Admin window only
+shows that setting. On Windows every file it saves gets the Mark-of-the-Web
+(the `Zone.Identifier` stream Chrome writes), so SmartScreen and Office
+Protected View treat it as coming from the web; see
+[Downloads](https://github.com/jobshimo/browser-link#downloads).
+
 ## `browser-link map` — inspect and manage the persistent map
 
 The 6 map tools above are how an _agent_ reads and writes the map while it

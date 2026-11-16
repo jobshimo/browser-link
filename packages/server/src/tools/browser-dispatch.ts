@@ -35,15 +35,17 @@ import type {
   BridgeEventListener,
   SubscribeOptions,
 } from '../bridge/events.js';
-import { loadConfig } from '../config.js';
+import { allowsExecutableDownloads, loadConfig } from '../config.js';
 import {
   DOWNLOAD_BRIDGE_SLACK_MS,
   buildFetchDownloadJs,
   clampDownloadTimeoutMs,
   downloadMaxBytes,
+  notRefetchableError,
   pickFilename,
   shapeDownloadResult,
   validateRequestedFilename,
+  type ChromeReportedDownload,
   type DownloadResult,
   type FetchDownloadOutcome,
 } from '../downloads.js';
@@ -282,6 +284,10 @@ export interface BrowserToolDeps {
    * Absent in unit tests and builds without a data dir, in which case
    * `browser.download` fails plainly instead of downloading into nowhere. */
   saveDownload?: (filename: string, data: Buffer) => string;
+  /** How a file `saveDownload` wrote gets its Mark-of-the-Web: on `win32`
+   * its Zone.Identifier stream is written (`downloads.ts`). Defaults to
+   * this process's platform and the real stream write; tests inject both. */
+  downloadMark?: { platform: NodeJS.Platform; write?: (path: string, content: string) => void };
   /** Appends a server-owned event to the `browser.events` log. Optional —
    * used by `browser.download` for `download-started`/`download-finished`;
    * absent in unit tests that do not care. */
@@ -1949,6 +1955,13 @@ interface DownloadCapture {
   url?: string;
   filename?: string;
   mime?: string;
+  /** Chrome's total size of the download; null or absent when it did not
+   * know it (no Content-Length) or the extension predates the field. */
+  total_bytes?: number | null;
+  /** The HTTP method of the request that started the download, when the
+   * extension can know it. Chrome's download API and `Page.downloadWillBegin`
+   * report none today, so this is absent; see `runDownload`. */
+  method?: string;
 }
 
 /** What became of Chrome's own download in selector mode: `removed` (cancelled
@@ -2114,9 +2127,41 @@ async function runDownload(
   // The extension holds Chrome's download until told what happened here:
   // it is cancelled and erased only once the file is written, and released
   // untouched otherwise — also when the fetch throws.
+  //
+  // D17: the file is written (and Chrome's copy erased) only when it is
+  // certainly the right one. The re-fetch is a GET, so a download whose
+  // request was not a GET is never fetched again. Chrome does not report the
+  // method (neither `DownloadItem` nor `Page.downloadWillBegin` carries it),
+  // so when it is unknown the re-fetch must match everything Chrome did
+  // report (size when known, type when known, final URL) instead: a POST
+  // answer fetched again with GET gets an error status, another page or
+  // other bytes, and fails that check. With neither a size nor a type to
+  // compare, nothing is erased.
+  if (typeof capture.method === 'string' && capture.method.toUpperCase() !== 'GET') {
+    const refused: BrowserDownloadResult = {
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      filename: pickFilename({
+        url: captured.url,
+        suggested: captured.suggested,
+        ...(requested !== undefined ? { requested } : {}),
+      }),
+      bytes: 0,
+      mime: captured.mime,
+      url: captured.url,
+      error: notRefetchableError(capture.method.toUpperCase()),
+    };
+    return withChromeDownload(refused, await settleHeldDownload(tabId, downloadId, false, deps));
+  }
+  const expected = {
+    url: capture.url,
+    mime: capture.mime ?? null,
+    totalBytes: capture.total_bytes ?? null,
+  };
   let result: BrowserDownloadResult;
   try {
-    result = await fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+    result = await fetchAndSave(tabId, captured, { ...opts, expected }, deadline, deps, caller);
   } catch (err) {
     const outcome = await settleHeldDownload(tabId, downloadId, false, deps);
     const note = CHROME_DOWNLOAD_NOTES.failed[outcome];
@@ -2208,6 +2253,9 @@ async function fetchAndSave(
     requested: string | undefined;
     timeoutMs: number;
     save: (filename: string, data: Buffer) => string;
+    /** A held Chrome download (selector mode): the file is saved only when
+     * the re-fetch matches what Chrome reported. */
+    expected?: ChromeReportedDownload;
   },
   deadline: number,
   deps: BrowserToolDeps,
@@ -2234,6 +2282,9 @@ async function fetchAndSave(
       error: `the ${timeoutMs}ms budget ran out before the file could be fetched`,
     };
   }
+  // Read per call: `config set downloads.max-mb` and
+  // `downloads.allow-executables` apply to the next download, no restart.
+  const config = loadConfig();
   const outcome = (await runAction(
     'evaluate',
     tabId,
@@ -2241,17 +2292,19 @@ async function fetchAndSave(
       expression: buildFetchDownloadJs({
         url: sourceUrl,
         timeoutMs: remainingMs,
-        // Read per call: `config set downloads.max-mb` applies to the next
-        // download without a restart.
-        maxBytes: downloadMaxBytes(loadConfig()),
+        maxBytes: downloadMaxBytes(config),
       }),
     },
     deps,
     caller,
     remainingMs + DOWNLOAD_BRIDGE_SLACK_MS,
   )) as FetchDownloadOutcome;
-  const withMime = outcome.mime ? outcome : { ...outcome, mime: capturedMime };
-  return shapeDownloadResult(withMime, sources, save);
+  return shapeDownloadResult(outcome, sources, save, {
+    fallbackMime: capturedMime,
+    allowExecutables: allowsExecutableDownloads(config),
+    markOfTheWeb: deps.downloadMark ?? { platform: process.platform },
+    ...(opts.expected ? { expected: opts.expected } : {}),
+  });
 }
 
 /**

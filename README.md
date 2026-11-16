@@ -226,6 +226,7 @@ browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (of
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
 browser-link config set hide-password-values on  # snapshot and find show "filled, N characters" for password fields (off by default)
 browser-link config set activity.hide-sensitive off  # store sensitive trail rows unhidden (on in this version; applies after a restart)
+browser-link config set downloads.allow-executables on  # let browser.download save .exe, .msi, .bat, .ps1, ... (refused by default)
 browser-link config restore-defaults --yes # only when config.json cannot be read: keep a copy, write the defaults
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
@@ -1790,12 +1791,13 @@ never lets it appear:
   which Chrome consults _before_ it prompts — by holding it there, so Chrome
   cannot prompt and the download does not complete. The held download's URL
   is then fetched like the `url` mode below. Chrome's own download is
-  cancelled and erased only after the file is saved.
+  cancelled and erased only after the file is saved, and only when the file
+  fetched again is certainly the same one (see below).
 - `browser.download({ tab_id, url })` fetches an http(s), `blob:` or
   `data:` URL in the page, with the page's cookies.
 
 The server writes the bytes into the downloads directory and returns
-`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download? }`.
+`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download?, mark_of_the_web? }`.
 Timeouts and failures still report what is known (URL, MIME type, bytes
 received so far). `browser.events` gets `download-started` and
 `download-finished` entries.
@@ -1811,6 +1813,23 @@ be tied to the tab with certainty, the tool answers
 failed" and `chrome_download: "left_in_chrome"`; the file is not saved. The
 agent can pass the file's link as `url`, or ask you. When nothing appeared the
 state is `timeout`.
+
+**Nothing is erased on a doubt (selector mode).** The server fetches the
+captured download a second time, with GET. Before it saves that file, and so
+before Chrome's own copy may be erased, it compares the second fetch with what
+Chrome reported for its download: the exact size, the MIME type (when Chrome
+knew it) and the final URL. When anything differs (a server that answers 200
+with an HTML error page, a one-time link that now redirects to a login page, a
+different file), or when Chrome did not report the size (no `Content-Length`,
+or an extension older than the server), the second fetch cannot be proven
+identical: nothing is saved and Chrome's download is left untouched: the call ends
+`ok: false`, `state: "interrupted"`, `chrome_download: "left_in_chrome"`, with "the
+capture failed" and every difference in `error`; use Chrome's own copy, in its
+downloads list (chrome://downloads). Chrome does not report which HTTP method
+started a download, so a download produced by a POST cannot be recognised
+directly: fetched again with GET it gets an error status, another page or
+other bytes, and fails the comparison. A capture that does report a method
+other than GET is never fetched again.
 
 **What happens to Chrome's own download (`chrome_download`, selector mode).**
 The extension holds the captured download until the server says whether the
@@ -1854,6 +1873,29 @@ Only you choose the directory: an agent's `filename` must be a plain
 basename (no separators, no `..`), and an existing file is never
 overwritten (`report (1).csv`).
 
+**Executable files are refused.** A file whose name ends in a type that runs
+or installs when opened (`.exe`, `.msi`, `.bat`, `.cmd`, `.com`, `.ps1`, `.lnk`,
+`.scr`, `.js`, `.vbs`, `.hta`, `.jar`, `.reg`, `.msix`, `.sh`, `.dmg` and similar; any
+case, judged by the last extension, so `invoice.pdf.exe` is an `.exe`) is
+not written: the call ends `ok: false` and `error` names the setting. Whether
+the name came from the agent or the page does not matter. Only you can allow
+them, from the console (the Admin window shows the setting read-only):
+
+```bash
+browser-link config set downloads.allow-executables on   # off (the default) refuses them again
+browser-link config get downloads.allow-executables
+```
+
+**Mark-of-the-Web on Windows.** Every file the server saves on Windows gets
+the same `Zone.Identifier` alternate data stream Chrome writes on its own
+downloads (`ZoneId=3`, the Internet zone, with `ReferrerUrl` the page and
+`HostUrl` the download when they are http(s) URLs; a `data:` or `blob:` URL is
+left out), so SmartScreen and Office Protected View treat it as coming from
+the web. The result says `mark_of_the_web: "written"`. Where the stream cannot
+be written (a FAT or exFAT drive, some network shares) the file is kept and
+the result says `mark_of_the_web: "failed"` with the reason in
+`mark_of_the_web_error`. Other systems get no such field.
+
 Why not just tell Chrome to save without asking? Because an extension
 cannot: Chromium answers `Browser.setDownloadBehavior` and
 `Page.setDownloadBehavior` with "Not allowed" for `chrome.debugger`
@@ -1862,7 +1904,8 @@ when the user's "Ask where to save" setting is on. Fetching the file a
 second time in the page sidesteps both — with these limits:
 
 - A download produced by a one-shot POST form or a single-use token cannot
-  be fetched again; it comes back `interrupted` with the HTTP error.
+  be fetched again; it comes back `interrupted` with the HTTP error or the
+  difference from what Chrome reported, and Chrome keeps its own copy.
 - A `blob:` URL the page revoked right after the click is gone.
 - 25 MiB per file.
 - `chrome.downloads` gives no tab id, so selector mode never guesses: a
@@ -2092,14 +2135,16 @@ auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
 and an update check; and install or remove the instructions block per client.
 Since 1.0.0 it only **shows** the settings that widen what an agent may see or
 do: each MCP tool, cdp-direct on or off, its port and grant lifetime, MCP client
-registration, and the two hide settings (password values, sensitive values in the
-trail) appear as a value plus the console command that changes it
+registration, the two hide settings (password values, sensitive values in the
+trail) and whether `browser.download` may save executable file types appear as a
+value plus the console command that changes it
 (`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
 `browser-link config set cdp-direct.port <port>`,
 `browser-link config set cdp-direct.grant-ttl <minutes>`,
 `browser-link install --client <id>`,
 `browser-link config set hide-password-values <on|off>`,
-`browser-link config set activity.hide-sensitive <on|off>`), and the server
+`browser-link config set activity.hide-sensitive <on|off>`,
+`browser-link config set downloads.allow-executables <on|off>`), and the server
 refuses a write for them if one arrives, with or without a confirmation code.
 Each of these rows has an info control next to its label. On hover, keyboard
 focus or click it says: "This setting is changed from the console, not from
