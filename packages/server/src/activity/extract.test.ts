@@ -369,7 +369,10 @@ describe('classifyFlag — thrown errors', () => {
       'retargeted',
     ],
     ['retargeted: click would land on an ancestor', 'retargeted'],
-    ['ref-stale: e12 not found in document d3', 'ref-stale'],
+    [
+      'ref-stale: e12 not found in document d3: the element is gone, take a new snapshot',
+      'ref-stale',
+    ],
     ['expectation not met: url_changed after 3000ms', 'expect-failed'],
     ["Tool 'browser.click' timed out after 30000ms", 'timeout'],
     ['Element not found: #missing', 'not-found'],
@@ -503,7 +506,9 @@ describe('buildActivityRow', () => {
         caller,
         durationMs: 9,
         recordPayloads: true,
-        error: new Error('ref-stale: e1 not found in document d1'),
+        error: new Error(
+          'ref-stale: e1 not found in document d1: the element is gone, take a new snapshot',
+        ),
       },
     );
     expect(row.outcome).toBe('error');

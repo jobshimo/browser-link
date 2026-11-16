@@ -55,6 +55,27 @@
  *     `ambiguous: true` so agents know not to cache that selector.
  */
 export const DEEP_QUERY_JS = `
+  // Set when the depth guard below refused to enter a root that exists:
+  // part of the page was not walked. Results built on these helpers report
+  // it (owner decision D6: a cut never goes unsaid).
+  var deepDepthLimited = false;
+  function hasNestedRoot(scope) {
+    var all;
+    try {
+      all = scope.querySelectorAll('*');
+    } catch (_) {
+      return false;
+    }
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) return true;
+      if (all[i].tagName === 'IFRAME') {
+        try {
+          if (all[i].contentDocument) return true;
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
   function collectSearchRoots(start) {
     // start: a Document, Element or ShadowRoot to scope the search to.
     // Returns [start, ...every open shadow root and same-origin iframe
@@ -67,7 +88,10 @@ export const DEEP_QUERY_JS = `
       // Depth guard, same pattern as the other recursive helpers here:
       // pathological nesting (or a cycle introduced by a broken mock)
       // must degrade to a truncated result, never a stack overflow.
-      if (depth > 20) return;
+      if (depth > 20) {
+        if (hasNestedRoot(scope)) deepDepthLimited = true;
+        return;
+      }
       var all;
       try {
         all = scope.querySelectorAll('*');
