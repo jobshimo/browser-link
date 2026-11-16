@@ -256,6 +256,14 @@ export interface BrowserToolDeps {
    * wires `recordActivity` without wiring this gets the full trail it clearly
    * asked for rather than a silently gutted one. */
   recordActivityPayloads?: boolean;
+  /** Mirror of the `activity.hide-sensitive` config flag (owner decision
+   * D13, see `activity/extract.ts`). Only `false` stores sensitive rows
+   * unhidden; an absent value hides, the safe side. */
+  hideSensitiveActivity?: boolean;
+  /** The user's hide-password-values setting (owner decision D12), read on
+   * every snapshot, find and flow so a change applies to the next call.
+   * Absent means off: values are returned, as by default. */
+  hidePasswordValues?(): boolean;
   /** Optional map learner (see `map/learning.ts`'s `learnFromDispatch`).
    * Called once per dispatched tool, after the call settles, with the tool,
    * its args, the resolved result or the thrown error, and the tab's URL and
@@ -1307,6 +1315,31 @@ function routeToolCall(
     : deps.callBrowserTool(tabId, tool, params);
 }
 
+/** The user's hide-password-values setting (owner decision D12), read now. */
+function passwordValuesHidden(deps: BrowserToolDeps): boolean {
+  return deps.hidePasswordValues?.() === true;
+}
+
+/** The wire option that asks the page to hide password values: present only
+ * when the setting is on, so with it off every request is as before. */
+function hideParam(hide: boolean): { hide_password_values?: true } {
+  return hide ? { hide_password_values: true } : {};
+}
+
+/**
+ * With the setting on, a snapshot, find or flow answer must carry the page's
+ * `values_hidden` note: an extension older than this server ignores the
+ * option and would return the values. Such an answer is withheld, never
+ * passed on. With the setting off the answer is returned untouched.
+ */
+function requireValuesHidden(tool: string, result: unknown, hide: boolean): unknown {
+  if (!hide) return result;
+  if (typeof result === 'object' && result !== null && 'values_hidden' in result) return result;
+  throw new Error(
+    `${tool}: the user's setting hide-password-values is on, but the browser answered without hiding password values (an extension older than this server?), so the answer was withheld${tool === 'browser.flow' ? ' (the flow itself ran)' : ''}. Ask the user to update the browser-link extension.`,
+  );
+}
+
 /** Run an action through the claim registry. Returns the response payload of
  * the action when the agent is allowed, or throws a descriptive Error otherwise.
  * When no registry is wired (test fixtures, or future configs that disable
@@ -2188,7 +2221,8 @@ async function dispatchBrowserTool(
       // like non-string exclude entries, and the call answers a full snapshot.
       const sinceId =
         typeof since === 'string' && since.length <= MAX_SNAPSHOT_SINCE_LENGTH ? since : undefined;
-      return routeToolCall(
+      const hide = passwordValuesHidden(deps);
+      const snapshot = await routeToolCall(
         'snapshot',
         requireTabId(args),
         {
@@ -2198,9 +2232,11 @@ async function dispatchBrowserTool(
           max_interactive,
           since: sinceId,
           ...(snapshotOffset ? { offset: snapshotOffset } : {}),
+          ...hideParam(hide),
         },
         deps,
       );
+      return requireValuesHidden('browser.snapshot', snapshot, hide);
     }
     case 'browser.find': {
       const { text, role, exact, ref, key, offset } = (args ?? {}) as {
@@ -2224,20 +2260,33 @@ async function dispatchBrowserTool(
         throw new Error('browser.find: offset applies to text mode only');
       }
       const findOffset = offsetArg('browser.find', offset, FIND_OFFSET_PARTS);
+      const hide = passwordValuesHidden(deps);
       if (key !== undefined) {
         const problem = semanticKeyProblem(key);
         if (problem !== null) throw new Error(`browser.find: key ${problem}`);
         const found = await routeToolCall(
           'find',
           requireTabId(args),
-          { key: key as SemanticKey },
+          { key: key as SemanticKey, ...hideParam(hide) },
           deps,
         );
-        return withKnown(deps, 'browser.find', 'find', args, found);
+        return withKnown(
+          deps,
+          'browser.find',
+          'find',
+          args,
+          requireValuesHidden('browser.find', found, hide),
+        );
       }
       if (ref !== undefined) {
         // With a ref, find describes that element (see buildFindJs).
-        return routeToolCall('find', requireTabId(args), { ref: ref as string }, deps);
+        const described = await routeToolCall(
+          'find',
+          requireTabId(args),
+          { ref: ref as string, ...hideParam(hide) },
+          deps,
+        );
+        return requireValuesHidden('browser.find', described, hide);
       }
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error('browser.find: text required');
@@ -2248,12 +2297,19 @@ async function dispatchBrowserTool(
         );
       }
       // find is a read tool: no claim enforcement, no userGesture concerns.
-      return routeToolCall(
+      const found = await routeToolCall(
         'find',
         requireTabId(args),
-        { text, role, exact: exact === true, ...(findOffset ? { offset: findOffset } : {}) },
+        {
+          text,
+          role,
+          exact: exact === true,
+          ...(findOffset ? { offset: findOffset } : {}),
+          ...hideParam(hide),
+        },
         deps,
       );
+      return requireValuesHidden('browser.find', found, hide);
     }
     case 'browser.state':
       // state is a read tool, same bucket as find/snapshot: no claim
@@ -2580,6 +2636,7 @@ async function dispatchBrowserTool(
       const flowTimeoutMs = foreground
         ? Math.max(ACTION_TIMEOUT_FLOOR_MS, validated.budgetMs)
         : ACTION_TIMEOUT_FLOOR_MS;
+      const hide = passwordValuesHidden(deps);
       let result: unknown;
       try {
         result = await runAction(
@@ -2593,6 +2650,7 @@ async function dispatchBrowserTool(
             // A RELATIVE duration, not a timestamp: the extension and the
             // server do not share a clock.
             ...(foreground ? { deadline_ms: flowTimeoutMs - FLOW_DEADLINE_MARGIN_MS } : {}),
+            ...hideParam(hide),
           },
           deps,
           caller,
@@ -2605,6 +2663,7 @@ async function dispatchBrowserTool(
         if (!foreground || isCdpTabId(flowTabId) || !isBridgeFlowTimeout(err)) throw err;
         return recoverTimedOutFlow(flowTabId, flowId, err, deps);
       }
+      result = requireValuesHidden('browser.flow', result, hide);
       // A projection is only useful if it says which mode the flow needs —
       // see the dry-run comment above.
       const decorated = dryRun
@@ -2980,13 +3039,12 @@ function writeTrail(
       ...(error === undefined ? { result } : { error: error ?? new Error('unknown error') }),
       agentId: caller.agent_id,
       recordPayloads: deps.recordActivityPayloads !== false,
+      hideSensitive: deps.hideSensitiveActivity !== false,
+      // The tab's URL and title are the two columns that make a row readable
+      // a week later, and only the dispatcher can see the tab table. Passed
+      // in, not set afterwards, so the D13 rule covers them too.
+      ...(tab ? { page: { url: tab.url, title: tab.title } } : {}),
     });
-    // The tab's URL and title are the two columns that make a row readable a
-    // week later, and only the dispatcher can see the tab table.
-    if (row.tabId !== null && tab && tab.tab_id === row.tabId) {
-      row.url = tab.url;
-      row.title = tab.title;
-    }
     deps.recordActivity?.(row);
   } catch {
     // Observation must never break the observed. A row we failed to build is

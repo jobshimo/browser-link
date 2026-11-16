@@ -16,6 +16,7 @@ import {
   buildObserverMarkJs,
 } from './inpage/observer.js';
 import {
+  PASSWORD_VALUES_HIDDEN_NOTE,
   UNOBSERVED_FRAMES_HINT,
   buildFocusedFieldJs,
   buildProgrammaticClickJs,
@@ -24,7 +25,7 @@ import {
 import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
-import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
+import { SENSITIVE_PAYLOAD_MARKER, UNIDENTIFIED_FIELD_MARKER } from '../activity/extract.js';
 import { query, record } from '../activity/queries.js';
 import { handleBrowserTool, type BrowserToolDeps } from '../tools/browser-dispatch.js';
 
@@ -320,6 +321,47 @@ describe('callCdpTool — tool dispatch', () => {
       wait_for_load: false,
     });
     expect(result).toEqual({ title: 'Fast', url: 'https://example.com/fast' });
+  });
+
+  test('hide-password-values (D12): snapshot, find and a flow ask the page to hide; off asks nothing', async () => {
+    const expressions: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        expressions.push(expression);
+        return {
+          result: {
+            value: expression.includes('candidateOffset')
+              ? { matched: false, reason: 'not-found' }
+              : { interactive: [] },
+          },
+        };
+      },
+    });
+    grantAccess(port);
+    const HIDE = '"hideValues":true';
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', { hide_password_values: true });
+    await callCdpTool(`cdp:${targetId}`, 'find', { text: 'Pw', hide_password_values: true });
+    expect(expressions[0]).toContain(HIDE);
+    expect(expressions[0]).toContain('values_hidden');
+    expect(expressions[1]).toContain(HIDE);
+    const flow = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ find: { text: 'Pw' } }],
+      hide_password_values: true,
+    });
+    // The find step and the failure's recovery snapshot both hid values.
+    expect(expressions.slice(2).every((e) => e.includes(HIDE))).toBe(true);
+    expect(expressions.length).toBe(4);
+    expect(flow).toMatchObject({ ok: false, values_hidden: PASSWORD_VALUES_HIDDEN_NOTE });
+    const before = expressions.length;
+    const plain = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ find: { text: 'Pw' } }],
+    });
+    await callCdpTool(`cdp:${targetId}`, 'snapshot', {});
+    expect(
+      expressions.slice(before).some((e) => e.includes(HIDE) || e.includes('values_hidden')),
+    ).toBe(false);
+    expect('values_hidden' in (plain as object)).toBe(false);
   });
 
   test('an out-of-v1-scope tool (drag) rejects naming the extension as fallback', async () => {
@@ -1902,7 +1944,10 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     closeActivityDb();
   });
 
-  function dispatchDeps(recordActivityPayloads: boolean): BrowserToolDeps {
+  function dispatchDeps(
+    recordActivityPayloads: boolean,
+    hideSensitiveActivity?: boolean,
+  ): BrowserToolDeps {
     return {
       listTabs: () => [],
       callBrowserTool: async () => {
@@ -1914,6 +1959,7 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
         record(row);
       },
       recordActivityPayloads,
+      ...(hideSensitiveActivity === undefined ? {} : { hideSensitiveActivity }),
     };
   }
 
@@ -1945,7 +1991,11 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     },
   );
 
-  test('a failed type on a plain field is stored as today', async () => {
+  // A failure carries the field verdict only when it is sensitive, so a
+  // failed type on a plain field reads like one that never reached the
+  // field: hidden as not identified by default (D13), as before when the
+  // trail stores sensitive rows unhidden.
+  test('a failed type on a plain field: not identified by default, the text when stored unhidden', async () => {
     const { port, targetId } = await startFakeTarget(unmetPage({ sensitive_field: false }));
     grantAccess(port);
     const args = {
@@ -1958,10 +2008,13 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     await expect(
       handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
     ).rejects.toThrow(/^expectation not met/);
-    expect(rows().map((r) => r.payload)).toEqual(['alpha']);
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true, false), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['alpha', UNIDENTIFIED_FIELD_MARKER]);
   });
 
-  test('a failure with no field report (probe failed) is stored as today', async () => {
+  test('a failure with no field report (probe failed): not identified by default, the text when stored unhidden', async () => {
     const { port, targetId } = await startFakeTarget(unmetPage(new CdpError('context destroyed')));
     grantAccess(port);
     const args = {
@@ -1974,6 +2027,9 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     await expect(
       handleBrowserTool('browser.type', args, dispatchDeps(true), CALLER),
     ).rejects.toThrow(/^expectation not met/);
-    expect(rows().map((r) => r.payload)).toEqual(['hunter2']);
+    await expect(
+      handleBrowserTool('browser.type', args, dispatchDeps(true, false), CALLER),
+    ).rejects.toThrow(/^expectation not met/);
+    expect(rows().map((r) => r.payload)).toEqual(['hunter2', UNIDENTIFIED_FIELD_MARKER]);
   });
 });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   FIND_CUT_HINT,
   NOT_WALKED_NOTE,
+  PASSWORD_VALUES_HIDDEN_NOTE,
   SNAPSHOT_CUT_HINT,
   SNAPSHOT_NOT_COMPARED_HINT,
   SNAPSHOT_NOT_COMPARED_TEXT_HINT,
@@ -3688,5 +3689,196 @@ describe('results say when part of the page was not walked (depth guard)', () =>
       ok: false,
       reason: 'not-found',
     });
+  });
+});
+
+describe('password values: shown by default, hidden by a setting (D12)', () => {
+  const win = window as unknown as Record<string, unknown>;
+  const SECRET = 'hunter2-SECRET';
+
+  /** A visible, filled field appended to the body. */
+  function filled(html: string, value: string): HTMLInputElement {
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    const el = holder.firstElementChild as HTMLInputElement;
+    document.body.appendChild(el);
+    makeVisible(el);
+    el.value = value;
+    return el;
+  }
+
+  function entries(result: Json): Json[] {
+    return result.interactive as Json[];
+  }
+
+  test('by default a snapshot returns the text of a filled password field (pinned default)', () => {
+    filled('<input id="pw" type="password" name="pw">', SECRET);
+    const result = evalExpr<Json>(buildSnapshotJs({}));
+    expect(entries(result)).toEqual([
+      { tag: 'input', role: 'input', selector: '#pw', value: SECRET, name: 'pw', type: 'password' },
+    ]);
+    expect('values_hidden' in result).toBe(false);
+  });
+
+  test('by default find matches a password field by its text and quotes it (pinned default)', () => {
+    filled('<input id="pw" type="password">', SECRET);
+    const match = evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'textbox' }));
+    expect(match).toMatchObject({ matched: true, selector: '#pw' });
+    const miss = evalExpr<FindNoMatch>(buildFindJs({ text: 'hunter2', role: 'button' }));
+    expect(JSON.stringify(miss)).toContain(SECRET);
+  });
+
+  test('setting on: the entry says filled, N characters in place of value, and the result says why', () => {
+    filled('<input id="pw" type="password" name="pw">', SECRET);
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)).toEqual([
+      {
+        tag: 'input',
+        role: 'input',
+        selector: '#pw',
+        value_hidden: 'filled, 14 characters',
+        name: 'pw',
+        type: 'password',
+      },
+    ]);
+    expect(Object.keys(entries(result)[0])).toEqual([
+      'tag',
+      'role',
+      'selector',
+      'value_hidden',
+      'name',
+      'type',
+    ]);
+    expect(result.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+    expect(typeof result.values_hidden).toBe('string');
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+
+  test('setting on: one character is singular, and the count is in characters, not code units', () => {
+    filled('<input id="a" type="password">', 'x');
+    filled('<input id="b" type="password">', '\u{1F511}é');
+    const shown = entries(evalExpr<Json>(buildSnapshotJs({ hide_password_values: true })));
+    expect(shown.map((e) => e.value_hidden)).toEqual([
+      'filled, 1 character',
+      'filled, 2 characters',
+    ]);
+  });
+
+  test.each(['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'])(
+    'setting on: a field marked autocomplete="%s" is hidden too',
+    (token) => {
+      filled(`<input id="f" type="text" autocomplete="section-x ${token.toUpperCase()}">`, SECRET);
+      const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+      expect(entries(result)[0]).toMatchObject({ value_hidden: 'filled, 14 characters' });
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    },
+  );
+
+  test('setting on: a password field a show-password button turned into text stays hidden', () => {
+    const pw = filled('<input id="pw" type="password">', SECRET);
+    evalExpr(buildSnapshotJs({ hide_password_values: true }));
+    pw.type = 'text';
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toMatchObject({ value_hidden: 'filled, 14 characters' });
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+    expect(
+      evalExpr<Json>(buildFindJs({ text: 'hunter2', hide_password_values: true })),
+    ).toMatchObject({ matched: false, reason: 'not-found' });
+  });
+
+  test('setting on: a field the page does not mark sensitive keeps its value', () => {
+    filled('<input id="q" type="search" name="password">', 'shoes');
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toMatchObject({ value: 'shoes' });
+    expect('value_hidden' in entries(result)[0]).toBe(false);
+  });
+
+  test('setting on: an empty password field carries neither value nor value_hidden', () => {
+    filled('<input id="pw" type="password">', '');
+    const [entry] = entries(evalExpr<Json>(buildSnapshotJs({ hide_password_values: true })));
+    expect(entry).toEqual({ tag: 'input', role: 'input', selector: '#pw', type: 'password' });
+  });
+
+  test('setting on: a sensitive textarea shows neither its value nor its text', () => {
+    const area = document.createElement('textarea');
+    area.id = 'otp';
+    area.setAttribute('autocomplete', 'one-time-code');
+    area.textContent = SECRET;
+    document.body.appendChild(area);
+    makeVisible(area);
+    const result = evalExpr<Json>(buildSnapshotJs({ hide_password_values: true }));
+    expect(entries(result)[0]).toEqual({
+      tag: 'textarea',
+      role: 'textarea',
+      selector: '#otp',
+      value_hidden: 'filled, 14 characters',
+    });
+  });
+
+  test('setting on: find never matches on a hidden value, nor quotes it in near_misses or the error', () => {
+    filled('<input id="pw" type="password" placeholder="Your password">', SECRET);
+    const hide = { hide_password_values: true } as const;
+    expect(evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'textbox', ...hide }))).toEqual({
+      matched: false,
+      reason: 'not-found',
+      values_hidden: PASSWORD_VALUES_HIDDEN_NOTE,
+    });
+    const miss = evalExpr<Json>(buildFindJs({ text: 'hunter2', role: 'button', ...hide }));
+    expect(JSON.stringify(miss)).not.toContain('hunter2');
+    // Still found by what the page shows: its placeholder.
+    expect(
+      evalExpr<Json>(buildFindJs({ text: 'password', role: 'textbox', ...hide })),
+    ).toMatchObject({ matched: true, selector: '#pw', values_hidden: PASSWORD_VALUES_HIDDEN_NOTE });
+    // A near miss quotes the placeholder, never the value.
+    const near = evalExpr<FindNoMatch>(
+      buildFindJs({ text: 'your password', exact: true, role: 'button', ...hide }),
+    );
+    expect(JSON.stringify(near)).not.toContain('hunter2');
+    expect(near.near_misses?.[0]?.text).toBe('Your password');
+  });
+
+  test('setting on: multiple-matches candidates carry no value', () => {
+    filled('<input id="a" type="password" aria-label="Password field">', SECRET);
+    filled('<input id="b" type="password" aria-label="Password field">', SECRET);
+    const many = evalExpr<Json>(
+      buildFindJs({ text: 'password field', hide_password_values: true }),
+    );
+    expect(many.reason).toBe('multiple-matches');
+    expect(JSON.stringify(many)).not.toContain('hunter2');
+    expect(many.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+  });
+
+  test('setting on: a since diff lists a changed password field without its text', () => {
+    win[OBSERVER_BINDING] = () => undefined;
+    evalExpr(buildObserverInstallJs());
+    try {
+      const pw = filled('<input id="pw" type="password">', 'old-SECRET');
+      const first = evalExpr<Json>(buildSnapshotJs({}));
+      expect(entries(first)[0]).toMatchObject({ value: 'old-SECRET' });
+      pw.value = SECRET;
+      const diff = evalExpr<Json>(
+        buildSnapshotJs({ since: first.snapshot_id as string, hide_password_values: true }),
+      );
+      expect(diff.changed).toEqual([
+        expect.objectContaining({ selector: '#pw', value_hidden: 'filled, 14 characters' }),
+      ]);
+      expect(diff.values_hidden).toBe(PASSWORD_VALUES_HIDDEN_NOTE);
+      expect(JSON.stringify(diff)).not.toContain('SECRET');
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+
+  test('setting off: the expression and every result are exactly as without the option', () => {
+    filled('<input id="pw" type="password">', SECRET);
+    filled('<input id="q" type="search">', 'shoes');
+    expect(buildSnapshotJs({ hide_password_values: false })).toBe(buildSnapshotJs({}));
+    expect(buildFindJs({ text: 'hunter2', hide_password_values: false })).toBe(
+      buildFindJs({ text: 'hunter2' }),
+    );
+    const snap = evalExpr<Json>(buildSnapshotJs({}));
+    expect(entries(snap).map((e) => e.value)).toEqual([SECRET, 'shoes']);
+    expect(JSON.stringify(snap)).not.toContain('values_hidden');
   });
 });

@@ -543,6 +543,38 @@ describe('cli D9: --help or -h in any position prints help and does nothing else
     expect(logs[0]).not.toContain('Environment:');
   });
 
+  it('config --help lists the two hide settings with their meaning (D12, D13)', async () => {
+    const dispatch = await loadDispatch();
+    await dispatch(['config', 'set', 'hide-password-values', 'on', '--help']);
+    expect(logs[0]).toContain(
+      '  browser-link config set hide-password-values <on|off>\n' +
+        '                                Hide password values from agents (off by default): snapshot and\n' +
+        '                                find show "filled, N characters" instead.',
+    );
+    expect(logs[0]).toContain(
+      '  browser-link config set activity.hide-sensitive <on|off>\n' +
+        '                                Hide what was typed into sensitive fields in every column of the\n' +
+        '                                activity trail; applies after a restart.',
+    );
+    expect(h.spies.runConfigCommand).not.toHaveBeenCalled();
+  });
+
+  it('config --help in Spanish lists the two hide settings with their meaning (D12, D13)', async () => {
+    h.language.value = 'es';
+    const dispatch = await loadDispatch();
+    await dispatch(['config', '--help']);
+    expect(logs[0]).toContain(
+      '  browser-link config set hide-password-values <on|off>\n' +
+        '                                Oculta a los agentes el valor de las contraseñas (apagado por\n' +
+        '                                defecto): snapshot y find muestran "filled, N characters".',
+    );
+    expect(logs[0]).toContain(
+      '  browser-link config set activity.hide-sensitive <on|off>\n' +
+        '                                Oculta en todas las columnas del registro de actividad lo escrito\n' +
+        '                                en campos sensibles; se aplica al reiniciar.',
+    );
+  });
+
   it('the command help is in Spanish when the configured language is es', async () => {
     h.language.value = 'es';
     const dispatch = await loadDispatch();

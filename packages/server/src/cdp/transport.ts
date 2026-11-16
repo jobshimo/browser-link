@@ -29,6 +29,7 @@ import {
   buildElementRectJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  withValuesHiddenNote,
   buildProgrammaticClickJs,
   isFocusedField,
   actionFailure,
@@ -551,16 +552,25 @@ async function performFind(
     ref?: string;
     key?: FindKey;
     offset?: { candidates?: number };
+    /** The user's hide-password-values setting (owner decision D12). */
+    hide_password_values?: boolean;
   },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
+    const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(client, buildFindJs({ key: params.key }));
+      const value = await evaluateInTab<FindStepResult>(
+        client,
+        buildFindJs({ key: params.key, hide_password_values }),
+      );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(client, buildFindJs({ ref }));
+      const found = await evaluateInTab<FindStepResult>(
+        client,
+        buildFindJs({ ref, hide_password_values }),
+      );
       const refError = found.matched ? null : refFailureMessage(found, ref);
       if (refError) return { ok: false, error: refError };
       return { ok: true, result: found };
@@ -568,7 +578,13 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       client,
-      buildFindJs({ text, role: params.role, exact: params.exact === true, offset: params.offset }),
+      buildFindJs({
+        text,
+        role: params.role,
+        exact: params.exact === true,
+        offset: params.offset,
+        hide_password_values,
+      }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -977,9 +993,12 @@ function buildCdpFlowDeps(
    * foreground flow, its deadline. The runner itself only gets
    * `shouldCancel`, which is how it tells a human stop from a timeout. */
   shouldStopWaiting: () => boolean = shouldCancel,
+  /** The user's hide-password-values setting (owner decision D12): find
+   * steps and the recovery snapshot hide password values too. */
+  hidePasswordValues = false,
 ): Omit<FlowDeps, 'onProgress'> {
   return {
-    performFind: (fp) => performFind(client, fp),
+    performFind: (fp) => performFind(client, { ...fp, hide_password_values: hidePasswordValues }),
     performClick: (cp) => performClick(client, cp),
     performType: (tp) => performType(client, tp),
     performPress: (pp) => performPress(client, pp),
@@ -992,7 +1011,14 @@ function buildCdpFlowDeps(
     performDrag: () =>
       Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
     buildRecoverySnapshot: () =>
-      evaluateInTab(client, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+      evaluateInTab(
+        client,
+        buildSnapshotJs({
+          only_interactive: true,
+          max_interactive: 40,
+          hide_password_values: hidePasswordValues,
+        }),
+      ),
   };
 }
 
@@ -1079,6 +1105,7 @@ export async function callCdpTool(
         max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
         since: typeof p.since === 'string' ? p.since : undefined,
         offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+        hide_password_values: p.hide_password_values === true,
       };
       return evaluateInTab(client, buildSnapshotJs(opts));
     }
@@ -1113,6 +1140,7 @@ export async function callCdpTool(
         ref: typeof p.ref === 'string' ? p.ref : undefined,
         key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
         offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+        hide_password_values: p.hide_password_values === true,
       });
       if (!outcome.ok) throw new Error(outcome.error);
       return outcome.result;
@@ -1196,6 +1224,8 @@ export async function callCdpTool(
       const dryRun = p.dry_run === true;
       const detach = p.dry_run !== true && p.detach === true;
       const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : '';
+      // Strict `=== true`: the user's hide-password-values setting (D12).
+      const hidePasswordValues = p.hide_password_values === true;
 
       // THE cdp-direct kill switch. There is no extension here and
       // therefore no popup Stop button, so the user's only lever is
@@ -1233,12 +1263,14 @@ export async function callCdpTool(
           client,
           shouldCancel,
           deadlineAt === undefined ? undefined : () => shouldCancel() || Date.now() >= deadlineAt,
+          hidePasswordValues,
         );
-        return runFlow(
+        const ran = await runFlow(
           rawSteps as FlowStep[],
           deadlineAt === undefined ? deps : { ...deps, deadlineAt },
           { dryRun },
         );
+        return withValuesHiddenNote(ran, hidePasswordValues);
       }
 
       // ONE detached flow per tab — same rule, same reason, same error
@@ -1268,7 +1300,7 @@ export async function callCdpTool(
         let result: FlowResult | null = null;
         try {
           result = await runFlow(rawSteps as FlowStep[], {
-            ...buildCdpFlowDeps(client, shouldCancel),
+            ...buildCdpFlowDeps(client, shouldCancel, shouldCancel, hidePasswordValues),
             onProgress: (progress) => {
               reportDetachedProgress(flow.flowId, progress);
             },
@@ -1281,12 +1313,15 @@ export async function callCdpTool(
           finishDetachedFlow(flow.flowId, result);
         }
       })();
-      return {
-        detached: true,
-        started_at: flow.startedAt,
-        steps: rawSteps.length,
-        expires_at: flow.expiresAt,
-      };
+      return withValuesHiddenNote(
+        {
+          detached: true,
+          started_at: flow.startedAt,
+          steps: rawSteps.length,
+          expires_at: flow.expiresAt,
+        },
+        hidePasswordValues,
+      );
     }
 
     case 'flow_status': {

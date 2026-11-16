@@ -17,6 +17,7 @@ import {
   buildTypeResolveJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  withValuesHiddenNote,
   isFocusedField,
   actionFailure,
   buildStateJs,
@@ -1684,16 +1685,25 @@ async function performFind(
     ref?: string;
     key?: FindKey;
     offset?: { candidates?: number };
+    /** The user's hide-password-values setting (owner decision D12). */
+    hide_password_values?: boolean;
   },
 ): Promise<ActionOutcome<FindStepResult>> {
   try {
     const { text, ref } = params;
+    const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ key: params.key }));
+      const value = await evaluateInTab<FindStepResult>(
+        tabId,
+        buildFindJs({ key: params.key, hide_password_values }),
+      );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(tabId, buildFindJs({ ref }));
+      const found = await evaluateInTab<FindStepResult>(
+        tabId,
+        buildFindJs({ ref, hide_password_values }),
+      );
       const refError = found.matched ? null : refFailureMessage(found, ref);
       if (refError) return { ok: false, error: refError };
       return { ok: true, result: found };
@@ -1701,7 +1711,13 @@ async function performFind(
     if (!text) return { ok: false, error: 'find: text required' };
     const value = await evaluateInTab<FindStepResult>(
       tabId,
-      buildFindJs({ text, role: params.role, exact: params.exact === true, offset: params.offset }),
+      buildFindJs({
+        text,
+        role: params.role,
+        exact: params.exact === true,
+        offset: params.offset,
+        hide_password_values,
+      }),
     );
     return { ok: true, result: value };
   } catch (err) {
@@ -2443,6 +2459,7 @@ async function handleSnapshot(
         typeof p.offset === 'object' && p.offset !== null
           ? (p.offset as SnapshotOffset)
           : undefined,
+      hide_password_values: p.hide_password_values === true,
     }),
   );
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
@@ -2567,6 +2584,9 @@ async function handleFlow(
   // covers a server too old to send one: the popup's Stop button must work
   // regardless of which half was upgraded first.
   const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : newFlowId();
+  // Strict `=== true`: the user's hide-password-values setting (owner
+  // decision D12), sent by the server only when it is on.
+  const hidePasswordValues = p.hide_password_values === true;
 
   // A dry run dispatches nothing and finishes in milliseconds, so it is
   // deliberately NOT registered: there is nothing to stop, and listing it
@@ -2574,10 +2594,17 @@ async function handleFlow(
   // touched the page. It also ignores `detach` — projecting a flow is
   // fast and synchronous whichever way the real run would go.
   if (dryRun) {
-    const projection = await runFlow(rawSteps as FlowStep[], buildFlowDeps(tabId, state), {
-      dryRun: true,
-    });
-    return { kind: 'tool.response', id: msg.id, ok: true, result: projection };
+    const projection = await runFlow(
+      rawSteps as FlowStep[],
+      buildFlowDeps(tabId, state, undefined, hidePasswordValues),
+      { dryRun: true },
+    );
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: true,
+      result: withValuesHiddenNote(projection, hidePasswordValues),
+    };
   }
 
   if (detach) {
@@ -2638,7 +2665,7 @@ async function handleFlow(
     shouldCancel() || (deadlineAt !== undefined && Date.now() >= deadlineAt);
   const run = (): Promise<FlowResult> =>
     runFlow(rawSteps as FlowStep[], {
-      ...buildFlowDeps(tabId, state, stopWaiting),
+      ...buildFlowDeps(tabId, state, stopWaiting, hidePasswordValues),
       shouldCancel,
       ...(deadlineAt === undefined ? {} : { deadlineAt }),
       onProgress: (progress) => {
@@ -2685,12 +2712,15 @@ async function handleFlow(
       kind: 'tool.response',
       id: msg.id,
       ok: true,
-      result: {
-        detached: true,
-        started_at: entry.startedAt,
-        steps: rawSteps.length,
-        expires_at: entry.expiresAt,
-      },
+      result: withValuesHiddenNote(
+        {
+          detached: true,
+          started_at: entry.startedAt,
+          steps: rawSteps.length,
+          expires_at: entry.expiresAt,
+        },
+        hidePasswordValues,
+      ),
     };
   }
 
@@ -2701,7 +2731,12 @@ async function handleFlow(
     // failed step, and even a cancellation, is a legitimate business
     // outcome — same pattern as wait_for's matched:false) — flowResult
     // itself carries the ok:true/false and stopped_by the agent reads.
-    return { kind: 'tool.response', id: msg.id, ok: true, result: flowResult };
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: true,
+      result: withValuesHiddenNote(flowResult, hidePasswordValues),
+    };
   } finally {
     // In `finally` so a throw (detached debugger, closed tab) still retires
     // the registry entry — a phantom "running" flow in the popup would be
@@ -2737,16 +2772,27 @@ function buildFlowDeps(
   tabId: number,
   state: TabState,
   shouldCancel?: () => boolean,
+  /** The user's hide-password-values setting (owner decision D12): find
+   * steps and the recovery snapshot hide password values too. */
+  hidePasswordValues = false,
 ): Omit<FlowDeps, 'shouldCancel' | 'onProgress'> {
   return {
-    performFind: (params) => performFind(tabId, params),
+    performFind: (params) =>
+      performFind(tabId, { ...params, hide_password_values: hidePasswordValues }),
     performClick: (params) => performClick(tabId, params),
     performType: (params) => performType(tabId, params),
     performPress: (params) => performPress(tabId, params),
     performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
     performDrag: (params) => performDrag(tabId, params),
     buildRecoverySnapshot: () =>
-      evaluateInTab(tabId, buildSnapshotJs({ only_interactive: true, max_interactive: 40 })),
+      evaluateInTab(
+        tabId,
+        buildSnapshotJs({
+          only_interactive: true,
+          max_interactive: 40,
+          hide_password_values: hidePasswordValues,
+        }),
+      ),
   };
 }
 
@@ -3211,6 +3257,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
           ref: optStr('ref'),
           key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
           offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
+          hide_password_values: p.hide_password_values === true,
         });
         if (!outcome.ok) {
           return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };

@@ -289,6 +289,48 @@ describe('applyAdminAction — apply through the existing helpers', () => {
     expect(loadConfig().activityEnabled).toBe(false);
   });
 
+  test('hide-password-values (D12): preview, then the code writes it; no restart', async () => {
+    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+    const preview = await applyAdminAction(
+      { id: 'hidePasswordValues', value: true },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(preview).toMatchObject({
+      ok: true,
+      applied: false,
+      needsConfirm: true,
+      preview: 'Turn on: Hide password values from agents',
+    });
+    expect(saveConfig).not.toHaveBeenCalled();
+    expect(loadConfig().hidePasswordValues).toBeUndefined();
+    const result = await confirmed(
+      { id: 'hidePasswordValues', value: true },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(saveConfig).toHaveBeenCalledWith({ hidePasswordValues: true });
+    expect(loadConfig().hidePasswordValues).toBe(true);
+    expect(result).toMatchObject({ ok: true, applied: true });
+    expect('requiresRestart' in result).toBe(false);
+  });
+
+  test('activity.hide-sensitive (D13): preview in Spanish, then the code writes it; restart required', async () => {
+    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+    const preview = await applyAdminAction(
+      { id: 'activityHideSensitive', value: false, language: 'es' },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(preview).toMatchObject({
+      preview: 'Desactivar: Ocultar los valores sensibles en el registro de actividad',
+    });
+    const result = await confirmed(
+      { id: 'activityHideSensitive', value: false },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(saveConfig).toHaveBeenCalledWith({ activityHideSensitive: false });
+    expect(loadConfig().activityHideSensitive).toBe(false);
+    expect(result).toMatchObject({ ok: true, applied: true, requiresRestart: true });
+  });
+
   test('the language select saves and the fresh state comes back in that language', async () => {
     const result = await confirmed({ id: 'language', value: 'es' }, deps());
     expect(loadConfig().language).toBe('es');

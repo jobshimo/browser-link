@@ -13,8 +13,10 @@ import {
   type PendingRequest,
 } from '../bridge/ws-bridge.js';
 import { closeActivityDb } from '../activity/db.js';
-import { query, record } from '../activity/queries.js';
-import { SENSITIVE_PAYLOAD_MARKER } from '../activity/extract.js';
+import { exportAll, query, record } from '../activity/queries.js';
+import { SENSITIVE_PAYLOAD_MARKER, UNIDENTIFIED_FIELD_MARKER } from '../activity/extract.js';
+import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
+import type { ActivityRecord } from '../activity/types.js';
 
 /*
  * S2 through the extension executor: what the agent sees and what the trail
@@ -41,7 +43,11 @@ afterEach(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-function deps(extensionResult: unknown, recordActivityPayloads: boolean): BrowserToolDeps {
+function deps(
+  extensionResult: unknown,
+  recordActivityPayloads: boolean,
+  hideSensitiveActivity?: boolean,
+): BrowserToolDeps {
   return {
     listTabs: vi.fn(() => [TAB]),
     callBrowserTool: vi.fn(async () => extensionResult),
@@ -49,6 +55,7 @@ function deps(extensionResult: unknown, recordActivityPayloads: boolean): Browse
       record(row);
     },
     recordActivityPayloads,
+    ...(hideSensitiveActivity === undefined ? {} : { hideSensitiveActivity }),
   };
 }
 
@@ -97,11 +104,18 @@ describe('browser.type / browser.press via the extension: sensitive fields are n
     expect(storedPayloads()).toEqual([null, 'hunter2']);
   });
 
-  test('an older extension that reports no field type: stored as today, nothing errors', async () => {
+  test('an older extension that reports no field type: the text is hidden as not identified (D13), nothing errors', async () => {
     const legacy = { typed: 7, selector: '#pw' };
     expect(await handleBrowserTool('browser.type', TYPE_ARGS, deps(legacy, true), CALLER)).toEqual(
       legacy,
     );
+    const [row] = query({ agentId: CALLER.agent_id }).records;
+    expect(row).toMatchObject({ payload: UNIDENTIFIED_FIELD_MARKER, outcome: 'ok', error: null });
+  });
+
+  test('an older extension, trail stored unhidden: stored as before the hide setting', async () => {
+    const legacy = { typed: 7, selector: '#pw' };
+    await handleBrowserTool('browser.type', TYPE_ARGS, deps(legacy, true, false), CALLER);
     const [row] = query({ agentId: CALLER.agent_id }).records;
     expect(row).toMatchObject({ payload: 'hunter2', outcome: 'ok', error: null });
   });
@@ -123,9 +137,10 @@ describe('a failed browser.type / browser.press via the extension (S2)', () => {
   function failingDeps(
     frame: ToolResponseMessage,
     recordActivityPayloads: boolean,
+    hideSensitiveActivity?: boolean,
   ): BrowserToolDeps {
     return {
-      ...deps(undefined, recordActivityPayloads),
+      ...deps(undefined, recordActivityPayloads, hideSensitiveActivity),
       callBrowserTool: (_tabId, tool, params, timeoutMs = 30_000) => {
         const tabs = new Map([['tab_1', { ws: { readyState: 1, send: () => {} } } as never]]);
         const pending = new Map<string, PendingRequest>();
@@ -165,7 +180,10 @@ describe('a failed browser.type / browser.press via the extension (S2)', () => {
     },
   );
 
-  test('a failed type on a plain field is stored as today', async () => {
+  // The bridge carries `sensitive_field` on a failure only when it is true,
+  // so a failure on a plain field cannot be told from one that never reached
+  // the field: by default both are hidden as not identified (D13).
+  test('a failed type on a plain field: hidden as not identified by default, the text when stored unhidden', async () => {
     const frame = {
       kind: 'tool.response',
       id: 'r1',
@@ -176,18 +194,127 @@ describe('a failed browser.type / browser.press via the extension (S2)', () => {
     await expect(
       handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true), CALLER),
     ).rejects.toThrow(ERROR);
-    expect(storedPayloads()).toEqual(['hunter2']);
+    await expect(
+      handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true, false), CALLER),
+    ).rejects.toThrow(ERROR);
+    expect(storedPayloads()).toEqual(['hunter2', UNIDENTIFIED_FIELD_MARKER]);
   });
 
-  test('an error without the field (older extension) is stored as today', async () => {
+  test('an error without the field (older extension): hidden by default, as before when stored unhidden', async () => {
     const frame = { kind: 'tool.response', id: 'r1', ok: false, error: ERROR } as const;
+    for (const hide of [undefined, false]) {
+      await expect(
+        handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true, hide), CALLER),
+      ).rejects.toThrow(ERROR);
+      await expect(
+        handleBrowserTool('browser.press', PRESS_ARGS, failingDeps(frame, true, hide), CALLER),
+      ).rejects.toThrow(ERROR);
+    }
+    expect(storedPayloads()).toEqual([
+      'h',
+      'hunter2',
+      UNIDENTIFIED_FIELD_MARKER,
+      UNIDENTIFIED_FIELD_MARKER,
+    ]);
+  });
+});
+
+describe('a sensitive row hides the value in every column, or none (D13)', () => {
+  const SECRET = 'hunter2';
+  /** The tab after a login form sent by GET: the password is in the URL and
+   * the page title quotes it. */
+  const ECHO_TAB = {
+    tab_id: 'tab_1',
+    url: 'https://bank.example.com/login?user=ana&pw=hunter2',
+    title: 'Wrong password hunter2',
+  };
+  const ERROR = 'expectation not met: text_appears "hunter2"';
+
+  function echoDeps(
+    callBrowserTool: BrowserToolDeps['callBrowserTool'],
+    hideSensitiveActivity?: boolean,
+  ): BrowserToolDeps {
+    return {
+      listTabs: vi.fn(() => [ECHO_TAB]),
+      callBrowserTool,
+      recordActivity: (row) => {
+        record(row);
+      },
+      recordActivityPayloads: true,
+      ...(hideSensitiveActivity === undefined ? {} : { hideSensitiveActivity }),
+    };
+  }
+
+  const sensitiveFailure = (async () => {
+    throw new SensitiveFieldError(ERROR);
+  }) as BrowserToolDeps['callBrowserTool'];
+
+  function storedRows(): ActivityRecord[] {
+    return query({ agentId: CALLER.agent_id }).records;
+  }
+
+  test('by default every column of the stored row, the export and browser.activity are free of the value', async () => {
     await expect(
-      handleBrowserTool('browser.type', TYPE_ARGS, failingDeps(frame, true), CALLER),
+      handleBrowserTool('browser.type', TYPE_ARGS, echoDeps(sensitiveFailure), CALLER),
     ).rejects.toThrow(ERROR);
+    const [row] = storedRows();
+    expect(row).toMatchObject({
+      tool: 'browser.type',
+      payload: SENSITIVE_PAYLOAD_MARKER,
+      url: 'https://bank.example.com/login',
+      title: `Wrong password ${SENSITIVE_PAYLOAD_MARKER}`,
+      selector: '#pw',
+      error: `expectation not met: text_appears "${SENSITIVE_PAYLOAD_MARKER}"`,
+      outcome: 'error',
+    });
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+    expect(JSON.stringify([...exportAll()])).not.toContain(SECRET);
+    const viaTool = await handleBrowserTool(
+      'browser.activity',
+      {},
+      echoDeps(sensitiveFailure),
+      CALLER,
+    );
+    expect(JSON.stringify(viaTool)).not.toContain(SECRET);
+  });
+
+  test('by default a type whose field was never identified (not found) hides its value too', async () => {
+    const notFound = (async () => {
+      throw new Error('Element not found: #pw');
+    }) as BrowserToolDeps['callBrowserTool'];
     await expect(
-      handleBrowserTool('browser.press', PRESS_ARGS, failingDeps(frame, true), CALLER),
+      handleBrowserTool('browser.type', TYPE_ARGS, echoDeps(notFound), CALLER),
+    ).rejects.toThrow('Element not found: #pw');
+    const [row] = storedRows();
+    expect(row).toMatchObject({
+      payload: UNIDENTIFIED_FIELD_MARKER,
+      url: 'https://bank.example.com/login',
+      title: `Wrong password ${UNIDENTIFIED_FIELD_MARKER}`,
+    });
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+  });
+
+  test('stored unhidden: every column keeps what it had, the typed text included', async () => {
+    await expect(
+      handleBrowserTool('browser.type', TYPE_ARGS, echoDeps(sensitiveFailure, false), CALLER),
     ).rejects.toThrow(ERROR);
-    expect(storedPayloads()).toEqual(['h', 'hunter2']);
+    const [row] = storedRows();
+    expect(row).toMatchObject({
+      payload: SECRET,
+      url: ECHO_TAB.url,
+      title: ECHO_TAB.title,
+      selector: '#pw',
+      error: ERROR,
+    });
+  });
+
+  test('a plain field keeps its url and title whatever the setting', async () => {
+    const plain = vi.fn(async () => ({ typed: 7, selector: '#pw', sensitive_field: false }));
+    await handleBrowserTool('browser.type', TYPE_ARGS, echoDeps(plain), CALLER);
+    await handleBrowserTool('browser.type', TYPE_ARGS, echoDeps(plain, false), CALLER);
+    for (const row of storedRows()) {
+      expect(row).toMatchObject({ payload: SECRET, url: ECHO_TAB.url, title: ECHO_TAB.title });
+    }
   });
 });
 

@@ -52,6 +52,26 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildFindJs(paged)).toBe(ext.buildFindJs(paged));
   });
 
+  test('snapshot and find with the hide-password-values setting (owner decision D12)', () => {
+    expect(srv.PASSWORD_VALUES_HIDDEN_NOTE).toBe(ext.PASSWORD_VALUES_HIDDEN_NOTE);
+    expect(srv.SENSITIVE_FIELD_JS).toBe(ext.SENSITIVE_FIELD_JS);
+    const hide = { hide_password_values: true } as const;
+    expect(srv.buildSnapshotJs(hide)).toBe(ext.buildSnapshotJs(hide));
+    expect(srv.buildSnapshotJs({ since: 'abc123:s1', ...hide })).toBe(
+      ext.buildSnapshotJs({ since: 'abc123:s1', ...hide }),
+    );
+    for (const opts of [
+      { text: 'Save', role: 'textbox', ...hide },
+      { ref: 'k3x9ab:e7', ...hide },
+      { key: { role: 'link', name: 'Docs' }, ...hide },
+    ]) {
+      expect(srv.buildFindJs(opts)).toBe(ext.buildFindJs(opts));
+    }
+    expect(srv.withValuesHiddenNote({ ok: true }, true)).toEqual(
+      ext.withValuesHiddenNote({ ok: true }, true),
+    );
+  });
+
   test('buildClickResolveJs', () => {
     const opts = { selector: '#btn', force: false };
     expect(srv.buildClickResolveJs(opts)).toBe(ext.buildClickResolveJs(opts));

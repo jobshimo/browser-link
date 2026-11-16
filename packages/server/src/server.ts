@@ -12,6 +12,8 @@ import { SERVER_INSTRUCTIONS, buildStartInstructions } from './tools/server-inst
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   ConfigUnreadableError,
+  activityHidesSensitive,
+  hidesPasswordValues,
   loadConfig,
   readConfig,
   unreadableConfigMessage,
@@ -402,6 +404,8 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   // find the file unreadable and fall back to the defaults.
   const activityEnabled = cfg.activityEnabled !== false;
   const recordActivityPayloads = cfg.activityRecordPayloads !== false;
+  // Owner decision D13; its default waits for the owner (config.ts).
+  const hideSensitiveActivity = activityHidesSensitive(cfg);
 
   const deps: BrowserToolDeps = {
     listTabs: buildListTabs(tabs),
@@ -453,8 +457,14 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
             record(row);
           },
           recordActivityPayloads,
+          hideSensitiveActivity,
         }
       : {}),
+    // Owner decision D12, read on every snapshot, find and flow so a change
+    // from the console or the extension applies to the next call. A config
+    // that cannot be read throws, and the call is refused, like the tool
+    // deny list: it never falls back to showing values the user hid.
+    hidePasswordValues: () => hidesPasswordValues(loadConfig()),
     // Map learning (see map/learning.ts). Wired unconditionally and
     // independent of the activity toggle: the learner reads its own
     // `map-learning` switch per call, so `browser-link config set

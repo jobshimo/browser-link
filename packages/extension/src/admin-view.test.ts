@@ -243,6 +243,42 @@ describe('buildAdminRows', () => {
     });
   });
 
+  test('the hide toggles (D12, D13) show which is active, with their hint; only D13 needs a restart', () => {
+    const s = state();
+    s.sections[1]!.items.push(
+      {
+        id: 'hidePasswordValues',
+        kind: 'toggle',
+        label: 'Ocultar a los agentes el valor de las contraseñas',
+        value: true,
+        writesDisk: true,
+        hint: 'Se aplica en la siguiente llamada, sin reiniciar.',
+      },
+      {
+        id: 'activityHideSensitive',
+        kind: 'toggle',
+        label: 'Ocultar los valores sensibles en el registro de actividad',
+        value: false,
+        writesDisk: true,
+        requiresRestart: true,
+        hint: 'Se aplica tras reiniciar; las filas ya guardadas no se modifican.',
+      },
+    );
+    const rows = buildAdminRows(s, ES);
+    expect(rows.find((r) => r.itemId === 'hidePasswordValues')).toMatchObject({
+      control: 'toggle',
+      checked: true,
+      hint: 'Se aplica en la siguiente llamada, sin reiniciar.',
+    });
+    expect(rows.find((r) => r.itemId === 'hidePasswordValues')?.requiresRestart).toBeUndefined();
+    expect(rows.find((r) => r.itemId === 'activityHideSensitive')).toMatchObject({
+      control: 'toggle',
+      checked: false,
+      requiresRestart: true,
+      hint: 'Se aplica tras reiniciar; las filas ya guardadas no se modifican.',
+    });
+  });
+
   test('a toggle without a boolean value is disabled rather than guessed', () => {
     const s = state();
     s.sections[1]!.items[0] = { ...s.sections[1]!.items[0]!, value: 'yes' };

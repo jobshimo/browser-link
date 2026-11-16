@@ -5,8 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from './map/paths.js';
 import {
+  DEFAULT_ACTIVITY_HIDE_SENSITIVE,
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_DOWNLOADS_MAX_MB,
+  DEFAULT_HIDE_PASSWORD_VALUES,
+  activityHidesSensitive,
+  defaultSettings,
+  hidesPasswordValues,
   MAX_DOWNLOADS_MAX_MB,
   DEFAULT_GRANT_TTL_MINUTES,
   DEFAULT_IDLE_TTL_MINUTES,
@@ -389,6 +394,58 @@ describe('mapLearningEnabled', () => {
     expect(
       JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
     ).toEqual({ skipWelcome: true });
+  });
+});
+
+describe('hidePasswordValues and activityHideSensitive (D12, D13)', () => {
+  let dataDir: string;
+  let getDataDirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-config-hide-'));
+    getDataDirSpy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    getDataDirSpy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('defaults: password values shown (D12); trail hides sensitive rows, pending the owner (D13)', () => {
+    // D13: the owner has not confirmed this default. Changing it is the one
+    // line of DEFAULT_ACTIVITY_HIDE_SENSITIVE in config.ts and this line.
+    expect(DEFAULT_ACTIVITY_HIDE_SENSITIVE).toBe(true);
+    expect(DEFAULT_HIDE_PASSWORD_VALUES).toBe(false);
+    const fresh = loadConfig();
+    expect(fresh.hidePasswordValues).toBeUndefined();
+    expect(fresh.activityHideSensitive).toBeUndefined();
+    expect(hidesPasswordValues(fresh)).toBe(false);
+    expect(activityHidesSensitive(fresh)).toBe(true);
+    expect(defaultSettings()).toMatchObject({
+      hidePasswordValues: false,
+      activityHideSensitive: true,
+    });
+  });
+
+  test('both are persisted as written and read back', () => {
+    saveConfig({ hidePasswordValues: true, activityHideSensitive: false });
+    expect(
+      JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) as Record<string, unknown>,
+    ).toEqual({ hidePasswordValues: true, activityHideSensitive: false });
+    const cfg = loadConfig();
+    expect(hidesPasswordValues(cfg)).toBe(true);
+    expect(activityHidesSensitive(cfg)).toBe(false);
+  });
+
+  test('a hand-edited value that is not a boolean reads as the default', () => {
+    writeFileSync(
+      join(dataDir, 'config.json'),
+      JSON.stringify({ hidePasswordValues: 'yes', activityHideSensitive: 0 }),
+      'utf8',
+    );
+    const cfg = loadConfig();
+    expect(hidesPasswordValues(cfg)).toBe(false);
+    expect(activityHidesSensitive(cfg)).toBe(true);
   });
 });
 

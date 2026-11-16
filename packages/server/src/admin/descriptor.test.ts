@@ -120,6 +120,8 @@ describe('buildAdminState — status section', () => {
       ['status.cdpDirect', 'readout'],
       ['status.update', 'readout'],
       ['status.activity', 'readout'],
+      ['status.passwordValues', 'readout'],
+      ['status.activitySensitive', 'readout'],
     ]);
     expect(sec.items.every((i) => !i.writesDisk)).toBe(true);
   });
@@ -209,6 +211,8 @@ describe('buildAdminState — setup section', () => {
       ['cdpDirectGrantTtlMinutes', 'readout'],
       ['activityEnabled', 'toggle'],
       ['activityRecordPayloads', 'toggle'],
+      ['activityHideSensitive', 'toggle'],
+      ['hidePasswordValues', 'toggle'],
       ['downloadsDir', 'readout'],
       ['idleTtl', 'readout'],
       ['flowRecording', 'readout'],
@@ -456,5 +460,82 @@ describe('buildAdminState — reference section', () => {
     expect(es.title).toBe('Referencia');
     expect(item(es, 'repo').label).toBe('Repositorio en GitHub');
     expect(item(es, 'extension.path').label).toBe('Carpeta de la extensión');
+  });
+});
+
+describe('buildAdminState — which hide setting is active (D12, D13)', () => {
+  test('defaults: password values returned, sensitive trail rows hidden, each with the console command that flips it', () => {
+    const state = buildAdminState(input({ config: {} }));
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      kind: 'readout',
+      label: 'Password values',
+      value: 'returned',
+      hint: 'browser-link config set hide-password-values on',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      kind: 'readout',
+      label: 'Sensitive rows',
+      value: 'hidden',
+      hint: 'browser-link config set activity.hide-sensitive off',
+    });
+    const setup = section(state, 'setup');
+    expect(item(setup, 'hidePasswordValues')).toEqual({
+      id: 'hidePasswordValues',
+      kind: 'toggle',
+      label: 'Hide password values from agents',
+      value: false,
+      writesDisk: true,
+      hint: 'On: snapshot and find show "filled, N characters" instead of the value of a password field. Applies to the next call, no restart.',
+    });
+    expect(item(setup, 'activityHideSensitive')).toEqual({
+      id: 'activityHideSensitive',
+      kind: 'toggle',
+      label: 'Hide sensitive values in the activity trail',
+      value: true,
+      writesDisk: true,
+      requiresRestart: true,
+      hint: 'On: a row typed into a password, one-time-code or card field, or into a field that was never identified, hides the value in every column. Off: such rows are stored like any other. With payloads off the typed text is never stored. Applies after a restart; rows already stored are not changed.',
+    });
+  });
+
+  test('both switched: the status rows and the toggles follow the config', () => {
+    const state = buildAdminState(
+      input({ config: { hidePasswordValues: true, activityHideSensitive: false } }),
+    );
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      value: 'hidden',
+      hint: 'browser-link config set hide-password-values off',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      value: 'stored unhidden',
+      hint: 'browser-link config set activity.hide-sensitive on',
+    });
+    const setup = section(state, 'setup');
+    expect(item(setup, 'hidePasswordValues').value).toBe(true);
+    expect(item(setup, 'activityHideSensitive').value).toBe(false);
+  });
+
+  test('es labels', () => {
+    const state = buildAdminState(input({ config: { language: 'es', hidePasswordValues: true } }));
+    const status = section(state, 'status');
+    expect(item(status, 'status.passwordValues')).toMatchObject({
+      label: 'Contraseñas',
+      value: 'ocultas',
+    });
+    expect(item(status, 'status.activitySensitive')).toMatchObject({
+      label: 'Filas sensibles',
+      value: 'ocultas',
+    });
+    const setup = section(state, 'setup');
+    expect(item(setup, 'hidePasswordValues')).toMatchObject({
+      label: 'Ocultar a los agentes el valor de las contraseñas',
+      hint: 'Activado: snapshot y find muestran "filled, N characters" en lugar del valor de un campo de contraseña. Se aplica en la siguiente llamada, sin reiniciar.',
+    });
+    expect(item(setup, 'activityHideSensitive').label).toBe(
+      'Ocultar los valores sensibles en el registro de actividad',
+    );
+    expect(item(setup, 'activityHideSensitive').hint).toContain('Se aplica tras reiniciar');
   });
 });
