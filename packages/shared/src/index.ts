@@ -343,7 +343,7 @@ export interface AdminState {
   sections: AdminSection[];
   ui: AdminUiStrings;
 }
-/** A preview's `code` (servers from 1.0.2) is the only way to apply that
+/** A preview's `code` (servers from 1.1.0) is the only way to apply that
  * write: send the same `id` and `value` back with it. It is single-use,
  * short-lived and bound to that action and value; the server ignores any
  * `confirm` flag. */
