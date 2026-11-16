@@ -500,10 +500,14 @@ process checks keep out other users. Neither authenticates the extension itself.
 
 ### Chrome version
 
-The minimum is Chrome 118 (the manifest declares it). The end-to-end suite passed
-on Windows against Chrome for Testing 118.0.5993.70 and against the current
-stable Chrome, including a check that the pinned Origin is accepted while the
-server enforces it.
+The minimum is Chrome 118 (the manifest declares it). On 2026-11-17 the
+end-to-end suite ran on Windows against Chrome for Testing 118.0.5993.70 (every
+step passed) and against stable Chrome 157.0.8103.51 (every step passed except
+a click whose target first had to be scrolled into view). The steps cover the
+pinned Origin being accepted while the server enforces it, the 1.1.0 click,
+focus, settle and cut rules, and download attribution (a click's download
+captured, another tab's left alone), including the cases where Chrome's copy
+must be kept.
 
 ## How it works
 

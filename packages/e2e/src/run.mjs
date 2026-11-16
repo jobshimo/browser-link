@@ -21,11 +21,13 @@ import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync } fro
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   Cdp,
   DEFAULT_PORTS,
+  E2E_DIR,
   PAGE_FILE,
   SERVER_CLI,
   evaluateUntil,
@@ -49,13 +51,74 @@ import {
 } from './lib.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
-const TOTAL_TIMEOUT_MS = 180_000;
+const TOTAL_TIMEOUT_MS = 300_000;
 const REPORT_BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7 + 3) % 256));
 const ATTACHMENTS = {
   '/file.bin': { name: 'e2e-report.bin', bytes: REPORT_BYTES },
   '/other.bin': { name: 'e2e-other.bin', bytes: Buffer.from(REPORT_BYTES).reverse() },
+  // Executable types browser.download refuses by default (S3).
+  '/setup.exe': { name: 'setup.exe', bytes: REPORT_BYTES },
+  '/invoice.pdf.exe': { name: 'invoice.pdf.exe', bytes: REPORT_BYTES },
 };
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
+const FRAME_FILE = join(E2E_DIR, 'pages/frame.html');
+/** What each download situation served, by path: `requests` counts every
+ * request, `methods` lists them in order. */
+const served = {};
+
+/**
+ * The download situations of S2/S3, each answering a re-fetch differently.
+ * Returns false for any other path.
+ * - /post.pdf: a PDF to POST (with Content-Length); a GET answers 405.
+ * - /token.bin: binary once (a one-time token), then 200 text/html.
+ * - /chunked.bin: the report bytes with no Content-Length (chunked).
+ * - /gzip.bin: the report bytes gzip-encoded, Content-Length of the gzip.
+ */
+function serveDownloadSituation(q, r, path) {
+  const situations = ['/post.pdf', '/token.bin', '/chunked.bin', '/gzip.bin'];
+  if (!situations.includes(path)) return false;
+  const seen = (served[path] ??= { requests: 0, methods: [] });
+  seen.requests++;
+  seen.methods.push(q.method);
+  // Drain a form body before answering.
+  q.resume();
+  const attachment = (name, type, bytes, extra = {}) => {
+    r.writeHead(200, {
+      'content-type': type,
+      'content-disposition': `attachment; filename="${name}"`,
+      'content-length': bytes.length,
+      ...extra,
+    });
+    r.end(bytes);
+  };
+  if (path === '/post.pdf') {
+    if (q.method === 'POST') {
+      q.on('end', () => attachment('e2e-post.pdf', 'application/pdf', REPORT_BYTES));
+    } else {
+      r.writeHead(405, { 'content-type': 'text/html', allow: 'POST' });
+      r.end('<p>Method not allowed</p>');
+    }
+  } else if (path === '/token.bin') {
+    if (seen.requests === 1) {
+      attachment('e2e-token.bin', 'application/octet-stream', REPORT_BYTES);
+    } else {
+      r.writeHead(200, { 'content-type': 'text/html' });
+      r.end('<p>This link has expired</p>');
+    }
+  } else if (path === '/chunked.bin') {
+    r.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-disposition': 'attachment; filename="e2e-chunked.bin"',
+    });
+    r.write(REPORT_BYTES.subarray(0, 1024));
+    r.end(REPORT_BYTES.subarray(1024));
+  } else {
+    attachment('e2e-gzip.bin', 'application/octet-stream', gzipSync(REPORT_BYTES), {
+      'content-encoding': 'gzip',
+    });
+  }
+  return true;
+}
 
 class StepFailure extends Error {
   constructor(step, reason) {
@@ -65,6 +128,8 @@ class StepFailure extends Error {
 }
 
 const temps = [];
+/** Steps that failed without stopping the run (each already printed). */
+const deferredFailures = [];
 const state = { http: undefined, chrome: undefined, cdp: undefined, client: undefined };
 let serverPid;
 let serverStderr = '';
@@ -106,6 +171,20 @@ async function call(tool, args, check, { print = true, label = tool } = {}) {
   return res;
 }
 
+/** One MCP tool call whose refusal is the expected outcome: never throws on
+ * a tool error, returns `{ isError, body, text }` for the caller to judge. */
+async function attempt(tool, args, label) {
+  let res;
+  try {
+    res = await state.client.callTool({ name: tool, arguments: args }, undefined, {
+      timeout: CALL_TIMEOUT_MS,
+    });
+  } catch (e) {
+    throw new StepFailure(label, e.message);
+  }
+  return { isError: res.isError === true, body: json(res), text: text(res) };
+}
+
 /** Walk wrap_up's step-1 report for the pending reader with this name. */
 function findReaderId(node, name) {
   if (!node || typeof node !== 'object') return undefined;
@@ -125,8 +204,16 @@ async function main() {
   const html = readFileSync(PAGE_FILE);
   // Two attachment files for the download steps (answered again on every GET:
   // selector mode re-fetches the URL Chrome reported); everything else is the page.
+  const frameHtml = readFileSync(FRAME_FILE);
   state.http = createServer((q, r) => {
-    const file = ATTACHMENTS[(q.url ?? '/').split('?')[0]];
+    const path = (q.url ?? '/').split('?')[0];
+    if (path === '/frame.html') {
+      r.writeHead(200, { 'content-type': 'text/html' });
+      r.end(frameHtml);
+      return;
+    }
+    if (serveDownloadSituation(q, r, path)) return;
+    const file = ATTACHMENTS[path];
     if (file) {
       r.writeHead(200, {
         'content-type': 'application/octet-stream',
@@ -355,6 +442,21 @@ async function main() {
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
 
+  await ruleChecks(T);
+  // Right after the rule checks left the page scrolled: where a miss was
+  // seen. Recorded, not thrown, so the steps below still run; it fails the run.
+  try {
+    await clickAfterScroll(T);
+  } catch (e) {
+    if (!(e instanceof StepFailure)) throw e;
+    console.log(`e2e: FAIL ${e.message}`);
+    deferredFailures.push(e.step);
+  }
+  // The rule checks clicked targets below the fold. Back to the top, so the
+  // download click does not start scrolled away from #dl: a click that has
+  // to scroll its target into view can miss (see clickAfterScroll, last).
+  await pageValue(T, 'window.scrollTo(0, 0), window.scrollY');
+
   await downloadChecks({
     T,
     origin: new URL(page).origin,
@@ -379,13 +481,184 @@ async function main() {
   await refusedExtension(cdp, swSession, page, keylessId);
 }
 
+/**
+ * A click whose target must first be scrolled into view must land on it.
+ * Scrolled to the bottom, then #add (top of the page) is clicked five times
+ * without `expect`: each ok:true result without `hit_element` claims the
+ * click hit #add, so each must add one item.
+ */
+async function clickAfterScroll(T) {
+  const label = 'browser.click.after-scroll';
+  const t = now();
+  const count = "document.querySelector('#items').children.length";
+  const misses = [];
+  for (let i = 1; i <= 5; i++) {
+    await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
+    const before = await pageValue(T, count);
+    const r = await attempt('browser.click', { tab_id: T, selector: '#add', settle_ms: 0 }, label);
+    const after = await pageValue(T, count);
+    if (r.isError || r.body?.hit_element) {
+      misses.push(`try ${String(i)}: ${r.text.slice(0, 200)}`);
+    } else if (after !== before + 1) {
+      misses.push(
+        `try ${String(i)}: answered ${JSON.stringify(r.body)} but items went ${String(before)} -> ${String(after)}`,
+      );
+    }
+  }
+  if (misses.length) {
+    throw new StepFailure(
+      'click.after-scroll',
+      `${String(misses.length)} of 5 clicks reported as done did not reach #add: ${misses.join(' | ')}`,
+    );
+  }
+  stepDone(label, t);
+}
+
+/** A page value read through browser.evaluate (setup, not a checked step). */
+async function pageValue(T, expression) {
+  const res = await call('browser.evaluate', { tab_id: T, expression }, undefined, {
+    print: false,
+  });
+  const b = json(res);
+  return b && typeof b === 'object' && 'value' in b ? b.value : b;
+}
+
+/**
+ * The 1.1.0 rules a jsdom unit test cannot prove: the click resolver on a
+ * target with no box (D4), the focus check of type/press, what settle sees
+ * in closed shadow roots and frames (D5), and cut snapshot/find results (D6).
+ */
+async function ruleChecks(T) {
+  // D4: no box, no force: refused, nothing clicked.
+  let label = 'browser.click.no-box';
+  let t = now();
+  let r = await attempt('browser.click', { tab_id: T, selector: '#nobox' }, label);
+  let result = await pageValue(T, "document.querySelector('#result').textContent");
+  if (!/has no visible box/.test(r.text) || r.body?.ok === true || result === 'Hidden clicked') {
+    throw new StepFailure(
+      'click.no-box',
+      `expected a refusal naming "has no visible box" and no click; isError=${String(r.isError)} result=${JSON.stringify(result)} answer: ${r.text.slice(0, 400)}`,
+    );
+  }
+  stepDone(label, t);
+
+  // D4: no box, force: the element's own click(), and the result says so.
+  await call(
+    'browser.click',
+    { tab_id: T, selector: '#nobox', force: true, expect: { text_appears: 'Hidden clicked' } },
+    (b, tx) =>
+      (typeof b?.programmatic_click === 'string' && /"met":\s*true/.test(tx)) ||
+      `programmatic_click ${JSON.stringify(b?.programmatic_click)}; ${tx.slice(0, 300)}`,
+    { label: 'browser.click.forced-no-box' },
+  );
+
+  // type / press on an element that does not take focus: refused, nothing sent.
+  for (const [tool, args, verb] of [
+    ['browser.type', { text: 'zzz-unfocused' }, 'typed'],
+    ['browser.press', { key: 'x' }, 'pressed'],
+  ]) {
+    label = `${tool}.no-focus`;
+    t = now();
+    const before = await pageValue(
+      T,
+      "[...document.querySelectorAll('input')].map((i) => i.value).join('|')",
+    );
+    r = await attempt(tool, { tab_id: T, selector: '#nofocus', ...args }, label);
+    const after = await pageValue(
+      T,
+      "[...document.querySelectorAll('input')].map((i) => i.value).join('|')",
+    );
+    const want = `did not take focus (it is not focusable), so nothing was ${verb}`;
+    if (!r.text.includes(want) || r.body?.ok === true || before !== after) {
+      throw new StepFailure(
+        label.replace(/^browser\./, ''),
+        `expected "${want}" and no input changed; inputs ${JSON.stringify(before)} -> ${JSON.stringify(after)}; answer: ${r.text.slice(0, 400)}`,
+      );
+    }
+    stepDone(label, t);
+  }
+
+  // D5: a closed shadow root attached after the page observer is watched.
+  const settleOf = (b) => b?.settle ?? {};
+  await call('browser.click', { tab_id: T, selector: '#make-closed' }, undefined, {
+    print: false,
+    label: 'make-closed',
+  });
+  await call(
+    'browser.click',
+    { tab_id: T, selector: '#poke-closed' },
+    (b) => {
+      const s = settleOf(b);
+      return (
+        (s.mutation_count >= 1 && s.unobserved?.shadow_roots === undefined) ||
+        `settle ${JSON.stringify(s).slice(0, 500)}`
+      );
+    },
+    { label: 'browser.click.settle-closed-shadow' },
+  );
+  // Documented limit: a closed root attached while the page parsed, before
+  // any observer, cannot be known and is not reported. Informational.
+  const early = await call('browser.click', { tab_id: T, selector: '#poke-early' }, undefined, {
+    print: false,
+    label: 'poke-early',
+  });
+  const es = settleOf(json(early));
+  console.log(
+    `browser.click.settle-closed-early info: mutation_count=${String(es.mutation_count)} unobserved=${JSON.stringify(es.unobserved?.shadow_roots ?? null)}`,
+  );
+
+  // D5: a same-origin frame is watched; the cross-origin one is reported.
+  await call(
+    'browser.click',
+    { tab_id: T, selector: '#poke-frame' },
+    (b) => {
+      const s = settleOf(b);
+      const wrong = [];
+      if (!(s.mutation_count >= 1)) wrong.push('the same-origin frame change was not counted');
+      if (s.unobserved?.cross_origin_frames !== 1) wrong.push('cross_origin_frames is not 1');
+      if (!/Cross-origin frames cannot be watched/.test(String(s.unobserved?.hint))) {
+        wrong.push('no cross-origin hint');
+      }
+      return wrong.length === 0 || `${wrong.join('; ')}: settle ${JSON.stringify(s).slice(0, 600)}`;
+    },
+    { label: 'browser.click.settle-frames' },
+  );
+
+  // D6: a cut snapshot says it was cut and how much.
+  await call(
+    'browser.snapshot',
+    { tab_id: T, only_interactive: true, max_interactive: 3 },
+    (b, tx) => {
+      const cut = b?.truncated;
+      return (
+        (Number.isInteger(cut?.interactive) &&
+          cut.interactive > 0 &&
+          Number.isInteger(cut?.next_offset?.interactive ?? cut?.next_offset)) ||
+        `truncated ${JSON.stringify(cut)}; ${tx.slice(0, 200)}`
+      );
+    },
+    { label: 'browser.snapshot.cut' },
+  );
+  // D6: a cut find: 8 matches, 5 candidates, 3 counted as left out.
+  await call(
+    'browser.find',
+    { tab_id: T, text: 'Row action', role: 'button' },
+    (b) =>
+      (b?.reason === 'multiple-matches' &&
+        b?.candidates?.length === 5 &&
+        b?.truncated?.candidates === 3) ||
+      `reason=${String(b?.reason)} candidates=${String(b?.candidates?.length)} truncated=${JSON.stringify(b?.truncated)}`,
+    { label: 'browser.find.cut' },
+  );
+}
+
 /** Names of the files in `dir` (empty when it does not exist yet). */
 const listDir = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : []);
 
 /** Chrome's own download list, read from the extension's worker. */
 const chromeDownloads = (cdp, swSession) =>
   cdp.evaluate(
-    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, state: d.state, error: d.error ?? null, startTime: d.startTime ?? null })))',
+    'chrome.downloads.search({}).then((l) => l.map((d) => ({ url: d.url, finalUrl: d.finalUrl ?? null, state: d.state, error: d.error ?? null, startTime: d.startTime ?? null, filename: d.filename ?? null, exists: d.exists ?? null, totalBytes: d.totalBytes ?? null, fileSize: d.fileSize ?? null, mime: d.mime ?? null })))',
     swSession,
   );
 
@@ -414,6 +687,23 @@ function downloadFailure(label, why, res) {
     label.replace(/^browser\./, ''),
     `${why}; ${seen}; full result: ${text(res).slice(0, 1500)}`,
   );
+}
+
+/** Windows only: what is wrong with a saved file's Mark-of-the-Web (its
+ * `:Zone.Identifier` stream with ZoneId=3, as Chrome writes it). */
+function markOfTheWebProblems(b) {
+  if (process.platform !== 'win32') return [];
+  const wrong = [];
+  if (b?.mark_of_the_web !== 'written') {
+    wrong.push(`mark_of_the_web is ${String(b?.mark_of_the_web)}`);
+  }
+  try {
+    const zone = readFileSync(`${String(b?.path)}:Zone.Identifier`, 'utf8');
+    if (!/^ZoneId=3\r?$/m.test(zone)) wrong.push(`Zone.Identifier lacks ZoneId=3: ${zone}`);
+  } catch (e) {
+    wrong.push(`no Zone.Identifier stream on ${String(b?.path)}: ${e.message}`);
+  }
+  return wrong;
 }
 
 /** What is wrong with a saved download: right place, right bytes, no leftovers. */
@@ -464,6 +754,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
   if (b?.chrome_download !== 'removed') {
     wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
   }
+  wrong.push(...markOfTheWebProblems(b));
   if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
   try {
     const left = (await chromeDownloads(cdp, swSession)).filter((d) => d.url === fileUrl);
@@ -488,6 +779,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
     quiet(label),
   );
   wrong = savedProblems(json(res), downloadsDir, 2);
+  wrong.push(...markOfTheWebProblems(json(res)));
   if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
   stepDone(label, t);
 
@@ -598,6 +890,144 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
   if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
   console.log(`${label} outcome: unattributed (interrupted, left_in_chrome); ${chromeNote}`);
   stepDone(label, t);
+
+  await downloadSituations({ T, origin, downloadsDir, cdp, swSession });
+}
+
+/** Chrome's own entry for `url`, once it is no longer in progress (null
+ * when Chrome never listed it within 10 s). */
+async function chromeEntry(cdp, swSession, url) {
+  const t0 = now();
+  let item;
+  while (now() - t0 < 10_000) {
+    item = (await chromeDownloads(cdp, swSession)).find((d) => d.url === url);
+    if (item && item.state !== 'in_progress') return item;
+    await sleep(200);
+  }
+  return item ?? null;
+}
+
+/** What is wrong with Chrome's kept copy: listed, complete, on disk, and
+ * holding the bytes the first request served. */
+function keptProblems(item) {
+  if (!item) return ['Chrome does not list the download'];
+  const wrong = [];
+  if (item.state !== 'complete') wrong.push(`Chrome's copy is ${String(item.state)}`);
+  if (item.exists === false || !item.filename || !existsSync(item.filename)) {
+    wrong.push(`Chrome's file ${String(item.filename)} is gone`);
+  } else if (!readFileSync(item.filename).equals(REPORT_BYTES)) {
+    wrong.push(`Chrome's file ${item.filename} does not hold the served bytes`);
+  }
+  return wrong;
+}
+
+/**
+ * The S2/S3 download situations, through the real browser. A selector-mode
+ * capture whose re-fetch cannot be proven identical to Chrome's download
+ * fails and keeps Chrome's copy (owner decision D17); executable types are
+ * refused before anything is written.
+ */
+async function downloadSituations({ T, origin, downloadsDir, cdp, swSession }) {
+  const failedKept = async (label, selector, path, extra) => {
+    const t = now();
+    const before = listDir(downloadsDir);
+    const res = await call(
+      'browser.download',
+      { tab_id: T, selector, timeout_ms: 10_000 },
+      undefined,
+      { print: false, label },
+    );
+    const b = json(res);
+    const wrong = [];
+    if (b?.ok !== false) wrong.push(`ok is ${String(b?.ok)}`);
+    if (b?.chrome_download !== 'left_in_chrome') {
+      wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
+    }
+    // A re-fetch that answers an HTTP error fails as that error; a mismatch
+    // fails as "the capture failed". Either way the error says Chrome's copy stays.
+    if (!/left untouched|was not erased/.test(String(b?.error))) {
+      wrong.push("error does not say Chrome's copy was kept");
+    }
+    if (extra && !extra.test(String(b?.error))) wrong.push(`error does not match ${String(extra)}`);
+    const after = listDir(downloadsDir);
+    if (after.join('|') !== before.join('|')) {
+      wrong.push(`downloads dir changed from [${before.join(', ')}] to [${after.join(', ')}]`);
+    }
+    const item = await chromeEntry(cdp, swSession, `${origin}${path}`);
+    wrong.push(...keptProblems(item));
+    if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+    console.log(
+      `${label} outcome: failed, kept (Chrome totalBytes=${String(item.totalBytes)}, requests ${JSON.stringify(served[path]?.methods)}): ${String(b.error).slice(0, 160)}`,
+    );
+    stepDone(label, t);
+  };
+
+  // POST form: Chrome's download came from a POST; the GET re-fetch answers 405.
+  await failedKept('browser.download.post', '#dl-post', '/post.pdf');
+  // One-time token: the re-fetch answers 200 text/html.
+  await failedKept('browser.download.one-time', '#dl-token', '/token.bin');
+  // No Content-Length: Chrome cannot report the size, so nothing is proven.
+  await failedKept('browser.download.chunked', '#dl-chunked', '/chunked.bin', /size/);
+
+  // gzip: either outcome is safe; anything else (wrong bytes saved, or a
+  // failure that erased Chrome's copy) is not. The outcome is printed.
+  let label = 'browser.download.gzip';
+  let t = now();
+  const before = listDir(downloadsDir);
+  let res = await call(
+    'browser.download',
+    { tab_id: T, selector: '#dl-gzip', timeout_ms: 10_000 },
+    undefined,
+    { print: false, label },
+  );
+  let b = json(res);
+  const item = await chromeEntry(cdp, swSession, `${origin}/gzip.bin`);
+  let wrong;
+  let outcome;
+  if (b?.ok === true) {
+    outcome = 'saved';
+    wrong = savedProblems(b, downloadsDir, before.length + 1);
+    if (b?.chrome_download !== 'removed')
+      wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
+    wrong.push(...markOfTheWebProblems(b));
+  } else {
+    outcome = 'failed, kept';
+    wrong = keptProblems(item);
+    if (b?.chrome_download !== 'left_in_chrome') {
+      wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
+    }
+    const after = listDir(downloadsDir);
+    if (after.join('|') !== before.join('|')) wrong.push('downloads dir changed');
+  }
+  if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+  console.log(
+    `${label} outcome: ${outcome} (Chrome totalBytes=${String(item?.totalBytes)} fileSize=${String(item?.fileSize)}; served gzip ${String(gzipSync(REPORT_BYTES).length)} bytes, decoded ${String(REPORT_BYTES.length)}): ${String(b?.error ?? b?.path).slice(0, 200)}`,
+  );
+  stepDone(label, t);
+
+  // Executable types are refused, double extension included; nothing written.
+  for (const name of ['setup.exe', 'invoice.pdf.exe']) {
+    label = `browser.download.refused-${name}`;
+    t = now();
+    const dirBefore = listDir(downloadsDir);
+    res = await call(
+      'browser.download',
+      { tab_id: T, url: `${origin}/${name}`, timeout_ms: 10_000 },
+      undefined,
+      { print: false, label },
+    );
+    b = json(res);
+    wrong = [];
+    if (b?.ok !== false) wrong.push(`ok is ${String(b?.ok)}`);
+    if (b?.path !== null) wrong.push(`path is ${String(b?.path)}`);
+    if (!/is an executable file type/.test(String(b?.error))) {
+      wrong.push('error does not say "is an executable file type"');
+    }
+    if (listDir(downloadsDir).join('|') !== dirBefore.join('|'))
+      wrong.push('downloads dir changed');
+    if (wrong.length) throw downloadFailure(label, wrong.join('; '), res);
+    stepDone(label, t);
+  }
 }
 
 /** Chrome with the extension loaded. `Extensions.loadUnpacked` when this
@@ -897,6 +1327,7 @@ try {
       );
     }),
   ]);
+  if (deferredFailures.length) exitCode = 1;
 } catch (e) {
   exitCode = 1;
   const why = e instanceof StepFailure ? e.message : `setup: ${String(e?.stack ?? e)}`;
