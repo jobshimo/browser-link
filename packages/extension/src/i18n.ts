@@ -260,6 +260,9 @@ const EN = {
   adminChanged: 'Changed',
   adminOn: 'on',
   adminOff: 'off',
+  adminConsoleOnlyName: 'Why this setting cannot be changed here',
+  adminConsoleOnlyInfo:
+    'This setting is changed from the console, not from here: it changes what agents can see or do.',
 };
 
 /** The shape every language must provide, key for key. */
@@ -498,6 +501,9 @@ const ES: Messages = {
   adminChanged: 'Cambio aplicado',
   adminOn: 'activado',
   adminOff: 'desactivado',
+  adminConsoleOnlyName: 'Por qué este ajuste no se puede cambiar aquí',
+  adminConsoleOnlyInfo:
+    'Este ajuste se cambia desde la consola, no desde aquí: modifica lo que los agentes pueden ver o hacer.',
 };
 
 const DICTIONARIES: Readonly<Record<Language, Messages>> = { en: EN, es: ES };

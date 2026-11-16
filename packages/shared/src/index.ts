@@ -319,6 +319,9 @@ export interface AdminItem {
   writesDisk: boolean;
   requiresRestart?: boolean;
   hint?: string;
+  /** A readout of a setting only the console changes (it widens or narrows
+   * what an agent may see or do); the Admin window marks it with an info icon. */
+  consoleOnly?: boolean;
 }
 export interface AdminSection {
   id: 'status' | 'setup' | 'diagnose' | 'reference';

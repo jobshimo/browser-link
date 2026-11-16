@@ -5,6 +5,7 @@ import {
   fallbackAdminUi,
   adminUi,
   buildAdminRows,
+  createConsoleInfo,
   describeAdminError,
   initialConfirmState,
   nextAction,
@@ -243,39 +244,59 @@ describe('buildAdminRows', () => {
     });
   });
 
-  test('the hide toggles (D12, D13) show which is active, with their hint; only D13 needs a restart', () => {
+  test('a console-only readout (the hide settings) has no control, shows its value and command, and is flagged', () => {
     const s = state();
     s.sections[1]!.items.push(
       {
         id: 'hidePasswordValues',
-        kind: 'toggle',
+        kind: 'readout',
         label: 'Ocultar a los agentes el valor de las contraseñas',
-        value: true,
-        writesDisk: true,
-        hint: 'Se aplica en la siguiente llamada, sin reiniciar.',
+        value: 'visibles',
+        writesDisk: false,
+        consoleOnly: true,
+        hint: 'browser-link config set hide-password-values on',
       },
       {
         id: 'activityHideSensitive',
-        kind: 'toggle',
+        kind: 'readout',
         label: 'Ocultar los valores sensibles en el registro de actividad',
-        value: false,
-        writesDisk: true,
-        requiresRestart: true,
-        hint: 'Se aplica tras reiniciar; las filas ya guardadas no se modifican.',
+        value: 'ocultas',
+        writesDisk: false,
+        consoleOnly: true,
+        hint: 'browser-link config set activity.hide-sensitive off',
       },
     );
     const rows = buildAdminRows(s, ES);
+    for (const id of ['hidePasswordValues', 'activityHideSensitive']) {
+      expect(rows.find((r) => r.itemId === id)).toMatchObject({
+        control: 'none',
+        consoleOnly: true,
+      });
+    }
     expect(rows.find((r) => r.itemId === 'hidePasswordValues')).toMatchObject({
-      control: 'toggle',
-      checked: true,
-      hint: 'Se aplica en la siguiente llamada, sin reiniciar.',
+      valueText: 'visibles',
+      hint: 'browser-link config set hide-password-values on',
     });
-    expect(rows.find((r) => r.itemId === 'hidePasswordValues')?.requiresRestart).toBeUndefined();
-    expect(rows.find((r) => r.itemId === 'activityHideSensitive')).toMatchObject({
-      control: 'toggle',
-      checked: false,
-      requiresRestart: true,
-      hint: 'Se aplica tras reiniciar; las filas ya guardadas no se modifican.',
+    // Only the flagged rows carry the marker; the existing toggles keep theirs.
+    expect(rows.filter((r) => r.consoleOnly === true).map((r) => r.itemId)).toEqual([
+      'hidePasswordValues',
+      'activityHideSensitive',
+    ]);
+    expect(rows.find((r) => r.itemId === 'multiAgent')).toMatchObject({ control: 'toggle' });
+  });
+
+  test('the existing toggles still go through preview and code', () => {
+    const request = { id: 'multiAgent', value: true };
+    const preview: AdminActionResult = {
+      ok: true,
+      applied: false,
+      needsConfirm: true,
+      preview: 'Activar: Multi-agente',
+      code: 'c1',
+    };
+    expect(nextAction(preview, request, UI_ES, ES)).toMatchObject({
+      type: 'confirm',
+      resend: { id: 'multiAgent', value: true, code: 'c1' },
     });
   });
 
@@ -550,5 +571,74 @@ describe('admin window in Spanish', () => {
   test('a boolean readout reads in the interface language', () => {
     const rows = buildAdminRows(state(), ES);
     expect(rows.find((r) => r.itemId === 'server.multiAgent')?.valueText).toBe('activado');
+  });
+});
+
+describe('the console-only info control', () => {
+  function mount(t: typeof EN): { button: HTMLButtonElement; panel: HTMLElement } {
+    document.body.replaceChildren();
+    const info = createConsoleInfo(document, t, 'cdpDirectEnabled');
+    document.body.append(info.button, info.panel);
+    return info;
+  }
+  const key = (el: Element, k: string): void => {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+  };
+
+  test.each([
+    ['en', EN],
+    ['es', ES],
+  ] as const)('is a focusable button with a non-empty accessible name in %s', (_l, t) => {
+    const { button, panel } = mount(t);
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.type).toBe('button');
+    expect(button.tabIndex).toBe(0);
+    expect(button.getAttribute('aria-label')).toBe(t.adminConsoleOnlyName);
+    expect(button.getAttribute('aria-label')?.trim()).not.toBe('');
+    expect(button.getAttribute('aria-describedby')).toBe(panel.id);
+    expect(panel.textContent).toBe(t.adminConsoleOnlyInfo);
+    expect(panel.hidden).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('the text says it is changed from the console, in both languages', () => {
+    expect(EN.adminConsoleOnlyInfo).toContain('console');
+    expect(ES.adminConsoleOnlyInfo).toContain('consola');
+  });
+
+  test('click shows the text, a second click hides it, Escape closes it', () => {
+    const { button, panel } = mount(EN);
+    button.click();
+    expect(panel.hidden).toBe(false);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    button.click();
+    expect(panel.hidden).toBe(true);
+    button.click();
+    expect(panel.hidden).toBe(false);
+    key(button, 'Escape');
+    expect(panel.hidden).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('hover and keyboard focus show it without a click; leaving or blurring hides it', () => {
+    const { button, panel } = mount(EN);
+    button.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(panel.hidden).toBe(true);
+    button.dispatchEvent(new FocusEvent('focus'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new FocusEvent('blur'));
+    expect(panel.hidden).toBe(true);
+  });
+
+  test('a clicked (pinned) text survives the pointer leaving, and blur closes it', () => {
+    const { button, panel } = mount(EN);
+    button.dispatchEvent(new MouseEvent('mouseenter'));
+    button.click();
+    button.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(panel.hidden).toBe(false);
+    button.dispatchEvent(new FocusEvent('blur'));
+    expect(panel.hidden).toBe(true);
   });
 });

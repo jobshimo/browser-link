@@ -55,15 +55,13 @@ export interface AdminI18n {
   never: string;
   activityEnabled: string;
   activityRecordPayloads: string;
-  /** Owner decision D12 (setup toggle and status readout). */
+  /** Owner decision D12 (setup and status readouts, console-only). */
   hidePasswordValues: string;
-  hidePasswordValuesHint: string;
   passwordValuesStatus: string;
   passwordValuesHidden: string;
   passwordValuesShown: string;
-  /** Owner decision D13 (setup toggle and status readout). */
+  /** Owner decision D13 (setup and status readouts, console-only). */
   activityHideSensitive: string;
-  activityHideSensitiveHint: string;
   activitySensitiveStatus: string;
   activitySensitiveHidden: string;
   activitySensitiveStored: string;
@@ -177,14 +175,10 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     activityEnabled: 'Record the activity trail',
     activityRecordPayloads: 'Record tool payloads in the trail',
     hidePasswordValues: 'Hide password values from agents',
-    hidePasswordValuesHint:
-      'On: snapshot and find show "filled, N characters" instead of the value of a password field. Applies to the next call, no restart.',
     passwordValuesStatus: 'Password values',
     passwordValuesHidden: 'hidden',
     passwordValuesShown: 'returned',
     activityHideSensitive: 'Hide sensitive values in the activity trail',
-    activityHideSensitiveHint:
-      'On: a row typed into a password, one-time-code or card field, or into a field that was never identified, hides the value in every column. Off: such rows are stored like any other. With payloads off the typed text is never stored. Applies after a restart; rows already stored are not changed.',
     activitySensitiveStatus: 'Sensitive rows',
     activitySensitiveHidden: 'hidden',
     activitySensitiveStored: 'stored unhidden',
@@ -303,14 +297,10 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     activityEnabled: 'Guardar el registro de actividad',
     activityRecordPayloads: 'Guardar los payloads de las tools en el registro',
     hidePasswordValues: 'Ocultar a los agentes el valor de las contraseñas',
-    hidePasswordValuesHint:
-      'Activado: snapshot y find muestran "filled, N characters" en lugar del valor de un campo de contraseña. Se aplica en la siguiente llamada, sin reiniciar.',
     passwordValuesStatus: 'Contraseñas',
     passwordValuesHidden: 'ocultas',
     passwordValuesShown: 'visibles',
     activityHideSensitive: 'Ocultar los valores sensibles en el registro de actividad',
-    activityHideSensitiveHint:
-      'Activado: una fila escrita en un campo de contraseña, de código de un solo uso o de tarjeta, o en un campo que no se pudo identificar, oculta el valor en todas las columnas. Desactivado: esas filas se guardan como cualquier otra. Con los payloads desactivados, el texto escrito nunca se guarda. Se aplica tras reiniciar; las filas ya guardadas no se modifican.',
     activitySensitiveStatus: 'Filas sensibles',
     activitySensitiveHidden: 'ocultas',
     activitySensitiveStored: 'sin ocultar',

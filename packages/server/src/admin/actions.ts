@@ -23,7 +23,8 @@ import { ADMIN_I18N } from './i18n.js';
  * write itself goes through the SAME helper the CLI uses, never a new write
  * path.
  *
- * The tool set, cdp-direct, its grant lifetime and MCP client registration
+ * The tool set, cdp-direct, its grant lifetime, MCP client registration and
+ * the two hide settings (password values, sensitive trail rows)
  * have no branch here at all: they are console-only, so a later descriptor
  * change cannot make them writable from the bridge again.
  */
@@ -78,8 +79,6 @@ const PLAIN_TOGGLES = [
   'instructionsAutoRefresh',
   'activityEnabled',
   'activityRecordPayloads',
-  'activityHideSensitive',
-  'hidePasswordValues',
 ] as const;
 type PlainToggle = (typeof PLAIN_TOGGLES)[number];
 

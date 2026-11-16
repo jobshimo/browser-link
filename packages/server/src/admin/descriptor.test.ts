@@ -211,8 +211,8 @@ describe('buildAdminState — setup section', () => {
       ['cdpDirectGrantTtlMinutes', 'readout'],
       ['activityEnabled', 'toggle'],
       ['activityRecordPayloads', 'toggle'],
-      ['activityHideSensitive', 'toggle'],
-      ['hidePasswordValues', 'toggle'],
+      ['activityHideSensitive', 'readout'],
+      ['hidePasswordValues', 'readout'],
       ['downloadsDir', 'readout'],
       ['idleTtl', 'readout'],
       ['flowRecording', 'readout'],
@@ -251,6 +251,7 @@ describe('buildAdminState — setup section', () => {
       label: 'Tool browser.list_tabs',
       value: 'on',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'browser-link tools disable browser.list_tabs',
     });
     expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
@@ -264,6 +265,7 @@ describe('buildAdminState — setup section', () => {
       label: 'cdp-direct enabled',
       value: 'off',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'browser-link config set cdp-direct.enabled true',
     });
     expect(item(sec, 'cdpDirectGrantTtlMinutes')).toEqual({
@@ -272,6 +274,7 @@ describe('buildAdminState — setup section', () => {
       label: 'cdp-direct grant lifetime',
       value: '60 min',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl 60',
     });
   });
@@ -388,6 +391,7 @@ describe('buildAdminState — diagnose section', () => {
       label: 'MCP registration — Claude Code',
       value: 'registered',
       writesDisk: false,
+      consoleOnly: true,
       hint: 'Already registered; to remove it: browser-link uninstall --client claude',
     });
     expect(item(sec, 'client.register.copilot')).toMatchObject({
@@ -480,26 +484,49 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       hint: 'browser-link config set activity.hide-sensitive off',
     });
     const setup = section(state, 'setup');
+    // Owner decision (2026-11-16): read-only in the extension, changed from the console.
     expect(item(setup, 'hidePasswordValues')).toEqual({
       id: 'hidePasswordValues',
-      kind: 'toggle',
+      kind: 'readout',
       label: 'Hide password values from agents',
-      value: false,
-      writesDisk: true,
-      hint: 'On: snapshot and find show "filled, N characters" instead of the value of a password field. Applies to the next call, no restart.',
+      value: 'returned',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set hide-password-values on',
     });
     expect(item(setup, 'activityHideSensitive')).toEqual({
       id: 'activityHideSensitive',
-      kind: 'toggle',
+      kind: 'readout',
       label: 'Hide sensitive values in the activity trail',
-      value: true,
-      writesDisk: true,
-      requiresRestart: true,
-      hint: 'On: a row typed into a password, one-time-code or card field, or into a field that was never identified, hides the value in every column. Off: such rows are stored like any other. With payloads off the typed text is never stored. Applies after a restart; rows already stored are not changed.',
+      value: 'hidden',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set activity.hide-sensitive off',
     });
   });
 
-  test('both switched: the status rows and the toggles follow the config', () => {
+  test('every console-only setting carries the marker the Admin window draws its info icon from', () => {
+    const state = buildAdminState(input());
+    const marked = state.sections
+      .flatMap((s) => s.items)
+      .filter((i) => i.consoleOnly === true)
+      .map((i) => i.id);
+    expect(marked).toEqual([
+      'tools.browser.list_tabs',
+      'tools.browser.evaluate',
+      'cdpDirectEnabled',
+      'cdpDirectPort',
+      'cdpDirectGrantTtlMinutes',
+      'activityHideSensitive',
+      'hidePasswordValues',
+      'client.register.claude',
+    ]);
+    for (const i of state.sections.flatMap((s) => s.items)) {
+      if (i.consoleOnly === true) expect(i.kind).toBe('readout');
+    }
+  });
+
+  test('both switched: the status rows and the readouts follow the config', () => {
     const state = buildAdminState(
       input({ config: { hidePasswordValues: true, activityHideSensitive: false } }),
     );
@@ -513,8 +540,14 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       hint: 'browser-link config set activity.hide-sensitive on',
     });
     const setup = section(state, 'setup');
-    expect(item(setup, 'hidePasswordValues').value).toBe(true);
-    expect(item(setup, 'activityHideSensitive').value).toBe(false);
+    expect(item(setup, 'hidePasswordValues')).toMatchObject({
+      value: 'hidden',
+      hint: 'browser-link config set hide-password-values off',
+    });
+    expect(item(setup, 'activityHideSensitive')).toMatchObject({
+      value: 'stored unhidden',
+      hint: 'browser-link config set activity.hide-sensitive on',
+    });
   });
 
   test('es labels', () => {
@@ -531,11 +564,13 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
     const setup = section(state, 'setup');
     expect(item(setup, 'hidePasswordValues')).toMatchObject({
       label: 'Ocultar a los agentes el valor de las contraseñas',
-      hint: 'Activado: snapshot y find muestran "filled, N characters" en lugar del valor de un campo de contraseña. Se aplica en la siguiente llamada, sin reiniciar.',
+      value: 'ocultas',
+      hint: 'browser-link config set hide-password-values off',
     });
-    expect(item(setup, 'activityHideSensitive').label).toBe(
-      'Ocultar los valores sensibles en el registro de actividad',
-    );
-    expect(item(setup, 'activityHideSensitive').hint).toContain('Se aplica tras reiniciar');
+    expect(item(setup, 'activityHideSensitive')).toMatchObject({
+      label: 'Ocultar los valores sensibles en el registro de actividad',
+      value: 'ocultas',
+      hint: 'browser-link config set activity.hide-sensitive off',
+    });
   });
 });

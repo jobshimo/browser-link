@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as paths from '../map/paths.js';
@@ -177,6 +177,9 @@ describe('applyAdminAction — elevating settings are console-only (arch ask-3 c
     ['cdpDirectGrantTtlMinutes', '240'],
     ['tools.browser.evaluate', false],
     ['client.register.claude', true],
+    // Owner decision (2026-11-16): the two hide settings are console-only too.
+    ['hidePasswordValues', true],
+    ['activityHideSensitive', false],
   ];
   for (const [id, value] of cases) {
     test(`${id} with a code is refused and calls no helper`, async () => {
@@ -192,6 +195,50 @@ describe('applyAdminAction — elevating settings are console-only (arch ask-3 c
       }
     });
   }
+});
+
+describe('applyAdminAction — the two hide settings are changed only from the console', () => {
+  for (const key of ['hidePasswordValues', 'activityHideSensitive'] as const) {
+    for (const value of [true, false]) {
+      test(`${key}=${String(value)}: no preview, no code, no write, config.json untouched`, async () => {
+        DEFAULT_ADMIN_HELPERS.saveConfig({ language: 'en' });
+        const file = join(dataDir, 'config.json');
+        const before = readFileSync(file);
+        const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+        const d = deps({ helpers: { saveConfig } });
+        const noCode = await applyAdminAction({ id: key, value }, d);
+        expect(noCode).toEqual({ ok: false, error: `${key} is read-only` });
+        const withCode = await applyAdminAction({ id: key, value, code: 'x' }, d);
+        expect(withCode).toEqual({ ok: false, error: `${key} is read-only` });
+        // A code issued for another item cannot be borrowed either.
+        const other = await applyAdminAction({ id: 'multiAgent', value: false }, d);
+        if (!other.ok || other.applied) throw new Error('expected a preview');
+        expect(await applyAdminAction({ id: key, value, code: other.code }, d)).toEqual({
+          ok: false,
+          error: `${key} is read-only`,
+        });
+        expect(saveConfig).not.toHaveBeenCalled();
+        expect(readFileSync(file).equals(before)).toBe(true);
+      });
+    }
+  }
+
+  test('the existing toggles still preview, then write with their code', async () => {
+    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
+    const result = await confirmed(
+      { id: 'activityRecordPayloads', value: false },
+      deps({ helpers: { saveConfig } }),
+    );
+    expect(result).toMatchObject({ ok: true, applied: true, requiresRestart: true });
+    expect(saveConfig).toHaveBeenCalledWith({ activityRecordPayloads: false });
+    expect(loadConfig().activityRecordPayloads).toBe(false);
+  });
+
+  test('config set (the console path) still writes both keys', async () => {
+    await configCommand.runConfigCommand(['set', 'hide-password-values', 'on']);
+    await configCommand.runConfigCommand(['set', 'activity.hide-sensitive', 'off']);
+    expect(loadConfig()).toMatchObject({ hidePasswordValues: true, activityHideSensitive: false });
+  });
 });
 
 describe('applyAdminAction — confirm step', () => {
@@ -287,48 +334,6 @@ describe('applyAdminAction — apply through the existing helpers', () => {
       await confirmed({ id: 'activityEnabled', value: false }, deps({ helpers: { saveConfig } })),
     ).toMatchObject({ ok: true, applied: true, requiresRestart: true });
     expect(loadConfig().activityEnabled).toBe(false);
-  });
-
-  test('hide-password-values (D12): preview, then the code writes it; no restart', async () => {
-    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
-    const preview = await applyAdminAction(
-      { id: 'hidePasswordValues', value: true },
-      deps({ helpers: { saveConfig } }),
-    );
-    expect(preview).toMatchObject({
-      ok: true,
-      applied: false,
-      needsConfirm: true,
-      preview: 'Turn on: Hide password values from agents',
-    });
-    expect(saveConfig).not.toHaveBeenCalled();
-    expect(loadConfig().hidePasswordValues).toBeUndefined();
-    const result = await confirmed(
-      { id: 'hidePasswordValues', value: true },
-      deps({ helpers: { saveConfig } }),
-    );
-    expect(saveConfig).toHaveBeenCalledWith({ hidePasswordValues: true });
-    expect(loadConfig().hidePasswordValues).toBe(true);
-    expect(result).toMatchObject({ ok: true, applied: true });
-    expect('requiresRestart' in result).toBe(false);
-  });
-
-  test('activity.hide-sensitive (D13): preview in Spanish, then the code writes it; restart required', async () => {
-    const saveConfig = vi.fn(DEFAULT_ADMIN_HELPERS.saveConfig);
-    const preview = await applyAdminAction(
-      { id: 'activityHideSensitive', value: false, language: 'es' },
-      deps({ helpers: { saveConfig } }),
-    );
-    expect(preview).toMatchObject({
-      preview: 'Desactivar: Ocultar los valores sensibles en el registro de actividad',
-    });
-    const result = await confirmed(
-      { id: 'activityHideSensitive', value: false },
-      deps({ helpers: { saveConfig } }),
-    );
-    expect(saveConfig).toHaveBeenCalledWith({ activityHideSensitive: false });
-    expect(loadConfig().activityHideSensitive).toBe(false);
-    expect(result).toMatchObject({ ok: true, applied: true, requiresRestart: true });
   });
 
   test('the language select saves and the fresh state comes back in that language', async () => {

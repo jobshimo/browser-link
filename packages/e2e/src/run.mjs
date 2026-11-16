@@ -680,6 +680,8 @@ const I18N = {
     activity: 'Activity',
     status: 'Status',
     cdpDirectEnabled: 'cdp-direct enabled',
+    hidePasswordValues: 'Hide password values from agents',
+    activityHideSensitive: 'Hide sensitive values in the activity trail',
   },
   es: {
     footer: 'manual · por pestaña · solo loopback',
@@ -687,6 +689,8 @@ const I18N = {
     activity: 'Actividad',
     status: 'Estado',
     cdpDirectEnabled: 'cdp-direct activado',
+    hidePasswordValues: 'Ocultar a los agentes el valor de las contraseñas',
+    activityHideSensitive: 'Ocultar los valores sensibles en el registro de actividad',
   },
 };
 
@@ -805,16 +809,47 @@ async function languageChecks(cdp, extId) {
 
   // Console-only settings: the server's readout, the command under it, no control.
   await check('admin.console-only', async (name) => {
-    const label = JSON.stringify(I18N[to].cdpDirectEnabled);
-    const seen = await cdp.evaluate(
-      `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; return { controls: row.querySelectorAll('input, select, button').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null }; })()`,
+    // cdp-direct and the two hide settings (changed only from the console):
+    // the server's readout, the command under it, no control, and an info
+    // control (a button with an accessible name, pointing at a text) beside the label.
+    const rows = [
+      [
+        'cdpDirectEnabled',
+        ['true', 'false'].map((v) => `browser-link config set cdp-direct.enabled ${v}`),
+      ],
+      [
+        'hidePasswordValues',
+        ['on', 'off'].map((v) => `browser-link config set hide-password-values ${v}`),
+      ],
+      [
+        'activityHideSensitive',
+        ['on', 'off'].map((v) => `browser-link config set activity.hide-sensitive ${v}`),
+      ],
+    ];
+    for (const [key, commands] of rows) {
+      const label = JSON.stringify(I18N[to][key]);
+      const seen = await cdp.evaluate(
+        `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; const info = row.querySelector('button.admin-info'); const text = info ? document.getElementById(info.getAttribute('aria-describedby') ?? '') : null; return { controls: row.querySelectorAll('input, select, button:not(.admin-info)').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null, infoName: info?.getAttribute('aria-label') ?? null, infoText: text?.textContent ?? null }; })()`,
+        admin.sessionId,
+      );
+      if (
+        !seen ||
+        seen.controls !== 0 ||
+        !seen.value ||
+        !commands.includes(seen.command) ||
+        !seen.infoName?.trim() ||
+        !seen.infoText?.trim()
+      ) {
+        throw new StepFailure(name, `${key} row ${JSON.stringify(seen)}`);
+      }
+    }
+    // Every console-only row has the info control, not only these three.
+    const withoutInfo = await cdp.evaluate(
+      `[...document.querySelectorAll('.admin-row')].filter((r) => r.querySelector('button.admin-info') && !r.querySelector('button.admin-info').getAttribute('aria-label')?.trim()).length`,
       admin.sessionId,
     );
-    const commands = ['true', 'false'].map(
-      (v) => `browser-link config set cdp-direct.enabled ${v}`,
-    );
-    if (!seen || seen.controls !== 0 || !seen.value || !commands.includes(seen.command)) {
-      throw new StepFailure(name, `cdpDirectEnabled row ${JSON.stringify(seen)}`);
+    if (withoutInfo !== 0) {
+      throw new StepFailure(name, `${withoutInfo} info control(s) without an accessible name`);
     }
   });
 
