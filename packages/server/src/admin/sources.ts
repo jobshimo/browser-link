@@ -16,8 +16,9 @@ import type { AdminClient, AdminInput } from './descriptor.js';
  * Gathers the facts `buildAdminState` needs from the real machine. Shared by
  * the primary (in process: it knows its tabs and is the running server) and
  * the console's status view (out of process: it asks the primary's
- * `/version`, and the tab count stays unknown). Every source is a
- * best-effort read: one that throws degrades to an empty or unknown value.
+ * `/version`, and the tab count stays unknown). Every source but the config
+ * is a best-effort read: one that throws degrades to an empty or unknown
+ * value.
  */
 
 /** The WS bridge port; `ws-bridge.ts` owns it, repeated here (as `doctor`
@@ -65,7 +66,10 @@ function detectClients(): AdminClient[] {
 }
 
 export async function gatherAdminInput(opts: AdminSourceOptions): Promise<AdminInput> {
-  const config = safe(() => loadConfig(), {});
+  // Not best-effort: an unreadable config.json rejects with its message
+  // (`ConfigUnreadableError`) instead of describing the defaults as the
+  // settings in effect, and every action fails before it can write.
+  const config = loadConfig();
   const grant = safe(() => loadGrant(), null);
   const now = opts.now?.() ?? Date.now();
   const server = await opts.server().catch((): DoctorServerStatus => ({

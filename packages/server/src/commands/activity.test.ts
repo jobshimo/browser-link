@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeActivityDb } from '../activity/db.js';
+import { closeActivityDb, getActivityDb } from '../activity/db.js';
 import { countInRange, record } from '../activity/queries.js';
 import { localDayToUtc, parseDuration, runActivityCommand } from './activity.js';
 import type { ActivityInput } from '../activity/types.js';
@@ -309,5 +309,99 @@ describe('existing subcommands keep their output', () => {
     expect(readFileSync(out, 'utf8').split('\n')[0]).toBe(
       'id,at,tool,tabId,transport,url,title,agent,agentPid,selector,payload,outcome,error,durationMs,flowId',
     );
+  });
+});
+
+/* S3: every `clear` form compacts the file after deleting, or says it did not. */
+describe('clear compacts the database file', () => {
+  const OLD_AT = '2000-01-01T00:00:00.000Z';
+
+  function seedOld(selector = '#secret-selector-text'): void {
+    record(row({ selector }));
+    getActivityDb().prepare('UPDATE activity SET at = ?').run(OLD_AT);
+  }
+
+  test.each([
+    ['--older-than', ['clear', '--older-than', '1d']],
+    ['--from/--to with --yes', ['clear', '--from', '1999-01-01', '--to', '2999-01-01', '--yes']],
+    ['bare clear --yes', ['clear', '--yes']],
+  ])('%s deletes, compacts once, and keeps its output', (_label, argv) => {
+    seedOld();
+    const compact = vi.fn();
+    expect(runActivityCommand(argv, 'en', { compact })).toBe('Removed 1 actions from the trail.');
+    expect(compact).toHaveBeenCalledOnce();
+    expect(countInRange({})).toBe(0);
+  });
+
+  test.each([
+    ['--older-than', ['clear', '--older-than', '1d']],
+    ['--from/--to with --yes', ['clear', '--from', '1999-01-01', '--to', '1999-01-02', '--yes']],
+    ['bare clear --yes', ['clear', '--yes']],
+  ])('%s compacts even when nothing matched', (_label, argv) => {
+    const compact = vi.fn();
+    expect(runActivityCommand(argv, 'en', { compact })).toBe('Nothing to remove.');
+    expect(compact).toHaveBeenCalledOnce();
+  });
+
+  test('a refusal without --yes deletes nothing and compacts nothing', () => {
+    seedOld();
+    const compact = vi.fn();
+    runActivityCommand(['clear'], 'en', { compact });
+    runActivityCommand(['clear', '--to', '2999-01-01'], 'en', { compact });
+    expect(compact).not.toHaveBeenCalled();
+    expect(countInRange({})).toBe(1);
+  });
+
+  test.each([
+    ['en', ['clear', '--yes'], 'old text may remain'],
+    ['es', ['clear', '--yes'], 'puede quedar texto viejo'],
+    ['en', ['clear', '--older-than', '1d'], 'old text may remain'],
+    ['en', ['clear', '--to', '2999-01-01', '--yes'], 'old text may remain'],
+  ] as const)(
+    'a compaction that throws (%s, %j) fails with the rows-deleted message',
+    (language, argv, phrase) => {
+      seedOld();
+      const compact = () => {
+        throw new Error('database is locked');
+      };
+      let message = '';
+      try {
+        runActivityCommand([...argv], language, { compact });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      // The top-level handler of cli.ts prints a thrown message on stderr and
+      // exits 1.
+      expect(message).toContain(phrase);
+      expect(message).toContain('database is locked');
+      expect(countInRange({})).toBe(0);
+    },
+  );
+
+  test('the failure message says what to do', () => {
+    seedOld();
+    expect(() =>
+      runActivityCommand(['clear', '--yes'], 'en', {
+        compact: () => {
+          throw new Error('busy');
+        },
+      }),
+    ).toThrow(/Close the running server.*run the command again/);
+  });
+
+  test('after a successful clear the deleted text is not in the file bytes', () => {
+    const needle = 'NEEDLE-4f9a1c-should-not-survive';
+    seedOld(`#${needle}`);
+    const db = getActivityDb();
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    const files = () => ['activity.db', 'activity.db-wal'].map((f) => join(dataDir, f));
+    const bytes = () =>
+      files()
+        .filter((f) => existsSync(f))
+        .map((f) => readFileSync(f).toString('latin1'))
+        .join('');
+    expect(bytes()).toContain(needle);
+    runActivityCommand(['clear', '--yes']);
+    expect(bytes()).not.toContain(needle);
   });
 });

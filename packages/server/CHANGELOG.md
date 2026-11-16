@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.2](https://github.com/jobshimo/browser-link/compare/v1.0.1...v1.0.2) (2026-11-16)
+
+### ⚠ BREAKING CHANGES
+
+- **config:** a `config.json` that exists but cannot be read or parsed no longer falls back to the defaults with a warning. The server now refuses to work: it accepts no browser and answers every tool call with a message that names the file, the error and the two ways out. No command or screen overwrites the file. Remedy: fix the file, or run `browser-link config restore-defaults`, which keeps a byte-for-byte copy of the file, writes the defaults, and lists what is no longer in effect and what is. The console opens on a screen for this state, and `browser-link doctor` reports it as a failed check. A UTF-8 byte order mark is ignored; a UTF-16 file is reported as such.
+
+### Bug Fixes
+
+- **config:** a `config.json` that fails to read with a lock-like error (`EBUSY`, `EPERM`, `EACCES`, `EMFILE`, `ENFILE`) is tried five times over about 200 ms before it is called unreadable, so a file that an antivirus or a concurrent save holds for a moment at start-up no longer leaves the server refusing until the MCP client restarts. A file that does not parse is never retried.
+- **config:** a refusing server whose `config.json` was deleted now says so, instead of saying the file can be read again. The CLI language fallback catches only the unreadable-config error.
+- **auth:** the peer check is bounded. Lookup commands run with a 16 MiB output limit, and an overflow is reported as its own cause. The IPC server and the WebSocket gate share one loopback normaliser and one lookup limiter: 4 lookups in flight, 1 s to get a slot, 10 s in total per lookup. An IPC refusal names the real cause instead of `unknown`.
+- **auth:** a reconnect attempt of auto-reelect waits as long as the primary's check can take, never past the reelect window. The default window is 24 s, two full attempts.
+- **auth:** on Windows, the `tasklist` fallback refuses an owner name it could not decode without loss.
+- **server:** a frame from an accepted socket is checked before any field is read. A bad frame is dropped and logged by kind, and an exception while handling a frame closes that socket only.
+- **doctor:** `browser-link doctor` reports a client config that does not parse as a failed check, and the Doctor screen shows an error state instead of an unhandled rejection.
+- **activity:** every form of `browser-link activity clear` compacts the database file, and exits with code 1 when compaction does not happen.
+- **docs:** the READMEs now state the tool count (40) and that the readonly preset disables 21 and leaves 19, that password redaction needs an extension that reports the field as sensitive, that the IPC port also requires the same OS user, every update-check trigger, and that macOS is covered by unit tests only, never by a CI run.
+
 ## [1.0.1](https://github.com/jobshimo/browser-link/compare/v1.0.0...v1.0.1) (2026-11-13)
 
 ### Bug Fixes

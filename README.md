@@ -74,15 +74,18 @@ whole browser. Designed for the loop "user reports bug → agent reproduces
 it in the real UI → agent fixes the code → agent re-verifies in the same
 tab", not for unattended consumer automation.
 
-- ✅ **What it does** — exposes **37** MCP tools: 31 `browser.*` bridge tools
+- ✅ **What it does** — exposes **40** MCP tools: 34 `browser.*` bridge tools
   (list_tabs, ping, snapshot, find, state,
-  canvas_screenshot, screenshot, click, type, press, drag, flow, navigate, evaluate,
+  canvas_screenshot, screenshot, click, type, press, drag, flow, flow_cancel, flow_status, navigate, evaluate, read,
   wait_for, wait_for_tab, dialog_respond, set_permission, download, console,
-  network, network_body, claim/release/my_tabs, events, activity, reset, and `manual`, which needs no tab) and 6
+  network, network_body, claim/release/my_tabs, events, activity, reset, wrap_up, feedback, and `manual`, which needs no tab) and 6
   persistent-map tools, so the agent learns your apps across sessions.
 - ✅ **What it needs** — Node ≥ 22.22.2 and Chrome / Chromium / Edge / Brave
   / Vivaldi on Chromium ≥ 118 (from 118 an active debugger session keeps the
-  extension's service worker alive; the manifest declares it). No accounts, no
+  extension's service worker alive; the manifest declares it). CI runs on Windows
+  and Linux. macOS is supported in code, but no CI job runs on it: its peer
+  check is covered by unit tests with an injected platform and a stubbed
+  `lsof`, never by a real run. No accounts, no
   telemetry. The only request the server makes
   by itself is the npm registry update check described under
   [Where your data lives](#where-your-data-lives).
@@ -221,6 +224,7 @@ browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("n
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
+browser-link config restore-defaults --yes # only when config.json cannot be read: keep a copy, write the defaults
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
 browser-link cdp revoke                    # revoke the current cdp-direct grant
@@ -291,7 +295,7 @@ Stored activity rows are not changed by the update.
 ### What now stops a connection
 
 Since 1.0.0 the bridge accepts a connection only if every check passes. The
-extension popup shows the reason when one fails, and the server log names the
+extension popup shows the reason when one fails, and the [server log](#what-now-stops-a-connection) names the
 cause of every refusal:
 
 | Check  | Refused when                                                                                                          | Popup says (short)                               |
@@ -306,12 +310,23 @@ be seen, it could not be identified, or checking it failed. A connection with no
 `Origin` (a script, for example) is refused before any process
 lookup runs.
 
+**The server log.** browser-link writes no log file. "The server log" means
+the stderr of the server process your MCP client starts. In VS Code (GitHub
+Copilot) open it with the Command Palette, **MCP: List Servers**, select
+`browser-link`, **Show Output** (see the
+[VS Code documentation](https://code.visualstudio.com/docs/agents/run/manage-mcp-servers#_view-server-output)).
+The documentation of Claude Code and OpenCode does not say where they show a
+local server's stderr, so for them capture it by running the server by hand:
+run `browser-link stop` to end the running servers, then start
+`browser-link 2> server.log | cat` in a POSIX shell such as Git Bash (piping the output makes it
+start as the MCP server instead of the terminal UI) and read `server.log`.
+
 On Windows, `netstat` can omit a connection that was just opened from its first
 snapshot, so the server looks again, up to six snapshots over about 1.25 s, before
 refusing. If a refusal still happens, the popup says "The browser-link server
 refused the connection: it could not identify the program that opened the
 connection." (or, when the diagnosis itself cannot answer, "WebSocket connection
-failed. Is the MCP server running?"), and the server log line says how many
+failed. Is the MCP server running?"), and the [server log](#what-now-stops-a-connection) line says how many
 snapshots were taken and how many rows mentioned the port.
 
 **Allowing another extension id (experts only).** To connect your own build of
@@ -324,7 +339,7 @@ folder (see [Where your data lives](#where-your-data-lives)):
 
 An id is exactly 32 characters, each a letter from `a` to `p`. Any other entry
 (a prefix, a wildcard, a full `chrome-extension://` origin) is dropped with a
-warning in the server log. The pinned id is always allowed. You edit this key by
+warning in the [server log](#what-now-stops-a-connection). The pinned id is always allowed. You edit this key by
 hand: it cannot be set from the Admin window, the console, the bridge or an MCP
 tool. `browser-link doctor` lists the ids in effect.
 
@@ -334,9 +349,15 @@ list you wrote (see [Security model](#security-model)). Before turning it on:
 
 - A list with no valid absolute path refuses **every** browser. A mistyped list
   never turns the check off.
-- A `config.json` the server cannot parse falls back to the defaults, with a
-  warning in the log. That turns strict mode off, drops your allowed ids and
-  clears the tool deny list. Keep the file valid.
+- A `config.json` the server cannot read (it does not parse, or it is not one
+  JSON object) never falls back to the defaults: browser-link refuses to work
+  until it is fixed. No new browser connection is accepted, every tool call
+  answers with the file, the error and the two ways out, and no command or
+  screen writes over the file. Fix it by hand, or run
+  `browser-link config restore-defaults --yes`: it keeps a copy next to it
+  (`config.json.unreadable-<date and time>`), writes the default settings and
+  lists every setting you have to re-enter from that copy. A missing
+  `config.json` is the defaults, as before.
 
 **Known gap.** The peer check does not tell apart two programs that both run as
 your user. A process that runs as you but is confined away from your files, while
@@ -381,6 +402,12 @@ client. The cdp-direct port and the downloads folder were already readouts.
   `activity.record-payloads` is on or off. The tool result carries
   `sensitive_field: true` or `false`. A call that fails on such a field stores
   the marker too.
+- **Only when the connected extension reports the field.** The server relies
+  on the extension to say a field is sensitive. An extension that was not
+  reloaded after the update does not send `sensitive_field`, and its typed text
+  is stored as before. To tell, check that the tool result of a `type` or
+  `press` carries `sensitive_field`; if it is missing, reload the extension in
+  `chrome://extensions` (and reconnect your tabs).
 - **Rows already stored are untouched.** Text typed before 1.0.0 stays in
   `activity.db`. To remove it, purge the trail (see [Purging](#purging)):
   `browser-link activity clear --from 2000-01-01 --yes` deletes every row and
@@ -1742,8 +1769,11 @@ Three things keep that honest:
   `browser.press` acts on a field the page itself declares sensitive (a
   password input, or an `autocomplete` of `current-password`, `new-password`,
   `one-time-code`, `cc-number` or `cc-csc`), the row stores
-  `[sensitive field]` instead of the text, with `record-payloads` on or off.
-  Rows stored earlier are not changed.
+  `[sensitive field]` instead of the text, with `record-payloads` on or off,
+  but only when the connected extension reports the field as sensitive; an
+  extension not reloaded after the update does not (see
+  [The activity trail](#the-activity-trail)). Rows stored earlier are not
+  changed.
 - **It is not complete.** Detection relies on what the page declares, so
   `evaluate` expressions, plain text fields, `press` on unmarked fields, URLs
   with query strings, fields in cross-origin iframes, closed shadow roots and
@@ -1884,7 +1914,7 @@ per machine:
 - **From the shell**:
 
 ```bash
-browser-link tools                              # current state of all 36 toggle-able tools
+browser-link tools                              # current state of all 40 toggle-able tools
 browser-link tools disable browser.evaluate     # block JS execution
 browser-link tools disable browser.reset        # block destructive soft-reset
 browser-link tools disable browser.set_permission   # block permission grants
@@ -1894,12 +1924,12 @@ browser-link tools enable browser.click         # turn one back on
 
 Presets, in plain English:
 
-| Preset     | What it disables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `all`      | Nothing — every tool enabled (default).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `readonly` | The 13 non-read bridge tools (`navigate` / `click` / `type` / `press` / `drag` / `flow` / `flow_cancel` / `evaluate` / `dialog_respond` / `set_permission` / `claim_tab` / `release_tab` / `reset`) and the 4 map-write tools (`save` / `record_use` / `forget` / `rename_app`). Leaves the 14 read bridge tools and the 2 map-read tools (`recall` / `apps`) — 16 tools total. Note `flow_status` stays ON: watching what a flow is doing is observation, and an operator locked out of it could not see a runaway they are not allowed to start. |
-| `no-eval`  | Just `browser.evaluate`. Everything else stays on — useful for "agent can drive but cannot run arbitrary JS".                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `no-map`   | All 6 persistent-map tools. Bridge tools stay on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Preset     | What it disables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `all`      | Nothing — every tool enabled (default).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `readonly` | The 17 non-read bridge tools (`navigate` / `click` / `type` / `press` / `drag` / `flow` / `flow_cancel` / `dialog_respond` / `set_permission` / `download` / `claim_tab` / `release_tab` / `reset`, plus `evaluate` / `read` / `wrap_up` / `feedback`) and the 4 map-write tools (`save` / `record_use` / `forget` / `rename_app`) — 21 disabled. Leaves the 17 read bridge tools and the 2 map-read tools (`recall` / `apps`) — 19 tools total. Note `flow_status` stays ON: watching what a flow is doing is observation, and an operator locked out of it could not see a runaway they are not allowed to start. |
+| `no-eval`  | Just `browser.evaluate`. Everything else stays on — useful for "agent can drive but cannot run arbitrary JS".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `no-map`   | All 6 persistent-map tools. Bridge tools stay on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 The deny list lives in `config.json` next to the map DB. Changes are
 **live**: the server re-reads the file on every `tools/list` and
@@ -1926,8 +1956,10 @@ browser-link multi-agent auto-reelect disable    # optional, only relevant while
 With it on, every client sees the **same** connected Chrome tabs and the
 **same** persistent UI map. The IPC bridge listens on `127.0.0.1:17530`
 and applies the same kernel-level process-binding check as the WS port:
-only Node-family binaries that present a fresh token from
-`config-dir/multi-agent-token` are accepted.
+only Node-family binaries run by the same OS user as the server that present a
+fresh token from `config-dir/multi-agent-token` are accepted. Strict mode by
+path (`peerExecutablePaths`) applies to the WebSocket port only, not to this
+one.
 
 **Auto-reelect on primary close**: if the primary's MCP client closes,
 secondary proxies enter a 5-second reconnect window — in-flight
@@ -2296,7 +2328,7 @@ connect, and whether strict mode is on.
 Chrome extension ids (for example `["abcdefghijklmnopabcdefghijklmnop"]`, a
 build of your own). Each entry must be exactly 32 letters `a`–`p`; anything
 else (a prefix, a wildcard, a full `chrome-extension://` origin) is dropped
-with a warning in the server log, and the pinned id is always allowed. It is
+with a warning in the [server log](#what-now-stops-a-connection), and the pinned id is always allowed. It is
 edited by hand only: no console command, admin panel item, bridge message or
 MCP tool writes it.
 
@@ -2314,7 +2346,7 @@ every peer. It is edited by hand only: no console command, admin panel
 item, bridge message or MCP tool writes it. Update the list when your
 browser moves (a channel switch or a reinstall elsewhere), or it stops
 connecting. The socket can belong to a helper process (on macOS, `Google
-Chrome Helper`), so list the path the refusal line in the server log
+Chrome Helper`), so list the path the refusal line in the [server log](#what-now-stops-a-connection)
 names.
 
 **The Stop button is part of this model, not a convenience.** The human is

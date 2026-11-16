@@ -4,7 +4,12 @@ import { Frame } from '../components.js';
 import { COLORS, GLYPHS } from '../tokens.js';
 import { CheckRow, FooterKeys, KeyCap, SectionHead } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
-import { loadConfig, saveConfig } from '../../config.js';
+import {
+  ConfigUnreadableError,
+  loadConfig,
+  saveConfig,
+  type UnreadableConfig,
+} from '../../config.js';
 import {
   PRESETS,
   TOOL_CATALOGUE,
@@ -103,6 +108,9 @@ type PermRow =
 
 interface PermissionsViewProps extends CommonProps {
   onBack: () => void;
+  /** A save found config.json unreadable and wrote nothing. Without it the
+   * error is thrown. */
+  onConfigUnreadable?: (problem: UnreadableConfig) => void;
 }
 
 function setsDiffer(a: Set<string>, b: Set<string>): boolean {
@@ -118,7 +126,7 @@ function diffSize(a: Set<string>, b: Set<string>): number {
   return n;
 }
 
-export function PermissionsView({ language, onBack }: PermissionsViewProps) {
+export function PermissionsView({ language, onBack, onConfigUnreadable }: PermissionsViewProps) {
   const t = PERM_I18N[language];
 
   /* Row order:
@@ -182,7 +190,14 @@ export function PermissionsView({ language, onBack }: PermissionsViewProps) {
 
   const save = (): void => {
     const list = sanitizeDisabledTools([...disabled]);
-    saveConfig({ disabledTools: list });
+    try {
+      saveConfig({ disabledTools: list });
+    } catch (error) {
+      // Nothing was written: the App shows the unreadable-config screen.
+      if (!(error instanceof ConfigUnreadableError) || !onConfigUnreadable) throw error;
+      onConfigUnreadable({ path: error.path, error: error.error });
+      return;
+    }
     setSavedDisabled(new Set(list));
     setJustSaved(true);
   };

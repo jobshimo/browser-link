@@ -17,17 +17,19 @@ import type { CommonProps } from './types.js';
  */
 const DOCTOR_I18N: Record<
   Language,
-  { title: string; loading: string; refreshLabel: string; backLabel: string }
+  { title: string; loading: string; failed: string; refreshLabel: string; backLabel: string }
 > = {
   en: {
     title: 'Doctor — diagnose current setup',
     loading: 'Diagnosing…',
+    failed: 'Diagnosis failed:',
     refreshLabel: 'refresh',
     backLabel: 'back to menu',
   },
   es: {
     title: 'Diagnóstico — estado actual de la instalación',
     loading: 'Diagnosticando…',
+    failed: 'El diagnóstico falló:',
     refreshLabel: 'refrescar',
     backLabel: 'volver al menú',
   },
@@ -42,18 +44,27 @@ interface DoctorViewProps extends CommonProps {
 export function DoctorView({ language, onBack, runDoctor: run = runDoctor }: DoctorViewProps) {
   const t = DOCTOR_I18N[language];
   const [output, setOutput] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setOutput(null);
-    void run().then((r) => {
-      if (!cancelled) setOutput(formatDoctor(r));
-    });
+    setFailure(null);
+    // A rejection must end the spinner: it becomes an error state, never an
+    // unhandled rejection.
+    void run().then(
+      (r) => {
+        if (!cancelled) setOutput(formatDoctor(r, language));
+      },
+      (error: unknown) => {
+        if (!cancelled) setFailure(error instanceof Error ? error.message : String(error));
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [refreshKey, run]);
+  }, [refreshKey, run, language]);
 
   useInput((input, key) => {
     if (key.return || key.escape) onBack();
@@ -72,7 +83,9 @@ export function DoctorView({ language, onBack, runDoctor: run = runDoctor }: Doc
         />
       }
     >
-      {output === null ? (
+      {failure !== null ? (
+        <Text color={COLORS.error}>{`${t.failed} ${failure}`}</Text>
+      ) : output === null ? (
         <Box>
           <InlineSpinner />
           <Text color={COLORS.muted}>{` ${t.loading}`}</Text>

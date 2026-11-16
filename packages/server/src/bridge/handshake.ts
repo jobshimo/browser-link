@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isAllowedBrowser, isAllowedExecutablePath } from '../auth/allowlist.js';
 import { allowedExtensionIds } from '../auth/extension-id.js';
+import { lookupConnectionPeer, type ConnectionPeer } from '../auth/peer-connection.js';
+import { sharedPeerLookupLimiter, type PeerLookupLimiter } from '../auth/peer-lookup-limiter.js';
 import type { PeerLookupRequest, PeerLookupResult } from '../auth/process-identity.js';
-import { loadConfig } from '../config.js';
+import { readConfig, unreadableConfigMessage, type UnreadableConfig } from '../config.js';
 import { isLoopbackHost } from '../lifecycle/version-endpoint.js';
 
 /**
@@ -84,17 +86,6 @@ export function printableOrigin(origin: string): string {
   return origin.replace(UNPRINTABLE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
-/**
- * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
- * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
- * IPv4 form lsof / netstat understand.
- */
-function normaliseLoopback(addr: string): string {
-  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
-  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
-  return addr;
-}
-
 export type HandshakeRefusal = {
   accepted: false;
   reason: HandshakeRefusalReason;
@@ -102,6 +93,24 @@ export type HandshakeRefusal = {
 };
 
 export type HandshakeVerdict = { accepted: true } | HandshakeRefusal;
+
+/** The reason an unreadable config.json refuses with. The extension keeps a
+ * byte-guarded copy of the reason codes, so no new code is added; of the
+ * existing ones this is the only one that does not send the user to a wrong
+ * remedy (`origin-not-allowed` says "reload the extension"). The log line
+ * carries the real cause. */
+export const CONFIG_UNREADABLE_REASON: HandshakeRefusalReason = 'process-lookup-failed';
+
+/** The refusal while config.json cannot be read: the extension ids it
+ * allows and its strict-mode paths are unknown, so no connection can be
+ * judged. Decided before any process lookup. */
+function refuseUnreadableConfig(problem: UnreadableConfig): HandshakeRefusal {
+  return {
+    accepted: false,
+    reason: CONFIG_UNREADABLE_REASON,
+    logLine: `Rejected WS handshake: ${unreadableConfigMessage(problem)}`,
+  };
+}
 
 /** The gate's verdict on the `Origin` alone, decided before any process
  * lookup: a refusal naming the origin and the ids allowed to connect, or
@@ -129,39 +138,37 @@ function refuseOrigin(
  * owns the other end of its TCP connection (same OS user, browser name and,
  * in the opt-in strict mode, a listed executable path). Both are required.
  * A lookup failure is a refusal; only a bug rejects, which both callers
- * turn into a 500. */
+ * turn into a 500.
+ *
+ * The lookup goes through `limiter` (by default the one the IPC server
+ * shares): a connection that gets no slot in time, or whose lookup outlives
+ * the total deadline, is refused as `peer-unknown` with that cause in the
+ * log line. A refused Origin is decided first and costs no slot. */
 export async function evaluateHandshake(
   req: IncomingMessage,
   lookupPeerProcess: LookupPeerProcess,
+  limiter: PeerLookupLimiter = sharedPeerLookupLimiter,
 ): Promise<HandshakeVerdict> {
   // Read on every handshake, like every other config key the primary
-  // honours without a restart.
-  const config = loadConfig();
+  // honours without a restart. An unreadable file refuses every connection
+  // before the Origin is judged: the ids it would allow are unknown.
+  const read = readConfig();
+  if (read.state === 'unreadable') return refuseUnreadableConfig(read);
+  const config = read.config;
   const originRefusal = refuseOrigin(req.headers.origin, config.allowedExtensionIds ?? []);
   if (originRefusal !== undefined) return originRefusal;
-  const remoteAddress = normaliseLoopback(req.socket.remoteAddress ?? '');
-  const remotePort = req.socket.remotePort;
-  if (!remoteAddress || remotePort == null) {
-    return {
-      accepted: false,
-      reason: 'peer-unidentified',
-      logLine: 'Rejected WS handshake: peer address/port not exposed by socket.',
-    };
-  }
   // `undefined` means strict mode is off.
   const strictPaths = config.peerExecutablePaths;
-  // The bridge's own end of this connection: only OS rows whose remote end
-  // is the bridge count, so stale rows on the peer's port do not.
-  const localAddress = normaliseLoopback(req.socket.localAddress ?? '');
-  const localPort = req.socket.localPort;
-  let lookup: PeerLookupResult;
+  // Only OS rows whose remote end is the bridge's own end of this connection
+  // count, so stale rows on the peer's port do not.
+  let found: ConnectionPeer;
   try {
-    lookup = await lookupPeerProcess(remoteAddress, remotePort, {
-      withExecutablePath: strictPaths !== undefined,
-      ...(localAddress && localPort != null
-        ? { serverEndpoint: { host: localAddress, port: localPort } }
-        : {}),
-    });
+    found = await lookupConnectionPeer(
+      req.socket,
+      lookupPeerProcess,
+      { withExecutablePath: strictPaths !== undefined },
+      limiter,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -170,6 +177,15 @@ export async function evaluateHandshake(
       logLine: `Rejected WS handshake: process lookup failed (${msg}).`,
     };
   }
+  if (!found.identified) {
+    return {
+      accepted: false,
+      reason: 'peer-unidentified',
+      logLine: 'Rejected WS handshake: peer address/port not exposed by socket.',
+    };
+  }
+  const { host: remoteAddress, port: remotePort } = found.remote;
+  const lookup = found.result;
   if (!lookup.ok) {
     if (lookup.cause === 'owner-mismatch') {
       return {
@@ -267,7 +283,11 @@ export function createHandshakeCheckHandler(
       'access-control-allow-origin': origin,
       vary: 'Origin',
     };
-    const originRefusal = refuseOrigin(origin, loadConfig().allowedExtensionIds ?? []);
+    const read = readConfig();
+    const originRefusal =
+      read.state === 'unreadable'
+        ? refuseUnreadableConfig(read)
+        : refuseOrigin(origin, read.config.allowedExtensionIds ?? []);
     if (originRefusal !== undefined) {
       res.writeHead(200, headers);
       res.end(JSON.stringify({ accepted: false, reason: originRefusal.reason }));

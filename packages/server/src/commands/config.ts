@@ -12,8 +12,12 @@ import {
   clampGrantTtlMinutes,
   clampIdleTtlMinutes,
   loadConfig,
+  readConfig,
+  restoreDefaultConfig,
   sanitizeDownloadsMaxMb,
   saveConfig,
+  type BrowserLinkConfig,
+  type RestoreDefaultsResult,
 } from '../config.js';
 import { isAbsolute } from 'node:path';
 import { HandshakeError, IpcClient } from '../bridge/ipc-client.js';
@@ -124,10 +128,11 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off>',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
       `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
-    unknownAction: (action) => `Unknown config action: ${action}. Use get or set.`,
+    unknownAction: (action) =>
+      `Unknown config action: ${action}. Use get, set or restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'enabled',
     flowRecordingDisabled: 'disabled',
@@ -192,10 +197,11 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off>',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
       `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning.`,
-    unknownAction: (action) => `Acción de config desconocida: ${action}. Usá get o set.`,
+    unknownAction: (action) =>
+      `Acción de config desconocida: ${action}. Usá get, set o restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
     flowRecordingEnabled: 'habilitado',
     flowRecordingDisabled: 'deshabilitado',
@@ -644,11 +650,179 @@ export function setMapLearning(rawValue: string, language: Language = 'en'): str
   return t.mapLearningSetSaved(enabled ? t.mapLearningOn : t.mapLearningOff);
 }
 
+interface RestoreI18n {
+  restored: string;
+  unreadable: (path: string) => string;
+  error: string;
+  copyKept: string;
+  lostHeader: string;
+  inEffectHeader: string;
+  notSet: string;
+  worksAgain: string;
+  preview: string;
+  previewConfirm: string;
+  readable: (path: string) => string;
+  missing: (path: string) => string;
+  keys: Record<keyof BrowserLinkConfig, string>;
+}
+
+/** Exported for the console's config screen, which shows the same text. */
+export const RESTORE_I18N: Record<Language, RestoreI18n> = {
+  en: {
+    restored: 'Restored the default settings.',
+    unreadable: (path) => `config.json could not be read: ${path}`,
+    error: 'error:',
+    copyKept: 'The unreadable file was kept, byte for byte, at:',
+    lostHeader:
+      'The custom settings of the old file are no longer in effect. Re-enter the ones you want from that copy, in config.json or with the commands that set them:',
+    inEffectHeader: 'In effect now (the defaults):',
+    notSet: 'not set',
+    worksAgain:
+      'browser-link works again with these settings. A browser-link server that started while the file was unreadable keeps refusing until you restart your MCP client.',
+    preview:
+      'Restoring keeps a copy of it next to it (config.json.unreadable-<date and time>), then writes the default settings; the custom settings in it stop applying until you re-enter them.',
+    previewConfirm: 'Nothing was changed. Re-run with --yes to confirm:',
+    readable: (path) =>
+      `config.json can be read (${path}): there is nothing to restore. Nothing was changed.`,
+    missing: (path) =>
+      `There is no config.json (${path}): the default settings are already in effect. Nothing was changed.`,
+    keys: {
+      peerExecutablePaths:
+        'strict mode: the browser executable paths allowed to connect (not set: off)',
+      allowedExtensionIds: 'extra extension ids allowed to connect (the pinned id always is)',
+      disabledTools: 'MCP tools you disabled (browser-link tools)',
+      multiAgent: 'multi-agent mode (browser-link multi-agent)',
+      autoReelect: 'auto-reelect (browser-link multi-agent auto-reelect)',
+      cdpDirectEnabled: 'cdp-direct mode (config set cdp-direct.enabled)',
+      cdpDirectPort: 'cdp-direct port (config set cdp-direct.port)',
+      cdpDirectGrantTtlMinutes:
+        'default lifetime of a cdp-direct grant, in minutes (config set cdp-direct.grant-ttl)',
+      idleTtlMinutes:
+        "idle-disconnect TTL, in minutes (config set idle-ttl; not set: the extension's own choice)",
+      idleTtlUpdatedAt: 'when idle-ttl was last set from the CLI',
+      language: 'console language',
+      flowRecordingEnabled:
+        "flow recording (config set flow-recording; not set: the extension's own choice)",
+      flowRecordingUpdatedAt: 'when flow-recording was last set from the CLI',
+      activityEnabled: 'activity trail recording',
+      activityRecordPayloads: 'whether the activity trail keeps the text an action moved',
+      mapLearningEnabled: 'map learning (config set map-learning)',
+      downloadsDir:
+        'folder browser.download writes into (config set downloads.dir; not set: <data dir>/downloads)',
+      downloadsMaxMb: 'per-file size cap of browser.download, in MiB (config set downloads.max-mb)',
+      instructionsAutoRefresh: 'refresh of the agent-instructions blocks at server start',
+      skipWelcome: 'the console skips its welcome screen',
+      noticeAcknowledged: 'you confirmed the product notice in the console',
+    },
+  },
+  es: {
+    restored: 'Se restauró la configuración por defecto.',
+    unreadable: (path) => `No se pudo leer config.json: ${path}`,
+    error: 'error:',
+    copyKept: 'El archivo ilegible se guardó, byte a byte, en:',
+    lostHeader:
+      'La configuración personalizada del archivo viejo ya no está en efecto. Volvé a cargar la que quieras desde esa copia, en config.json o con los comandos que la configuran:',
+    inEffectHeader: 'En efecto ahora (los valores por defecto):',
+    notSet: 'sin valor',
+    worksAgain:
+      'browser-link vuelve a funcionar con esta configuración. Un servidor de browser-link que arrancó mientras el archivo era ilegible sigue rechazando hasta que reinicies tu cliente MCP.',
+    preview:
+      'Restaurar guarda una copia al lado (config.json.unreadable-<fecha y hora>) y después escribe la configuración por defecto; la configuración personalizada que tenía deja de aplicarse hasta que la vuelvas a cargar.',
+    previewConfirm: 'No se cambió nada. Volvé a correrlo con --yes para confirmar:',
+    readable: (path) =>
+      `config.json se puede leer (${path}): no hay nada que restaurar. No se cambió nada.`,
+    missing: (path) =>
+      `No hay config.json (${path}): ya está en efecto la configuración por defecto. No se cambió nada.`,
+    keys: {
+      peerExecutablePaths:
+        'modo estricto: rutas de los ejecutables de navegador que pueden conectarse (sin valor: desactivado)',
+      allowedExtensionIds:
+        'ids de extensión extra que pueden conectarse (el id fijado siempre puede)',
+      disabledTools: 'tools MCP que deshabilitaste (browser-link tools)',
+      multiAgent: 'modo multi-agente (browser-link multi-agent)',
+      autoReelect: 're-elección automática (browser-link multi-agent auto-reelect)',
+      cdpDirectEnabled: 'modo cdp-direct (config set cdp-direct.enabled)',
+      cdpDirectPort: 'puerto de cdp-direct (config set cdp-direct.port)',
+      cdpDirectGrantTtlMinutes:
+        'duración por defecto de un permiso de cdp-direct, en minutos (config set cdp-direct.grant-ttl)',
+      idleTtlMinutes:
+        'TTL de auto-desconexión, en minutos (config set idle-ttl; sin valor: lo que elija la extensión)',
+      idleTtlUpdatedAt: 'cuándo se configuró idle-ttl por última vez desde la CLI',
+      language: 'idioma de la consola',
+      flowRecordingEnabled:
+        'grabación de flows (config set flow-recording; sin valor: lo que elija la extensión)',
+      flowRecordingUpdatedAt: 'cuándo se configuró flow-recording por última vez desde la CLI',
+      activityEnabled: 'registro del rastro de actividad',
+      activityRecordPayloads: 'si el rastro de actividad guarda el texto que movió cada acción',
+      mapLearningEnabled: 'aprendizaje del mapa (config set map-learning)',
+      downloadsDir:
+        'carpeta donde browser.download guarda los archivos (config set downloads.dir; sin valor: <directorio de datos>/downloads)',
+      downloadsMaxMb:
+        'tamaño máximo por archivo de browser.download, en MiB (config set downloads.max-mb)',
+      instructionsAutoRefresh: 'refresco de los bloques de instrucciones al arrancar el servidor',
+      skipWelcome: 'la consola salta su pantalla de bienvenida',
+      noticeAcknowledged: 'confirmaste el aviso del producto en la consola',
+    },
+  },
+};
+
+function settingValue(value: unknown, t: RestoreI18n): string {
+  return value === undefined ? t.notSet : JSON.stringify(value);
+}
+
+/** What `config restore-defaults` did, in `language`: the copy, every
+ * setting that stopped applying, and every value in effect now. The keys
+ * come from `RESTORE_I18N.keys` (every persisted key, checked by the type)
+ * and the values from `result.inEffect` (`defaultSettings`). */
+export function formatRestoreResult(result: RestoreDefaultsResult, language: Language): string {
+  const t = RESTORE_I18N[language];
+  if (!result.restored) {
+    return result.state === 'ok' ? t.readable(result.path) : t.missing(result.path);
+  }
+  const keys = Object.keys(t.keys) as (keyof BrowserLinkConfig)[];
+  const width = Math.max(...keys.map((k) => k.length)) + 2;
+  return [
+    t.restored,
+    '',
+    t.unreadable(result.path),
+    `  ${t.error} ${result.error}`,
+    t.copyKept,
+    `  ${result.backupPath}`,
+    '',
+    t.lostHeader,
+    ...keys.map((k) => `  ${k.padEnd(width)}${t.keys[k]}`),
+    '',
+    t.inEffectHeader,
+    ...keys.map((k) => `  ${k.padEnd(width)}${settingValue(result.inEffect[k], t)}`),
+    '',
+    t.worksAgain,
+  ].join('\n');
+}
+
+/** `browser-link config restore-defaults [--yes]`. Without `--yes`, like the
+ * other destructive commands, it only says what it would do. */
+export function restoreDefaults(argv: string[], language: Language = 'en'): string {
+  const t = RESTORE_I18N[language];
+  const read = readConfig();
+  if (read.state === 'unreadable' && !argv.includes('--yes')) {
+    return [
+      t.unreadable(read.path),
+      `  ${t.error} ${read.error}`,
+      t.preview,
+      t.previewConfirm,
+      '  browser-link config restore-defaults --yes',
+    ].join('\n');
+  }
+  return formatRestoreResult(restoreDefaultConfig(), language);
+}
+
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
   const key = argv.at(1);
   const value = argv.at(2);
+
+  if (action === 'restore-defaults') return restoreDefaults(argv.slice(1), language);
 
   if (action === undefined || action === 'get') {
     if (key === undefined) return listConfig(language);

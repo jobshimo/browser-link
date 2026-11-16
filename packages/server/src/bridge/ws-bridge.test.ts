@@ -1380,6 +1380,134 @@ describe('startWsBridge handshake gate and message loop', () => {
     expect(tabs.get(msg.payload.tabId)?.url).toBe('https://example.com/');
   });
 
+  /* S1: a frame from an accepted socket is checked before any field is read.
+   * One bad frame must never take the primary (or another socket) down. */
+  describe('frames from an accepted socket (S1)', () => {
+    const MALFORMED: [string, unknown][] = [
+      ['tab.register', { kind: 'tab.register' }],
+      ['tab.register', { kind: 'tab.register', payload: { url: 1, title: 'x' } }],
+      ['tool.response', { kind: 'tool.response', id: 7, ok: true }],
+      ['bridge.event', { kind: 'bridge.event', eventKind: 5, data: {} }],
+      ['bridge.event', { kind: 'bridge.event', eventKind: 'dialog-opened' }],
+      ['flow.recorded', { kind: 'flow.recorded' }],
+      ['activity.query', { kind: 'activity.query' }],
+      ['activity.purge', { kind: 'activity.purge', request_id: 3 }],
+      ['bridge.repair', { kind: 'bridge.repair' }],
+      ['admin.describe', { kind: 'admin.describe' }],
+      ['admin.action', { kind: 'admin.action', request_id: 'r1' }],
+      ['unknown', { kind: 'no.such.kind' }],
+      ['unknown', null],
+      ['unknown', [1, 2]],
+    ];
+
+    async function openSocket(url: string): Promise<WebSocket> {
+      const outcome = await connect(url, PINNED_EXTENSION_ORIGIN);
+      if (!('ws' in outcome)) throw new Error(`refused: ${outcome.status} ${outcome.message}`);
+      return outcome.ws;
+    }
+
+    function nextMessage(ws: WebSocket): Promise<ServerToExtension> {
+      return new Promise((resolve) => {
+        ws.once('message', (d) => resolve(JSON.parse(String(d)) as ServerToExtension));
+      });
+    }
+
+    async function register(ws: WebSocket, title: string): Promise<string> {
+      const reply = nextMessage(ws);
+      ws.send(JSON.stringify({ kind: 'tab.register', payload: { url: 'https://e.test/', title } }));
+      const msg = await reply;
+      if (msg.kind !== 'tab.registered') throw new Error(`unexpected ${msg.kind}`);
+      return msg.payload.tabId;
+    }
+
+    const logged = () => vi.mocked(console.error).mock.calls.map((c) => String(c[0]));
+
+    test.each(MALFORMED)(
+      'a malformed %s frame is dropped, logged by kind without its payload, and the socket still works',
+      async (kind, frame) => {
+        const { tabs, url } = await bridge(chromiumPeer);
+        const ws = await openSocket(url);
+        const closed = vi.fn();
+        ws.on('close', closed);
+        ws.send(JSON.stringify(frame));
+        // A valid frame sent after it is answered: the socket is open and the
+        // handler loop is alive.
+        const tabId = await register(ws, 'after-bad-frame');
+        expect(tabs.has(tabId)).toBe(true);
+        expect(closed).not.toHaveBeenCalled();
+        const line = logged().find((l) => l.includes('Dropped malformed frame'));
+        expect(line).toContain(`(kind: ${kind})`);
+        expect(line).not.toContain('no.such.kind');
+      },
+    );
+
+    test('a frame that is not JSON is dropped and logged as unknown', async () => {
+      const { url } = await bridge(chromiumPeer);
+      const ws = await openSocket(url);
+      ws.send('{not json');
+      await register(ws, 'after-garbage');
+      expect(logged().some((l) => l.includes('Dropped malformed frame (kind: unknown)'))).toBe(
+        true,
+      );
+    });
+
+    test('one malformed frame per kind, then a valid tab.register and a tool round trip still work', async () => {
+      const pending = new Map<string, PendingRequest>();
+      const tabs = new Map<string, TabSession>();
+      wss = await startWsBridge(tabs, pending, new BridgeEventLog(), {
+        port: 0,
+        version: '9.9.9',
+        lookupPeerProcess: chromiumPeer,
+      });
+      const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+      const ws = await openSocket(url);
+      for (const [, frame] of MALFORMED) ws.send(JSON.stringify(frame));
+      const tabId = await register(ws, 'survivor');
+      const request = nextMessage(ws);
+      const call = sendToolRequest(tabs, pending, tabId, 'r-1', 'ping', {}, 5000);
+      expect(await request).toMatchObject({ kind: 'tool.request', id: 'r-1', tool: 'ping' });
+      ws.send(JSON.stringify({ kind: 'tool.response', id: 'r-1', ok: true, result: 'pong' }));
+      await expect(call).resolves.toBe('pong');
+    });
+
+    test('an exception while handling a frame closes that socket only; other sockets and their tabs are unaffected', async () => {
+      const pending = new Map<string, PendingRequest>();
+      const tabs = new Map<string, TabSession>();
+      wss = await startWsBridge(tabs, pending, new BridgeEventLog(), {
+        port: 0,
+        version: '9.9.9',
+        lookupPeerProcess: chromiumPeer,
+        onRepair: () => {
+          throw new Error('repair exploded');
+        },
+      });
+      const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+      const good = await openSocket(url);
+      const goodTab = await register(good, 'good');
+      const bad = await openSocket(url);
+      const badTab = await register(bad, 'bad');
+      const goodClosed = vi.fn();
+      good.on('close', goodClosed);
+      const badClosed = new Promise<void>((resolve) => bad.once('close', () => resolve()));
+
+      bad.send(JSON.stringify({ kind: 'bridge.repair', request_id: 'x' }));
+      await badClosed;
+
+      const lines = logged().join('\n');
+      expect(lines).toContain('Error handling bridge.repair frame');
+      expect(lines).toContain('repair exploded');
+      // Only the faulty socket's tab is gone.
+      await vi.waitFor(() => expect(tabs.has(badTab)).toBe(false));
+      expect(tabs.has(goodTab)).toBe(true);
+      expect(goodClosed).not.toHaveBeenCalled();
+      const request = nextMessage(good);
+      const call = sendToolRequest(tabs, pending, goodTab, 'r-2', 'ping', {}, 5000);
+      expect(await request).toMatchObject({ kind: 'tool.request', id: 'r-2' });
+      good.send(JSON.stringify({ kind: 'tool.response', id: 'r-2', ok: true, result: 1 }));
+      await expect(call).resolves.toBe(1);
+    });
+  });
+
   test('a web-page Origin is still refused, by a line naming it', async () => {
     const { url } = await bridge(chromiumPeer);
     expect(await connect(url, 'http://localhost:3000')).toEqual({

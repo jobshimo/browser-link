@@ -4,7 +4,12 @@ import { Frame } from '../components.js';
 import { COLORS, GLYPHS } from '../tokens.js';
 import { CheckRow, FooterKeys, SectionHead } from '../primitives/index.js';
 import type { Language } from '../../commands/welcome.js';
-import { loadConfig, saveConfig } from '../../config.js';
+import {
+  ConfigUnreadableError,
+  loadConfig,
+  saveConfig,
+  type UnreadableConfig,
+} from '../../config.js';
 import type { CommonProps } from './types.js';
 import { BRIDGE_PORT } from '../../bridge/protocol.js';
 
@@ -110,9 +115,12 @@ const MULTI_AGENT_I18N: Record<Language, MultiAgentI18n> = {
 
 interface MultiAgentViewProps extends CommonProps {
   onBack: () => void;
+  /** A save found config.json unreadable and wrote nothing. Without it the
+   * error is thrown. */
+  onConfigUnreadable?: (problem: UnreadableConfig) => void;
 }
 
-export function MultiAgentView({ language, onBack }: MultiAgentViewProps) {
+export function MultiAgentView({ language, onBack, onConfigUnreadable }: MultiAgentViewProps) {
   const t = MULTI_AGENT_I18N[language];
 
   const initialCfg = useMemo(() => loadConfig(), []);
@@ -146,7 +154,14 @@ export function MultiAgentView({ language, onBack }: MultiAgentViewProps) {
   };
 
   const save = (): void => {
-    saveConfig({ multiAgent: multi, autoReelect: multi ? reelect : false });
+    try {
+      saveConfig({ multiAgent: multi, autoReelect: multi ? reelect : false });
+    } catch (error) {
+      // Nothing was written: the App shows the unreadable-config screen.
+      if (!(error instanceof ConfigUnreadableError) || !onConfigUnreadable) throw error;
+      onConfigUnreadable({ path: error.path, error: error.error });
+      return;
+    }
     setSavedMulti(multi);
     setSavedReelect(multi ? reelect : false);
     setJustSaved(true);
