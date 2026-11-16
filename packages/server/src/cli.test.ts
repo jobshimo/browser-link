@@ -44,9 +44,10 @@ const h = vi.hoisted(() => {
 });
 
 function registerModuleMocks(): void {
-  vi.doMock('./config.js', () => {
+  vi.doMock('./config.js', async () => {
+    const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
     h.loaded.add('config');
-    return { loadConfig: h.spies.loadConfig };
+    return { loadConfig: h.spies.loadConfig, ConfigUnreadableError: actual.ConfigUnreadableError };
   });
   vi.doMock('./server.js', () => {
     h.loaded.add('server');
