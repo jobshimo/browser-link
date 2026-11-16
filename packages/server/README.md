@@ -152,6 +152,15 @@ Shadow-DOM/iframe piercing and occlusion rules the bridge tools follow —
 lives in the [GitHub README](https://github.com/jobshimo/browser-link#what-the-agent-can-do);
 this page stays a landing page on purpose.
 
+Three things the page tools tell the agent are worth knowing here. A
+`snapshot` or `find` result that was cut carries `truncated`, and `offset`
+returns the rest. `snapshot` and `find` return the value of password fields
+unless you run `browser-link config set hide-password-values on`. In the
+activity trail, `browser-link config set activity.hide-sensitive <on|off>`
+decides whether what was typed into a sensitive field is hidden in every column
+of its row (it applies after a restart); see
+[The activity trail](https://github.com/jobshimo/browser-link#the-activity-trail).
+
 ## `browser-link map` — inspect and manage the persistent map
 
 The 6 map tools above are how an _agent_ reads and writes the map while it
