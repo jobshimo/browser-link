@@ -84,7 +84,9 @@ describe('map forget --pitfall / --mechanism (W2)', () => {
 
   test('a valueless flag and an unknown key are clear errors', () => {
     seed();
-    expect(() => runMapCommand(['forget', 'my-app', '--pitfall'])).toThrow(/--pitfall requires/);
+    expect(() => runMapCommand(['forget', 'my-app', '--pitfall'])).toThrow(
+      'browser-link map forget: option --pitfall needs a value',
+    );
     expect(() => runMapCommand(['forget', 'my-app', '--mechanism', 'nope'])).toThrow(
       /No mechanism named "nope"/,
     );

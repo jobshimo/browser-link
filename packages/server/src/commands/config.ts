@@ -25,6 +25,7 @@ import { resolveDownloadsDir } from '../downloads.js';
 import { getDataDir } from '../map/paths.js';
 import { readToken } from '../bridge/token.js';
 import type { Language } from './welcome.js';
+import { readArgs } from '../cli-args.js';
 
 /**
  * `browser-link config` — scriptable CLI surface for settings that are also
@@ -803,8 +804,9 @@ export function formatRestoreResult(result: RestoreDefaultsResult, language: Lan
  * other destructive commands, it only says what it would do. */
 export function restoreDefaults(argv: string[], language: Language = 'en'): string {
   const t = RESTORE_I18N[language];
+  const yes = readArgs('config restore-defaults', argv, language).has('yes');
   const read = readConfig();
-  if (read.state === 'unreadable' && !argv.includes('--yes')) {
+  if (read.state === 'unreadable' && !yes) {
     return [
       t.unreadable(read.path),
       `  ${t.error} ${read.error}`,
@@ -819,10 +821,16 @@ export function restoreDefaults(argv: string[], language: Language = 'en'): stri
 export async function runConfigCommand(argv: string[], language: Language = 'en'): Promise<string> {
   const t = CFG_I18N[language];
   const action = argv.at(0);
-  const key = argv.at(1);
-  const value = argv.at(2);
-
   if (action === 'restore-defaults') return restoreDefaults(argv.slice(1), language);
+  if (action !== undefined && action !== 'get' && action !== 'set') {
+    throw new Error(t.unknownAction(action));
+  }
+  // `get` and `set` take plain words only; an option or an extra word is
+  // refused before anything is read or written.
+  const words =
+    action === undefined ? [] : readArgs(`config ${action}`, argv.slice(1), language).positionals;
+  const key = words.at(0);
+  const value = words.at(1);
 
   if (action === undefined || action === 'get') {
     if (key === undefined) return listConfig(language);
@@ -834,29 +842,27 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (key === 'map-learning') return getMapLearningLine(language);
     throw new Error(t.unknownKey(key));
   }
-  if (action === 'set') {
-    if (key === undefined) throw new Error(t.usage);
-    if (key === 'idle-ttl' || key === 'flow-recording') {
-      if (value === undefined) throw new Error(t.usage);
-      return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
-    }
-    if (isCdpDirectKey(key)) {
-      if (value === undefined) throw new Error(t.usage);
-      return setCdpDirectKey(key, value, language);
-    }
-    if (key === 'downloads.dir') {
-      if (value === undefined) throw new Error(t.usage);
-      return setDownloadsDir(value, language);
-    }
-    if (key === 'downloads.max-mb') {
-      if (value === undefined) throw new Error(t.usage);
-      return setDownloadsMaxMb(value, language);
-    }
-    if (key === 'map-learning') {
-      if (value === undefined) throw new Error(t.usage);
-      return setMapLearning(value, language);
-    }
-    throw new Error(t.unknownKey(key));
+  // `set` is the only action left.
+  if (key === undefined) throw new Error(t.usage);
+  if (key === 'idle-ttl' || key === 'flow-recording') {
+    if (value === undefined) throw new Error(t.usage);
+    return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
   }
-  throw new Error(t.unknownAction(action));
+  if (isCdpDirectKey(key)) {
+    if (value === undefined) throw new Error(t.usage);
+    return setCdpDirectKey(key, value, language);
+  }
+  if (key === 'downloads.dir') {
+    if (value === undefined) throw new Error(t.usage);
+    return setDownloadsDir(value, language);
+  }
+  if (key === 'downloads.max-mb') {
+    if (value === undefined) throw new Error(t.usage);
+    return setDownloadsMaxMb(value, language);
+  }
+  if (key === 'map-learning') {
+    if (value === undefined) throw new Error(t.usage);
+    return setMapLearning(value, language);
+  }
+  throw new Error(t.unknownKey(key));
 }
