@@ -32,6 +32,7 @@ import {
   extensionCopy,
   freePort,
   isAlive,
+  jsLiteral,
   killPid,
   launchChrome,
   now,
@@ -208,7 +209,7 @@ async function main() {
   });
   const tabId = await evaluateUntil(
     cdp,
-    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${JSON.stringify(page)} && t.status === 'complete') || {}).id ?? null)`,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(page)} && t.status === 'complete') || {}).id ?? null)`,
     swSession,
     15_000,
   );
@@ -224,7 +225,7 @@ async function main() {
   });
   const connected = await evaluateUntil(
     cdp,
-    `chrome.runtime.sendMessage(${JSON.stringify({ action: 'connect', tabId })})`,
+    `chrome.runtime.sendMessage(${jsLiteral({ action: 'connect', tabId })})`,
     popupSession,
     15_000,
   );
@@ -636,7 +637,7 @@ async function refusedExtension(cdp, swSession, page, keylessId) {
   const { targetId: refusedTab } = await cdp.send('Target.createTarget', { url });
   const tabId = await evaluateUntil(
     cdp,
-    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${JSON.stringify(url)} && t.status === 'complete') || {}).id ?? null)`,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(url)} && t.status === 'complete') || {}).id ?? null)`,
     swSession,
     15_000,
   );
@@ -646,7 +647,7 @@ async function refusedExtension(cdp, swSession, page, keylessId) {
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const result = await evaluateUntil(
     cdp,
-    `chrome.runtime.sendMessage(${JSON.stringify({ action: 'connect', tabId })})`,
+    `chrome.runtime.sendMessage(${jsLiteral({ action: 'connect', tabId })})`,
     sessionId,
     15_000,
   );
@@ -751,7 +752,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `${footer} === ${JSON.stringify(I18N[from].footer)}`,
+      `${footer} === ${jsLiteral(I18N[from].footer)}`,
       popup.sessionId,
       `footer not in ${from}`,
     );
@@ -762,7 +763,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[from].status)}`,
+      `document.querySelector('.admin-section-title')?.textContent === ${jsLiteral(I18N[from].status)}`,
       admin.sessionId,
       `admin status section not in ${from}`,
     );
@@ -770,13 +771,13 @@ async function languageChecks(cdp, extId) {
 
   await check('i18n.switch', async (name) => {
     await cdp.evaluate(
-      `document.querySelector('.lang-switch button[data-lang="${to}"]').click()`,
+      `document.querySelector(${jsLiteral(`.lang-switch button[data-lang="${to}"]`)}).click()`,
       popup.sessionId,
     );
     await expectSoon(
       cdp,
       name,
-      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)} && document.querySelector('.lang-switch button[data-lang="${to}"]').getAttribute('aria-pressed') === 'true' && document.getElementById('notice-open').textContent === ${JSON.stringify(I18N[to].notice)}`,
+      `document.documentElement.lang === ${jsLiteral(to)} && ${footer} === ${jsLiteral(I18N[to].footer)} && document.querySelector(${jsLiteral(`.lang-switch button[data-lang="${to}"]`)}).getAttribute('aria-pressed') === 'true' && document.getElementById('notice-open').textContent === ${jsLiteral(I18N[to].notice)}`,
       popup.sessionId,
       `popup did not switch to ${to}`,
     );
@@ -794,14 +795,14 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `window.__e2eNoReload === 1 && document.documentElement.lang === '${to}' && document.querySelector('h1').textContent.trim() === ${JSON.stringify(I18N[to].activity)}`,
+      `window.__e2eNoReload === 1 && document.documentElement.lang === ${jsLiteral(to)} && document.querySelector('h1').textContent.trim() === ${jsLiteral(I18N[to].activity)}`,
       activity.sessionId,
       'Activity did not follow without reload',
     );
     await expectSoon(
       cdp,
       name,
-      `window.__e2eNoReload === 1 && document.querySelector('.admin-section-title')?.textContent === ${JSON.stringify(I18N[to].status)}`,
+      `window.__e2eNoReload === 1 && document.querySelector('.admin-section-title')?.textContent === ${jsLiteral(I18N[to].status)}`,
       admin.sessionId,
       'Admin did not follow without reload',
     );
@@ -827,7 +828,7 @@ async function languageChecks(cdp, extId) {
       ],
     ];
     for (const [key, commands] of rows) {
-      const label = JSON.stringify(I18N[to][key]);
+      const label = jsLiteral(I18N[to][key]);
       const seen = await cdp.evaluate(
         `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; const info = row.querySelector('button.admin-info'); const text = info ? document.getElementById(info.getAttribute('aria-describedby') ?? '') : null; return { controls: row.querySelectorAll('input, select, button:not(.admin-info)').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null, infoName: info?.getAttribute('aria-label') ?? null, infoText: text?.textContent ?? null }; })()`,
         admin.sessionId,
@@ -859,7 +860,7 @@ async function languageChecks(cdp, extId) {
     await expectSoon(
       cdp,
       name,
-      `document.documentElement.lang === '${to}' && ${footer} === ${JSON.stringify(I18N[to].footer)}`,
+      `document.documentElement.lang === ${jsLiteral(to)} && ${footer} === ${jsLiteral(I18N[to].footer)}`,
       again.sessionId,
       'the choice did not survive reopening the popup',
     );

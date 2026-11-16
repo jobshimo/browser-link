@@ -258,6 +258,15 @@ export async function waitServiceWorker(cdp, extId, timeoutMs) {
   }
 }
 
+/** A value as a JavaScript literal that is safe to splice into evaluated source:
+ * JSON.stringify leaves U+2028/U+2029 and `<`, `>`, `/` unescaped. */
+export function jsLiteral(value) {
+  return JSON.stringify(value).replace(
+    /[<>\/\u2028\u2029]/g,
+    (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'),
+  );
+}
+
 /** Evaluate in a target until it returns a truthy value, retrying the
  * transient `chrome is not defined` right after attach, until `timeoutMs`. */
 export async function evaluateUntil(cdp, expression, sessionId, timeoutMs) {
