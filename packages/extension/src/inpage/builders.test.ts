@@ -12,6 +12,7 @@ import {
   buildFindJs,
   buildFocusJs,
   buildFocusedFieldJs,
+  buildProgrammaticClickJs,
   buildSettleJs,
   buildSnapshotJs,
   buildStateJs,
@@ -45,6 +46,33 @@ function evalExpr<T = unknown>(source: string): T {
  * mirroring how a real browser reports offsetParent for a rendered element. */
 function makeVisible(el: Element): void {
   Object.defineProperty(el, 'offsetParent', { value: document.body, configurable: true });
+}
+
+/** jsdom has no layout: every element answers `getClientRects()` with an
+ * empty list and `getBoundingClientRect()` with zeros, which is what Chrome
+ * answers only for an element that is not rendered (display:none, inside a
+ * display:none ancestor, an <option> of a closed <select>). A rendered
+ * element has at least one client rect, so the click tests give their
+ * targets one; a test that leaves a target without it models an element
+ * with no box. */
+function giveBox(
+  el: Element,
+  box: { left: number; top: number; width: number; height: number } = {
+    left: 100,
+    top: 200,
+    width: 80,
+    height: 20,
+  },
+): void {
+  const rect = {
+    ...box,
+    x: box.left,
+    y: box.top,
+    right: box.left + box.width,
+    bottom: box.top + box.height,
+  } as DOMRect;
+  el.getClientRects = () => [rect] as unknown as DOMRectList;
+  el.getBoundingClientRect = () => rect;
 }
 
 interface FindMatch {
@@ -108,6 +136,7 @@ describe('buildFindJs -> buildClickResolveJs round trip (the core agent workflow
     shadow.innerHTML = '<button>Save changes</button>';
     const target = shadow.querySelector('button')!;
     makeVisible(target);
+    giveBox(target);
 
     const found = evalExpr<FindResult>(buildFindJs({ text: 'Save changes' }));
     expect(found.matched).toBe(true);
@@ -127,6 +156,7 @@ describe('buildFindJs -> buildClickResolveJs round trip (the core agent workflow
     idoc.body.innerHTML = '<button>Submit order</button>';
     const target = idoc.querySelector('button')!;
     makeVisible(target);
+    giveBox(target);
 
     const found = evalExpr<FindResult>(buildFindJs({ text: 'Submit order' }));
     expect(found.matched).toBe(true);
@@ -415,6 +445,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
     document.body.appendChild(overlay);
@@ -432,6 +463,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
     document.body.appendChild(overlay);
@@ -453,6 +485,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     acc.id = 'acc-1';
     acc.style.pointerEvents = 'none';
     document.body.appendChild(acc);
+    giveBox(acc);
     const hitTarget = document.createElement('div');
     hitTarget.id = 'hit-layer';
     document.body.appendChild(hitTarget);
@@ -478,6 +511,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'clipped-btn';
     scroller.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -494,6 +528,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'clipped-btn';
     scroller.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => scroller;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -514,6 +549,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     icon.className = 'icon';
     icon.style.pointerEvents = 'none';
     button.appendChild(icon);
+    giveBox(icon);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => button;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -529,6 +565,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const button = document.createElement('button');
     button.id = 'save-btn';
     document.body.appendChild(button);
+    giveBox(button);
     const label = document.createElement('span');
     label.textContent = 'Save';
     button.appendChild(label);
@@ -547,6 +584,7 @@ describe('buildClickResolveJs — occlusion guard', () => {
     const target = document.createElement('button');
     target.id = 'save-btn';
     document.body.appendChild(target);
+    giveBox(target);
     (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => target;
 
     const resolved = evalExpr<ClickResolveResult>(
@@ -619,6 +657,263 @@ describe('buildClickResolveJs — occlusion guard', () => {
   });
 });
 
+/*
+ * Owner decision D4: "without `force`, a target with no visible box fails
+ * with a clear message; a click is never made at (0,0). With `force`: a
+ * covered target is clicked at its position as today; a target with no box
+ * gets a programmatic click on the element itself, with no pointer, and the
+ * result says so explicitly."
+ */
+describe('a click never lands at (0,0) (D4)', () => {
+  const NO_BOX = { ok: false, reason: 'no-box' };
+  const doc = document as unknown as {
+    elementFromPoint?: (x: number, y: number) => Element | null;
+  };
+  let corner: HTMLElement;
+
+  beforeEach(() => {
+    // What a real page has at its top-left corner: the element a click at
+    // (0,0) would land on.
+    corner = document.createElement('div');
+    corner.id = 'corner';
+    document.body.appendChild(corner);
+    doc.elementFromPoint = (x, y) => (x === 0 && y === 0 ? corner : null);
+  });
+  afterEach(() => {
+    delete doc.elementFromPoint;
+  });
+
+  function button(id: string, parent: Element = document.body): HTMLButtonElement {
+    const el = document.createElement('button');
+    el.id = id;
+    el.textContent = 'Go';
+    parent.appendChild(el);
+    return el;
+  }
+  function watchScroll(el: Element): Element[] {
+    const scrolled: Element[] = [];
+    el.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    return scrolled;
+  }
+  const resolve = (selector: string, force: boolean): Json =>
+    evalExpr<Json>(buildClickResolveJs({ selector, force }));
+
+  test('display:none target: no-box without force, a no_box answer with force, never a point', () => {
+    const el = button('hidden-btn');
+    el.style.display = 'none';
+    const scrolled = watchScroll(el);
+    expect(resolve('#hidden-btn', false)).toEqual(NO_BOX);
+    expect(resolve('#hidden-btn', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    // Nothing is scrolled for a target that will not be clicked by pointer.
+    expect(scrolled).toEqual([]);
+  });
+
+  test('a target inside a display:none ancestor has no box either', () => {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'none';
+    document.body.appendChild(wrap);
+    button('inner-btn', wrap);
+    expect(resolve('#inner-btn', false)).toEqual(NO_BOX);
+    expect(resolve('#inner-btn', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+  });
+
+  test('visibility:hidden (own or inherited) is no box although layout gives it a rect', () => {
+    const own = button('own-hidden');
+    own.style.visibility = 'hidden';
+    giveBox(own);
+    expect(resolve('#own-hidden', false)).toEqual(NO_BOX);
+    expect(resolve('#own-hidden', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    const wrap = document.createElement('div');
+    wrap.style.visibility = 'hidden';
+    document.body.appendChild(wrap);
+    giveBox(button('inherited-hidden', wrap));
+    expect(resolve('#inherited-hidden', false)).toEqual(NO_BOX);
+  });
+
+  test('a zero-height anchor whose descendant is hit keeps the HEAD path: allowed at its own position', () => {
+    // An inline <a> whose only content is an absolutely positioned child:
+    // its own client rect has no height, the child takes the click.
+    const link = document.createElement('a');
+    link.id = 'wrap-link';
+    link.href = '#';
+    const child = document.createElement('span');
+    link.appendChild(child);
+    document.body.appendChild(link);
+    giveBox(link, { left: 100, top: 200, width: 50, height: 0 });
+    doc.elementFromPoint = (x, y) => (x === 125 && y === 200 ? child : null);
+    expect(resolve('#wrap-link', false)).toEqual({ ok: true, x: 125, y: 200, tag: 'a' });
+  });
+
+  test('a zero-size target hitting something else is retargeted or occluded exactly as at HEAD', () => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wrapper';
+    document.body.appendChild(wrapper);
+    giveBox(button('zero', wrapper), { left: 40, top: 50, width: 0, height: 0 });
+    doc.elementFromPoint = () => wrapper;
+    expect(resolve('#zero', false)).toEqual({
+      ok: false,
+      reason: 'retargeted',
+      hit_element: 'div.wrapper',
+    });
+    doc.elementFromPoint = () => corner;
+    expect(resolve('#zero', false)).toEqual({
+      ok: false,
+      reason: 'occluded',
+      blocker: 'div#corner',
+    });
+    // force: clicked by pointer at its own position, naming what is there.
+    expect(resolve('#zero', true)).toEqual({
+      ok: true,
+      x: 40,
+      y: 50,
+      tag: 'button',
+      hit_element: 'div#corner',
+    });
+  });
+
+  test('an empty rect at the top document origin is no box: never a click at (0,0)', () => {
+    giveBox(button('at-origin'), { left: 0, top: 0, width: 0, height: 0 });
+    expect(resolve('#at-origin', false)).toEqual(NO_BOX);
+    expect(resolve('#at-origin', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+  });
+
+  test('a box that only touches the origin (not empty) is clicked as at HEAD', () => {
+    const el = button('corner-btn');
+    giveBox(el, { left: -10, top: -10, width: 20, height: 20 });
+    doc.elementFromPoint = () => el;
+    expect(resolve('#corner-btn', false)).toEqual({ ok: true, x: 0, y: 0, tag: 'button' });
+  });
+
+  test('the browser says not visible (content of a closed <details>): no box', () => {
+    // Chrome's own answer: checkVisibility() is false for an element whose
+    // ancestor hides it from rendering (content-visibility, a closed
+    // <details>), even where layout still reports a rect. jsdom has no
+    // checkVisibility, so the test supplies Chrome's answer.
+    const details = document.createElement('details');
+    document.body.appendChild(details);
+    const inner = button('in-details', details);
+    giveBox(inner);
+    const asked: unknown[] = [];
+    (inner as unknown as { checkVisibility: (o: unknown) => boolean }).checkVisibility = (o) => {
+      asked.push(o);
+      return false;
+    };
+    expect(resolve('#in-details', false)).toEqual(NO_BOX);
+    expect(resolve('#in-details', true)).toEqual({ ok: true, no_box: true, tag: 'button' });
+    // visibility:hidden counts; opacity is not asked for (see the next test).
+    expect(asked[0]).toEqual({ visibilityProperty: true });
+  });
+
+  test('an <option> of a <select> has no box of its own', () => {
+    document.body.innerHTML =
+      '<div id="corner"></div><select id="s"><option id="o1">A</option><option id="o2">B</option></select>';
+    giveBox(document.getElementById('s')!);
+    expect(resolve('#o2', false)).toEqual(NO_BOX);
+    expect(resolve('#o2', true)).toEqual({ ok: true, no_box: true, tag: 'option' });
+  });
+
+  test('opacity:0 keeps its box: clicked at its position by pointer, as today', () => {
+    const el = button('clear-btn');
+    el.style.opacity = '0';
+    giveBox(el);
+    doc.elementFromPoint = () => el;
+    expect(resolve('#clear-btn', false)).toEqual({ ok: true, x: 140, y: 210, tag: 'button' });
+  });
+
+  test('the browser says visible and there is a box: clicked at its position', () => {
+    const el = button('shown');
+    giveBox(el);
+    (el as unknown as { checkVisibility: () => boolean }).checkVisibility = () => true;
+    doc.elementFromPoint = () => el;
+    expect(resolve('#shown', false)).toEqual({ ok: true, x: 140, y: 210, tag: 'button' });
+  });
+
+  test('a target below the viewport is scrolled into view and clicked at its new position', () => {
+    const el = button('far');
+    giveBox(el, { left: 100, top: 5000, width: 80, height: 20 });
+    el.scrollIntoView = () => giveBox(el, { left: 100, top: 300, width: 80, height: 20 });
+    doc.elementFromPoint = (x, y) => (x === 140 && y === 310 ? el : null);
+    expect(resolve('#far', false)).toEqual({ ok: true, x: 140, y: 310, tag: 'button' });
+  });
+
+  test('covered target with force is still clicked at its position, naming the cover', () => {
+    const el = button('covered');
+    giveBox(el);
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    document.body.appendChild(overlay);
+    doc.elementFromPoint = () => overlay;
+    expect(resolve('#covered', false)).toEqual({
+      ok: false,
+      reason: 'occluded',
+      blocker: 'div.modal-backdrop',
+    });
+    expect(resolve('#covered', true)).toEqual({
+      ok: true,
+      x: 140,
+      y: 210,
+      tag: 'button',
+      hit_element: 'div.modal-backdrop',
+    });
+  });
+
+  test('no-box by ref, with force, still says reresolved after a re-render', () => {
+    const win = window as unknown as Record<string, unknown>;
+    document.body.innerHTML = '<ul id="list"><li><button>Alpha</button></li></ul>';
+    win[OBSERVER_BINDING] = () => undefined;
+    try {
+      evalExpr(buildObserverInstallJs());
+      const handle = win[OBSERVER_GLOBAL] as { refFor: (el: Element) => string | null };
+      const ref = handle.refFor(document.querySelector('#list button')!)!;
+      document.getElementById('list')!.innerHTML = '<li><button>Alpha</button></li>';
+      expect(evalExpr<Json>(buildClickResolveJs({ ref, force: true }))).toEqual({
+        ok: true,
+        no_box: true,
+        tag: 'button',
+        reresolved: true,
+      });
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+});
+
+describe('buildProgrammaticClickJs (the force click on a target with no box, D4)', () => {
+  test('calls the element’s own click(): a click event, no mousedown, mouseup or pointer events', () => {
+    const el = document.createElement('button');
+    el.id = 'hidden-btn';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    const seen: string[] = [];
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'mousemove', 'click']) {
+      el.addEventListener(type, () => seen.push(type));
+    }
+    const result = evalExpr<Json>(buildProgrammaticClickJs({ selector: '#hidden-btn' }));
+    expect(result).toEqual({ ok: true });
+    expect(seen).toEqual(['click']);
+  });
+
+  test('a target that is gone fails like any other resolution and clicks nothing', () => {
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#nope' }))).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
+  test('an element without its own click() (SVG) still gets one click event, bubbling', () => {
+    document.body.innerHTML = '<div id="wrap"><svg><circle id="dot" r="2"></circle></svg></div>';
+    const seen: string[] = [];
+    document.getElementById('wrap')!.addEventListener('click', (e) => {
+      seen.push((e.target as Element).id);
+    });
+    expect(evalExpr<Json>(buildProgrammaticClickJs({ selector: '#dot' }))).toEqual({ ok: true });
+    expect(seen).toEqual(['dot']);
+  });
+});
+
 describe('buildTypeResolveJs', () => {
   test('focuses an input nested in a shadow root and reports success', () => {
     const host = document.createElement('div');
@@ -679,6 +974,131 @@ describe('buildFocusJs', () => {
   test('false when the selector matches nothing', () => {
     const focused = evalExpr<boolean>(buildFocusJs({ selector: '#does-not-exist' }));
     expect(focused).toBe(false);
+  });
+});
+
+/*
+ * `Input.insertText` and key events go to whatever has focus. When the
+ * element asked for does not take it, type and press used to report success
+ * and write into the previously focused field.
+ */
+describe('type and press act only on an element that took focus', () => {
+  let previous: HTMLInputElement;
+  beforeEach(() => {
+    previous = document.createElement('input');
+    previous.id = 'previous';
+    document.body.appendChild(previous);
+    previous.focus();
+  });
+  const typeAt = (selector: string, clear = false): Json =>
+    evalExpr<Json>(buildTypeResolveJs({ selector, clear }));
+  const pressAt = (selector: string): unknown => evalExpr(buildFocusJs({ selector }));
+  const notFocused = (why: string): Json => ({ ok: false, reason: 'not-focused', why });
+
+  test('a field with no visible box does not take focus: nothing is cleared, focus stays where it was', () => {
+    document.body.insertAdjacentHTML('beforeend', '<input id="hidden" value="keep" />');
+    const hidden = document.getElementById('hidden') as HTMLInputElement;
+    // Chrome refuses focus to an element that is not rendered; jsdom has no
+    // rendering and focuses it anyway, so the test gives it Chrome's answer.
+    hidden.focus = () => undefined;
+    expect(typeAt('#hidden', true)).toEqual(notFocused('it has no visible box'));
+    expect(hidden.value).toBe('keep');
+    expect(pressAt('#hidden')).toEqual(notFocused('it has no visible box'));
+    expect(document.activeElement).toBe(previous);
+  });
+
+  test('a disabled field does not take focus', () => {
+    document.body.insertAdjacentHTML('beforeend', '<input id="off" disabled />');
+    giveBox(document.getElementById('off')!);
+    expect(typeAt('#off')).toEqual(notFocused('it is disabled'));
+    expect(pressAt('#off')).toEqual(notFocused('it is disabled'));
+    expect(document.activeElement).toBe(previous);
+  });
+
+  test('a wrapper that is not focusable does not take focus', () => {
+    document.body.insertAdjacentHTML('beforeend', '<div id="wrap"><span>Name</span></div>');
+    giveBox(document.getElementById('wrap')!);
+    expect(typeAt('#wrap')).toEqual(notFocused('it is not focusable'));
+    expect(pressAt('#wrap')).toEqual(notFocused('it is not focusable'));
+  });
+
+  test('by ref the press resolver answers the same failure object', () => {
+    const win = window as unknown as Record<string, unknown>;
+    document.body.insertAdjacentHTML('beforeend', '<div id="wrap2" role="button">Go</div>');
+    giveBox(document.getElementById('wrap2')!);
+    win[OBSERVER_BINDING] = () => undefined;
+    try {
+      evalExpr(buildObserverInstallJs());
+      const handle = win[OBSERVER_GLOBAL] as { refFor: (el: Element) => string | null };
+      const ref = handle.refFor(document.getElementById('wrap2')!)!;
+      expect(evalExpr(buildFocusJs({ ref }))).toEqual(notFocused('it is not focusable'));
+      expect(evalExpr(buildTypeResolveJs({ ref, clear: false }))).toEqual(
+        notFocused('it is not focusable'),
+      );
+    } finally {
+      evalExpr(buildObserverTeardownJs());
+      delete win[OBSERVER_BINDING];
+    }
+  });
+
+  test('still works: an input inside an open shadow root', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    host.attachShadow({ mode: 'open' }).innerHTML = '<input id="in-shadow" />';
+    expect(typeAt('#in-shadow')).toEqual({ ok: true });
+    expect(pressAt('#in-shadow')).toBe(true);
+  });
+
+  test('still works: an input inside a same-origin iframe', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.contentDocument!.body.innerHTML = '<input id="in-frame" />';
+    expect(typeAt('#in-frame')).toEqual({ ok: true });
+    expect(pressAt('#in-frame')).toBe(true);
+  });
+
+  test('still works: a contenteditable element', () => {
+    document.body.insertAdjacentHTML('beforeend', '<div id="editor" contenteditable="true"></div>');
+    expect(typeAt('#editor')).toEqual({ ok: true });
+    expect(pressAt('#editor')).toBe(true);
+  });
+
+  test('still works: a paragraph inside the focused editing host', () => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div id="host-editor" contenteditable="true"><p id="para">x</p></div>',
+    );
+    const editor = document.getElementById('host-editor')!;
+    editor.focus();
+    // Chrome reports isContentEditable on an editing host; jsdom does not.
+    Object.defineProperty(editor, 'isContentEditable', { value: true });
+    expect(typeAt('#para')).toEqual({ ok: true });
+    expect(pressAt('#para')).toBe(true);
+    expect(document.activeElement).toBe(editor);
+  });
+
+  test('still works: a host whose shadow root delegates focus to an inner input', () => {
+    const host = document.createElement('x-field');
+    host.id = 'x-field';
+    document.body.appendChild(host);
+    host.attachShadow({ mode: 'open', delegatesFocus: true }).innerHTML = '<input />';
+    // jsdom does not implement delegatesFocus; Chrome moves focus to the
+    // first focusable element inside, which is what the stub does.
+    host.focus = () => host.shadowRoot!.querySelector('input')!.focus();
+    expect(typeAt('#x-field')).toEqual({ ok: true });
+    expect(pressAt('#x-field')).toBe(true);
+  });
+
+  test('still works: a label whose focus goes to its control', () => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<label id="lbl" for="named">Name</label><input id="named" />',
+    );
+    const label = document.getElementById('lbl') as HTMLLabelElement;
+    // Chrome forwards focus() on a label to its control; jsdom does not.
+    label.focus = () => (document.getElementById('named') as HTMLInputElement).focus();
+    expect(typeAt('#lbl')).toEqual({ ok: true });
+    expect(pressAt('#lbl')).toBe(true);
   });
 });
 
@@ -939,8 +1359,8 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     shadow.innerHTML = '<div id="card">Card</div><div id="column">Column</div>';
     const card = shadow.getElementById('card')!;
     const column = shadow.getElementById('column')!;
-    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
-    column.getBoundingClientRect = () => ({ left: 100, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(card, { left: 10, top: 20, width: 30, height: 10 });
+    giveBox(column, { left: 100, top: 20, width: 30, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
@@ -959,7 +1379,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="drop-target">Drop here</div>';
     const target = idoc.getElementById('drop-target')!;
-    target.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(target, { left: 10, top: 20, width: 30, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_x: 5, from_y: 5, to_selector: '#drop-target' }),
@@ -995,7 +1415,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
   test('to_selector not found returns a descriptive err', () => {
     const src = document.createElement('div');
     document.body.appendChild(src);
-    src.getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    giveBox(src, { left: 0, top: 0, width: 10, height: 10 });
     src.id = 'src';
 
     const result = evalExpr<DragProbeResult>(
@@ -1017,7 +1437,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<img id="thumb" src="x.png" />';
     const img = idoc.getElementById('thumb')!;
-    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 20 }) as DOMRect;
+    giveBox(img, { left: 0, top: 0, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#thumb', to_x: 100, to_y: 100 }),
@@ -1036,7 +1456,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="offscreen">Offscreen</div>';
     const el = idoc.getElementById('offscreen')!;
-    el.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+    giveBox(el, { left: 10, top: 10, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#offscreen', to_x: 1, to_y: 1 }),
@@ -1054,12 +1474,12 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const idoc = iframe.contentDocument!;
     idoc.body.innerHTML = '<div id="card">Card</div>';
     const card = idoc.getElementById('card')!;
-    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 30, height: 10 }) as DOMRect;
+    giveBox(card, { left: 10, top: 20, width: 30, height: 10 });
 
     const column = document.createElement('div');
     column.id = 'column';
     document.body.appendChild(column);
-    column.getBoundingClientRect = () => ({ left: 700, top: 50, width: 40, height: 20 }) as DOMRect;
+    giveBox(column, { left: 700, top: 50, width: 40, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#card', to_selector: '#column' }),
@@ -1080,7 +1500,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const docA = frameA.contentDocument!;
     docA.body.innerHTML = '<div id="src">Source</div>';
     const src = docA.getElementById('src')!;
-    src.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20 }) as DOMRect;
+    giveBox(src, { left: 10, top: 10, width: 20, height: 20 });
 
     const frameB = document.createElement('iframe');
     document.body.appendChild(frameB);
@@ -1089,7 +1509,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const docB = frameB.contentDocument!;
     docB.body.innerHTML = '<div id="dst">Destination</div>';
     const dst = docB.getElementById('dst')!;
-    dst.getBoundingClientRect = () => ({ left: 30, top: 40, width: 20, height: 20 }) as DOMRect;
+    giveBox(dst, { left: 30, top: 40, width: 20, height: 20 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#src', to_selector: '#dst' }),
@@ -1106,7 +1526,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     link.href = 'https://example.com/page';
     link.textContent = 'Drag me';
     document.body.appendChild(link);
-    link.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(link, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#drag-link', to_x: 100, to_y: 100 }),
@@ -1121,7 +1541,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     anchor.id = 'no-href';
     anchor.textContent = 'Not a link';
     document.body.appendChild(anchor);
-    anchor.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(anchor, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#no-href', to_x: 100, to_y: 100 }),
@@ -1136,7 +1556,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     div.id = 'custom-drag';
     div.draggable = true;
     document.body.appendChild(div);
-    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(div, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#custom-drag', to_x: 100, to_y: 100 }),
@@ -1150,7 +1570,7 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     const div = document.createElement('div');
     div.id = 'plain';
     document.body.appendChild(div);
-    div.getBoundingClientRect = () => ({ left: 0, top: 0, width: 20, height: 10 }) as DOMRect;
+    giveBox(div, { left: 0, top: 0, width: 20, height: 10 });
 
     const result = evalExpr<DragProbeResult>(
       buildDragProbeJs({ from_selector: '#plain', to_x: 100, to_y: 100 }),
@@ -1158,6 +1578,46 @@ describe('buildDragProbeJs — deep-query endpoint resolution (v0.20.0)', () => 
     expect('err' in result).toBe(false);
     if ('err' in result) return;
     expect(result.draggable).toBe(false);
+  });
+
+  test('a source with no visible box fails naming the source, not a point at its frame origin (D4)', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.getBoundingClientRect = () =>
+      ({ left: 200, top: 300, width: 400, height: 400 }) as DOMRect;
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<div id="card" style="display:none">Card</div>';
+    const scrolled: Element[] = [];
+    idoc.getElementById('card')!.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#card', to_x: 100, to_y: 100 })),
+    ).toEqual({
+      err:
+        'from_selector #card has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag from: make it visible first',
+    });
+    expect(scrolled).toEqual([]);
+  });
+
+  test('a destination with no visible box fails naming the destination (D4)', () => {
+    const src = document.createElement('div');
+    src.id = 'src';
+    document.body.appendChild(src);
+    giveBox(src, { left: 10, top: 10, width: 20, height: 20 });
+    const dst = document.createElement('div');
+    dst.id = 'dst';
+    dst.style.visibility = 'hidden';
+    document.body.appendChild(dst);
+    giveBox(dst, { left: 300, top: 300, width: 20, height: 20 });
+    expect(
+      evalExpr<Json>(buildDragProbeJs({ from_selector: '#src', to_selector: '#dst' })),
+    ).toEqual({
+      err:
+        'to_selector #dst has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag to: make it visible first',
+    });
   });
 });
 
@@ -1890,6 +2350,11 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
       null;
   }
+  // A click target needs a box (see giveBox); without one it is refused or
+  // clicked programmatically (owner decision D4).
+  const boxEveryButton = (): void => {
+    for (const el of document.querySelectorAll('#list button')) giveBox(el);
+  };
   const second = (): HTMLElement =>
     document.querySelectorAll<HTMLElement>('#list li')[1].firstElementChild as HTMLElement;
   const refOfSecond = (): string => (win[OBSERVER_GLOBAL] as ObserverHandle).refFor(second())!;
@@ -1907,6 +2372,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
 
   test('click by a live ref gives the same result as by selector and targets that node', () => {
     install(BUTTONS);
+    boxEveryButton();
     const ref = refOfSecond();
     const bySelector = evalExpr<Json>(
       buildClickResolveJs({ selector: '#list li:nth-of-type(2) button', force: false }),
@@ -1926,6 +2392,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
     const ref = refOfSecond();
     const old = second();
     rerender(BUTTONS);
+    boxEveryButton();
     const fresh = second();
     expect(fresh).not.toBe(old);
     let scrolled: Element | null = null;
@@ -1933,7 +2400,7 @@ describe('ref as a target (click, type, focus, rect, wait_for, find)', () => {
       scrolled = this;
     };
     const resolved = evalExpr<Json>(buildClickResolveJs({ ref, force: false }));
-    expect(resolved).toEqual({ ok: true, x: 0, y: 0, tag: 'button', reresolved: true });
+    expect(resolved).toEqual({ ok: true, x: 140, y: 210, tag: 'button', reresolved: true });
     expect(scrolled).toBe(fresh);
     // The rebind is done: the next resolution is a plain live hit.
     expect(evalExpr<Json>(buildClickResolveJs({ ref, force: false })).reresolved).toBeUndefined();

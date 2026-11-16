@@ -13,6 +13,7 @@ import {
   buildSnapshotJs,
   buildFindJs,
   buildClickResolveJs,
+  buildProgrammaticClickJs,
   buildTypeResolveJs,
   buildFocusJs,
   buildFocusedFieldJs,
@@ -55,6 +56,9 @@ import { resolveSettleParams, settleSafely } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
 import { captureAround, createDownloadCapture } from './download-capture.js';
 import {
+  PROGRAMMATIC_CLICK_NOTE,
+  noBoxClickMessage,
+  notFocusedMessage,
   refFailureMessage,
   notWalkedSuffix,
   retargetedClickMessage,
@@ -1576,10 +1580,19 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 /** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
 type ClickResolveResult =
   | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
+  | { ok: true; no_box: true; tag: string; reresolved?: boolean }
+  | { ok: false; reason: 'no-box' }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found'; not_walked?: string }
   | { ok: false; reason: 'occluded'; blocker: string }
   | { ok: false; reason: 'retargeted'; hit_element: string }
+  | RefResolveFailure;
+
+/** Result shape returned by `buildProgrammaticClickJs` (owner decision D4). */
+type ProgrammaticClickResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-selector'; error: string }
+  | { ok: false; reason: 'not-found'; not_walked?: string }
   | RefResolveFailure;
 
 /** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
@@ -1587,6 +1600,7 @@ type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
   | { ok: false; reason: 'invalid-selector'; error: string }
   | { ok: false; reason: 'not-found'; not_walked?: string }
+  | FocusRefusal
   | RefResolveFailure;
 
 /** A `ref` target the page could not resolve — see `resolveTarget` in
@@ -1596,9 +1610,13 @@ type RefResolveFailure =
   | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
   | { ok: false; reason: 'observer-unavailable' };
 
-/** Result shape of `buildFocusJs` with a `ref` (with a selector it is a
- * boolean). */
-type FocusRefResult = { ok: true; reresolved?: boolean } | RefResolveFailure;
+/** The target of a type / press did not take focus — see `FOCUS_REFUSAL_JS`
+ * in `inpage/builders.ts`; `notFocusedMessage` (flow.ts) gives the error. */
+type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
+
+/** Result shape of `buildFocusJs` with a `ref` (with a selector it is
+ * `true`, `false` when not found, or a `FocusRefusal`). */
+type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
 
 async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
   const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
@@ -1730,6 +1748,9 @@ async function performClick(
           error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
         };
       }
+      if (resolved.reason === 'no-box') {
+        return { ok: false, error: noBoxClickMessage(ref ?? selector ?? '') };
+      }
       if (resolved.reason === 'invalid-selector') {
         return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
       }
@@ -1740,32 +1761,47 @@ async function performClick(
     }
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: resolved.x,
-      y: resolved.y,
-    });
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
-    await cdp(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: resolved.x,
-      y: resolved.y,
-      button: 'left',
-      clickCount: 1,
-    });
+    if ('no_box' in resolved) {
+      const clicked = await evaluateInTab<ProgrammaticClickResult>(
+        tabId,
+        buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
+      );
+      if (!clicked.ok) {
+        const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
+        return {
+          ok: false,
+          error: refError ?? `Element not found: ${ref ?? selector}${notWalkedSuffix(clicked)}`,
+        };
+      }
+    } else {
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: resolved.x,
+        y: resolved.y,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await cdp(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: resolved.x,
+        y: resolved.y,
+        button: 'left',
+        clickCount: 1,
+      });
+    }
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
     if (ref !== undefined) result.ref = ref;
     if (resolved.reresolved === true) result.reresolved = true;
-    if (resolved.hit_element) result.hit_element = resolved.hit_element;
+    if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
+    else if (resolved.hit_element) result.hit_element = resolved.hit_element;
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -1803,6 +1839,9 @@ async function performType(
         buildTypeResolveJs({ ref, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, resolved.why, 'typed') };
+        }
         return {
           ok: false,
           error: refFailureMessage(resolved, ref) ?? `Element not found: ${ref}`,
@@ -1815,6 +1854,9 @@ async function performType(
         buildTypeResolveJs({ selector, clear }),
       );
       if (!resolved.ok) {
+        if (resolved.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(selector, resolved.why, 'typed') };
+        }
         if (resolved.reason === 'invalid-selector') {
           return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
         }
@@ -1874,16 +1916,22 @@ async function performPress(
     if (ref !== undefined) {
       const focused = await evaluateInTab<FocusRefResult>(tabId, buildFocusJs({ ref }));
       if (!focused.ok) {
+        if (focused.reason === 'not-focused') {
+          return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
+        }
         return { ok: false, error: refFailureMessage(focused, ref) ?? `Element not found: ${ref}` };
       }
       reresolved = focused.reresolved === true;
     } else if (params.selector) {
-      const focused = await evaluateInTab<boolean>(
+      const focused = await evaluateInTab<boolean | FocusRefusal>(
         tabId,
         buildFocusJs({ selector: params.selector }),
       );
       if (!focused) {
         return { ok: false, error: `Element not found: ${params.selector}` };
+      }
+      if (focused !== true && 'why' in focused) {
+        return { ok: false, error: notFocusedMessage(params.selector, focused.why, 'pressed') };
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);

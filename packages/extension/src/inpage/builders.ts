@@ -864,6 +864,8 @@ export function buildFindJs(opts: FindOpts): string {
  * is set — hit-tests that point before returning it, so a covering overlay
  * is caught before background.ts dispatches CDP mouse events. Returns:
  *   { ok: true, x, y, tag, hit_element?, reresolved? }
+ *   { ok: true, no_box: true, tag, reresolved? }   (force, no visible box)
+ *   { ok: false, reason: 'no-box' }                (no force, no visible box)
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
  *   { ok: false, reason: 'occluded', blocker }
@@ -874,6 +876,14 @@ export function buildFindJs(opts: FindOpts): string {
  * The target is `selector` or `ref` (see `resolveTarget` in
  * `PAGE_OBSERVER_JS`); `reresolved: true` is present only when a `ref`'s
  * node was gone and was just re-resolved by its semantic key.
+ *
+ * Owner decision D4: a target with no visible box (see `hasVisibleBox` in
+ * `deep-query.ts`) never gets a click point, since it would be (0,0) plus
+ * frame offsets, and is not scrolled; an empty rect whose point is exactly
+ * the top viewport origin is treated the same (checked after the scroll).
+ * A zero-size rect elsewhere keeps the hit-test path. Without `force` it fails 'no-box';
+ * with `force` the answer is `no_box: true` and the transport clicks it with
+ * `buildProgrammaticClickJs` instead of the mouse.
  *
  * `hit_element` is present ONLY when the dispatched click will land on a
  * DIFFERENT element than the resolved target (neither the target nor a
@@ -907,13 +917,23 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   const target = resolveTarget(opts);
   if (!target.ok) return target;
   const el = target.el;
+  const tag = el.tagName.toLowerCase();
+  // Owner decision D4: never a point for a target with no box (it would be
+  // (0,0)): fail without force, a programmatic click with it.
+  function noBox() {
+    if (!opts.force) return { ok: false, reason: 'no-box' };
+    const programmatic = { ok: true, no_box: true, tag };
+    if (target.reresolved) programmatic.reresolved = true;
+    return programmatic;
+  }
+  if (!hasVisibleBox(el)) return noBox();
   const chain = frameElementChain(el);
   for (const fe of chain) {
     if (fe.scrollIntoView) fe.scrollIntoView({ block: 'center', inline: 'center' });
   }
   if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
   const center = viewportCenterOf(el);
-  const tag = el.tagName.toLowerCase();
+  if (isEmptyRectAtOrigin(el, center)) return noBox();
   const occlusion = checkOcclusion(el, center.localX, center.localY);
   if (!occlusion.allowed && !opts.force) {
     if (occlusion.retargeted) {
@@ -926,6 +946,39 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
   if (hit) result.hit_element = hit;
   if (target.reresolved) result.reresolved = true;
   return result;
+})()
+`;
+}
+
+/**
+ * Build the programmatic click of owner decision D4: a `force` click on a
+ * target with no visible box (`buildClickResolveJs` answered `no_box`) calls
+ * the element's own `click()`, with no pointer, no mouse events and no
+ * coordinates. The transports run it where they would dispatch the mouse
+ * events, so the settle mark and the `expect` baseline are taken before it
+ * exactly as before a pointer click. An element without its own `click()`
+ * (SVG) gets the same single bubbling `click` event. Returns:
+ *   { ok: true }
+ *   or the target failure of `resolveTarget`, unchanged.
+ */
+export function buildProgrammaticClickJs(opts: TargetOpts): string {
+  const optsJson = JSON.stringify(targetJson(opts));
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
+  const opts = ${optsJson};
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
+  if (typeof el.click === 'function') {
+    el.click();
+  } else {
+    const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    el.dispatchEvent(new view.MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+  }
+  return { ok: true };
 })()
 `;
 }
@@ -957,11 +1010,15 @@ export function buildTypeResolveJs(opts: TypeResolveOpts): string {
   ${DEEP_QUERY_JS}
   ${PAGE_OBSERVER_JS}
   ${RESOLVE_TARGET_JS}
+  ${DEEP_ACTIVE_ELEMENT_JS}
+  ${FOCUS_REFUSAL_JS}
   const opts = ${optsJson};
   const target = resolveTarget(opts);
   if (!target.ok) return target;
   const el = target.el;
   el.focus();
+  const refused = focusRefusal(el);
+  if (refused) return refused;
   ${opts.clear ? "if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }" : ''}
   return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
@@ -992,11 +1049,15 @@ export function buildFocusJs(opts: FocusResolveOpts): string {
   ${DEEP_QUERY_JS}
   ${PAGE_OBSERVER_JS}
   ${RESOLVE_TARGET_JS}
+  ${DEEP_ACTIVE_ELEMENT_JS}
+  ${FOCUS_REFUSAL_JS}
   const opts = ${optsJson};
   const target = resolveTarget(opts);
   const byRef = typeof opts.ref === 'string';
   if (!target.ok) return byRef ? target : false;
   target.el.focus();
+  const refused = focusRefusal(target.el);
+  if (refused) return refused;
   if (!byRef) return true;
   return target.reresolved ? { ok: true, reresolved: true } : { ok: true };
 })()`;
@@ -1037,6 +1098,32 @@ export const DEEP_ACTIVE_ELEMENT_JS = `
       break;
     }
     return el;
+  }
+`;
+
+/**
+ * `focusRefusal(el)`, as a JS source fragment, run right after `el.focus()`
+ * by `buildTypeResolveJs` and `buildFocusJs`: `Input.insertText` and key
+ * events go to the deep active element, so when the element asked for did
+ * not take focus the text or key would land in whatever had focus before.
+ * Returns null when focus is where it should be: the element itself, an
+ * element inside it (a shadow root that delegates focus, a wrapper that
+ * moves focus inward), the control of a `<label>`, or the editing host that
+ * contains it. Otherwise `{ ok: false, reason: 'not-focused', why }`, `why`
+ * naming the likely cause. Needs `DEEP_QUERY_JS` and `DEEP_ACTIVE_ELEMENT_JS`.
+ */
+export const FOCUS_REFUSAL_JS = `
+  function focusRefusal(el) {
+    const active = deepActiveElement();
+    if (active) {
+      if (active === el || composedContains(el, active)) return null;
+      if (el.control && active === el.control) return null;
+      if (active.isContentEditable === true && composedContains(active, el)) return null;
+    }
+    let why = 'it is not focusable';
+    if (el.disabled === true) why = 'it is disabled';
+    else if (!hasVisibleBox(el)) why = 'it has no visible box';
+    return { ok: false, reason: 'not-focused', why: why };
   }
 `;
 
@@ -1308,6 +1395,9 @@ export function buildDragProbeJs(opts: DragProbeOpts): string {
   function scrollAndProbe(sel) {
     const el = deepQueryFirst(sel);
     if (!el) return { err: 'not_found' };
+    // Owner decision D4: an endpoint with no visible box would be dragged
+    // at (0,0) plus its frame offsets; refuse it, nothing scrolled.
+    if (!hasVisibleBox(el)) return { err: 'no_box' };
     const chain = frameElementChain(el);
     for (let i = 0; i < chain.length; i++) {
       if (chain[i].scrollIntoView) {
@@ -1339,14 +1429,21 @@ export function buildDragProbeJs(opts: DragProbeOpts): string {
       in_viewport: bottom > 0 && right > 0 && top < innerHeight && left < innerWidth,
     };
   }
+  function endpointError(name, sel, err, direction) {
+    if (err === 'no_box') {
+      return name + ' ' + sel + ' has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag ' + direction + ': make it visible first';
+    }
+    return name + ' not found: ' + sel;
+  }
   let fromHint = null;
   if (P.from_selector) {
     fromHint = scrollAndProbe(P.from_selector);
-    if (fromHint.err) return { err: 'from_selector not found: ' + P.from_selector };
+    if (fromHint.err) return { err: endpointError('from_selector', P.from_selector, fromHint.err, 'from') };
   }
   if (P.to_selector) {
     const t = scrollAndProbe(P.to_selector);
-    if (t.err) return { err: 'to_selector not found: ' + P.to_selector };
+    if (t.err) return { err: endpointError('to_selector', P.to_selector, t.err, 'to') };
   }
   const from = P.from_selector
     ? readCenter(P.from_selector)

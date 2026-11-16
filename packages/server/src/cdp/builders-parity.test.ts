@@ -59,6 +59,19 @@ describe('cdp builders emit byte-identical output to the extension original', ()
     expect(srv.buildClickResolveJs(byRef)).toBe(ext.buildClickResolveJs(byRef));
   });
 
+  test('FOCUS_REFUSAL_JS (type and press act only on an element that took focus)', () => {
+    expect(srv.FOCUS_REFUSAL_JS).toBe(ext.FOCUS_REFUSAL_JS);
+  });
+
+  test('buildProgrammaticClickJs (owner decision D4)', () => {
+    expect(srv.buildProgrammaticClickJs({ selector: '#btn' })).toBe(
+      ext.buildProgrammaticClickJs({ selector: '#btn' }),
+    );
+    expect(srv.buildProgrammaticClickJs({ ref: 'k3x9ab:e7' })).toBe(
+      ext.buildProgrammaticClickJs({ ref: 'k3x9ab:e7' }),
+    );
+  });
+
   test('buildTypeResolveJs (clear true and false)', () => {
     expect(srv.buildTypeResolveJs({ selector: '#in', clear: true })).toBe(
       ext.buildTypeResolveJs({ selector: '#in', clear: true }),
