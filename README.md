@@ -429,11 +429,15 @@ client. The cdp-direct port and the downloads folder were already readouts.
 - **Where the value is hidden.** With `activity.hide-sensitive` on, a hidden
   row changes these columns, and no other column holds free text:
   `payload` holds the marker; `url` loses its query string and fragment (a form
-  sent by GET puts its fields there); `title`, `selector` and `error` have the
-  text a `type` typed replaced by the marker wherever it appears, ignoring
-  letter case and also URL-encoded, form-encoded (`+` for a space) or
-  JSON-escaped. A `press` hides its key in `payload` only: one character would
-  match almost any text.
+  sent by GET puts its fields there); `url`, `title`, `selector` and `error` have
+  the text a `type` typed replaced by the marker wherever it appears, ignoring
+  letter case and also URL-encoded (as a component, or as a browser writes it
+  in a path), form-encoded (`+` for a space), JSON-escaped, or in the other
+  Unicode normalization form. A typed text shorter than 4 characters is not
+  searched for, because it occurs by coincidence in almost any text: `title` and
+  `error` become the marker whole, `url` keeps its origin and path, and
+  `selector` is kept. A `press` hides its key in `payload` only: one character
+  would match almost any text.
 - **A field that was not identified.** A `type` or `press` that never said
   which field it acted on is hidden the same way, with `[field not identified]`
   in place of `[sensitive field]`: it failed with a plain error (a stale
@@ -448,8 +452,9 @@ client. The cdp-direct port and the downloads folder were already readouts.
   stores such rows like any other row: no marker, nothing replaced, the query
   string stays in `url`, and `activity.record-payloads` alone decides whether
   `payload` holds the text. With `hide-sensitive` on and `record-payloads` off,
-  an ordinary row keeps an empty `payload`, and a hidden row still stores its
-  marker. The setting is read when the server starts recording the trail, so it
+  an ordinary row keeps an empty `payload`, a sensitive row still stores
+  `[sensitive field]`, and a row whose field was not identified stores no
+  payload; the other columns are cleaned in both. The setting is read when the server starts recording the trail, so it
   applies after a restart (restart your MCP client).
 - **Rows already stored are untouched.** Text typed before 1.0.0, or while
   `activity.hide-sensitive` was off, stays in `activity.db`; changing the
@@ -701,7 +706,7 @@ it has no visible box when the browser says it is not rendered or has
 all (`display: none`, `display: contents`, an `<option>` of a `<select>`). A
 rectangle of size zero still counts as a box, and so does `opacity: 0`; only an
 empty rectangle whose click point is exactly the top-left corner of the
-viewport is treated as no box.
+viewport is treated as no box (the same for an endpoint of `drag`).
 
 - Without `force` the call fails: `Element <target> has no visible box (not rendered, visibility-hidden, or an option of a select), so there is no point to click: make it visible first (open its menu, dialog or section), or pass force: true to call the element's own click() with no pointer`.
 - With `force: true` a covered target is clicked at its position, as before. A
@@ -709,9 +714,11 @@ viewport is treated as no box.
   carries `programmatic_click: "the target has no visible box, so its own click() was called: no pointer, no mouse events, no coordinates"`.
   What the agent loses with it: no hit-test, no hover, pointer, `mousedown` or
   `mouseup` events, no coordinates, and the click event is not trusted
-  (`isTrusted: false`); focus moves only if the element takes it itself. A
-  disabled element ignores the call, and a forced click on an `<option>`
-  calls its `click()` without selecting it.
+  (`isTrusted: false`); focus moves only if the element takes it itself. The
+  forced click is refused, with nothing clicked, when its `click()` could do
+  nothing: on a disabled target (`:disabled`, which includes a disabling
+  ancestor `<fieldset>`) it fails with `Element <target> is disabled, so its own click() does nothing and nothing was clicked: wait until it is enabled, or find the control that enables it`,
+  and on an `<option>` or `<optgroup>` with `Element <target> is an <option> (or <optgroup>): clicking an option does nothing and it never selects it, so nothing was clicked; the select's value must be set instead`.
 - `browser.drag` fails the same way for a selector endpoint with no visible
   box: `drag: from_selector <selector> has no visible box (not rendered or visibility-hidden), so there is no point to drag from: make it visible first` (`to_selector` for the other endpoint).
   Nothing is sent, and `drag` has no `force`.
@@ -747,6 +754,13 @@ truncated: { interactive?, headings?, text?, not_compared?,
   says how many candidates were left out and repeats `truncated` in its error.
 - A result where nothing was cut has no `truncated`: it holds everything in
   scope, with the fields it always had.
+- The text window never ends between the two halves of a surrogate pair, so
+  the pages of `text` concatenate to the text.
+- When an `offset` was given and every requested part came back empty, the
+  result carries `offset_past_end`: `{ <part>: { offset, total } }` for each
+  part asked at or past its end (`find`: `{ candidates: { offset, total } }`).
+  Nothing is left there, which is not the same as the page having nothing.
+  Paging with `next_offset` never carries it.
 - `offset` is `{ interactive?, headings?, text? }` for `snapshot` and
   `{ candidates? }` for `find`, each a non-negative integer. Anything else is
   refused, never dropped: `browser.snapshot: offset must be an object like truncated.next_offset`,
@@ -873,11 +887,11 @@ changed name or role invalidates the `ref`.
 
 **Failures.**
 
-| Error                                                                                       | Meaning and next step                                                                                                                                                                                     |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ref-stale: <ref> not found in document <doc_id>: the element is gone, take a new snapshot` | The node is gone and no rebind is allowed (no match, several, or a look-alike that already existed), or the `ref` belongs to another document. Take a fresh `snapshot` (or `find`) and use the new `ref`. |
-| `observer-unavailable: …`                                                                   | The page observer is not running in the tab, so a `ref` cannot be resolved. Use a selector.                                                                                                               |
-| `wait_for` on a `ref` that no longer resolves                                               | Not an error: the element counts as missing (`attached` false, `detached` true).                                                                                                                          |
+| Error                                                                                       | Meaning and next step                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ref-stale: <ref> not found in document <doc_id>: the element is gone, take a new snapshot` | The node is gone and no rebind is allowed (no match, several, or a look-alike that already existed), or the `ref` belongs to another document. Take a fresh `snapshot` (or `find`) and use the new `ref`.                                                                                                                                                                                                                                                                                 |
+| `observer-unavailable: …`                                                                   | The page observer is not running in the tab, so a `ref` cannot be resolved. Use a selector.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `wait_for` on a `ref` that no longer resolves                                               | For `hidden` and `detached` the element counts as missing (`attached` false, `detached` true) and the wait is met. For `visible` and `attached`, a `ref` of another document fails at once with the `ref-stale` message; a `ref` whose node is only gone keeps polling and ends `matched: false, reason: 'timeout'` plus `ref_gone: "<ref> not found in document <doc_id>: the element is gone, take a new snapshot"`, and a flow `wait_for` step's failure text ends with that sentence. |
 
 **Properties.**
 
