@@ -141,6 +141,15 @@ jobs:
           E2E_LEG: chrome 118
         run: pnpm test:e2e
 
+      # R6 (design section 8): the port contract suite against the cdp-direct
+      # adapters on a real Chrome target. The e2e step above also checks that
+      # every extension adapter function was called (V8 coverage of the worker).
+      - name: cdp-direct adapter contract (real Chrome)
+        env:
+          CDP_CONTRACT_CHROME: ${{ steps.cft.outputs.chrome }}
+          E2E_NO_SANDBOX: '1'
+        run: pnpm --filter @jobshimo/browser-link exec vitest run src/cdp/adapters/contract.chrome.test.ts
+
       - name: Upload the browser record
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

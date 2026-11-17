@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.12](https://github.com/jobshimo/browser-link/compare/v1.4.11...v1.4.12) (2026-11-17)
+
+### Notes
+
+- Slice 9 of the service worker plan; no behaviour change. One page driver in core (`packages/core/src/session/page-driver.ts`) now does what both transports did twice: evaluation in the page, key events, the settle wait with the page observer's changes, and the observer's install, binding messages and teardown. The extension builds it over new `chrome.debugger` and `chrome.tabs` adapters (`adapters/chrome-cdp-session.ts`, `adapters/chrome-page-info.ts`), cdp-direct over its `CdpClient` (`cdp/adapters/cdp-client-session.ts`, `cdp/adapters/cdp-page-info.ts`). The load wait of `navigate` (armed before `Page.navigate`, cancelled when it fails) moved to core's `session/load-wait.ts` for both. Every CDP command, its params and order, and every in-page string either transport sends are the ones before.
+- Ports changed with arch's decisions (design revision 7): `PageInfo.waitForLoad` became `armLoadWait` returning `{ done, cancel }`; the settler returns a typed mark and settle report; `Clock.every`, which nothing called, is gone.
+- cdp-direct keeps one raw `Runtime.evaluate`, in its `evaluate` case, until slice 15; a fitness test allows only that one. `CdpClient` gains `onAny` (every event of the connection).
+- The e2e now fails when an extension adapter function is never called during the run (V8 coverage of the service worker), and the CI e2e job runs the port contract suite against the cdp-direct adapters on a real Chrome.
+- `background.ts` shrinks by 225 lines and its line budget goes from 5033 to 4808.
+
 ## [1.4.11](https://github.com/jobshimo/browser-link/compare/v1.4.10...v1.4.11) (2026-11-17)
 
 ### Notes

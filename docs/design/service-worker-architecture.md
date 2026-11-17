@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 6. Revision 1 (`5486e34`) was audited as
+Status: revision 7. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,31 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 7 (2026-11-17)
+
+Arch's decisions while building slice 9, where the ports of 3.1 and 3.2 did
+not match the code at 1.4.11 (3.1 and 3.2 code blocks, the 3.1 adapter table
+and 5.3 items 3 and 5 updated):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `PageInfo.waitForLoad(timeoutMs): Promise<void>` becomes `armLoadWait(timeoutMs): LoadWait` (`{ done: Promise<void>; cancel(): void }`); the contract gains "a cancelled load wait never settles" | both transports arm the wait before `Page.navigate` and cancel it when the navigation fails (the 1.3.4 fix); the old shape could not express it without a behavior change |
+| 2 | `Settler.mark(settle)` returns `ObserverMarkResult` (`none`, `unavailable` with its reason, or `marked` with the `ObserverMark`); `settle(settle, mark)` returns a `SettleReport` or `undefined`; `ObserverMarkResult`, `ObserverFailure`, `SettleReport`, `KeyEvent` and `LoadWait` live in `ports/values.ts` | the settler follows today's behavior, typed: ports own their value types and no port speaks `Record<string, unknown>`; the wire output is unchanged (the differential proves it) |
+| 3 | `Clock.every` is removed from the port, both `system-clock.ts` adapters, the fake and the tests | nothing calls it; ports describe what is used, so R6 condition 1 needs no exemption |
+| 4 | `PageDriver` holds `evaluator`, `keyboard` (`key` only), `settler` and `page`; `Pointer`, `Keyboard.insertText` and `CdpEvents` join with the slices that move their first callers (10, 11, 14) | the rule of 3: no capability without a caller |
+
+Also decided for slice 9: cdp-direct keeps one raw `Runtime.evaluate` (the
+`evaluate` case of `callCdpTool`, whose `timeout_ms` is the client's own
+per-command timeout) until slice 15, listed as the only exception by
+`cdp/raw-evaluate.fitness.test.ts`; the load-wait logic (status check,
+timer) lives in core `session/load-wait.ts` on `Clock`; the extension
+`CdpSession` takes the tab-filtered subscribe function `background.ts` owns,
+so slice 9 adds no `app/` folder; R6 takes the fallback path (section 8):
+V8 coverage of the worker during the e2e (`packages/e2e/src/adapter-coverage.mjs`),
+the contract suite on in-memory fakes, and the contract suite against the
+cdp-direct adapters on a real Chrome target in the `e2e` CI job
+(`cdp/adapters/contract.chrome.test.ts`).
 
 ### Revision 6 (2026-11-17)
 
@@ -418,9 +443,7 @@ export interface Clock {
   sleep(ms: number): Promise<void>;
   /** Run `fn` once after `ms`; returns cancel. Replaces setTimeout/clearTimeout. */
   after(ms: number, fn: () => void): () => void;
-  /** Run `tick` every `ms`; returns stop. Replaces setInterval. */
-  every(ms: number, tick: () => void): () => void;
-}
+}   // no `every`: nothing calls it (revision 7)
 
 // values.ts: the value types the ports speak, declared here so `ports`
 // imports nothing in core (5.2). Moved verbatim in slice 7 from
@@ -430,6 +453,16 @@ export interface Clock {
 export interface SettleParams { settleMs: number; settleTimeoutMs: number; /* ... */ }
 export type EvaluateFn = (expression: string) => Promise<unknown>;
 export interface ObserverMark { /* as observer-host.ts today */ }
+// Slice 9 (revision 7) adds the values the page driver and PageInfo speak:
+export type ObserverFailure = 'observer-unavailable' | 'doc-changed' | 'changes-error';
+export type ObserverMarkResult =
+  | { kind: 'none' }                                     // settle off for the call
+  | { kind: 'unavailable'; reason: ObserverFailure }
+  | { kind: 'marked'; mark: ObserverMark };
+export type SettleReport = { settled?: boolean; mutation_count?: number; /* ... */
+  changes?: SettleChanges | null; observer?: ObserverFailure };
+export type KeyEvent = { type: 'keyDown' | 'rawKeyDown' | 'char' | 'keyUp'; /* ... */ };
+export interface LoadWait { done: Promise<void>; cancel(): void }
 
 // cdp-session.ts: one debugger session on one page.
 export interface CdpSession {
@@ -441,8 +474,9 @@ export interface CdpSession {
 // page-info.ts: what the transport knows about the page outside CDP.
 export interface PageInfo {
   info(): Promise<{ url: string; title: string }>;
-  /** Resolves when the page reports load complete, rejects on timeout. */
-  waitForLoad(timeoutMs: number): Promise<void>;
+  /** Armed before Page.navigate; `done` resolves on load complete, rejects on
+   * timeout; after `cancel` it never settles (revision 7). */
+  armLoadWait(timeoutMs: number): LoadWait;
 }
 
 // settings.ts: synchronous reads; the adapter keeps the cache current.
@@ -514,9 +548,9 @@ says why).
 
 | Core port | Extension adapter | cdp-direct adapter |
 |---|---|---|
-| `Clock` | `adapters/system-clock.ts` over `Date.now`, `setTimeout`, `setInterval` | `cdp/adapters/system-clock.ts`, same globals |
-| `CdpSession` | `chrome.debugger.sendCommand` + `onEvent` filtered by `source.tabId` (`background.ts` `cdp`, `attachDebuggerListener`) | `cdp/client.ts` `CdpClient` |
-| `PageInfo` | `chrome.tabs.get`, `onUpdated` status complete (`background.ts` `waitForLoad`) | `Target.getTargetInfo`, `Page.loadEventFired` (`transport.ts` `getTargetInfo`, `waitForLoad`) |
+| `Clock` | `adapters/system-clock.ts` over `Date.now`, `setTimeout` | `cdp/adapters/system-clock.ts`, same globals |
+| `CdpSession` | `adapters/chrome-cdp-session.ts`: `chrome.debugger.sendCommand`; `onEvent` is the tab-filtered subscribe function of `background.ts` (since slice 9) | `cdp/adapters/cdp-client-session.ts` over `cdp/client.ts` `CdpClient` (`send`, `onAny`) |
+| `PageInfo` | `adapters/chrome-page-info.ts`: `chrome.tabs.get`, `onUpdated` status complete through core `session/load-wait.ts` `armLoadWait` and `tabLoadSignal` | `cdp/adapters/cdp-page-info.ts`: `Target.getTargetInfo`, `Page.loadEventFired` through the same `armLoadWait` |
 | `IdleSettings` | `chrome-settings.ts` | not used by cdp-direct (Q4) |
 | `FlowHistoryStore`, `DetachedFlowStore` | `chrome.storage.session` | not used by cdp-direct (Q4) |
 | `EventsOut` | `send(connection.ws, ...)` | the `BridgeEventLog` sink of `detached-flows.ts` |
@@ -534,29 +568,30 @@ Revision 1's `cdp-glue.ts` was a bag of nine functions. It becomes a
 exposing narrow capabilities that handlers require one by one:
 
 ```ts
-// ports/page-driver.ts
-export interface Evaluator {          // evaluateInTab, evaluateObserverJs
-  evaluate<T = unknown>(expression: string, opts?: { awaitPromise?: boolean }): Promise<T>;
+// ports/page-driver.ts (as built in slice 9, revision 7)
+export interface Evaluator {          // evaluateInTab (observer reads stay inside the driver)
+  evaluate<T = unknown>(expression: string): Promise<T>;
 }
-export interface Keyboard {           // dispatchKeyEvent, Input.insertText
-  key(event: KeyEventInit): Promise<void>;
-  insertText(text: string): Promise<void>;
+export interface Keyboard {           // dispatchKeyEvent (core `pressKey` sends the sequence)
+  key(event: KeyEvent): Promise<void>;
 }
-export interface Pointer {            // Input.dispatchMouseEvent
-  mouse(event: MouseEventInit): Promise<void>;
-}
-export interface Settler {            // runSettle, settleWithChanges,
-  mark(): Promise<ObserverMark | null>;   // takeObserverMark, installObserver,
-  settle(params: SettleParams, mark: ObserverMark | null): Promise<SettleReport>;
-}                                     // handleObserverMessage
-export interface CdpEvents {          // waitForCdpEvent
-  waitFor(method: string, predicate: (params: unknown) => boolean, timeoutMs: number): Promise<unknown>;
+export interface Settler {            // takeObserverMark, settleWithChanges, runSettle
+  mark(settle: SettleParams | null): Promise<ObserverMarkResult>;
+  settle(settle: SettleParams | null, mark: ObserverMarkResult): Promise<SettleReport | undefined>;
 }
 export interface PageDriver {
-  evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer;
-  settler: Settler; events: CdpEvents; page: PageInfo;
+  evaluator: Evaluator; keyboard: Keyboard; settler: Settler; page: PageInfo;
 }
+// Join with their first callers: Pointer.mouse (slice 10),
+// Keyboard.insertText (11), CdpEvents.waitFor (14).
 ```
+
+`core/session/page-driver.ts` `createPageDriver({ session, page, clock })`
+returns the driver plus the observer lifecycle its transport drives:
+`observer` (the host mirror), `install({ enableRuntime, onTopDocument })`
+(`installObserver` and the binding subscription; each top-document
+message goes to `onTopDocument`, where the extension sends its bridge
+events) and `uninstall(tearDownPage)`.
 
 One implementation serves both transports, because both have a `CdpSession`;
 the nine twin helpers in `transport.ts` are deleted with slice 9.
@@ -921,11 +956,11 @@ to `support/flow-limits.ts`.
      `await`. Moving a wake listener into a function, behind an `await`, or
      into `app/` fails the test, before and after slices 19-21. Transient
      subscriptions scoped to one operation and paired with a
-     `removeListener` (today `background.ts` `waitForLoad` on
+     `removeListener` (the load wait of core `session/load-wait.ts` on
      `tabs.onUpdated`, the per-call `debugger.onEvent` handlers, and the
      recording navigation listener) are not wake listeners and are not
      constrained by this rule; after slices 9-21 they go through
-     `CdpSession.onEvent`, `PageInfo.waitForLoad` and `TabEvents.onUpdated`.
+     `CdpSession.onEvent`, `PageInfo.armLoadWait` and `TabEvents.onUpdated`.
    - no bundled module other than `background.ts` declares a top-level
      `BRIDGE_PORT` (Q3).
 4. **Mirror:** `sync-core.mjs --check` in the server's `test` script (2.3).
@@ -941,7 +976,8 @@ to `support/flow-limits.ts`.
    - the extension adapters inside the real service worker (R6).
    What the suite pins: `send` resolves with the CDP result and rejects with
    the CDP error message unchanged; events arrive in order and stop after
-   unsubscribe; `waitForLoad` resolves on load and rejects on timeout; the
+   unsubscribe; an armed load wait resolves on load, rejects on timeout and,
+   once cancelled, never settles; the
    stores round-trip records and `remove`/`drop` are idempotent; the outcome
    mapping follows the table in 3.4.
 
@@ -1072,7 +1108,12 @@ compares them with these budgets.
   - `e2e` ("e2e (Chrome 118, ubuntu)"): Chrome for Testing `118.0.5993.70`
     installed by `@puppeteer/browsers` into a cached directory, 10 min
     timeout. `release` has `needs: [ci, e2e]`, so this job blocks the
-    publish.
+    publish. Since slice 9 its e2e run also fails when an extension adapter
+    function was never called (R6 condition 1, V8 coverage of the worker;
+    `E2E_ADAPTER_COVERAGE=0` turns it off, as `scripts/e2e-diff.mjs` does),
+    and a step after it runs the port contract suite against the cdp-direct
+    adapters on the same Chrome (`cdp/adapters/contract.chrome.test.ts`,
+    enabled by `CDP_CONTRACT_CHROME`).
   - `e2e-stable` ("e2e (stable Chrome, ubuntu)"): the runner's
     auto-updating `/usr/bin/google-chrome`, 10 min timeout, on every PR and
     push; not in `release.needs`, so it reports in the step summary and the
