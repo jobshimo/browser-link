@@ -308,10 +308,10 @@ describe('doc_info messages', () => {
     expect(parseObserverMessage(info(over))).toBeNull();
   });
 
-  test('applying it reports the page identity without touching the mirror', () => {
+  test('applying it reports the page identity and keeps it as the latest one', () => {
     const mirror = createObserverMirror();
     apply(mirror, docStart('doc-a', 'https://a.test/x'));
-    const before = JSON.stringify(mirror);
+    const before = JSON.stringify({ ...mirror, doc_info: undefined });
     expect(apply(mirror, info())).toEqual({
       kind: 'doc_info',
       url: 'https://a.test/x',
@@ -319,6 +319,12 @@ describe('doc_info messages', () => {
       view_sig: '0011aabb',
       title: 'Invoices',
     });
-    expect(JSON.stringify(mirror)).toBe(before);
+    expect(mirror.doc_info).toEqual({
+      url: 'https://a.test/x',
+      build: '3f9a2b1c',
+      view_sig: '0011aabb',
+      title: 'Invoices',
+    });
+    expect(JSON.stringify({ ...mirror, doc_info: undefined })).toBe(before);
   });
 });
