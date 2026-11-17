@@ -208,8 +208,10 @@ Consequences, measured:
   dispatch (`transport.ts` `callCdpTool`). Only the five `perform*` bodies are
   guarded, by an AST comparison (`cdp/transport-parity.test.ts` `HANDLERS`).
   (Slice 10, 1.4.16, moved `performFind` and `performClick` into core
-  `actions/`, run by both transports through the tool registry; `HANDLERS`
-  now lists the other three.)
+  `actions/`, run by both transports through the tool registry; slice 11,
+  1.4.17, moved `performType` and `performPress` the same way, so `HANDLERS`
+  now lists `performWaitFor` only, and the sensitive-field mapping is the
+  `sensitive` kind of 3.4.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -595,6 +597,8 @@ export interface Evaluator {          // evaluateInTab (observer reads stay insi
 }
 export interface Keyboard {           // dispatchKeyEvent (core `pressKey` sends the sequence)
   key(event: KeyEvent): Promise<void>;
+  /** One Input.insertText into whatever has focus; a failed dispatch rejects (slice 11). */
+  insertText(text: string): Promise<void>;
 }
 export interface Settler {            // takeObserverMark, settleWithChanges, runSettle
   mark(settle: SettleParams | null): Promise<ObserverMarkResult>;
@@ -607,7 +611,7 @@ export interface Pointer {             // input only (slice 10, revision 8)
 export interface PageDriver {
   evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; settler: Settler; page: PageInfo;
 }
-// Join with their first callers: Keyboard.insertText (11), CdpEvents.waitFor (14).
+// Joins with its first caller: CdpEvents.waitFor (14).
 ```
 
 The pointer port is the same for both transports. What differed between
@@ -695,10 +699,12 @@ export type ToolOutcome = { ok: true; result: unknown } | { ok: false; failure: 
 | `unsupported` | not reachable (the extension provides every requirement) | not reachable (the dispatcher gate refuses first); kept as a typed defense | `browser-dispatch.ts` gate |
 
 The `sensitive` kind shows on three different surfaces. On the extension
-wire the response carries `sensitive_field: true` (`background.ts` `handleTool`,
-cases `type` and `press`). The server side of that transport turns it into
-`SensitiveFieldError` (`bridge/ws-bridge.ts`), and cdp-direct throws the same
-class (`cdp/transport.ts` `failureError`), so both transports reach
+wire the response carries `sensitive_field: true` (core `tools/failure.ts`
+`toolResponse`, since slice 11 the only place that adds it; before, the
+`type` and `press` cases of `background.ts` `handleTool`). The server side of
+that transport turns it into `SensitiveFieldError` (`bridge/ws-bridge.ts`),
+and cdp-direct throws the same class (`cdp/tool-outcome.ts` `cdpToolResult`;
+before slice 11, `cdp/transport.ts` `failureError`), so both transports reach
 `activity/extract.ts` (`buildRow`, the `SensitiveFieldError` check) with the
 same class. The agent does not see the marker: the MCP result is the ordinary
 error text of `action`, with no `sensitive_field`. The only place the marker

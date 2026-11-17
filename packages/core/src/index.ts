@@ -9,7 +9,8 @@
 // Slice 9 adds the page driver (`session/page-driver`, the CDP implementation
 // of the `PageDriver` port) and the load wait behind `PageInfo.armLoadWait`
 // (`session/load-wait`). Slice 10 adds the tool registry and the failure
-// contract (`tools/`) and the find and click actions (`actions/`).
+// contract (`tools/`) and the find and click actions (`actions/`); slice 11
+// the type and press actions and the keyboard contract.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -26,6 +27,8 @@ export * from './session/load-wait.js';
 export * from './session/page-driver.js';
 export * from './actions/perform-find.js';
 export * from './actions/perform-click.js';
+export * from './actions/perform-type.js';
+export * from './actions/perform-press.js';
 export * from './tools/requirement.js';
 export * from './tools/failure.js';
 export * from './tools/registry.js';

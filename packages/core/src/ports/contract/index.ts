@@ -11,6 +11,7 @@ export {
   type Outcome,
 } from './assert.js';
 export { type CdpSessionHarness, defineCdpSessionContract } from './cdp-session.contract.js';
+export { defineKeyboardContract, type KeyboardHarness } from './keyboard.contract.js';
 export { definePageInfoContract, type PageInfoHarness } from './page-info.contract.js';
 export { definePointerContract, type PointerHarness } from './pointer.contract.js';
 export {

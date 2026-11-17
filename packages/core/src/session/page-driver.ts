@@ -9,7 +9,8 @@
  * transports sent before slice 9 (`background.ts` and `cdp/transport.ts`
  * `evaluateInTab`, `evaluateObserverJs`, `takeObserverMark`,
  * `settleWithChanges`, `installObserver`, `handleObserverMessage`,
- * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`).
+ * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`),
+ * slice 11 the keyboard's `insertText` (the `Input.insertText` of `performType`).
  * What differs per transport stays outside: the install warning text, the
  * bridge events the extension reports for a top-document message, whether
  * `Runtime.enable` is sent here, and whether dialogs are watched
@@ -307,6 +308,9 @@ export function createPageDriver({
   const keyboard: Keyboard = {
     key: async (event) => {
       await session.send('Input.dispatchKeyEvent', event);
+    },
+    insertText: async (text) => {
+      await session.send('Input.insertText', { text });
     },
   };
 

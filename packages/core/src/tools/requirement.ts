@@ -5,14 +5,15 @@
  * the clock, and the dialog watch where the transport tracks dialogs (the
  * extension; read-only and transitional until slice 12, design revision 8).
  * Requirements join with the first handler that needs them: slice 10 has
- * the page's evaluator, pointer and settle wait.
+ * the page's evaluator, pointer and settle wait; slice 11 adds the keyboard.
  */
 import type { Clock } from '../ports/clock.js';
-import type { Evaluator, Pointer, Settler } from '../ports/page-driver.js';
+import type { Evaluator, Keyboard, Pointer, Settler } from '../ports/page-driver.js';
 import type { DialogWatch } from '../session/page-driver.js';
 
 export interface RequirementDeps {
   evaluator: Evaluator;
+  keyboard: Keyboard;
   pointer: Pointer;
   settler: Settler;
 }

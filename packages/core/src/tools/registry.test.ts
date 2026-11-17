@@ -2,13 +2,18 @@
 // itself, and each interaction entry's per-transport argument coercion.
 import { describe, expect, it } from 'vitest';
 import { createManualClock } from '../ports/contract/index.js';
-import type { Evaluator, Pointer, Settler } from '../ports/page-driver.js';
+import type { Evaluator, Keyboard, Pointer, Settler } from '../ports/page-driver.js';
 import { TOOL_REGISTRY } from './catalog.js';
-import { clickTool, findTool } from './interaction.js';
+import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
 import { createToolRegistry, dispatchTool, type RegisteredTool } from './registry.js';
 import type { Requirement, ToolDeps } from './requirement.js';
 
-const ALL: ReadonlySet<Requirement> = new Set<Requirement>(['evaluator', 'pointer', 'settler']);
+const ALL: ReadonlySet<Requirement> = new Set<Requirement>([
+  'evaluator',
+  'keyboard',
+  'pointer',
+  'settler',
+]);
 
 function deps(evaluate: Evaluator['evaluate'] = () => Promise.resolve(undefined)): ToolDeps {
   const pointer: Pointer = { mouse: () => Promise.resolve() };
@@ -16,7 +21,8 @@ function deps(evaluate: Evaluator['evaluate'] = () => Promise.resolve(undefined)
     mark: () => Promise.resolve({ kind: 'none' }),
     settle: () => Promise.resolve(undefined),
   };
-  return { evaluator: { evaluate }, pointer, settler, clock: createManualClock() };
+  const keyboard: Keyboard = { key: () => Promise.resolve(), insertText: () => Promise.resolve() };
+  return { evaluator: { evaluate }, keyboard, pointer, settler, clock: createManualClock() };
 }
 
 const echo = (name: string, handler: RegisteredTool['handler']): RegisteredTool => ({
@@ -82,8 +88,8 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds find and click, both listed', () => {
-    expect([...TOOL_REGISTRY.keys()]).toEqual(['find', 'click']);
+  it('holds find, click, type and press, all listed', () => {
+    expect([...TOOL_REGISTRY.keys()]).toEqual(['find', 'click', 'type', 'press']);
     expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
   });
 });
@@ -168,5 +174,61 @@ describe('click: each transport keeps its own coercion (design 7(e))', () => {
       expect: { url_changed: true },
     });
     expect(clickTool.coerce['cdp-direct'](p)).toEqual(clickTool.coerce.extension(p));
+  });
+});
+
+describe('type: each transport keeps its own coercion (design 7(e))', () => {
+  it('a missing selector and text: the extension reads "undefined", cdp-direct leaves the selector out and types ""', () => {
+    expect(typeTool.coerce.extension({})).toMatchObject({
+      selector: 'undefined',
+      text: 'undefined',
+    });
+    expect(typeTool.coerce['cdp-direct']({})).toMatchObject({ selector: undefined, text: '' });
+  });
+
+  it('with a ref, both leave a missing selector undefined', () => {
+    expect(typeTool.coerce.extension({ ref: 'd1:e2', text: 'x' }).selector).toBeUndefined();
+    expect(typeTool.coerce['cdp-direct']({ ref: 'd1:e2', text: 'x' }).selector).toBeUndefined();
+  });
+
+  it('both read clear, settle and expect the same way', () => {
+    const p = {
+      selector: '#q',
+      text: 'hi',
+      clear: 'yes',
+      settle_ms: 0,
+      settle_timeout_ms: 'x',
+      expect: { value_equals: 'hi' },
+    };
+    expect(typeTool.coerce.extension(p)).toEqual({
+      selector: '#q',
+      ref: undefined,
+      text: 'hi',
+      clear: false,
+      settle_ms: 0,
+      settle_timeout_ms: undefined,
+      expect: { value_equals: 'hi' },
+    });
+    expect(typeTool.coerce['cdp-direct'](p)).toEqual(typeTool.coerce.extension(p));
+  });
+});
+
+describe('press: both transports read it the same way', () => {
+  it('keeps string modifiers only, and reads a missing one as []', () => {
+    const p = { key: 'Enter', modifiers: ['Shift', 3, 'Control'], selector: '#q', settle_ms: 5 };
+    expect(pressTool.coerce.extension(p)).toEqual({
+      key: 'Enter',
+      modifiers: ['Shift', 'Control'],
+      selector: '#q',
+      ref: undefined,
+      settle_ms: 5,
+      settle_timeout_ms: undefined,
+      expect: undefined,
+    });
+    expect(pressTool.coerce['cdp-direct'](p)).toEqual(pressTool.coerce.extension(p));
+    expect(pressTool.coerce.extension({ key: 7, modifiers: 'Shift' })).toMatchObject({
+      key: undefined,
+      modifiers: [],
+    });
   });
 });

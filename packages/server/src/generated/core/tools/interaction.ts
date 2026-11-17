@@ -1,14 +1,21 @@
 // GENERATED from packages/core/src/tools/interaction.ts. Do not edit.
 /**
  * Registry entries of the interaction tools (design 3.3): `find` and
- * `click` (slice 10); `type` and `press` join in slice 11. Each `coerce` is
- * the argument coercion its transport did in its own `case` before slice 10
+ * `click` (slice 10), `type` and `press` (slice 11). Each `coerce` is the
+ * argument coercion its transport did in its own `case` before it moved
  * (`background.ts` `handleTool`, `cdp/transport.ts` `callCdpTool`): where
  * the two differ (a missing `text` or `selector`: the extension's
- * `String(p[key])`, cdp-direct's `''`), each keeps its own (design 7(e)).
+ * `String(p[key])`, cdp-direct's `''` or `undefined`), each keeps its own
+ * (design 7(e)).
+ *
+ * `type` and `press` can fail on a sensitive field: `fromActionOutcome`
+ * maps a failure carrying `sensitive_field: true` to the `sensitive` kind
+ * (design 3.4), which each transport's mapping marks on its wire.
  */
 import { performClick, type ClickParams } from '../actions/perform-click.js';
 import { performFind, type FindParams } from '../actions/perform-find.js';
+import { performPress, type PressParams } from '../actions/perform-press.js';
+import { performType, type TypeParams } from '../actions/perform-type.js';
 import type { FindKey } from '../inpage/builders.js';
 import type { ExpectParams } from '../support/expect.js';
 import { fromActionOutcome } from './failure.js';
@@ -106,4 +113,61 @@ export const clickTool: ToolEntry<ClickParams, 'evaluator' | 'pointer' | 'settle
     },
   },
   handler: async (deps, params) => fromActionOutcome(await performClick(deps, params)),
+};
+
+/** What both transports read the same way for a type. */
+function typeRest(p: Params): Omit<TypeParams, 'selector' | 'ref' | 'text'> {
+  return {
+    clear: p.clear === true,
+    settle_ms: optNum(p, 'settle_ms'),
+    settle_timeout_ms: optNum(p, 'settle_timeout_ms'),
+    expect: p.expect as ExpectParams | undefined,
+  };
+}
+
+export const typeTool: ToolEntry<TypeParams, 'evaluator' | 'keyboard' | 'settler'> = {
+  name: 'type',
+  requires: ['evaluator', 'keyboard', 'settler'],
+  listed: true,
+  coerce: {
+    extension: (p) => {
+      const ref = optStr(p, 'ref');
+      return {
+        selector: ref !== undefined ? optStr(p, 'selector') : str(p, 'selector'),
+        ref,
+        text: str(p, 'text'),
+        ...typeRest(p),
+      };
+    },
+    'cdp-direct': (p) => ({
+      selector: optStr(p, 'selector'),
+      ref: optStr(p, 'ref'),
+      text: typeof p.text === 'string' ? p.text : '',
+      ...typeRest(p),
+    }),
+  },
+  handler: async (deps, params) => fromActionOutcome(await performType(deps, params)),
+};
+
+/** Both transports read a press the same way. */
+function coercePress(p: Params): PressParams {
+  return {
+    key: optStr(p, 'key'),
+    modifiers: Array.isArray(p.modifiers)
+      ? p.modifiers.filter((m): m is string => typeof m === 'string')
+      : [],
+    selector: optStr(p, 'selector'),
+    ref: optStr(p, 'ref'),
+    settle_ms: optNum(p, 'settle_ms'),
+    settle_timeout_ms: optNum(p, 'settle_timeout_ms'),
+    expect: p.expect as ExpectParams | undefined,
+  };
+}
+
+export const pressTool: ToolEntry<PressParams, 'evaluator' | 'keyboard' | 'settler'> = {
+  name: 'press',
+  requires: ['evaluator', 'keyboard', 'settler'],
+  listed: true,
+  coerce: { extension: coercePress, 'cdp-direct': coercePress },
+  handler: async (deps, params) => fromActionOutcome(await performPress(deps, params)),
 };

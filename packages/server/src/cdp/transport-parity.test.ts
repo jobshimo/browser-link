@@ -5,13 +5,14 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 /*
- * PARITY GUARD for the hand-mirrored action handlers. `performType`,
- * `performPress` and `performWaitFor` exist twice: in the extension's
+ * PARITY GUARD for the hand-mirrored action handlers. `performWaitFor`
+ * exists twice: in the extension's
  * `background.ts` (driving a tab through `chrome.debugger`) and in
  * `cdp/transport.ts` (driving a cdp-direct target through a raw CDP
  * client). Each leaves this list when its slice moves it into core
- * (`performFind` and `performClick` left with slice 10, into core's
- * `actions/`); until then this test keeps the two copies from drifting.
+ * (`performFind` and `performClick` left with slice 10, `performType` and
+ * `performPress` with slice 11, into core's `actions/`); until then this
+ * test keeps the two copies from drifting.
  *
  * How it compares: each handler BODY (not its signature, whose first
  * parameter is necessarily transport-specific) is re-printed from the
@@ -31,7 +32,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const EXT_BACKGROUND = join(here, '..', '..', '..', 'extension', 'src', 'background.ts');
 const SRV_TRANSPORT = join(here, 'transport.ts');
 
-const HANDLERS = ['performType', 'performPress', 'performWaitFor'] as const;
+const HANDLERS = ['performWaitFor'] as const;
 type Handler = (typeof HANDLERS)[number];
 
 /** A statement block present on one side only. `start` is the exact
@@ -152,8 +153,8 @@ describe('perform* parity guard: extension background.ts vs server cdp/transport
   });
 
   test('the comparison is not vacuous: a one-token change is reported', () => {
-    const { server } = normalised('performType');
-    const mutated = server.map((l) => l.replace("'typed'", "'pressed'"));
+    const { server } = normalised('performWaitFor');
+    const mutated = server.map((l) => l.replace("'timeout'", "'timed-out'"));
     expect(firstDifference(server, mutated)).toMatch(/line \d+:/);
   });
 });

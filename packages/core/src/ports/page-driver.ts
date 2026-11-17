@@ -1,8 +1,8 @@
 // Narrow page capabilities (design 3.2), built once per `CdpSession` by
 // `session/page-driver.ts`. Handlers require them one by one. Ports
-// describe what is used: the pointer joined with click (slice 10);
-// `insertText` and CDP event waits join with the slices that move the
-// handlers using them (11, 14).
+// describe what is used: the pointer joined with click (slice 10),
+// `insertText` with type (slice 11); CDP event waits join with the slice
+// that moves the handler using them (14).
 
 import type { PageInfo } from './page-info.js';
 import type {
@@ -22,6 +22,10 @@ export interface Evaluator {
 export interface Keyboard {
   /** One `Input.dispatchKeyEvent`. */
   key(event: KeyEvent): Promise<void>;
+  /** One `Input.insertText` into whatever has focus; resolves when the page
+   * answered it, rejects when the dispatch fails. Input only: what the
+   * focused field is, an action reads through the evaluator. */
+  insertText(text: string): Promise<void>;
 }
 
 export interface Pointer {
