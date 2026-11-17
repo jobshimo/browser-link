@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { platform } from 'node:os';
 
 /**
@@ -57,21 +58,48 @@ export function isAllowedBrowser(binaryName: string, os: NodeJS.Platform = platf
   return getAllowedBrowsers(os).includes(binaryName);
 }
 
+/** The real path of a listed entry, read on disk now; null when it cannot
+ * be resolved (missing file, no access). */
+export type ResolveListedPath = (path: string) => string | null;
+
+const resolveOnDisk: ResolveListedPath = (path) => {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+};
+
 /**
  * The opt-in strict mode (`peerExecutablePaths` in config.json): the peer's
- * executable path must equal one listed path — case-insensitively on
- * Windows, whose file system is, and exactly elsewhere. An unread or empty
- * path never matches, and an empty list allows nothing.
+ * executable path must equal one listed path, or that listed path with its
+ * junctions and symbolic links resolved on disk at check time —
+ * case-insensitively on Windows, whose file system is, and exactly
+ * elsewhere. An unread or empty path never matches, and an empty list allows
+ * nothing.
+ *
+ * Only the listed side is resolved. On Windows the peer's path is the real
+ * file the kernel reports, so an entry through a junction (nvm's
+ * `C:\nvm4w\nodejs\node.exe`) still matches the program started through it.
+ * Resolving the listed side can only add the file the entry names today;
+ * the peer's path is never resolved again, since a junction the peer
+ * controls could be pointed elsewhere after it started.
  */
 export function isAllowedExecutablePath(
   executablePath: string | undefined,
   allowed: readonly string[],
   os: NodeJS.Platform = platform(),
+  resolve: ResolveListedPath = resolveOnDisk,
 ): boolean {
   if (executablePath === undefined || executablePath.length === 0) return false;
-  if (os === 'win32') {
-    const wanted = executablePath.toLowerCase();
-    return allowed.some((p) => p.toLowerCase() === wanted);
-  }
-  return allowed.includes(executablePath);
+  const same =
+    os === 'win32'
+      ? (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+      : (a: string, b: string) => a === b;
+  return allowed.some((entry) => {
+    if (same(entry, executablePath)) return true;
+    if (entry.length === 0) return false;
+    const real = resolve(entry);
+    return real !== null && real.length > 0 && same(real, executablePath);
+  });
 }

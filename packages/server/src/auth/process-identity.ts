@@ -1,6 +1,12 @@
 import { execFile } from 'node:child_process';
 import { platform } from 'node:os';
+import { win32 } from 'node:path';
 import { promisify } from 'node:util';
+import {
+  buildKernelOwnerScript,
+  parseKernelOwnerReply,
+  type KernelTcpRow,
+} from './windows-tcp-owner.js';
 
 const execFileAsync = promisify(execFile);
 // Bounds each lookup command. A cold PowerShell start plus the CIM owner
@@ -22,6 +28,8 @@ export const LOOKUP_TIMEOUT_MS = 5000;
  * after boot) followed by the tasklist fallback, with netstat taking a few
  * tens of milliseconds out of the second; on macOS and Linux the two lsof
  * calls of strict mode. A lookup cut short by it fails with `deadline`.
+ * On Windows the kernel-table PowerShell runs first (about 0.4 s); when it
+ * times out, its fallback has what is left of this budget.
  */
 export const PEER_LOOKUP_DEADLINE_MS = 2 * LOOKUP_TIMEOUT_MS;
 
@@ -155,6 +163,10 @@ export interface PeerLookupDeps {
   /** A monotonic clock in ms, read only when the request carries a total
    * budget. Default `performance.now()`. */
   now?: () => number;
+  /** Where the Windows lookup writes its one line when the kernel-table
+   * source fails and the netstat + CIM fallback runs. Default
+   * `console.error`, the server's log. */
+  log?: (line: string) => void;
 }
 
 /** What the caller needs beyond identity. */
@@ -226,7 +238,8 @@ export async function lookupPeerProcessDetailed(
       result = await lookupUnix(run, host, port, request.serverEndpoint, getuid(), withPath);
     } else if (os === 'win32') {
       const sleep = deps.sleep ?? defaultSleep;
-      result = await lookupWindows(run, sleep, host, port, request.serverEndpoint, withPath);
+      const log = deps.log ?? defaultLog;
+      result = await lookupWindows(run, sleep, log, host, port, request.serverEndpoint, withPath);
     } else {
       return { ok: false, cause: 'unsupported-platform' };
     }
@@ -250,6 +263,10 @@ const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 const defaultNow = (): number => performance.now();
+
+const defaultLog = (line: string): void => {
+  console.error(line);
+};
 
 function run(exec: ExecFile, file: string, args: readonly string[]): Promise<{ stdout: string }> {
   return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS, maxBuffer: LOOKUP_MAX_OUTPUT_BYTES });
@@ -458,10 +475,173 @@ interface WindowsIdentity {
 }
 
 /**
- * Windows path: `netstat -ano` lists every TCP connection with its owning
- * PID, then one PowerShell CIM call reads the image name, executable path
- * and owner of that PID and of this server, so both owners come from the
- * same method. All primitives ship with Windows; no extra tooling needed.
+ * Windows path. First the kernel-table source (`windows-tcp-owner.ts`): one
+ * PowerShell reads the owner of the peer's endpoint from the kernel TCP
+ * table and that process's token user, image name and image path. When that
+ * source cannot answer, the netstat + CIM lookup runs instead and one log
+ * line names the stage that failed.
+ *
+ * The fallback only ever replaces a source that could not answer. An answer
+ * that refuses (another user, two owners, this very process) stands, so the
+ * fallback can never accept a peer the kernel table refused. What the
+ * kernel table reads differently from netstat + CIM: it sees rows netstat
+ * does not print yet (state 0), and the path it reports is the real file
+ * (see `kernelTableLookup`); strict mode matches it against each listed
+ * entry as written and as resolved on disk, so an entry through a junction
+ * still matches a program started through it.
+ */
+async function lookupWindows(
+  exec: ExecFile,
+  sleep: (ms: number) => Promise<void>,
+  log: (line: string) => void,
+  host: string,
+  port: number,
+  server: Endpoint | undefined,
+  withPath: boolean,
+): Promise<PeerProcess> {
+  const kernel = await kernelTableLookup(exec, host, port, server, withPath);
+  if (kernel.ok) return kernel.peer;
+  log(
+    `[browser-link] Windows peer lookup: the kernel TCP table source failed at stage ${kernel.stage} (cause: ${kernel.cause}); checking with netstat + CIM instead.`,
+  );
+  return lookupWindowsNetstat(exec, sleep, host, port, server, withPath);
+}
+
+/** Where the kernel-table source stopped without a verdict. */
+export type KernelLookupStage =
+  | 'powershell'
+  | 'add-type'
+  | 'tcp-table'
+  | 'native'
+  | 'reply'
+  | 'endpoint'
+  | 'table-changed'
+  | 'process'
+  | 'token'
+  | 'server-token'
+  | 'image-path';
+
+type KernelLookup =
+  { ok: true; peer: PeerProcess } | { ok: false; stage: KernelLookupStage; cause: PeerLookupCause };
+
+/**
+ * The kernel-table source. Returns `ok: false` (fall back) when it could not
+ * read what it needs; throws a `LookupFailure` (a refusal, no fallback) when
+ * what it read refuses the peer, or when the lookup's total budget is spent.
+ *
+ * Rows count like netstat's: the LOCAL end must be `host:port` and, when the
+ * server's endpoint is known, the REMOTE end must be it; pid 0 (TIME_WAIT) is
+ * no owner; any state counts. IPv6 addresses are normalised the way the
+ * socket's own addresses are (`::1` and `::ffff:a.b.c.d` read as IPv4). The
+ * owner must be the same single pid in the read before and the read after
+ * its process was opened, so a pid reused in between is never taken.
+ *
+ * Owners are compared by the user SID of the process token, for the peer and
+ * for this server alike. The image name is the one CIM reports (the
+ * Toolhelp snapshot), so the name rules see the same name as before. The
+ * path is `QueryFullProcessImageName`'s: where the running image file is
+ * now, with every junction and symbolic link resolved and the case it has on
+ * disk (CIM reports the path the process was started with, which can go
+ * through a junction, such as nvm's `C:\nvm4w\nodejs`). That path is
+ * returned as read and never resolved again on disk, since a junction the
+ * peer controls could be retargeted between its start and the check; strict
+ * mode resolves only the listed entries (`isAllowedExecutablePath`).
+ */
+async function kernelTableLookup(
+  exec: ExecFile,
+  host: string,
+  port: number,
+  server: Endpoint | undefined,
+  withPath: boolean,
+): Promise<KernelLookup> {
+  const fail = (stage: KernelLookupStage, cause: PeerLookupCause): KernelLookup => ({
+    ok: false,
+    stage,
+    cause,
+  });
+  let stdout: string;
+  try {
+    ({ stdout } = await run(exec, 'powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildKernelOwnerScript(port, process.pid),
+    ]));
+  } catch (err) {
+    // The total budget is spent: nothing else may run.
+    if (err instanceof LookupFailure) throw err;
+    return fail('powershell', classifyLookupError(err));
+  }
+  const reply = parseKernelOwnerReply(stdout);
+  if (reply === null) return fail('reply', 'parse-miss');
+  if (reply.kind === 'stage') return fail(reply.stage, `command-failed:${reply.stage}`);
+
+  const before = kernelOwnersOf(reply.rows, host, port, server);
+  if (before.length === 0) return fail('endpoint', 'endpoint-not-listed');
+  if (before.length > 1) throw new LookupFailure('endpoint-ambiguous');
+  const pid = before[0];
+  assertPeerPid(pid);
+  const after = kernelOwnersOf(reply.rowsAfter, host, port, server);
+  if (after.length !== 1 || after[0] !== pid) return fail('table-changed', 'endpoint-ambiguous');
+
+  const peer = reply.procs.find((p) => p.pid === pid);
+  const self = reply.procs.find((p) => p.pid === process.pid);
+  if (peer === undefined || peer.name === null || peer.name.length === 0) {
+    return fail('process', 'peer-row-missing');
+  }
+  if (peer.sid === null || peer.sid.length === 0) return fail('token', 'owner-unreadable');
+  if (self === undefined || self.sid === null || self.sid.length === 0) {
+    return fail('server-token', 'owner-unreadable');
+  }
+  assertSameOwner(peer.sid, self.sid);
+  const found: PeerProcess = { pid, binaryName: peer.name };
+  if (!withPath) return { ok: true, peer: found };
+  if (peer.path === null || !win32.isAbsolute(peer.path)) {
+    return fail('image-path', 'path-unreadable');
+  }
+  return { ok: true, peer: { ...found, executablePath: peer.path } };
+}
+
+/** The distinct live pids of the kernel rows whose local end is
+ * `host:port` (and remote end the server, when known). */
+function kernelOwnersOf(
+  rows: readonly KernelTcpRow[],
+  host: string,
+  port: number,
+  server: Endpoint | undefined,
+): number[] {
+  const owners = new Set<number>();
+  for (const row of rows) {
+    if (row.pid === 0) continue;
+    if (row.localPort !== port || normaliseLoopback(row.localAddress) !== host) continue;
+    if (
+      server !== undefined &&
+      (row.remotePort !== server.port || normaliseLoopback(row.remoteAddress) !== server.host)
+    ) {
+      continue;
+    }
+    owners.add(row.pid);
+  }
+  return [...owners];
+}
+
+/**
+ * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
+ * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
+ * IPv4 form lsof / netstat understand.
+ */
+export function normaliseLoopback(addr: string): string {
+  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
+  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
+  return addr;
+}
+
+/**
+ * The netstat + CIM lookup, now the fallback: `netstat -ano` lists every TCP
+ * connection with its owning PID, then one PowerShell CIM call reads the
+ * image name, executable path and owner of that PID and of this server, so
+ * both owners come from the same method. All primitives ship with Windows;
+ * no extra tooling needed.
  *
  * Like the UNIX path, this filters by LOCAL endpoint match — see
  * `parseNetstatForLocal`. Keep the two branches in sync.
@@ -470,7 +650,7 @@ interface WindowsIdentity {
  * again after `NETSTAT_RETRY_DELAYS_MS`. Only that miss is retried; every
  * check below runs on whatever the last snapshot found.
  */
-async function lookupWindows(
+async function lookupWindowsNetstat(
   exec: ExecFile,
   sleep: (ms: number) => Promise<void>,
   host: string,

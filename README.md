@@ -345,13 +345,17 @@ run `browser-link stop` to end the running servers, then start
 `browser-link 2> server.log | cat` in a POSIX shell such as Git Bash (piping the output makes it
 start as the MCP server instead of the terminal UI) and read `server.log`.
 
-On Windows, `netstat` can omit a connection that was just opened from its first
-snapshot, so the server looks again, up to six snapshots over about 1.25 s, before
-refusing. If a refusal still happens, the popup says "The browser-link server
-refused the connection: it could not identify the program that opened the
-connection." (or, when the diagnosis itself cannot answer, "WebSocket connection
-failed. Is the MCP server running?"), and the [server log](#what-now-stops-a-connection) line says how many
-snapshots were taken and how many rows mentioned the port.
+On Windows the server reads the owner of the connection straight from the
+kernel's TCP table, which already lists a connection that was just opened
+(`netstat` can leave one out for a while). When that cannot run, for example
+because PowerShell is locked down, the server logs one line naming the step
+that failed and checks with `netstat` instead, which looks again, up to six
+snapshots over about 1.25 s, before refusing. If a refusal still happens, the
+popup says "The browser-link server refused the connection: it could not
+identify the program that opened the connection." (or, when the diagnosis
+itself cannot answer, "WebSocket connection failed. Is the MCP server
+running?"), and the [server log](#what-now-stops-a-connection) line names the
+cause.
 
 **Allowing another extension id (experts only).** To connect your own build of
 the extension, add its id to `allowedExtensionIds` in `config.json`, in the data
@@ -392,10 +396,12 @@ carries a browser's name. Strict mode closes that gap by path. Malware already
 inside your browser is outside this model too (see
 [Security model](#security-model)).
 
-On Windows the lookup also counts a socket that `netstat` lists only as bound
-(foreign port 0) when no row to the server exists. If one process has a row to
-the server and another has a bound-only row for the same endpoint, the row to the
-server decides instead of the lookup refusing as ambiguous.
+On Windows the kernel-table check counts only a row whose two ends are the
+peer's endpoint and the server's. Only the `netstat` fallback also counts a
+socket that `netstat` lists only as bound (foreign port 0) when no row to the
+server exists; if one process has a row to the server and another has a
+bound-only row for the same endpoint, the row to the server decides instead of
+the lookup refusing as ambiguous.
 
 ### The Admin window no longer changes what an agent may do
 
@@ -2736,13 +2742,24 @@ refused too.
 - **macOS / Linux** → `lsof -nP -F pcun -iTCP@<host>:<port> -sTCP:ESTABLISHED`;
   the process uid must equal the server's uid
   (`packages/server/src/auth/process-identity.ts`).
-- **Windows** → `netstat -ano` locates the owning PID; one PowerShell CIM
-  call (`Win32_Process` + `GetOwner`) then reads the image name and the
-  owner of that PID and of the server itself, and the two owners must be
-  equal. `tasklist /V` is the fallback when PowerShell is missing or
-  locked down, or when the CIM call takes over 5 s (the first one after
-  boot, while WMI starts, can on a slow machine); it compares the owners the
-  same way.
+- **Windows** → one PowerShell, started for each check, reads the kernel's
+  TCP table (`GetExtendedTcpTable`, IPv4 and IPv6, every connection state)
+  for the process that owns the peer's end of this connection, then that
+  process's user from its token, its image name and its image path
+  (`QueryFullProcessImageName`), and the server's own user the same way; the
+  two users (SIDs) must be equal. It reads the table again before it lets go
+  of the process, so a process that exited and whose id was reused in between
+  is never taken for the owner. A cold check takes about 0.4 s. When this
+  check cannot run (PowerShell missing, `Add-Type` blocked by Constrained
+  Language Mode or AppLocker, a timeout, a reply it cannot read, a token it
+  may not open), the server logs one line naming the step that failed and
+  falls back to the earlier check: `netstat -ano` locates the owning PID,
+  one PowerShell CIM call (`Win32_Process` + `GetOwner`) reads the image
+  name, path and owner of that PID and of the server itself, and
+  `tasklist /V` stands in when that call fails or takes over 5 s (the first
+  one after boot, while WMI starts, can on a slow machine). A refusal by the
+  kernel-table check (another user, two owners) is final: the fallback only
+  replaces a check that could not answer.
 
 The handshake is refused in these cases (`evaluateHandshake` in
 `packages/server/src/bridge/handshake.ts`, the gate the WebSocket upgrade
@@ -2804,8 +2821,17 @@ browser executables (for example
 executable path must then equal one of them (case-insensitive on Windows,
 exact elsewhere), and a path that cannot be read is refused (on Windows
 the `tasklist` fallback reports no path, so with strict mode on, a machine
-where PowerShell is blocked refuses every browser, and the first connect
-after boot can be refused while WMI starts; connect again). Absent or
+where PowerShell is blocked refuses every browser). On Windows the path
+compared is where the running file is now, as the kernel reports it
+(`QueryFullProcessImageName`): every junction and symbolic link resolved.
+A listed entry matches that path as written, or as it resolves on disk at
+the moment of the check, so an entry through a junction (nvm's
+`C:\nvm4w\nodejs\node.exe` is one) keeps matching the program started
+through it, and stops matching when the junction points at another file.
+The browser's own path is never resolved again, since a junction can be
+pointed elsewhere after the program started. Only when the `netstat`
+fallback answers is the path the one the program was started with, as CIM
+reports it. Absent or
 empty means no path check. A list with no valid absolute path refuses
 every peer. It is edited by hand only: no console command, admin panel
 item, bridge message or MCP tool writes it. Update the list when your

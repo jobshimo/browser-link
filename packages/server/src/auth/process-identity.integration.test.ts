@@ -3,18 +3,19 @@ import { platform } from 'node:os';
 import { createServer, type Server, type Socket } from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { promisify } from 'node:util';
 import {
   lookupPeerProcess,
-  buildCimIdentityScript,
   lookupPeerProcessDetailed,
   type PeerLookupDeps,
 } from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
-// Real-loopback tests: lsof (macOS / Linux) or netstat + PowerShell CIM
-// (Windows) must agree on which side is local and who owns it.
+// Real-loopback tests: lsof (macOS / Linux) or the kernel TCP table read
+// through one PowerShell (Windows) must agree on which side is local and who
+// owns it.
 const isUnix = platform() === 'darwin' || platform() === 'linux';
 const isWindows = platform() === 'win32';
 
@@ -210,29 +211,21 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
 });
 
 describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
-  // A fresh CI VM starts WMI on the first CIM call: 8.2 s and over 10 s were
-  // measured on windows-latest, past the 5 s lookup bound (by design: that
-  // first strict-mode handshake is refused, see LOOKUP_TIMEOUT_MS). So WMI
-  // is started first with a generous bound, and the lookup itself must then
-  // read the path within its normal bounds.
-  test('identifies a same-user child with its image name and executable path', async () => {
+  // The kernel-table source answers alone: one PowerShell, no netstat, no
+  // CIM (so no WMI start-up to wait for), and no fallback log line. A run
+  // that needs the fallback fails here, which is the point: it would mean
+  // the kernel source does not work on this machine.
+  test('identifies a same-user child with its image name and executable path, from the kernel table', async () => {
     const { port, connection } = await listen();
     const ready = await connectFromChild(port);
     await connection;
 
-    const t0 = performance.now();
-    await execFileAsync(
-      'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', buildCimIdentityScript(ready.pid, process.pid)],
-      { timeout: 60_000, windowsHide: true },
-    );
-    console.log(`windows WMI warm-up: ${String(Math.round(performance.now() - t0))} ms`);
-
     const trace: TraceEntry[] = [];
+    const logs: string[] = [];
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
       ready.localPort,
-      { execFile: tracingExecFile(trace) },
+      { execFile: tracingExecFile(trace), log: (line) => logs.push(line) },
       {
         withExecutablePath: true,
         serverEndpoint: { host: '127.0.0.1', port },
@@ -241,7 +234,8 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
     console.log(
       `windows path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}`,
     );
-    expect(res, failureContext(port, ready, trace)).toEqual({
+    const context = `${failureContext(port, ready, trace)}\nlog: ${JSON.stringify(logs)}`;
+    expect(res, context).toEqual({
       ok: true,
       peer: {
         pid: ready.pid,
@@ -249,6 +243,17 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
         executablePath: expect.stringMatching(/node\.exe$/i) as unknown,
       },
     });
-    if (res.ok) expect(res.peer.executablePath?.toLowerCase()).toBe(process.execPath.toLowerCase());
-  }, 90_000);
+    expect(logs, context).toEqual([]);
+    expect(
+      trace.map((t) => t.file),
+      context,
+    ).toEqual(['powershell']);
+    // The kernel reports the real file, with junctions (such as nvm's
+    // C:\nvm4w\nodejs) resolved, in the case it has on disk.
+    if (res.ok) {
+      expect(res.peer.executablePath?.toLowerCase()).toBe(
+        realpathSync.native(process.execPath).toLowerCase(),
+      );
+    }
+  }, 30_000);
 });
