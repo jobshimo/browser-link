@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0](https://github.com/jobshimo/browser-link/compare/v1.3.9...v1.4.0) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension is now built differently, so the installed files changed.
+
+### Features
+
+- **extension:** the extension is bundled with esbuild: four entries (background, popup, activity and admin), ES modules, target Chrome 118, not minified, with source maps kept in the npm package. No extension source or behaviour changed, and the manifest is identical.
+
+### Notes
+
+- The npm package no longer ships the per-module `.js`, `.d.ts` and `.js.map` files under `dist/extension` (579 files become 491). The packed size grows from about 1.17 MB to about 1.37 MB because of the source maps.
+- A fitness test keeps `BRIDGE_PORT` declared only in `background.ts`.
+- The differential e2e check treats the two answers `flow_cancel` may give (cancelled, or running with cancelling) as equal.
+
 ## [1.3.9](https://github.com/jobshimo/browser-link/compare/v1.3.8...v1.3.9) (2026-11-17)
 
 ### Bug Fixes
