@@ -173,6 +173,8 @@ import {
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
 import { createConnectFailureTracker } from './connect-failure-policy.js';
+import { armLoadWait } from './load-wait.js';
+import { normalizeConsoleLevel } from './console-level.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -1486,7 +1488,7 @@ function attachDebuggerListener(state: TabState): void {
         .join(' ');
       pushConsole(state, {
         timestamp: p.timestamp ?? Date.now(),
-        level: p.type ?? 'log',
+        level: normalizeConsoleLevel(p.type),
         text,
         source: 'console',
       });
@@ -1497,7 +1499,7 @@ function attachDebuggerListener(state: TabState): void {
       const e = p.entry ?? {};
       pushConsole(state, {
         timestamp: e.timestamp ?? Date.now(),
-        level: e.level ?? 'log',
+        level: normalizeConsoleLevel(e.level),
         text: e.text ?? '',
         source: 'log',
         url: e.url,
@@ -1797,20 +1799,15 @@ async function evaluateInTab<T = unknown>(tabId: number, expression: string): Pr
   return result.result.value;
 }
 
-async function waitForLoad(tabId: number, timeoutMs = 20_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(handler);
-      reject(new Error('navigation timed out'));
-    }, timeoutMs);
-    const handler: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (updatedId, info) => {
-      if (updatedId === tabId && info.status === 'complete') {
-        clearTimeout(t);
-        chrome.tabs.onUpdated.removeListener(handler);
-        resolve();
-      }
-    };
-    chrome.tabs.onUpdated.addListener(handler);
+/** Arm the load wait on this tab; see `armLoadWait` for why it precedes the navigation. */
+function armTabLoadWait(tabId: number): ReturnType<typeof armLoadWait> {
+  return armLoadWait(tabId, {
+    add: (h) => {
+      chrome.tabs.onUpdated.addListener(h);
+    },
+    remove: (h) => {
+      chrome.tabs.onUpdated.removeListener(h);
+    },
   });
 }
 
@@ -2644,8 +2641,14 @@ async function handleNavigate(
 ): Promise<ExtensionToServer> {
   const url = str('url');
   const waitForLoadFlag = p.wait_for_load !== false;
-  await cdp(tabId, 'Page.navigate', { url });
-  if (waitForLoadFlag) await waitForLoad(tabId);
+  const loadWait = waitForLoadFlag ? armTabLoadWait(tabId) : undefined;
+  try {
+    await cdp(tabId, 'Page.navigate', { url });
+  } catch (err) {
+    loadWait?.cancel();
+    throw err;
+  }
+  if (loadWait) await loadWait.done;
   const tab = await chrome.tabs.get(tabId);
   return {
     kind: 'tool.response',
@@ -4322,7 +4325,7 @@ async function repairConnection(): Promise<RepairOutcome> {
 // document set up — so `handleRecordingNavigation` re-injects the recorder
 // script (not the binding) after every navigation observed while
 // recording, using the same `chrome.tabs.onUpdated` "complete" signal
-// `waitForLoad` already uses elsewhere in this file for the standalone
+// `armLoadWait` already uses elsewhere in this file for the standalone
 // `navigate` tool.
 
 function originOfUrl(url: string): string {
