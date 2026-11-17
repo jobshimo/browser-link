@@ -18,15 +18,17 @@ import {
   buildWaitForSelectorJs,
   type SnapshotOffset,
   type WaitForSelectorCondition,
-  OBSERVER_BINDING,
   DEFAULT_IDLE_TTL_MINUTES,
-  activityAfterFlowEnded,
   clampIdleTtlMinutes,
   idleHoldUntil,
   shouldScheduleIdleSweep,
-  tabsToDisconnectForIdle,
-  type IdleCallInProgress,
   type IdleFlowHold,
+  idleTabs,
+  type NetworkEntry,
+  sessionDialogWatch,
+  TabRegistry,
+  type TabReservation,
+  TabSession,
   createPageDriver,
   dispatchTool,
   performClick,
@@ -58,6 +60,17 @@ import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
 import { createChromePageInfo } from './adapters/chrome-page-info.js';
+import {
+  closeTabConnection,
+  debuggerIntake,
+  deliverCdpEvent,
+  newTabConnection,
+  registeredSocket,
+  send,
+  sendBridgeEvent,
+  type TabConnection,
+  type TabEventListener,
+} from './app/tab-connection.js';
 import {
   captureAround,
   createDownloadCapture,
@@ -110,8 +123,6 @@ import {
   generateRecordingSession,
   isNavigationForRecording,
   isSameRecordingSession,
-  parseRecordedPayload,
-  toFlowStep,
 } from './recording.js';
 import {
   ALARM_MIN_DELAY_MS,
@@ -135,7 +146,6 @@ import {
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
 import { createConnectFailureTracker } from './connect-failure-policy.js';
-import { normalizeConsoleLevel } from './console-level.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -145,8 +155,6 @@ const BRIDGE_PORT = 17529;
 const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
 const HANDSHAKE_CHECK_URL = `http://127.0.0.1:${BRIDGE_PORT}${HANDSHAKE_CHECK_PATH}`;
 const CDP_VERSION = '1.3';
-const CONSOLE_BUFFER_MAX = 200;
-const NETWORK_BUFFER_MAX = 200;
 
 /* Idle TTL for a tab's WebSocket bridge.
  *
@@ -250,7 +258,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   // Recording` is defined further down (function declarations are hoisted,
   // so this forward reference is safe) alongside the rest of the recording
   // engine.
-  for (const tabId of tabStates.keys()) {
+  for (const tabId of tabConnections.keys()) {
     void forceStopAndDiscardRecording(tabId).catch(() => {
       // Best effort — the tab may already be mid-teardown.
     });
@@ -274,129 +282,6 @@ async function applyIncomingFlowRecordingSettings(
   }
 }
 
-interface ConsoleEntry {
-  timestamp: number;
-  level: string;
-  text: string;
-  source: 'console' | 'log';
-  url?: string;
-  line?: number;
-}
-
-interface NetworkEntry {
-  request_id: string;
-  url: string;
-  method: string;
-  resource_type?: string;
-  status?: number;
-  status_text?: string;
-  mime_type?: string;
-  request_headers?: Record<string, string>;
-  response_headers?: Record<string, string>;
-  request_post_data?: string;
-  encoded_data_length?: number;
-  started_at: number;
-  finished_at?: number;
-  failed?: string;
-}
-
-interface TabState {
-  tabId: number;
-  serverTabId?: string;
-  /** Version of the MCP server that registered this tab — set from the
-   * `tab.registered` payload. Compared against the extension's own
-   * `chrome.runtime.getManifest().version` so the popup can warn the user
-   * when one half was upgraded and the other wasn't. */
-  serverVersion?: string;
-  /** Package version installed on disk when this tab registered
-   * (`tab.registered.installedVersion`, servers from 0.41.0). Newer than
-   * `serverVersion` means the server keeps running stale code. */
-  installedVersion?: string;
-  /** Pid of the server that registered this tab (servers from 0.41.0). */
-  serverPid?: number;
-  ws?: WebSocket;
-  debuggerAttached: boolean;
-  consoleBuffer: ConsoleEntry[];
-  networkBuffer: Map<string, NetworkEntry>;
-  networkOrder: string[];
-  debuggerListener?: (method: string, params: unknown) => void;
-  /** Pending native dialog on this tab — set when CDP emits
-   * Page.javascriptDialogOpening, cleared on Page.javascriptDialogClosed.
-   * Surfaced to the popup via the `pendingDialogs` runtime message. */
-  pendingDialog?: PendingDialogInfo;
-  /** Last time the server talked to this tab (a tool.request landed).
-   * Used by the WS-idle sweeper to disconnect tabs that have been silent
-   * for longer than the user's configured `idleTtlMinutes` (see
-   * core's idle-rules.ts). Touched on every tool.request received AND once at
-   * connect time. */
-  lastActivityAt: number;
-  /** Tool calls this tab is still answering (BL-EXT-098): each holds the
-   * idle clock until it replies, so the sweep never parks a call that runs
-   * longer than the TTL. Absent until the first call. */
-  callsInProgress?: Set<{ startedAt: number }>;
-  /** Present from `startRecording` through save/discard. `undefined` means
-   * "not recording and nothing to review" — the common case, and what
-   * every tab starts as regardless of the flow-recording setting. */
-  recording?: RecordingState;
-  /** Single in-flight `flow.recorded` save, resolved by the matching
-   * `flow.recorded.result` WS message (see the `connectTab` message
-   * switch). The popup disables Save while this is set, so at most one is
-   * ever outstanding — same single-slot pattern the IPC bridge's
-   * `settings.push` uses. */
-  pendingFlowSave?: (result: { ok: true } | { ok: false; error: string }) => void;
-  /** Listeners of this tab's CDP events other than `debuggerListener`
-   * (the page driver's observer binding), fed by the permanent
-   * `chrome.debugger.onEvent` listener below. */
-  eventListeners: Set<TabEventListener>;
-  /** The tab's page driver (core's `session/page-driver.ts`): evaluation,
-   * keys, settle, and the page observer whose host mirror it keeps. */
-  driver: PageDriverHandle;
-}
-
-type TabEventListener = (method: string, params: unknown) => void;
-
-/**
- * State for one tab's demonstration recording, see the module-level
- * "Flow recording by demonstration" section below for the full lifecycle
- * (`startRecording` -> `handleRecordingNavigation`* -> `stopRecording` ->
- * `saveRecording` | `discardRecording`).
- */
-interface RecordingState {
-  /** 'recording': the in-page recorder is installed and capturing.
-   * 'reviewing': recording stopped, steps are held here for the popup's
-   * review panel, awaiting Save or Discard. */
-  status: 'recording' | 'reviewing';
-  steps: FlowStep[];
-  /** The tab's URL the last time recording state observed it — the
-   * baseline `handleRecordingNavigation` diffs `chrome.tabs.onUpdated`
-   * against to detect a REAL navigation (vs. a redundant "complete" event
-   * for the same document). Doubles as the origin source at save time. */
-  lastUrl: string;
-  /** Set once the 20-step cap was hit — surfaced to the popup so it can
-   * show "recording stopped: step limit reached" instead of a plain Stop. */
-  capped: boolean;
-  /** Per-session CDP binding name — randomized every recording start (an
-   * independent random identifier, no shared affix with the other two
-   * globals) so a page script has no stable global to probe for "is
-   * recording active" (see recorder.ts's THREAT MODEL doc). */
-  bindingName: string;
-  /** Per-session in-page idempotency-flag global name (independent random). */
-  activeFlag: string;
-  /** Per-session in-page teardown-function global name (independent
-   * random). Passed to `buildStopRecorderJs` on every exit path. */
-  stopFn: string;
-  /** Per-session shared secret carried in every recorder payload — a
-   * binding call whose payload lacks the right nonce is discarded before
-   * parsing (parseRecordedPayload). Rotated every recording start. */
-  nonce: string;
-  /** 0-based indices of steps whose recorded selector was flagged
-   * `ambiguous` by genSelectorInfo (may match multiple elements,
-   * first-match-wins). Surfaced per-step in the popup's review list and
-   * folded into the saved recipe's description via buildAmbiguousNote —
-   * never silently dropped. */
-  ambiguousStepIndices: number[];
-}
-
 interface ConnectResult {
   ok: boolean;
   error?: string;
@@ -418,53 +303,6 @@ interface StatusResult {
 // describe just the slices we use, so the rest of the file can drop
 // `Record<string, any>` casts and `unknown` member access entirely.
 
-interface CdpRuntimeConsoleAPICalled {
-  args?: { value?: unknown; description?: string }[];
-  timestamp?: number;
-  type?: string;
-}
-
-interface CdpLogEntryAdded {
-  entry?: {
-    level?: string;
-    text?: string;
-    timestamp?: number;
-    url?: string;
-    lineNumber?: number;
-  };
-}
-
-interface CdpNetworkRequestWillBeSent {
-  requestId: string;
-  type?: string;
-  request?: {
-    url?: string;
-    method?: string;
-    headers?: Record<string, string>;
-    postData?: string;
-  };
-}
-
-interface CdpNetworkResponseReceived {
-  requestId: string;
-  response?: {
-    status?: number;
-    statusText?: string;
-    mimeType?: string;
-    headers?: Record<string, string>;
-  };
-}
-
-interface CdpNetworkLoadingFinished {
-  requestId: string;
-  encodedDataLength?: number;
-}
-
-interface CdpNetworkLoadingFailed {
-  requestId: string;
-  errorText?: string;
-}
-
 interface CdpNetworkGetResponseBody {
   body: string;
   base64Encoded: boolean;
@@ -472,27 +310,6 @@ interface CdpNetworkGetResponseBody {
 
 interface CdpInputDragIntercepted {
   data: unknown;
-}
-
-interface CdpPageJavascriptDialogOpening {
-  type?: string;
-  message?: string;
-  defaultPrompt?: string;
-  url?: string;
-}
-
-interface CdpPageJavascriptDialogClosed {
-  result?: boolean;
-  userInput?: string;
-}
-
-/** Information we surface in the popup about a native dialog currently
- * blocking a tab. Cleared on dialog-closed. */
-interface PendingDialogInfo {
-  type: string;
-  message: string;
-  default_prompt?: string;
-  url?: string;
 }
 
 // Runtime messages between popup.ts and this script.
@@ -575,7 +392,7 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
   );
 }
 
-const tabStates = new Map<number, TabState>();
+const tabConnections = new TabRegistry<TabConnection>();
 
 /**
  * In-flight `activity.query` frames, keyed by request id.
@@ -637,7 +454,7 @@ async function activityRoundTrip(
 ): Promise<ActivityReply> {
   // Narrow to the socket itself rather than the state that holds it, so the
   // send below needs no non-null assertion to prove what the find already did.
-  const socket = [...tabStates.values()]
+  const socket = [...tabConnections.values()]
     .map((s) => s.ws)
     .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
   if (!socket) {
@@ -716,7 +533,7 @@ async function adminRoundTrip(
   timeoutMs: number,
   onFailure: (requestId: string, error: string) => AdminReply,
 ): Promise<AdminReply> {
-  const socket = [...tabStates.values()]
+  const socket = [...tabConnections.values()]
     .map((s) => s.ws)
     .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
   if (!socket) return onFailure('', 'not-connected');
@@ -909,20 +726,16 @@ async function getFlowsStatus(
 /** Per-tab `chrome.tabs.onUpdated` listener installed while that tab is
  * recording, so `handleRecordingNavigation` fires on every navigation and
  * `stopRecording`/`cleanup` can remove EXACTLY this listener rather than
- * guessing which one belongs to which tab. Kept out of `TabState` itself
+ * guessing which one belongs to which tab. Kept out of `TabConnection`
  * (unlike `debuggerListener`) only because it needs to be reachable from
  * `chrome.tabs.onRemoved`/`cleanup` even in the split second before a
- * `TabState` exists — in practice that never happens today, but keeping
+ * connection exists — in practice that never happens today, but keeping
  * the two concerns in separate maps avoids coupling tab-removal cleanup to
- * TabState's shape. */
+ * the connection's shape. */
 const recordingNavListeners = new Map<
   number,
   Parameters<typeof chrome.tabs.onUpdated.addListener>[0]
 >();
-
-function send(ws: WebSocket, msg: ExtensionToServer): void {
-  ws.send(JSON.stringify(msg));
-}
 
 function safeParse(raw: string): ServerToExtension | null {
   try {
@@ -936,11 +749,11 @@ function safeParse(raw: string): ServerToExtension | null {
  * from `listeners`. */
 function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDriverHandle {
   return createPageDriver({
-    session: tabSession(tabId, listeners),
+    session: debuggerSession(tabId, listeners),
     page: createChromePageInfo(tabId, systemClock),
     clock: systemClock,
-    // The tab's pending dialog (`attachDebuggerListener`), read live.
-    dialogs: { isOpen: () => tabStates.get(tabId)?.pendingDialog !== undefined },
+    // The pending dialog of the tab's `TabSession` (its debugger intake), read live.
+    dialogs: sessionDialogWatch(() => tabConnections.get(tabId)?.session),
   });
 }
 
@@ -958,7 +771,7 @@ function actionDeps(tabId: number): ToolDeps {
   return { evaluator, keyboard, pointer, settler, clock: systemClock, dialogs };
 }
 
-function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
+function debuggerSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
   return createChromeCdpSession(tabId, (listener) => {
     listeners.add(listener);
     return () => {
@@ -967,11 +780,11 @@ function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession
   });
 }
 
-/** The connected tab's page driver; for a tab with no state (a call racing
- * its cleanup) a fresh one, whose commands fail as `chrome.debugger` does and
- * whose observer is not installed, as before slice 9. */
+/** The connected tab's page driver; for a tab with no connection (a call
+ * racing its cleanup) a fresh one, whose commands fail as `chrome.debugger`
+ * does and whose observer is not installed, as before slice 9. */
 function pageDriver(tabId: number): PageDriverHandle {
-  return tabStates.get(tabId)?.driver ?? newPageDriver(tabId, new Set());
+  return tabConnections.get(tabId)?.session.driver ?? newPageDriver(tabId, new Set());
 }
 
 /** `cdp` only sends; nothing subscribes through it. */
@@ -982,7 +795,7 @@ function cdp<T = unknown>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<T> {
-  return tabSession(tabId, NO_LISTENERS).send<T>(method, params);
+  return debuggerSession(tabId, NO_LISTENERS).send<T>(method, params);
 }
 
 /**
@@ -1092,41 +905,6 @@ function waitForCdpEvent<T = unknown>(
   });
 }
 
-// Convert an arbitrary console arg (`unknown`) into something printable
-// without leaking `[object Object]`. Used by the console buffer when CDP
-// hands us values we don't statically know.
-function stringifyConsoleArg(v: unknown): string {
-  if (typeof v === 'string') return v;
-  if (v === null || v === undefined) return String(v);
-  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return Object.prototype.toString.call(v);
-  }
-}
-
-function pushConsole(state: TabState, entry: ConsoleEntry): void {
-  state.consoleBuffer.push(entry);
-  if (state.consoleBuffer.length > CONSOLE_BUFFER_MAX) {
-    state.consoleBuffer.shift();
-  }
-}
-
-function ensureNetworkEntry(state: TabState, requestId: string): NetworkEntry {
-  let entry = state.networkBuffer.get(requestId);
-  if (!entry) {
-    entry = { request_id: requestId, url: '', method: '', started_at: Date.now() };
-    state.networkBuffer.set(requestId, entry);
-    state.networkOrder.push(requestId);
-    while (state.networkOrder.length > NETWORK_BUFFER_MAX) {
-      const oldId = state.networkOrder.shift();
-      if (oldId !== undefined) state.networkBuffer.delete(oldId);
-    }
-  }
-  return entry;
-}
-
 /**
  * Report a top-document page-observer message the page driver applied: a
  * `doc_info` as a `tab-doc-info` bridge event (build fingerprint and view
@@ -1135,170 +913,23 @@ function ensureNetworkEntry(state: TabState, requestId: string): NetworkEntry {
  * `tab-navigated` bridge event so the server keeps the tab's URL and title
  * current.
  */
-async function reportTopDocument(state: TabState, outcome: ObserverMessageOutcome): Promise<void> {
+async function reportTopDocument(
+  state: TabConnection,
+  outcome: ObserverMessageOutcome,
+): Promise<void> {
   if (outcome.kind === 'doc_info') {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId)
-      send(state.ws, docInfoEvent(state.serverTabId, outcome));
+    const open = registeredSocket(state);
+    if (open) send(open.ws, docInfoEvent(open.serverTabId, outcome));
     return;
   }
   if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
   let title = '';
   try {
-    title = (await state.driver.page.info()).title;
+    title = (await state.session.driver.page.info()).title;
   } catch {
     // Best effort — the tab may be closing; the URL is still worth sending.
   }
-  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
-    send(state.ws, {
-      kind: 'bridge.event',
-      eventKind: 'tab-navigated',
-      tabId: state.serverTabId,
-      data: { url: outcome.url, title },
-    });
-  }
-}
-
-function attachDebuggerListener(state: TabState): void {
-  const listener = (method: string, params: unknown): void => {
-    if (method === 'Runtime.consoleAPICalled') {
-      const p = params as CdpRuntimeConsoleAPICalled;
-      const args = p.args ?? [];
-      const text = args
-        .map((a) => (a.value !== undefined ? stringifyConsoleArg(a.value) : (a.description ?? '')))
-        .join(' ');
-      pushConsole(state, {
-        timestamp: p.timestamp ?? Date.now(),
-        level: normalizeConsoleLevel(p.type),
-        text,
-        source: 'console',
-      });
-      return;
-    }
-    if (method === 'Log.entryAdded') {
-      const p = params as CdpLogEntryAdded;
-      const e = p.entry ?? {};
-      pushConsole(state, {
-        timestamp: e.timestamp ?? Date.now(),
-        level: normalizeConsoleLevel(e.level),
-        text: e.text ?? '',
-        source: 'log',
-        url: e.url,
-        line: e.lineNumber,
-      });
-      return;
-    }
-    if (method === 'Network.requestWillBeSent') {
-      const p = params as CdpNetworkRequestWillBeSent;
-      const entry = ensureNetworkEntry(state, p.requestId);
-      entry.url = p.request?.url ?? entry.url;
-      entry.method = p.request?.method ?? entry.method;
-      entry.resource_type = p.type ?? entry.resource_type;
-      entry.request_headers = p.request?.headers ?? entry.request_headers;
-      entry.request_post_data = p.request?.postData ?? entry.request_post_data;
-      return;
-    }
-    if (method === 'Network.responseReceived') {
-      const p = params as CdpNetworkResponseReceived;
-      const entry = ensureNetworkEntry(state, p.requestId);
-      entry.status = p.response?.status;
-      entry.status_text = p.response?.statusText;
-      entry.mime_type = p.response?.mimeType;
-      entry.response_headers = p.response?.headers;
-      return;
-    }
-    if (method === 'Network.loadingFinished') {
-      const p = params as CdpNetworkLoadingFinished;
-      const entry = ensureNetworkEntry(state, p.requestId);
-      entry.finished_at = Date.now();
-      entry.encoded_data_length = p.encodedDataLength;
-      return;
-    }
-    if (method === 'Network.loadingFailed') {
-      const p = params as CdpNetworkLoadingFailed;
-      const entry = ensureNetworkEntry(state, p.requestId);
-      entry.finished_at = Date.now();
-      entry.failed = p.errorText ?? 'failed';
-      return;
-    }
-    if (method === 'Page.javascriptDialogOpening') {
-      // The page JS thread is now frozen until something calls
-      // Page.handleJavaScriptDialog. We do NOT respond automatically —
-      // the agent reads dialog-opening from browser.events and decides
-      // via browser.dialog_respond. The popup also exposes accept/dismiss
-      // buttons as a manual escape hatch.
-      const p = params as CdpPageJavascriptDialogOpening;
-      const info: PendingDialogInfo = {
-        type: p.type ?? 'alert',
-        message: p.message ?? '',
-      };
-      if (typeof p.defaultPrompt === 'string') info.default_prompt = p.defaultPrompt;
-      if (typeof p.url === 'string') info.url = p.url;
-      state.pendingDialog = info;
-      if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
-        const data: Record<string, unknown> = {
-          type: info.type,
-          message: info.message,
-        };
-        if (info.default_prompt !== undefined) data.default_prompt = info.default_prompt;
-        if (info.url !== undefined) data.url = info.url;
-        send(state.ws, {
-          kind: 'bridge.event',
-          eventKind: 'dialog-opening',
-          tabId: state.serverTabId,
-          data,
-        });
-      }
-      return;
-    }
-    if (method === 'Page.javascriptDialogClosed') {
-      const p = params as CdpPageJavascriptDialogClosed;
-      state.pendingDialog = undefined;
-      if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
-        const data: Record<string, unknown> = { accept: p.result === true };
-        if (typeof p.userInput === 'string') data.user_input = p.userInput;
-        send(state.ws, {
-          kind: 'bridge.event',
-          eventKind: 'dialog-closed',
-          tabId: state.serverTabId,
-          data,
-        });
-      }
-      return;
-    }
-    if (
-      method === 'Runtime.bindingCalled' &&
-      (params as { name?: string }).name === OBSERVER_BINDING
-    ) {
-      // The page driver's own subscription handles it (core's session/page-driver.ts).
-      return;
-    }
-    if (method === 'Runtime.bindingCalled') {
-      // Fired for EVERY CDP binding on the tab, not just ours. Two gates
-      // before a payload is even parsed: the per-session binding name must
-      // match, and — inside parseRecordedPayload — the payload must carry
-      // the per-session nonce only the injected recorder knows. A page
-      // script calling the binding blind (it CAN reach the function — CDP
-      // bindings are page-visible globals) fails the nonce check and
-      // records nothing. See recorder.ts's THREAT MODEL doc.
-      const p = params as { name?: string; payload?: string };
-      const recording = state.recording;
-      if (!recording || recording.status !== 'recording') return;
-      if (p.name !== recording.bindingName) return;
-      const payload = parseRecordedPayload(p.payload ?? '', recording.nonce);
-      if (!payload) return;
-      const result = appendRecordingStep(recording.steps, toFlowStep(payload));
-      recording.steps = result.steps;
-      if (!result.capped && payload.kind !== 'press' && payload.ambiguous === true) {
-        recording.ambiguousStepIndices.push(result.steps.length - 1);
-      }
-      if (result.capped) {
-        recording.capped = true;
-        void finishRecording(state.tabId);
-      }
-      return;
-    }
-  };
-  state.debuggerListener = listener;
+  sendBridgeEvent(state, 'tab-navigated', { url: outcome.url, title });
 }
 
 /** Build the canvas-screenshot expression. Walks nested Shadow DOM roots
@@ -1435,7 +1066,7 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 
 async function performWaitFor(
   tabId: number,
-  state: TabState,
+  state: TabSession,
   params: {
     selector?: string;
     ref?: string;
@@ -2026,7 +1657,7 @@ async function handleScreenshot(
 }
 
 function handleConsole(
-  state: TabState,
+  state: TabSession,
   msg: ToolRequestMessage,
   optStr: (key: string) => string | undefined,
 ): ExtensionToServer {
@@ -2038,7 +1669,7 @@ function handleConsole(
 }
 
 function handleNetwork(
-  state: TabState,
+  state: TabSession,
   msg: ToolRequestMessage,
   optStr: (key: string) => string | undefined,
 ): ExtensionToServer {
@@ -2064,7 +1695,7 @@ async function handleNetworkBody(
 
 async function handleFlow(
   tabId: number,
-  state: TabState,
+  state: TabSession,
   msg: ToolRequestMessage,
   p: Record<string, unknown>,
 ): Promise<ExtensionToServer> {
@@ -2275,7 +1906,7 @@ async function handleFlowStatus(
  * own to break out of. */
 function buildFlowDeps(
   tabId: number,
-  state: TabState,
+  state: TabSession,
   shouldCancel?: () => boolean,
   /** The user's hide-password-values setting (owner decision D12): find
    * steps and the recovery snapshot hide password values too. */
@@ -2358,8 +1989,7 @@ function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
   const endedAt = Date.now();
   // Owner decision D1: the flow's steps were the tab's activity, so the
   // idle window restarts from its last step whatever the outcome.
-  const tabState = tabStates.get(entry.tabId);
-  if (tabState) tabState.lastActivityAt = activityAfterFlowEnded(tabState.lastActivityAt, endedAt);
+  tabConnections.get(entry.tabId)?.session.flowEnded(endedAt);
   const droppedAt = flowHistoryDroppedAt.get(entry.tabId);
   // Skip the append entirely for a tab that has already been removed — see
   // `flowHistoryDroppedAt`. Ordering on the chain is not enough on its own,
@@ -2399,7 +2029,7 @@ function appendFlowHistoryEntry(tabId: number, historyEntry: FlowHistoryEntry): 
  * is addressable by `flow_id` through `browser.flow_status` and has no
  * business in a 200-entry ring buffer. */
 function publishFlowFinished(tabId: number, record: DetachedFlowRecord): boolean {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state?.ws || state.ws.readyState !== WebSocket.OPEN) return false;
   send(state.ws, {
     kind: 'bridge.event',
@@ -2774,7 +2404,10 @@ async function handleSetPermission(
   };
 }
 
-async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<ExtensionToServer> {
+async function handleTool(
+  state: TabConnection,
+  msg: ToolRequestMessage,
+): Promise<ExtensionToServer> {
   const tabId = state.tabId;
   // A registered tool (design 3.3) runs through core and maps its outcome
   // to the wire once (3.4).
@@ -2819,16 +2452,16 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return await handleScreenshot(tabId, msg, p, optStr);
 
       case 'console':
-        return handleConsole(state, msg, optStr);
+        return handleConsole(state.session, msg, optStr);
 
       case 'network':
-        return handleNetwork(state, msg, optStr);
+        return handleNetwork(state.session, msg, optStr);
 
       case 'network_body':
         return await handleNetworkBody(tabId, msg, str);
 
       case 'flow':
-        return await handleFlow(tabId, state, msg, p);
+        return await handleFlow(tabId, state.session, msg, p);
 
       case 'flow_status':
         // Deliberately NOT scoped to `tabId`: the registry and the
@@ -2848,7 +2481,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
       }
 
       case 'wait_for': {
-        const outcome = await performWaitFor(tabId, state, {
+        const outcome = await performWaitFor(tabId, state.session, {
           selector: optStr('selector'),
           ref: optStr('ref'),
           expression: optStr('expression'),
@@ -2888,63 +2521,19 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
   }
 }
 
-async function cleanup(tabId: number): Promise<void> {
-  const state = tabStates.get(tabId);
-  if (!state) return;
-  // Delete the tracking entry SYNCHRONOUSLY, before any await below: the
-  // reconnect policy's CloseContext.tracked contract promises that every
-  // extension-initiated teardown deletes state BEFORE the WS close event
-  // dispatches. ws.close() further down fires that event on a later turn,
-  // so deleting here keeps the promise — the close handler then sees an
-  // untracked socket and never auto-reconnects a teardown the extension
-  // itself initiated. The awaited steps below only need the captured
-  // `state` and raw CDP calls, never the map entry — and deleting first
-  // also makes a re-entrant cleanup a no-op instead of a double detach.
-  tabStates.delete(tabId);
-  // A flow cannot outlive its bridge: the debugger is about to detach, so
-  // every remaining step would fail one by one anyway. Cancelling instead
-  // makes the flow stop AT ONCE and report what it completed — and, just
-  // as importantly, keeps the popup from offering a Stop button for a flow
-  // whose tab is already being torn down.
-  flowRegistry.cancelForTab(tabId);
-  // Recording never survives a disconnect — there is no server connection
-  // left to save to, and leaving captured-but-unsaved steps around after
-  // the tab drops its bridge would be a surprising place for them to
-  // linger.
-  removeRecordingNavListener(tabId);
-  // `chrome.debugger.detach` below drops the CDP binding SUBSCRIPTION but
-  // does NOT remove the plain `window.addEventListener` listeners the
-  // recorder installed in the page — those would leak, staying attached to
-  // a page the user is still browsing. Tear them down in-page FIRST, while
-  // the debugger is still attached and the page driver can reach the page.
-  // Best-effort: the tab may already be gone (tab-removal path), in which
-  // case there is nothing left to tear down anyway.
-  if (state.recording) {
-    await teardownRecorderInPage(tabId, state.recording.stopFn);
-  }
-  if (state.ws && state.ws.readyState !== WebSocket.CLOSED) {
-    try {
-      state.ws.close();
-    } catch {
-      // Best effort — the resource may already be detached/closed.
-    }
-  }
-  if (state.debuggerAttached) {
-    await state.driver.uninstall(() => true);
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch {
-      // Best effort — the resource may already be detached/closed.
-    }
-  }
+/** Tear the tab's connection down (`app/tab-connection.ts` `closeTabConnection`). */
+function cleanup(tabId: number): Promise<void> {
+  return closeTabConnection(tabConnections, tabId, {
+    cancelFlows: (id) => flowRegistry.cancelForTab(id),
+    removeRecordingNavListener,
+    teardownRecorder: teardownRecorderInPage,
+    detachDebugger: (id) => chrome.debugger.detach({ tabId: id }),
+  });
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.tabId === undefined) return;
-  const state = tabStates.get(source.tabId);
-  if (!state) return;
-  state.debuggerListener?.(method, params);
-  for (const listener of state.eventListeners) listener(method, params);
+  deliverCdpEvent(tabConnections.get(source.tabId), method, params);
 });
 
 /**
@@ -3051,7 +2640,7 @@ const reconnectScheduler = createReconnectScheduler({
       // The Chrome tab itself is gone — nothing left to reconnect.
       return 'stop';
     }
-    const existing = tabStates.get(tabId);
+    const existing = tabConnections.get(tabId);
     if (existing) {
       // A live bridge already exists (e.g. the user pressed Connect while
       // a retry was pending) — done. A state whose socket is not OPEN yet
@@ -3090,7 +2679,7 @@ async function resumePendingReconnects(): Promise<void> {
     return;
   }
   const plan = planResume(stored, Date.now(), {
-    isLive: (tabId) => tabStates.has(tabId),
+    isLive: (tabId) => tabConnections.has(tabId),
     cancelledSince: (tabId) => reconnectScheduler.wasCancelledSince(tabId, epoch),
   });
   // Wait only what was left of the pending step (0 = due already).
@@ -3110,14 +2699,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // detached flow's record should have. See `recoverDetachedFlows`.
 void recoverDetachedFlows();
 
-/** Tabs with a `connectTab` currently in flight. The `tabStates.has` check
- * inside `doConnectTab` alone cannot prevent two concurrent connects — the
- * state lands only after three awaited chrome.* calls — so this SYNCHRONOUS
- * check-and-set is the real per-tab reentrancy guard. */
-const connectsInFlight = new Set<number>();
-
+/** Connect a tab. The `has` check inside `doConnectTab` alone cannot prevent
+ * two concurrent connects — the connection lands only after three awaited
+ * chrome.* calls — so the registry's SYNCHRONOUS reservation is the real
+ * per-tab reentrancy guard, held for the whole attempt. */
 async function connectTab(tabId: number): Promise<ConnectResult> {
-  if (connectsInFlight.has(tabId)) {
+  const reservation = tabConnections.reserve(tabId);
+  if (!reservation) {
     // A concurrent connect (popup Connect racing a scheduled reconnect
     // attempt, or vice versa) — the in-flight attempt owns the tab.
     // Answer benignly instead of letting a second attempt fail its
@@ -3125,18 +2713,18 @@ async function connectTab(tabId: number): Promise<ConnectResult> {
     // exact message as the "Reconnecting" card, not an error.
     return { ok: false, error: CONNECT_IN_PROGRESS_ERROR };
   }
-  connectsInFlight.add(tabId);
   try {
-    return await doConnectTab(tabId);
+    return await doConnectTab(reservation);
   } finally {
-    connectsInFlight.delete(tabId);
+    tabConnections.release(reservation);
   }
 }
 
 /** Body of `connectTab` — call only through the wrapper above, which holds
- * the per-tab in-flight lock for the full duration of the attempt. */
-async function doConnectTab(tabId: number): Promise<ConnectResult> {
-  if (tabStates.has(tabId)) {
+ * the tab's reservation for the full duration of the attempt. */
+async function doConnectTab(reservation: TabReservation): Promise<ConnectResult> {
+  const { tabId } = reservation;
+  if (tabConnections.has(tabId)) {
     return workerFailure({ code: 'tab-already-connected' });
   }
 
@@ -3163,18 +2751,17 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
   }
 
   const eventListeners = new Set<TabEventListener>();
-  const state: TabState = {
+  const driver = newPageDriver(tabId, eventListeners);
+  const state = newTabConnection(
     tabId,
-    debuggerAttached: true,
-    consoleBuffer: [],
-    networkBuffer: new Map(),
-    networkOrder: [],
-    lastActivityAt: Date.now(),
+    new TabSession({ clock: systemClock, driver }),
     eventListeners,
-    driver: newPageDriver(tabId, eventListeners),
-  };
-  tabStates.set(tabId, state);
-  attachDebuggerListener(state);
+  );
+  tabConnections.commit(reservation, state);
+  state.debuggerListener = debuggerIntake(state, {
+    clock: systemClock,
+    onRecordingCapped: (id) => void finishRecording(id),
+  });
 
   try {
     await cdp(tabId, 'Page.enable');
@@ -3192,7 +2779,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
 
   // The page observer: non-fatal. On failure the tab connects as before and
   // actions report `settle.changes: null` with `observer-unavailable`.
-  const installed = await state.driver.install({
+  const installed = await state.session.driver.install({
     enableRuntime: false,
     onTopDocument: (outcome) => reportTopDocument(state, outcome),
   });
@@ -3239,7 +2826,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
           case 'tab.registered': {
             // A successful registration ends any reconnect cycle for this
             // tab. Covers the resume path re-arming a tab the user just
-            // connected manually (resumePendingReconnects's tabStates
+            // connected manually (resumePendingReconnects's tabConnections
             // check races connectTab); when the SCHEDULER drove this very
             // connect, its in-flight guard makes this cancel a clean,
             // notify-once end of the cycle.
@@ -3267,14 +2854,14 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // killed under.
             void flushPendingFlowEvents(tabId);
             // A fingerprint the observer pushed before this registration.
-            const docInfo = pendingDocInfoEvent(state.driver.observer, msg.payload.tabId);
+            const docInfo = pendingDocInfoEvent(state.session.driver.observer, msg.payload.tabId);
             if (docInfo) send(ws, docInfo);
             settle({ ok: true, serverTabId: msg.payload.tabId });
             return;
           }
           case 'settings.update': {
             // Housekeeping, not agent activity — deliberately does NOT touch
-            // state.lastActivityAt. Counting a server-pushed settings sync as
+            // the session's activity. Counting a server-pushed settings sync as
             // "activity" would let it silently keep an otherwise-idle tab
             // connected forever, defeating the idle TTL it is updating.
             //
@@ -3299,21 +2886,9 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             return;
           }
           case 'tool.request': {
-            // Touch the activity timestamp so the WS-idle sweeper keeps
-            // this tab warm.
-            state.lastActivityAt = Date.now();
-            // The call holds the idle clock while it runs, and its reply is
-            // activity too (BL-EXT-098).
-            const call = { startedAt: state.lastActivityAt };
-            const calls = (state.callsInProgress ??= new Set());
-            calls.add(call);
-            let response: Awaited<ReturnType<typeof handleTool>>;
-            try {
-              response = await handleTool(state, msg);
-            } finally {
-              calls.delete(call);
-              state.lastActivityAt = Math.max(state.lastActivityAt, Date.now());
-            }
+            // The request is activity, the call holds the idle clock while it
+            // runs, and its reply is activity too (BL-EXT-098).
+            const response = await state.session.runCall(() => handleTool(state, msg));
             if (ws.readyState === WebSocket.OPEN) send(ws, response);
             return;
           }
@@ -3327,7 +2902,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // Counts as activity: an agent reaching for the kill switch is
             // very much using this tab, and letting the idle sweeper close
             // the bridge underneath it would be perverse.
-            state.lastActivityAt = Date.now();
+            state.session.touch();
             flowRegistry.cancel(msg.flow_id, msg.reason === 'expired' ? 'expired' : undefined);
             return;
           }
@@ -3378,7 +2953,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     });
 
     ws.addEventListener('close', (ev: CloseEvent) => {
-      const current = tabStates.get(tabId);
+      const current = tabConnections.get(tabId);
       if (current !== undefined && current.ws !== ws) {
         // A newer connection already owns this tab — this close belongs to
         // a superseded socket, and tearing state down here would kill the
@@ -3420,14 +2995,14 @@ async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
 }
 
 function getTabStatus(tabId: number): StatusResult {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state) {
     // Keep the popup truthful while auto-reconnect is working: "not
     // connected, but actively retrying" rather than a flat idle state.
-    // `connectsInFlight` covers the short gap inside a live attempt
-    // before its TabState lands — without it the popup's poll could
+    // The registry's reservation covers the short gap inside a live attempt
+    // before its connection lands — without it the popup's poll could
     // misread that gap as idle and freeze the card there.
-    if (reconnectScheduler.isPending(tabId) || connectsInFlight.has(tabId)) {
+    if (reconnectScheduler.isPending(tabId) || tabConnections.isReservedOrLive(tabId)) {
       return { connected: false, reconnecting: true };
     }
     return { connected: false };
@@ -3446,7 +3021,7 @@ function getVersionCheck(): VersionCheck {
   const extension = chrome.runtime.getManifest().version;
   let server: string | null = null;
   let installed: string | null = null;
-  for (const s of tabStates.values()) {
+  for (const s of tabConnections.values()) {
     if (typeof s.serverVersion === 'string' && s.serverVersion.length > 0) {
       server = s.serverVersion;
       installed =
@@ -3500,7 +3075,7 @@ function askServerRestart(socket: WebSocket): Promise<RepairOutcome> {
 }
 
 async function repairConnection(): Promise<RepairOutcome> {
-  const socket = [...tabStates.values()]
+  const socket = [...tabConnections.values()]
     .map((s) => s.ws)
     .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
   const plan = planRepair({
@@ -3607,7 +3182,7 @@ async function teardownRecorderInPage(tabId: number, stopFn: string): Promise<vo
 }
 
 async function handleRecordingNavigation(tabId: number, newUrl: string): Promise<void> {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   const recording = state?.recording;
   if (!recording || recording.status !== 'recording') return;
   if (!isNavigationForRecording(recording.lastUrl, newUrl)) return;
@@ -3633,7 +3208,7 @@ async function startRecording(tabId: number): Promise<{ ok: boolean; error?: str
   if (!flowRecordingEnabledCache) {
     return workerFailure({ code: 'recording-disabled' });
   }
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state) return workerFailure({ code: 'tab-not-connected' });
   if (state.recording) {
     return workerFailure({ code: 'recording-in-progress' });
@@ -3715,7 +3290,7 @@ async function startRecording(tabId: number): Promise<{ ok: boolean; error?: str
  * the step-cap auto-stop path (`Runtime.bindingCalled` handler /
  * `handleRecordingNavigation` above). */
 async function finishRecording(tabId: number): Promise<void> {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state?.recording || state.recording.status !== 'recording') return;
   removeRecordingNavListener(tabId);
   state.recording.status = 'reviewing';
@@ -3730,7 +3305,7 @@ async function finishRecording(tabId: number): Promise<void> {
 async function stopRecording(
   tabId: number,
 ): Promise<{ ok: boolean; steps?: FlowStep[]; capped?: boolean; error?: string }> {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state?.recording || state.recording.status !== 'recording') {
     return workerFailure({ code: 'not-recording' });
   }
@@ -3757,7 +3332,7 @@ async function stopRecording(
  * received and persisted before this ran. */
 function clearRecording(tabId: number): void {
   removeRecordingNavListener(tabId);
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state) return;
   state.recording = undefined;
   const pending = state.pendingFlowSave;
@@ -3782,7 +3357,7 @@ async function discardRecording(tabId: number): Promise<{ ok: boolean }> {
  * while a recording is in progress. Never leaves captured-but-unreviewed
  * steps sitting in memory once the user has turned the feature off. */
 async function forceStopAndDiscardRecording(tabId: number): Promise<void> {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   if (!state?.recording) return;
   if (state.recording.status === 'recording') {
     await finishRecording(tabId);
@@ -3798,7 +3373,7 @@ function getRecordingStatus(tabId: number): {
   steps?: FlowStep[];
   ambiguousStepIndices?: number[];
 } {
-  const recording = tabStates.get(tabId)?.recording;
+  const recording = tabConnections.get(tabId)?.recording;
   if (!recording) return { active: false, reviewing: false, stepCount: 0, capped: false };
   return {
     active: recording.status === 'recording',
@@ -3821,7 +3396,7 @@ async function saveRecording(
   name: string,
   description: string | undefined,
 ): Promise<{ ok: boolean; error?: string }> {
-  const state = tabStates.get(tabId);
+  const state = tabConnections.get(tabId);
   const recording = state?.recording;
   if (!state || !recording || recording.status !== 'reviewing') {
     return workerFailure({ code: 'no-reviewed-recording' });
@@ -3920,8 +3495,8 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     return true;
   }
   if (msg.action === 'pendingDialog') {
-    const state = tabStates.get(msg.tabId);
-    sendResponse({ pending: state?.pendingDialog ?? null });
+    const state = tabConnections.get(msg.tabId);
+    sendResponse({ pending: state?.session.pendingDialog ?? null });
     return false;
   }
   if (msg.action === 'respondDialog') {
@@ -4042,7 +3617,7 @@ chrome.tabs.onCreated.addListener((tab) => {
   const openerTabId = tab.openerTabId;
   if (typeof newTabId !== 'number') return;
   if (typeof openerTabId !== 'number') return;
-  const openerState = tabStates.get(openerTabId);
+  const openerState = tabConnections.get(openerTabId);
   if (!openerState) return;
   const openedFrom = openerState.serverTabId;
   if (!openedFrom) return;
@@ -4070,7 +3645,7 @@ chrome.tabs.onCreated.addListener((tab) => {
     try {
       const result = await connectTab(newTabId);
       if (!result.ok || !result.serverTabId) return;
-      const newState = tabStates.get(newTabId);
+      const newState = tabConnections.get(newTabId);
       if (!newState?.ws || newState.ws.readyState !== WebSocket.OPEN) return;
       let resolvedUrl = '';
       try {
@@ -4096,7 +3671,7 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId === undefined) return;
-  const state = tabStates.get(source.tabId);
+  const state = tabConnections.get(source.tabId);
   if (!state) return;
   state.debuggerAttached = false;
   void cleanup(source.tabId).catch(() => {
@@ -4116,7 +3691,7 @@ chrome.debugger.onDetach.addListener((source) => {
  *
  * When the console set "never" (idleTtlMinutesCache === 0),
  * `shouldScheduleIdleSweep` short-circuits the tick before it walks
- * `tabStates` — the interval itself keeps ticking (cancelling/rearming a
+ * `tabConnections` — the interval itself keeps ticking (cancelling/rearming a
  * service-worker timer from a storage listener is more moving parts than
  * it is worth for a once-a-minute no-op), but each tick does zero work
  * beyond that one check.
@@ -4139,14 +3714,9 @@ setInterval(() => {
       holdUntil: idleHoldUntil(entry, foregroundFlowDeadlines.get(entry.flowId)),
     });
   }
-  const tabs = [...tabStates].map(([tabId, state]) => [tabId, state.lastActivityAt] as const);
-  // BL-EXT-098: a call still running holds its tab too.
-  const calls: IdleCallInProgress[] = [];
-  for (const [tabId, state] of tabStates) {
-    for (const call of state.callsInProgress ?? [])
-      calls.push({ tabId, startedAt: call.startedAt });
-  }
-  for (const tabId of tabsToDisconnectForIdle(tabs, holds, now, idleTtlMinutesCache, calls)) {
+  // BL-EXT-098: a call still running holds its tab too (`TabSession.idleCandidate`).
+  const sessions = [...tabConnections].map(([tabId, conn]) => [tabId, conn.session] as const);
+  for (const tabId of idleTabs(sessions, holds, now, idleTtlMinutesCache)) {
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

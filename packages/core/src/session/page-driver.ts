@@ -85,10 +85,10 @@ export interface PageDriverHandle extends PageDriver {
   uninstall(tearDownPage: () => boolean): Promise<void>;
 }
 
-/** The transport's view of JavaScript dialogs (the extension tracks
- * `Page.javascriptDialogOpening` / `Closed` per tab). Read-only, outside
- * `ports/`, and transitional: slice 12 hands it `TabSession` state
- * (design revision 8). */
+/** The transport's view of JavaScript dialogs. Read-only and outside
+ * `ports/` (design revision 8): the extension's watch reads its tab's
+ * `TabSession` pending dialog (`session/tab-session.ts`
+ * `sessionDialogWatch`); cdp-direct does not track dialogs and gives none. */
 export interface DialogWatch {
   isOpen(): boolean;
 }

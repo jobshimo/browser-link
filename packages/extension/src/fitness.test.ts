@@ -9,6 +9,9 @@
 //     count) appear only in adapters/** and background.ts; no worker-zone
 //     module imports a UI-zone module; UI-zone modules import neither
 //     background.ts, adapters/** nor app/**.
+//   - app/** (design 5.2): an app module names no `chrome` identifier and
+//     imports neither background.ts nor adapters/** (it may import core,
+//     shared, the extension's pure modules and its own interfaces).
 //   - Adapters stay free of logic: every function-like node in adapters/**
 //     has a decision count of 0 (if, ?:, case, loops, catch, &&, ||; not
 //     ?? or ?.), outside ADAPTER_EXEMPTIONS (at most three).
@@ -28,7 +31,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 /** Lowered by every slice that moves code out; never raised without arch sign-off. */
-const BACKGROUND_LINE_BUDGET = 4154;
+const BACKGROUND_LINE_BUDGET = 3724;
 
 /** Scripts of the three HTML pages, and the module only they import. */
 const UI_ZONE = ['popup.ts', 'activity.ts', 'admin.ts', 'ui-language.ts'];
@@ -170,6 +173,21 @@ function zoneViolations(files: Sources, uiZone: readonly string[] = UI_ZONE): st
     for (const target of importsOf(path, files)) {
       if (target === 'background.ts' || isAdapter(target) || isApp(target)) {
         violations.push(`UI zone: ${path} imports ${target}`);
+      }
+    }
+  }
+  return violations;
+}
+
+/** app/** modules: no `chrome`, and no import of background.ts or adapters/** (5.2). */
+function appViolations(files: Sources): string[] {
+  const violations: string[] = [];
+  for (const [path, text] of files) {
+    if (!isApp(path)) continue;
+    if (hasChromeIdentifier(path, text)) violations.push(`app: ${path} names chrome`);
+    for (const target of importsOf(path, files)) {
+      if (target === 'background.ts' || isAdapter(target)) {
+        violations.push(`app: ${path} imports ${target}`);
       }
     }
   }
@@ -479,6 +497,41 @@ describe('fitness: extension zones', () => {
       'UI zone: popup.ts imports background.ts',
       'UI zone: popup.ts imports app/windows.ts',
       'UI zone: admin.ts imports adapters/tabs.ts',
+    ]);
+  });
+});
+
+describe('fitness: app/** stays chrome-free', () => {
+  it('holds for the real app/ modules', () => {
+    const files = realSources();
+    expect([...files.keys()].filter(isApp).length).toBeGreaterThan(0);
+    expect(appViolations(files)).toEqual([]);
+  });
+
+  it('core, shared and the extension pure modules are allowed', () => {
+    const fixture = new Map([
+      [
+        'app/conn.ts',
+        "import { TabSession } from '@browser-link/core';\nimport { send } from '../recording.js';\n// chrome.debugger in a comment\nvoid [TabSession, send];\n",
+      ],
+      ['recording.ts', 'export const send = 1;\n'],
+    ]);
+    expect(appViolations(fixture)).toEqual([]);
+  });
+
+  it('RED: an app/ module names chrome, imports background.ts or an adapter', () => {
+    const fixture = new Map([
+      [
+        'app/conn.ts',
+        "import { BRIDGE_PORT } from '../background.js';\nimport { get } from '../adapters/tabs.js';\nexport const info = () => chrome.tabs.get(BRIDGE_PORT + get);\n",
+      ],
+      ['background.ts', 'export const BRIDGE_PORT = 1;\n'],
+      ['adapters/tabs.ts', 'export const get = 1;\n'],
+    ]);
+    expect(appViolations(fixture)).toEqual([
+      'app: app/conn.ts names chrome',
+      'app: app/conn.ts imports background.ts',
+      'app: app/conn.ts imports adapters/tabs.ts',
     ]);
   });
 });
