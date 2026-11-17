@@ -87,6 +87,24 @@ export function resolveChrome(env = process.env, platform = process.platform) {
   return found;
 }
 
+/** The environment every built-server process of a run gets (the MCP server
+ * and the CLI commands the harness runs, such as the cdp-direct grant): the
+ * run's own ports, data dir and HOME, so nothing reaches the owner's
+ * browser-link, its config or the agent-instruction files under the real HOME. */
+export function isolatedServerEnv({ wsPort, ipcPort, dataDir, homeDir }, base = process.env) {
+  return {
+    ...base,
+    BROWSER_LINK_WS_PORT: String(wsPort),
+    BROWSER_LINK_IPC_PORT: String(ipcPort),
+    BROWSER_LINK_DATA_DIR: dataDir,
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    XDG_CONFIG_HOME: join(homeDir, '.config'),
+    XDG_DATA_HOME: join(homeDir, '.local/share'),
+    COPILOT_HOME: join(homeDir, '.copilot'),
+  };
+}
+
 /** A free loopback port, never one of the defaults. */
 export async function freePort() {
   for (;;) {

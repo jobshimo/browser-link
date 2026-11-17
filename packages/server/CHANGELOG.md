@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.15](https://github.com/jobshimo/browser-link/compare/v1.4.14...v1.4.15) (2026-11-17)
+
+No tool or wire-format changes.
+
+### Tests
+
+- **e2e:** the real-Chrome run now also covers cdp-direct, the second transport. After the extension cases it starts a second headless Chrome without the extension on a free debugging port, enables and grants cdp-direct with the built CLI (`config set cdp-direct.enabled true`, `config set cdp-direct.port <port>`, `cdp allow --minutes 10`) inside the run's temp data dir and HOME, and drives that Chrome's tab through the same server: `list_tabs`, `navigate`, `snapshot`, `find`, `type`, `click`, `evaluate`, and a click on a missing selector with its exact error text. The `.cdp` cases are in the tool-to-case table and take about 1 s.
+- **e2e-diff:** the differential compares the cdp-direct cases too; the normalise table also masks `claimed_at` and `last_activity_at`, the claim times `list_tabs` shows once the extension tabs are claimed.
+
+### Continuous Integration
+
+- **e2e:** the required `e2e` job (Chrome 118) and the stable leg run the cdp-direct cases as part of `pnpm test:e2e`. The `e2e-diff` job counts `packages/e2e/src/cdp-direct.mjs` as harness (self-diff, base-record cache key).
+
 ## [1.4.14](https://github.com/jobshimo/browser-link/compare/v1.4.13...v1.4.14) (2026-11-17)
 
 ### Bug Fixes

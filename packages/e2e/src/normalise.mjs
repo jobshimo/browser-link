@@ -59,6 +59,10 @@ export const TIME_KEYS = [
   'taken_at_ms',
   // console entries: Chrome's epoch ms of each message.
   'timestamp',
+  // list_tabs claimed_by: epoch ms the claim was taken and last used (the
+  // cdp-direct list_tabs runs after the extension tabs were claimed).
+  'claimed_at',
+  'last_activity_at',
 ];
 
 /** Counts that measure timing, per tool, at the top of the result: they
