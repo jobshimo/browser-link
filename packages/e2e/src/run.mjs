@@ -504,6 +504,7 @@ async function main() {
     (_b, t) => !/"ok":\s*false/.test(t) || 'a step failed',
   );
 
+  await errorPaths(T);
   await ruleChecks(T);
   // Right after the rule checks left the page scrolled: where a miss was
   // seen. Recorded, not thrown, so the steps below still run; it fails the run.
@@ -1101,6 +1102,87 @@ async function pageValue(T, expression) {
   });
   const b = json(res);
   return b && typeof b === 'object' && 'value' in b ? b.value : b;
+}
+
+/**
+ * Error paths (slice 3b): one case per ToolFailure kind a Chrome tab can
+ * reach, with the exact error text the tool answers today. `unknown-tool` is
+ * not here: no MCP path sends one (contract suite only).
+ */
+async function errorPaths(T) {
+  const expectError = async (name, tool, args, want, extra) => {
+    const label = `error.${name}`;
+    const t = now();
+    const r = await attempt(tool, { tab_id: T, ...args }, label);
+    if (!r.isError || r.text !== want) {
+      throw new StepFailure(
+        label,
+        `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+      );
+    }
+    if (extra) await extra();
+    stepDone(label, t);
+  };
+
+  // action: a click whose selector matches nothing.
+  await expectError(
+    'action',
+    'browser.click',
+    { selector: '#e2e-no-such-element' },
+    'Error: Element not found: #e2e-no-such-element',
+  );
+
+  // thrown: the evaluated expression throws.
+  await expectError(
+    'thrown',
+    'browser.evaluate',
+    { expression: "(() => { throw new Error('e2e-boom'); })()" },
+    'Error: Error: e2e-boom\n    at <anonymous>:1:16\n    at <anonymous>:1:41',
+  );
+
+  // timeout: wait_for expires on a selector that never appears.
+  // Today it is an ordinary answer, not an error: matched false, reason timeout.
+  {
+    const label = 'error.timeout';
+    const t = now();
+    const r = await attempt(
+      'browser.wait_for',
+      { tab_id: T, selector: '#e2e-never', condition: 'visible', timeout_ms: 300 },
+      label,
+    );
+    if (r.isError || r.body?.matched !== false || r.body?.reason !== 'timeout') {
+      throw new StepFailure(
+        label,
+        `expected matched:false reason:"timeout" and no isError; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+      );
+    }
+    stepDone(label, t);
+  }
+
+  // sensitive: a type into a password field fails (its expect already held);
+  // the error text is the executor's own, and the trail stores the marker.
+  await expectError(
+    'sensitive',
+    'browser.type',
+    {
+      selector: '#pw',
+      text: 'e2e-secret-2',
+      clear: true,
+      settle_ms: 0,
+      expect: { selector_appears: '#pw' },
+    },
+    'Error: expectation not met: selector_appears "#pw" was already present before the action',
+    async () => {
+      await call(
+        'browser.activity',
+        { tool: 'browser.type', limit: 1 },
+        (b, tx) =>
+          (b?.records?.[0]?.payload === '[sensitive field]' && !tx.includes('e2e-secret-2')) ||
+          `stored payload is ${JSON.stringify(b?.records?.[0]?.payload)}`,
+        { print: false, label: 'browser.activity.error-sensitive' },
+      );
+    },
+  );
 }
 
 /**
