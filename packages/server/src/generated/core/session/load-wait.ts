@@ -21,13 +21,19 @@ export type LoadSignal = (loaded: () => void) => () => void;
 export function armLoadWait(signal: LoadSignal, clock: Clock, timeoutMs: number): LoadWait {
   let release: () => void = () => {};
   const done = new Promise<void>((resolve, reject) => {
-    let settled = false;
+    let settled = false as boolean; // widened: the signal may set it during subscribe
     const unsubscribe = signal(() => {
       if (settled) return;
       settled = true;
       release();
       resolve();
     });
+    if (settled) {
+      // The signal fired during subscribe: `release` was still the placeholder,
+      // so unsubscribe here and never arm the timer.
+      unsubscribe();
+      return;
+    }
     const cancelTimer = clock.after(timeoutMs, () => {
       if (settled) return;
       settled = true;

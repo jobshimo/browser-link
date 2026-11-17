@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.14](https://github.com/jobshimo/browser-link/compare/v1.4.13...v1.4.14) (2026-11-17)
+
+### Bug Fixes
+
+- **core:** `armLoadWait` releases its timer and its subscription when the load signal arrives synchronously, during subscribe. Before, `release` was still the placeholder at that moment, so `done` resolved but the timeout timer and the subscription stayed alive. The timer is now never armed in that case and the subscription is dropped at once; a signal that arrives later behaves as before.
+
 ## [1.4.13](https://github.com/jobshimo/browser-link/compare/v1.4.12...v1.4.13) (2026-11-17)
 
 ### Bug Fixes

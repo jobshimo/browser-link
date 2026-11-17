@@ -104,3 +104,62 @@ describe('PageInfo contract over armLoadWait', () => {
     test(c.name, () => c.run());
   }
 });
+
+describe('armLoadWait when the signal fires during subscribe', () => {
+  /** A manual clock that counts the timers still armed. */
+  function countingClock(): { clock: ReturnType<typeof createManualClock>; live: () => number } {
+    const inner = createManualClock();
+    let live = 0;
+    const clock = {
+      ...inner,
+      after: (ms: number, fn: () => void) => {
+        live += 1;
+        const cancel = inner.after(ms, () => {
+          live -= 1;
+          fn();
+        });
+        let cancelled = false;
+        return () => {
+          if (!cancelled) live -= 1;
+          cancelled = true;
+          cancel();
+        };
+      },
+    };
+    return { clock, live: () => live };
+  }
+
+  function syncSignal(): { signal: LoadSignal; unsubscribed: () => number } {
+    let unsubscribed = 0;
+    return {
+      signal: (loaded) => {
+        loaded();
+        return () => {
+          unsubscribed += 1;
+        };
+      },
+      unsubscribed: () => unsubscribed,
+    };
+  }
+
+  test('resolves, leaves no timer armed and unsubscribes', async () => {
+    const { clock, live } = countingClock();
+    const sync = syncSignal();
+    const wait = armLoadWait(sync.signal, clock, 50);
+    await expect(wait.done).resolves.toBeUndefined();
+    expect(live()).toBe(0);
+    expect(sync.unsubscribed()).toBe(1);
+    await clock.advance(100);
+    await expect(wait.done).resolves.toBeUndefined();
+  });
+
+  test('cancel after the synchronous resolve is a no-op that leaves nothing armed', async () => {
+    const { clock, live } = countingClock();
+    const sync = syncSignal();
+    const wait = armLoadWait(sync.signal, clock, 50);
+    wait.cancel();
+    await expect(wait.done).resolves.toBeUndefined();
+    expect(live()).toBe(0);
+    expect(sync.unsubscribed()).toBeGreaterThanOrEqual(1);
+  });
+});
