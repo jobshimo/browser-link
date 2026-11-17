@@ -1319,6 +1319,13 @@ describe('buildSettleJs', () => {
 describe('buildSettleJs: shadow roots and frames (D5)', () => {
   const QUIET = 30;
   const MUTATE_AT = 20;
+  // The page measures with Date.now (1 ms steps) while this test schedules the
+  // mutation with setTimeout, whose clock is the event loop's own cached ms
+  // tick (coarser on Windows). A timer can therefore fire up to a tick before
+  // MUTATE_AT by Date.now. The product never settles before QUIET ms after the
+  // last mutation it saw (settle.check compares Date.now deltas), so the lower
+  // bound is allowed that much timer skew, not more.
+  const TIMER_SLACK = 2;
   const settleJs = () => buildSettleJs({ settle_ms: QUIET, settle_timeout_ms: 1000 });
 
   interface DeepSettleResult {
@@ -1389,7 +1396,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
         shadow.getElementById('inner')!.setAttribute('data-x', '1'),
       );
       expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a mutation inside a nested open shadow root is counted', async () => {
@@ -1400,7 +1407,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
       inner.innerHTML = '<b>y</b>';
       const result = await settleWhile(() => inner.querySelector('b')!.setAttribute('data-x', '1'));
       expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a closed root attached before settle started, known to the observer, is counted', async () => {
@@ -1409,7 +1416,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
       const closed = host.attachShadow({ mode: 'closed' });
       const result = await settleWhile(() => closed.appendChild(document.createElement('i')));
       expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 1 });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a root attached during the wait is counted through the observer; settle patches nothing', async () => {
@@ -1432,7 +1439,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
       }, MUTATE_AT);
       const result = await pending;
       expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
       expect(during).toBe(before);
       expect(Element.prototype.attachShadow).toBe(before);
     });
@@ -1448,7 +1455,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
       const result = await pending;
       // The insertion of the host (1) and the insertion inside its root (1).
       expect(result).toEqual({ settled: true, duration_ms: expect.any(Number), mutation_count: 2 });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a mutation inside a same-origin iframe document is counted and delays settled', async () => {
@@ -1462,7 +1469,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
         mutation_count: 1,
         frame_mutation_count: 1,
       });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a closed root inside a same-origin iframe, known to its observer, is counted', async () => {
@@ -1498,7 +1505,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
         mutation_count: 2,
         frame_mutation_count: 1,
       });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
     });
 
     test('a cross-origin iframe is reported as not watched', async () => {
@@ -1578,7 +1585,7 @@ describe('buildSettleJs: shadow roots and frames (D5)', () => {
         mutation_count: 1,
         unobserved: OPEN_ONLY,
       });
-      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET);
+      expect(result.duration_ms).toBeGreaterThanOrEqual(MUTATE_AT + QUIET - TIMER_SLACK);
       expect(Element.prototype.attachShadow).toBe(before);
     });
 
