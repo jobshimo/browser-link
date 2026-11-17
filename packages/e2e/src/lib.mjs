@@ -17,6 +17,7 @@ import {
 import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
+import { inflateSync } from 'node:zlib';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -26,6 +27,7 @@ export const EXT_DIST = join(REPO, 'packages/extension/dist');
 export const SERVER_CLI = join(REPO, 'packages/server/dist/cli.js');
 const SERVER_EXTENSION_ID = join(REPO, 'packages/server/dist/auth/extension-id.js');
 export const PAGE_FILE = join(E2E_DIR, 'pages/index.html');
+export const CAPTURE_FILE = join(E2E_DIR, 'pages/capture.html');
 /** The ports the owner's own browser-link uses; the harness never binds them. */
 export const DEFAULT_PORTS = [17529, 17530];
 
@@ -431,4 +433,78 @@ export function writeResult(record, env = process.env) {
     appendFileSync(env.GITHUB_STEP_SUMMARY, summaryMarkdown(record, env.E2E_LEG));
   }
   return file;
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Decode an 8-bit, non-interlaced RGB or RGBA PNG (what Chrome's canvas
+ * `toDataURL` and `Page.captureScreenshot` produce) into
+ * `{ width, height, pixel(x, y) -> [r, g, b, a] }`. Throws on anything else,
+ * so a capture in another shape fails loudly instead of reading garbage. */
+export function decodePng(buf) {
+  if (!Buffer.isBuffer(buf) || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error('not a PNG (bad signature)');
+  }
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  const idat = [];
+  for (let at = 8; at + 8 <= buf.length;) {
+    const len = buf.readUInt32BE(at);
+    const type = buf.toString('latin1', at + 4, at + 8);
+    const data = buf.subarray(at + 8, at + 8 + len);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      const [depth, colorType, , , interlace] = data.subarray(8, 13);
+      channels = { 2: 3, 6: 4 }[colorType] ?? 0;
+      if (depth !== 8 || !channels || interlace !== 0) {
+        throw new Error(
+          `unsupported PNG: depth ${depth}, color type ${colorType}, interlace ${interlace}`,
+        );
+      }
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    at += 12 + len;
+  }
+  if (!width || !height) throw new Error('PNG without IHDR');
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const px = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? px[y * stride + i - channels] : 0;
+      const b = y > 0 ? px[(y - 1) * stride + i] : 0;
+      const c = y > 0 && i >= channels ? px[(y - 1) * stride + i - channels] : 0;
+      let p;
+      if (filter === 0) p = 0;
+      else if (filter === 1) p = a;
+      else if (filter === 2) p = b;
+      else if (filter === 3) p = (a + b) >> 1;
+      else if (filter === 4) {
+        const e = a + b - c;
+        const [da, db, dc] = [Math.abs(e - a), Math.abs(e - b), Math.abs(e - c)];
+        p = da <= db && da <= dc ? a : db <= dc ? b : c;
+      } else throw new Error(`bad PNG filter ${filter} on row ${y}`);
+      px[y * stride + i] = (line[i] + p) & 0xff;
+    }
+  }
+  return {
+    width,
+    height,
+    pixel(x, y) {
+      const o = y * stride + x * channels;
+      return [px[o], px[o + 1], px[o + 2], channels === 4 ? px[o + 3] : 255];
+    },
+  };
+}
+
+/** Each channel of `got` within `tolerance` of `want` ([r, g, b]). */
+export function colorNear(got, want, tolerance = 8) {
+  return want.every((v, i) => Math.abs(got[i] - v) <= tolerance);
 }

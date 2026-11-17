@@ -1236,7 +1236,7 @@ describe('buildSettleJs', () => {
     document.body.appendChild(target);
 
     const resultPromise = evalExpr<Promise<SettleResult>>(
-      buildSettleJs({ settle_ms: 30, settle_timeout_ms: 500 }),
+      buildSettleJs({ settle_ms: 100, settle_timeout_ms: 500 }),
     );
     // One mutation shortly after the observer starts, then silence — the
     // quiet period should be measured from THIS mutation, not from t=0.
@@ -1245,7 +1245,7 @@ describe('buildSettleJs', () => {
     const result = await resultPromise;
     expect(result.settled).toBe(true);
     expect(result.mutation_count).toBeGreaterThanOrEqual(1);
-    expect(result.duration_ms).toBeGreaterThanOrEqual(30);
+    expect(result.duration_ms).toBeGreaterThanOrEqual(100);
   });
 
   test('resolves settled:false when mutations never stop before the cap', async () => {
@@ -1289,7 +1289,7 @@ describe('buildSettleJs', () => {
     input.focus();
 
     const resultPromise = evalExpr<Promise<SettleResult>>(
-      buildSettleJs({ settle_ms: 30, settle_timeout_ms: 300 }),
+      buildSettleJs({ settle_ms: 100, settle_timeout_ms: 300 }),
     );
     setTimeout(() => other.focus(), 5);
 
@@ -1317,7 +1317,13 @@ describe('buildSettleJs', () => {
  * settle that sees it finishes no earlier than MUTATE_AT + QUIET.
  */
 describe('buildSettleJs: shadow roots and frames (D5)', () => {
-  const QUIET = 30;
+  // The product starts its quiet clock when the script starts, before it walks
+  // the roots and frames (no mutation can happen during that synchronous walk,
+  // so those ms are real quiet). On a slow or cold runner the walk can take
+  // tens of ms, and the first quiet check then falls that much earlier than
+  // QUIET after the test timers were armed. QUIET must leave room for the walk
+  // plus MUTATE_AT, or the mutation lands after settle already ended.
+  const QUIET = 100;
   const MUTATE_AT = 20;
   // The page measures with Date.now (1 ms steps) while this test schedules the
   // mutation with setTimeout, whose clock is the event loop's own cached ms
