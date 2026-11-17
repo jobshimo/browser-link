@@ -107,32 +107,48 @@ describe('the contracts catch a broken subject (RED probes)', () => {
     ).rejects.toThrow(/after unsubscribe/);
   });
 
-  it('PageInfo: a waitForLoad that never times out', async () => {
+  it('PageInfo: a load wait that never times out', async () => {
     const cases = definePageInfoContract(() => ({
       ...fakePage(),
       page: {
         info: () => Promise.resolve({ url: '', title: '' }),
-        waitForLoad: () => new Promise<void>(() => undefined),
+        armLoadWait: () => ({ done: new Promise<void>(() => undefined), cancel: () => undefined }),
       },
     }));
     await expect(
-      caseNamed(cases, 'waitForLoad rejects when the timeout passes first').run(),
+      caseNamed(cases, 'an armed load wait rejects when the timeout passes first').run(),
     ).rejects.toThrow(/without load/);
+  });
+
+  it('PageInfo: a cancel that does not release the wait', async () => {
+    const cases = definePageInfoContract(() => {
+      const harness = fakePage();
+      const arm = harness.page.armLoadWait.bind(harness.page);
+      return {
+        ...harness,
+        page: {
+          info: () => harness.page.info(),
+          armLoadWait: (timeoutMs: number) => ({ ...arm(timeoutMs), cancel: () => undefined }),
+        },
+      };
+    });
+    await expect(caseNamed(cases, 'a cancelled load wait never settles').run()).rejects.toThrow(
+      /after cancel/,
+    );
   });
 });
 
 describe('createManualClock', () => {
-  it('fires timers in due order and repeats `every` until stopped', async () => {
+  it('fires timers in due order and skips a cancelled one', async () => {
     const clock = createManualClock(0);
     const fired: string[] = [];
-    clock.after(30, () => fired.push('after30'));
-    const stop = clock.every(20, () => fired.push(`every@${clock.now()}`));
+    clock.after(30, () => fired.push(`after30@${clock.now()}`));
+    clock.after(20, () => fired.push(`after20@${clock.now()}`));
     const cancel = clock.after(10, () => fired.push('cancelled'));
     cancel();
     await clock.advance(45);
-    stop();
     await clock.advance(100);
-    expect(fired).toEqual(['every@20', 'after30', 'every@40']);
+    expect(fired).toEqual(['after20@20', 'after30@30']);
     expect(clock.now()).toBe(145);
   });
 

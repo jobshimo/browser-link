@@ -5,6 +5,7 @@
 import type { CdpSession } from '../cdp-session.js';
 import type { Clock } from '../clock.js';
 import type { PageInfo } from '../page-info.js';
+import type { LoadWait } from '../values.js';
 
 export interface ManualClock extends Clock {
   /** Move time forward by `ms`, firing every timer that falls due, in order. */
@@ -14,20 +15,18 @@ export interface ManualClock extends Clock {
 interface Timer {
   at: number;
   fn: () => void;
-  every: number | null;
 }
 
 export function createManualClock(start = 0): ManualClock {
   let now = start;
   let timers: Timer[] = [];
-  const schedule = (timer: Timer): (() => void) => {
+  const after = (ms: number, fn: () => void): (() => void) => {
+    const timer = { at: now + ms, fn };
     timers.push(timer);
     return () => {
       timers = timers.filter((t) => t !== timer);
     };
   };
-  const after = (ms: number, fn: () => void): (() => void) =>
-    schedule({ at: now + ms, fn, every: null });
   return {
     now: () => now,
     sleep: (ms) =>
@@ -35,7 +34,6 @@ export function createManualClock(start = 0): ManualClock {
         after(ms, resolve);
       }),
     after,
-    every: (ms, tick) => schedule({ at: now + ms, fn: tick, every: ms }),
     async advance(ms) {
       const target = now + ms;
       for (;;) {
@@ -45,8 +43,7 @@ export function createManualClock(start = 0): ManualClock {
           .at(0);
         if (due === undefined) break;
         now = due.at;
-        if (due.every === null) timers = timers.filter((t) => t !== due);
-        else due.at += due.every;
+        timers = timers.filter((t) => t !== due);
         due.fn();
         await Promise.resolve();
       }
@@ -96,7 +93,7 @@ export function createMemoryCdpSession(
 }
 
 export interface MemoryPageInfo extends PageInfo {
-  /** Report load complete: every pending `waitForLoad` resolves. */
+  /** Report load complete: every armed load wait resolves. */
   completeLoad(): void;
 }
 
@@ -107,19 +104,31 @@ export function createMemoryPageInfo(
   const waiters = new Set<() => void>();
   return {
     info: () => Promise.resolve({ ...page }),
-    waitForLoad: (timeoutMs) =>
-      new Promise<void>((resolve, reject) => {
-        const cancel = clock.after(timeoutMs, () => {
-          waiters.delete(loaded);
-          reject(new Error(`page did not finish loading within ${timeoutMs}ms`));
-        });
+    armLoadWait(timeoutMs): LoadWait {
+      let release = (): void => undefined;
+      const done = new Promise<void>((resolve, reject) => {
         const loaded = (): void => {
-          cancel();
-          waiters.delete(loaded);
+          release();
           resolve();
         };
+        const cancelTimer = clock.after(timeoutMs, () => {
+          release();
+          reject(new Error('navigation timed out'));
+        });
+        release = () => {
+          cancelTimer();
+          waiters.delete(loaded);
+        };
         waiters.add(loaded);
-      }),
+      });
+      done.catch(() => undefined);
+      return {
+        done,
+        cancel: () => {
+          release();
+        },
+      };
+    },
     completeLoad() {
       for (const loaded of [...waiters]) loaded();
     },

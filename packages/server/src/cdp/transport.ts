@@ -28,8 +28,6 @@ import {
   buildClickHitCheckJs,
   buildClickMoveCheckJs,
   buildClickResolveJs,
-  buildFrameWatchReadJs,
-  buildFrameWatchStartJs,
   clickMissedMessage,
   clickMoveMissedMessage,
   CLICK_MOVE_TRIES,
@@ -59,29 +57,11 @@ import {
   type WaitForSelectorCondition,
 } from '../generated/core/inpage/builders.js';
 import {
-  OBSERVER_BINDING,
-  buildObserverChangesJs,
-  buildObserverInstallJs,
-  buildObserverMarkJs,
-  buildObserverTeardownJs,
-} from '../generated/core/inpage/observer.js';
-import {
-  TOP_DOCUMENT_PROBE_JS,
-  applyObserverMessage,
-  createObserverMirror,
-  isTopDocumentMessage,
-  mergeSettleChanges,
-  parseObserverMessage,
-  readObserverMark,
-  type ObserverMirror,
-} from '../generated/core/support/observer-host.js';
-import {
   runScreenshot,
   type ElementRectOutcome,
   type ScreenshotMode,
 } from '../generated/core/support/screenshot.js';
-import { resolveSettleParams, settleSafely } from '../generated/core/support/settle.js';
-import type { SettleParams } from '../generated/core/ports/values.js';
+import { resolveSettleParams } from '../generated/core/support/settle.js';
 import {
   beginExpect,
   resolveExpectParams,
@@ -89,12 +69,15 @@ import {
   type ExpectParams,
 } from '../generated/core/support/expect.js';
 import { systemClock } from './adapters/system-clock.js';
+import { createCdpClientSession } from './adapters/cdp-client-session.js';
+import { createCdpPageInfo } from './adapters/cdp-page-info.js';
 import {
-  buildKeyEventSequence,
-  MODIFIER_BITS,
-  modifiersToBitmask,
-  resolveKey,
-} from '../generated/core/support/keymap.js';
+  createPageDriver,
+  pressKey,
+  type PageDriverHandle,
+} from '../generated/core/session/page-driver.js';
+import { NAVIGATE_LOAD_TIMEOUT_MS } from '../generated/core/session/load-wait.js';
+import { MODIFIER_BITS, modifiersToBitmask, resolveKey } from '../generated/core/support/keymap.js';
 import {
   cancelDetachedFlow,
   detachedFlowForTab,
@@ -138,17 +121,6 @@ interface CdpConnection {
   client: CdpClient;
   lastUsedAt: number;
 }
-
-/** Page-observer state of one connection (see core's `support/observer-host.ts`): the host
- * mirror, and the `Page.addScriptToEvaluateOnNewDocument` identifier to
- * remove on close. Keyed by client so the perform* helpers, which only get
- * the client, can reach it. */
-interface CdpObserverState {
-  mirror: ObserverMirror;
-  scriptId?: string;
-}
-
-const observers = new WeakMap<CdpClient, CdpObserverState>();
 
 /** Resolved connections currently believed live, keyed by CDP targetId.
  * Only ever holds SETTLED, successful dials — see `getConnection`. */
@@ -280,71 +252,39 @@ async function dial(targetId: string): Promise<CdpConnection> {
   // up front — it unlocks Page.loadEventFired, which navigate's
   // wait_for_load uses. Runtime.evaluate and Input.* commands work without
   // their own domain being explicitly enabled. The page observer enables
-  // Runtime itself, for `Runtime.bindingCalled` (see `installObserver`).
+  // Runtime itself, for `Runtime.bindingCalled`.
   await client.send('Page.enable');
-  await installObserver(client);
+  // The page observer, as the extension installs it in `connectTab`.
+  // Non-fatal: on failure the connection is used as before and actions
+  // report `settle.changes: null` with `observer-unavailable`. cdp-direct has
+  // no bridge events and `list_tabs` reads target info live, so a
+  // top-document message only updates the driver's mirror.
+  const driver = newPageDriver(client);
+  drivers.set(client, driver);
+  const installed = await driver.install({ enableRuntime: true });
+  if (!installed.ok) {
+    console.warn('browser-link: cdp-direct page observer not installed', installed.error);
+  }
   return { client, lastUsedAt: Date.now() };
 }
 
-/**
- * Install the page observer on a freshly dialled connection, as the
- * extension does in `connectTab`: Runtime (for `Runtime.bindingCalled`),
- * the push binding, then the observer as a new-document script that also
- * runs immediately in the current document. Non-fatal — on failure the
- * connection is used as before and actions report `settle.changes: null`
- * with `observer-unavailable`.
- */
-async function installObserver(client: CdpClient): Promise<void> {
-  const state: CdpObserverState = { mirror: createObserverMirror() };
-  observers.set(client, state);
-  client.on('Runtime.bindingCalled', (params) => {
-    const p = (params ?? {}) as { name?: unknown; payload?: unknown };
-    if (p.name !== OBSERVER_BINDING) return;
-    void handleObserverMessage(client, state, typeof p.payload === 'string' ? p.payload : '');
+/** The page driver of each connection (core's `session/page-driver.ts`):
+ * evaluation, keys, settle, and the page observer. Keyed by client so the
+ * perform* helpers, which only get the client, can reach it. */
+const drivers = new WeakMap<CdpClient, PageDriverHandle>();
+
+function newPageDriver(client: CdpClient): PageDriverHandle {
+  return createPageDriver({
+    session: createCdpClientSession(client),
+    page: createCdpPageInfo(client, systemClock),
+    clock: systemClock,
   });
-  try {
-    await client.send('Runtime.enable');
-    await client.send('Runtime.addBinding', { name: OBSERVER_BINDING });
-    const added = await client.send<{ identifier?: unknown }>(
-      'Page.addScriptToEvaluateOnNewDocument',
-      { source: buildObserverInstallJs(), runImmediately: true },
-    );
-    if (typeof added.identifier === 'string') state.scriptId = added.identifier;
-    state.mirror.installed = true;
-  } catch (err) {
-    console.warn(
-      'browser-link: cdp-direct page observer not installed',
-      err instanceof Error ? err.message : String(err),
-    );
-  }
 }
 
-/**
- * Fold one binding message into the connection's mirror. `doc_start` / `nav`
- * are first checked against the top document (the install script also runs
- * in same-process child frames, and the binding is page-visible). cdp-direct
- * has no bridge events and `list_tabs` reads target info live, so the mirror
- * is the only thing updated here.
- */
-async function handleObserverMessage(
-  client: CdpClient,
-  state: CdpObserverState,
-  payload: string,
-): Promise<void> {
-  const message = parseObserverMessage(payload);
-  if (!message) return;
-  if (message.type === 'summary') {
-    applyObserverMessage(state.mirror, message);
-    return;
-  }
-  let probe: unknown;
-  try {
-    probe = await evaluateObserverJs(client, TOP_DOCUMENT_PROBE_JS);
-  } catch {
-    return;
-  }
-  if (!isTopDocumentMessage(probe, message.doc_id)) return;
-  applyObserverMessage(state.mirror, message);
+/** The connection's page driver; a client that was never dialled (tests)
+ * gets a fresh one whose observer is not installed, as before slice 9. */
+function pageDriver(client: CdpClient): PageDriverHandle {
+  return drivers.get(client) ?? newPageDriver(client);
 }
 
 /**
@@ -355,28 +295,10 @@ async function handleObserverMessage(
  * here would leave the newer connection without an observer.
  */
 async function closeConnection(client: CdpClient, targetId: string): Promise<void> {
-  const state = observers.get(client);
-  if (state?.mirror.installed === true && client.isOpen) {
-    state.mirror.installed = false;
-    if (state.scriptId !== undefined) {
-      try {
-        await client.send(
-          'Page.removeScriptToEvaluateOnNewDocument',
-          { identifier: state.scriptId },
-          OBSERVER_EVAL_TIMEOUT_MS,
-        );
-      } catch {
-        // Best effort — the target may already be gone.
-      }
-      state.scriptId = undefined;
-    }
-    if (!connections.has(targetId) && !inFlight.has(targetId)) {
-      try {
-        await evaluateObserverJs(client, buildObserverTeardownJs());
-      } catch {
-        // Best effort — the target may already be gone.
-      }
-    }
+  if (client.isOpen) {
+    await drivers
+      .get(client)
+      ?.uninstall(() => !connections.has(targetId) && !inFlight.has(targetId));
   }
   client.close();
 }
@@ -456,102 +378,6 @@ interface CdpEvaluateResult<T> {
   exceptionDetails?: { text?: string; exception?: { description?: string } };
 }
 
-async function evaluateInTab<T = unknown>(
-  client: CdpClient,
-  expression: string,
-  timeoutMs?: number,
-): Promise<T> {
-  const res = await client.send<CdpEvaluateResult<T>>(
-    'Runtime.evaluate',
-    {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-      userGesture: true,
-    },
-    timeoutMs,
-  );
-  if (res.exceptionDetails) {
-    const ex = res.exceptionDetails;
-    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
-  }
-  return res.result.value;
-}
-
-/** Ceiling for one observer plumbing evaluation, as in the extension: a
- * page frozen by a native dialog never answers `Runtime.evaluate`. */
-const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
-
-/**
- * `Runtime.evaluate` for page-observer plumbing (mark, changes, probes,
- * teardown). Unlike `evaluateInTab` it passes no `userGesture` — these
- * reads must never hand the page transient user activation it did not
- * earn — and it gives up after `OBSERVER_EVAL_TIMEOUT_MS`.
- */
-async function evaluateObserverJs(client: CdpClient, expression: string): Promise<unknown> {
-  const res = await client.send<CdpEvaluateResult<unknown>>(
-    'Runtime.evaluate',
-    { expression, returnByValue: true },
-    OBSERVER_EVAL_TIMEOUT_MS,
-  );
-  if (res.exceptionDetails) {
-    const ex = res.exceptionDetails;
-    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
-  }
-  return res.result.value;
-}
-
-/**
- * Start listening for the load event BEFORE the navigation is sent: a fast
- * page can fire `Page.loadEventFired` before `Page.navigate` resolves, and a
- * listener added afterwards never sees it. `cancel` releases the listener
- * and timer when the navigation itself fails.
- */
-function armLoadWait(
-  client: CdpClient,
-  timeoutMs = 20_000,
-): { done: Promise<void>; cancel: () => void } {
-  let release: () => void = () => {};
-  const done = new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const off = client.on('Page.loadEventFired', () => {
-      if (settled) return;
-      settled = true;
-      release();
-      resolve();
-    });
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      release();
-      reject(new Error('navigation timed out'));
-    }, timeoutMs);
-    release = () => {
-      off();
-      clearTimeout(timer);
-    };
-  });
-  // `done` is awaited only after Page.navigate answers; keep an early timeout
-  // from surfacing as an unhandled rejection in between.
-  done.catch(() => {});
-  return {
-    done,
-    cancel: () => {
-      release();
-    },
-  };
-}
-
-function runSettle(
-  client: CdpClient,
-  settle: SettleParams | null,
-): Promise<Record<string, unknown> | undefined> {
-  return settleSafely((expression) => evaluateInTab(client, expression), settle);
-}
-
-const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
-const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
-
 /** The press and release of a pointer click at (x, y); the move that
  * precedes them is sent by `moveOntoTarget`. */
 function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
@@ -604,7 +430,10 @@ async function readMoveCheck(
   });
   let check: unknown;
   try {
-    check = await Promise.race([evaluateInTab(session, buildClickMoveCheckJs()), late]);
+    check = await Promise.race([
+      pageDriver(session).evaluator.evaluate(buildClickMoveCheckJs()),
+      late,
+    ]);
   } catch {
     check = undefined;
   } finally {
@@ -701,7 +530,10 @@ async function checkClickLanding(
   });
   let landing: unknown;
   try {
-    landing = await Promise.race([evaluateInTab(session, buildClickHitCheckJs()), late]);
+    landing = await Promise.race([
+      pageDriver(session).evaluator.evaluate(buildClickHitCheckJs()),
+      late,
+    ]);
   } catch {
     landing = undefined;
   } finally {
@@ -716,102 +548,6 @@ async function checkClickLanding(
   if ('landed' in check && check.landed === true) return {};
   const landedOn = (check as { landed_on?: unknown }).landed_on;
   return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
-}
-
-/**
- * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
- * changes an action makes inside same-origin frames before the settle wait
- * starts, which neither the page observer (top document only) nor the
- * settle wait (from its own start) would count (owner decision D5). Never
- * throws: a watch that cannot be armed counts nothing.
- */
-async function startFrameWatch(session: CdpClient): Promise<void> {
-  try {
-    await evaluateInTab(session, buildFrameWatchStartJs());
-  } catch {
-    // nothing armed, nothing counted
-  }
-}
-
-/** Read and stop the frame watch right before the settle wait starts: the
- * records it saw, 0 when there is none. Never throws. */
-async function readFrameWatch(session: CdpClient): Promise<number> {
-  try {
-    const read = await evaluateInTab<{ ok: boolean; records?: unknown }>(
-      session,
-      buildFrameWatchReadJs(),
-    );
-    return read.ok && typeof read.records === 'number' && read.records > 0 ? read.records : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Add frame records seen before the settle wait to its result, the way the
- * wait reports its own (`frame_mutation_count`, already in `mutation_count`). */
-function addFrameRecords(settleResult: Record<string, unknown>, records: number): void {
-  const before =
-    typeof settleResult.frame_mutation_count === 'number' ? settleResult.frame_mutation_count : 0;
-  settleResult.frame_mutation_count = before + records;
-  if (typeof settleResult.mutation_count === 'number') settleResult.mutation_count += records;
-}
-
-/**
- * Take the page observer's action mark BEFORE an action dispatches (spec v4
- * §5.4). `null` when settle is off for this call (no changes are reported
- * then); an `observer-unavailable` marker when the observer was never
- * installed on this connection or the mark could not be taken.
- */
-async function takeObserverMark(client: CdpClient, settle: SettleParams | null): Promise<unknown> {
-  if (!settle) return null;
-  await startFrameWatch(client);
-  if (observers.get(client)?.mirror.installed !== true) return OBSERVER_UNAVAILABLE;
-  try {
-    return await evaluateObserverJs(client, buildObserverMarkJs());
-  } catch {
-    return OBSERVER_UNAVAILABLE;
-  }
-}
-
-/**
- * Run the settle wait, then read what the page observer saw since `mark`
- * and fold it into the settle result (`mergeSettleChanges`). Never throws:
- * a changes read that rejects — typically because the action navigated and
- * destroyed the context — is reported as `doc-changed`.
- */
-async function settleWithChanges(
-  client: CdpClient,
-  settle: SettleParams | null,
-  mark: unknown,
-): Promise<Record<string, unknown> | undefined> {
-  const early = settle ? await readFrameWatch(client) : 0;
-  const settleResult = await runSettle(client, settle);
-  if (!settleResult) return undefined;
-  if (early > 0) addFrameRecords(settleResult, early);
-  const parsed = readObserverMark(mark);
-  let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
-  if (parsed) {
-    try {
-      changes = await evaluateObserverJs(
-        client,
-        buildObserverChangesJs(parsed.mark, parsed.doc_id),
-      );
-    } catch {
-      changes = OBSERVER_DOC_CHANGED;
-    }
-  }
-  return mergeSettleChanges(settleResult, changes) ?? undefined;
-}
-
-async function dispatchKeyEvent(
-  client: CdpClient,
-  def: ReturnType<typeof resolveKey>,
-  modifiers: number,
-): Promise<void> {
-  if (!def) return;
-  for (const event of buildKeyEventSequence(def, modifiers)) {
-    await client.send('Input.dispatchKeyEvent', event);
-  }
 }
 
 // === perform* action helpers ==============================================
@@ -883,15 +619,13 @@ async function performFind(
     const { text, ref } = params;
     const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(
-        client,
+      const value = await pageDriver(client).evaluator.evaluate<FindStepResult>(
         buildFindJs({ key: params.key, hide_password_values }),
       );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(
-        client,
+      const found = await pageDriver(client).evaluator.evaluate<FindStepResult>(
         buildFindJs({ ref, hide_password_values }),
       );
       const refError = found.matched ? null : refFailureMessage(found, ref);
@@ -899,8 +633,7 @@ async function performFind(
       return { ok: true, result: found };
     }
     if (!text) return { ok: false, error: 'find: text required' };
-    const value = await evaluateInTab<FindStepResult>(
-      client,
+    const value = await pageDriver(client).evaluator.evaluate<FindStepResult>(
       buildFindJs({
         text,
         role: params.role,
@@ -934,16 +667,15 @@ async function performClick(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    let resolved = await evaluateInTab<ClickResolveResult>(
-      client,
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(client).evaluator.evaluate(expression);
+    let resolved = await pageDriver(client).evaluator.evaluate<ClickResolveResult>(
       buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
     if (resolved.ok && !('no_box' in resolved)) {
       // The resolve scrolled the target into view; aim once the new layout
       // was painted, and arm the watch that proves where the press lands.
-      resolved = await evaluateInTab<ClickResolveResult>(
-        client,
+      resolved = await pageDriver(client).evaluator.evaluate<ClickResolveResult>(
         buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
       );
     }
@@ -973,13 +705,12 @@ async function performClick(
         error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
       };
     }
-    const mark = await takeObserverMark(client, settle);
+    const mark = await pageDriver(client).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     let hitCheckNote: string | undefined;
     let dialogOpened = false;
     if ('no_box' in resolved) {
-      const clicked = await evaluateInTab<ProgrammaticClickResult>(
-        client,
+      const clicked = await pageDriver(client).evaluator.evaluate<ProgrammaticClickResult>(
         buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
       );
       if (!clicked.ok) {
@@ -1026,7 +757,9 @@ async function performClick(
         hitCheckNote = landing.note;
       }
     }
-    const settleResult = dialogOpened ? undefined : await settleWithChanges(client, settle, mark);
+    const settleResult = dialogOpened
+      ? undefined
+      : await pageDriver(client).settler.settle(settle, mark);
     const verdict = dialogOpened
       ? { ok: true as const, expect: undefined }
       : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
@@ -1072,11 +805,11 @@ async function performType(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(client).evaluator.evaluate(expression);
     let reresolved = false;
     if (ref !== undefined) {
-      const resolved = await evaluateInTab<TypeResolveResult>(
-        client,
+      const resolved = await pageDriver(client).evaluator.evaluate<TypeResolveResult>(
         buildTypeResolveJs({ ref, clear }),
       );
       if (!resolved.ok) {
@@ -1090,8 +823,7 @@ async function performType(
       }
       reresolved = resolved.reresolved === true;
     } else if (selector !== undefined) {
-      const resolved = await evaluateInTab<TypeResolveResult>(
-        client,
+      const resolved = await pageDriver(client).evaluator.evaluate<TypeResolveResult>(
         buildTypeResolveJs({ selector, clear }),
       );
       if (!resolved.ok) {
@@ -1105,10 +837,10 @@ async function performType(
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await takeObserverMark(client, settle);
+    const mark = await pageDriver(client).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await client.send('Input.insertText', { text });
-    const settleResult = await settleWithChanges(client, settle, mark);
+    const settleResult = await pageDriver(client).settler.settle(settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: TypeStepResult = { typed: text.length };
@@ -1151,11 +883,14 @@ async function performPress(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(client).evaluator.evaluate(expression);
     const ref = params.ref;
     let reresolved = false;
     if (ref !== undefined) {
-      const focused = await evaluateInTab<FocusRefResult>(client, buildFocusJs({ ref }));
+      const focused = await pageDriver(client).evaluator.evaluate<FocusRefResult>(
+        buildFocusJs({ ref }),
+      );
       if (!focused.ok) {
         if (focused.reason === 'not-focused') {
           return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
@@ -1164,8 +899,7 @@ async function performPress(
       }
       reresolved = focused.reresolved === true;
     } else if (params.selector) {
-      const focused = await evaluateInTab<boolean | FocusRefusal>(
-        client,
+      const focused = await pageDriver(client).evaluator.evaluate<boolean | FocusRefusal>(
         buildFocusJs({ selector: params.selector }),
       );
       if (!focused) {
@@ -1176,10 +910,10 @@ async function performPress(
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await takeObserverMark(client, settle);
+    const mark = await pageDriver(client).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    await dispatchKeyEvent(client, def, modifiers);
-    const settleResult = await settleWithChanges(client, settle, mark);
+    await pressKey(pageDriver(client).keyboard, def, modifiers);
+    const settleResult = await pageDriver(client).settler.settle(settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: PressStepResult = { key, modifiers: modifierNames };
@@ -1270,7 +1004,7 @@ async function performWaitFor(
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(client, expr);
+          const result = await pageDriver(client).evaluator.evaluate(expr);
           return Boolean(result);
         } catch {
           return false;
@@ -1283,7 +1017,7 @@ async function performWaitFor(
       );
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(client, expr);
+          const result = await pageDriver(client).evaluator.evaluate(expr);
           if (typeof result === 'object' && result !== null) {
             const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
             if (probe.reason === 'ref-stale') {
@@ -1309,7 +1043,7 @@ async function performWaitFor(
       const wrapped = `Boolean(${waitExpression})`;
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(client, wrapped);
+          const result = await pageDriver(client).evaluator.evaluate(wrapped);
           return Boolean(result);
         } catch {
           return false;
@@ -1402,8 +1136,7 @@ function buildCdpFlowDeps(
     performDrag: () =>
       Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
     buildRecoverySnapshot: () =>
-      evaluateInTab(
-        client,
+      pageDriver(client).evaluator.evaluate(
         buildSnapshotJs({
           only_interactive: true,
           max_interactive: 40,
@@ -1417,11 +1150,6 @@ function buildCdpFlowDeps(
 
 interface TargetInfoResult {
   targetInfo: { title?: string; url?: string; type?: string };
-}
-
-async function getTargetInfo(client: CdpClient): Promise<{ title: string; url: string }> {
-  const info = await client.send<TargetInfoResult>('Target.getTargetInfo');
-  return { title: info.targetInfo.title ?? '', url: info.targetInfo.url ?? '' };
 }
 
 /**
@@ -1439,7 +1167,7 @@ async function getTargetInfo(client: CdpClient): Promise<{ title: string; url: s
  * opaque round trip to the extension. Over cdp-direct every underlying step
  * already carries its OWN hard bound, so there is no unbounded wait for an
  * outer timeout to guard: each `CdpClient.send` has a 15s default per-command
- * timeout (see client.ts), `waitForLoad` caps navigation's load wait at 20s,
+ * timeout (see client.ts), the page's `armLoadWait` caps navigation's load wait at 20s,
  * `performWaitFor` clamps its own poll loop to <=30s, and `runFlow`'s budget
  * was already validated <=60s upstream. Wrapping the whole call in a second
  * timer would only add a redundant, harder-to-reason-about failure mode (an
@@ -1476,12 +1204,14 @@ export async function callCdpTool(
 
   switch (tool) {
     case 'ping':
-      return getTargetInfo(client);
+      return pageDriver(client).page.info();
 
     case 'navigate': {
       const url = typeof p.url === 'string' ? p.url : '';
       const waitForLoadFlag = p.wait_for_load !== false;
-      const loadWait = waitForLoadFlag ? armLoadWait(client) : undefined;
+      const page = pageDriver(client).page;
+      // Armed before the navigation is sent (see core's session/load-wait.ts).
+      const loadWait = waitForLoadFlag ? page.armLoadWait(NAVIGATE_LOAD_TIMEOUT_MS) : undefined;
       try {
         await client.send('Page.navigate', { url });
       } catch (err) {
@@ -1489,7 +1219,7 @@ export async function callCdpTool(
         throw err;
       }
       if (loadWait) await loadWait.done;
-      return getTargetInfo(client);
+      return page.info();
     }
 
     case 'snapshot': {
@@ -1504,11 +1234,11 @@ export async function callCdpTool(
         offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
         hide_password_values: p.hide_password_values === true,
       };
-      return evaluateInTab(client, buildSnapshotJs(opts));
+      return pageDriver(client).evaluator.evaluate(buildSnapshotJs(opts));
     }
 
     case 'state':
-      return evaluateInTab(client, buildStateJs());
+      return pageDriver(client).evaluator.evaluate(buildStateJs());
 
     case 'screenshot': {
       const mode: ScreenshotMode =
@@ -1517,7 +1247,9 @@ export async function callCdpTool(
         {
           send: (method, params) => client.send(method, params),
           resolveElementRect: (selector) =>
-            evaluateInTab<ElementRectOutcome>(client, buildElementRectJs({ selector })),
+            pageDriver(client).evaluator.evaluate<ElementRectOutcome>(
+              buildElementRectJs({ selector }),
+            ),
         },
         {
           mode,
@@ -1593,7 +1325,20 @@ export async function callCdpTool(
 
     case 'evaluate': {
       const expression = typeof p.expression === 'string' ? p.expression : '';
-      return evaluateInTab(client, expression, timeoutMs);
+      // The one raw `Runtime.evaluate` left on cdp-direct until slice 15 moves
+      // this case onto the page driver: `timeoutMs` replaces the client's 15s
+      // per-command default, and its timeout error text reaches the agent
+      // (`raw-evaluate.fitness.test.ts` keeps it the only one).
+      const res = await client.send<CdpEvaluateResult<unknown>>(
+        'Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true, userGesture: true },
+        timeoutMs,
+      );
+      if (res.exceptionDetails) {
+        const ex = res.exceptionDetails;
+        throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
+      }
+      return res.result.value;
     }
 
     case 'wait_for': {

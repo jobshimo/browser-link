@@ -5,6 +5,16 @@
 export type { Clock } from './clock.js';
 export type { CdpSession } from './cdp-session.js';
 export type { ContentSettings } from './content-settings.js';
+export type { Evaluator, Keyboard, PageDriver, Settler } from './page-driver.js';
 export type { PageInfo } from './page-info.js';
 export type { IdleSettings } from './settings.js';
-export type { EvaluateFn, ObserverMark, SettleParams } from './values.js';
+export type {
+  EvaluateFn,
+  KeyEvent,
+  LoadWait,
+  ObserverFailure,
+  ObserverMark,
+  ObserverMarkResult,
+  SettleParams,
+  SettleReport,
+} from './values.js';

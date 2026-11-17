@@ -34,23 +34,35 @@ export function definePageInfoContract(
     {
       name: 'info reports the url and title',
       run: withHarness(async ({ page, expected }) => {
-        equal(await page.info(), expected, 'page info');
+        const { url, title } = await page.info();
+        equal({ url, title }, expected, 'page info');
       }),
     },
     {
-      name: 'waitForLoad resolves when the page finishes loading',
+      name: 'an armed load wait resolves when the page finishes loading',
       run: withHarness(async ({ page, completeLoad }) => {
-        const loaded = observe(page.waitForLoad(TIMEOUT_MS * 10));
+        const loaded = observe(page.armLoadWait(TIMEOUT_MS * 50).done);
         await completeLoad();
-        equal(await loaded.now(), 'resolved', 'waitForLoad after load');
+        equal(await loaded.now(), 'resolved', 'load wait after load');
       }),
     },
     {
-      name: 'waitForLoad rejects when the timeout passes first',
+      name: 'an armed load wait rejects when the timeout passes first',
       run: withHarness(async ({ page, elapse }) => {
-        const loaded = observe(page.waitForLoad(TIMEOUT_MS));
+        const loaded = observe(page.armLoadWait(TIMEOUT_MS).done);
         await elapse(TIMEOUT_MS * 2);
-        equal(await loaded.now(), 'rejected', 'waitForLoad without load');
+        equal(await loaded.now(), 'rejected', 'load wait without load');
+      }),
+    },
+    {
+      name: 'a cancelled load wait never settles',
+      run: withHarness(async ({ page, completeLoad, elapse }) => {
+        const wait = page.armLoadWait(TIMEOUT_MS);
+        const loaded = observe(wait.done);
+        wait.cancel();
+        await completeLoad();
+        await elapse(TIMEOUT_MS * 2);
+        equal(await loaded.now(), 'pending', 'load wait after cancel');
       }),
     },
   ];
