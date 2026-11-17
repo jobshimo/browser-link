@@ -1,7 +1,13 @@
 // idle-settings.ts IS shared with popup.ts (unlike the runtime-message shapes
 // mirrored below) — both entrypoints compile to sibling files under dist/,
 // so a plain relative import works, exactly as it does for background.ts.
-import { IDLE_TTL_NEVER, type FlowStep } from '@browser-link/core';
+import {
+  IDLE_TTL_NEVER,
+  formatFlowDuration,
+  type FlowHistoryEntry,
+  type FlowStep,
+  type RunningFlowView,
+} from '@browser-link/core';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
   LEGACY_IDLE_TTL_STORAGE_KEY,
@@ -16,11 +22,6 @@ import {
 } from './flow-recording-policy.js';
 import { describeFlowStep } from './recording.js';
 import { describeFlowHistoryEntry, describeFlowProgress, flowTabLabel } from './flow-labels.js';
-import {
-  formatFlowDuration,
-  type FlowHistoryEntry,
-  type RunningFlowView,
-} from './flow-registry.js';
 import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
 import {
   NOTICE_ACKNOWLEDGED_STORAGE_KEY,

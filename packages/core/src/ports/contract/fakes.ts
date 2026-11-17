@@ -5,9 +5,18 @@
 import type { CdpSession } from '../cdp-session.js';
 import type { Clock } from '../clock.js';
 import type { ContentSettings } from '../content-settings.js';
+import type { DetachedFlowStore } from '../detached-flow-store.js';
 import type { Downloads } from '../downloads.js';
+import type { FlowHistoryStore } from '../flow-history-store.js';
 import type { PageInfo } from '../page-info.js';
-import type { CaptureActOutcome, CaptureOutcome, CapturedDownload, LoadWait } from '../values.js';
+import type {
+  CaptureActOutcome,
+  CaptureOutcome,
+  CapturedDownload,
+  DetachedFlowRecord,
+  FlowHistoryEntry,
+  LoadWait,
+} from '../values.js';
 
 export interface ManualClock extends Clock {
   /** Move time forward by `ms`, firing every timer that falls due, in order. */
@@ -234,4 +243,63 @@ export function createMemoryDownloads(clock: Clock): MemoryDownloads {
       waiting({ state: 'captured', download });
     },
   };
+}
+
+/** A copy as a store hands it back: serialised, never the caller's object. */
+const stored = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+export interface MemoryFlowHistoryStore extends FlowHistoryStore {
+  /** When set and true for a call, `load` (`'load'`) or `save` (`'save'`)
+   * rejects, as a store that refuses it. */
+  refuse?: (operation: 'load' | 'save') => boolean;
+}
+
+/** `FlowHistoryStore` over a map of serialised copies, answering on a later
+ * microtask like a real store. */
+export function createMemoryFlowHistoryStore(): MemoryFlowHistoryStore {
+  const tabs = new Map<number, FlowHistoryEntry[]>();
+  const store: MemoryFlowHistoryStore = {
+    async load(tabId) {
+      await Promise.resolve();
+      if (store.refuse?.('load') === true) throw new Error('store: load refused');
+      return stored(tabs.get(tabId) ?? []);
+    },
+    async save(tabId, entries) {
+      await Promise.resolve();
+      if (store.refuse?.('save') === true) throw new Error('store: save refused');
+      tabs.set(tabId, stored([...entries]));
+    },
+    async drop(tabId) {
+      await Promise.resolve();
+      tabs.delete(tabId);
+    },
+  };
+  return store;
+}
+
+export interface MemoryDetachedFlowStore extends DetachedFlowStore {
+  /** When set and true for a record, `put` rejects, as a store over quota. */
+  refuse?: (record: DetachedFlowRecord) => boolean;
+}
+
+/** `DetachedFlowStore` over a map of serialised copies by flow id,
+ * answering on a later microtask like a real store. */
+export function createMemoryDetachedFlowStore(): MemoryDetachedFlowStore {
+  const records = new Map<string, DetachedFlowRecord>();
+  const store: MemoryDetachedFlowStore = {
+    async list() {
+      await Promise.resolve();
+      return stored([...records.values()]);
+    },
+    async put(record) {
+      await Promise.resolve();
+      if (store.refuse?.(record) === true) throw new Error('store: put refused');
+      records.set(record.flowId, stored(record));
+    },
+    async remove(flowIds) {
+      await Promise.resolve();
+      for (const flowId of flowIds) records.delete(flowId);
+    },
+  };
+  return store;
 }

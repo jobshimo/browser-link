@@ -11,7 +11,7 @@ import {
   type FlowHistoryEntry,
   type FlowStopReason,
   type RunningFlowView,
-} from './flow-registry.js';
+} from '@browser-link/core';
 
 /** What the popup calls a flow's tab. The title is best-effort (it is
  * captured asynchronously at flow start and can legitimately be empty on

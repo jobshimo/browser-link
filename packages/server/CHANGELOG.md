@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.23](https://github.com/jobshimo/browser-link/compare/v1.4.22...v1.4.23) (2026-11-17)
+
+### Notes
+
+- Slice 17 of the service worker plan; no behaviour change. The extension's flow registry, flow history and detached-flow records move to core as three aggregates: `FlowRun` and `FlowRegistry` (`packages/core/src/flow/flow-run.ts`, `flow/flow-registry.ts`, which now also holds the foreground flow deadlines and answers the idle sweep's flow holds) and `FlowHistory` (`flow/flow-history.ts`, with the record rules in `flow/detached-flows.ts`), which owns the serialized write chain, the closed-tab guard, the event flush and the worker-restart reconciliation that lived in `background.ts`. `flow`, `flow_status` and `flow_cancel` answer as before, and `chrome.storage.session` keeps the same keys (`flow-history:<tab>`, `detached-flow:<flow id>`) and values; a test reads a history and a record written in the 1.4.22 format and checks the values written now.
+- Core gains the `FlowHistoryStore` (`load`, `save`, `drop`) and `DetachedFlowStore` (`list`, `put`, `remove`) ports, with `FlowHistoryEntry` and `DetachedFlowRecord` in `ports/values.ts`. Their contracts run on in-memory fakes and on the extension adapters (`adapters/chrome-flow-history-store.ts`, `adapters/chrome-detached-flow-store.ts`) over a stand-in `chrome.storage.session`; a `flow_status` read of a record now looks it up in one read of the session store. cdp-direct keeps its own detached-flow model.
+- A new e2e case runs ten more detached flows and checks that the oldest finished record is evicted (`flow_status` answers `unknown`); it is what reaches the detached-flow store's `remove` in the adapter coverage check.
+- `packages/core/tsconfig.purity.json` and its CI step are deleted: `flow-registry.ts`, the last module it listed, lives in core.
+- `background.ts` shrinks by 278 lines and its line budget goes from 2615 to 2337.
+
 ## [1.4.22](https://github.com/jobshimo/browser-link/compare/v1.4.21...v1.4.22) (2026-11-17)
 
 ### Notes

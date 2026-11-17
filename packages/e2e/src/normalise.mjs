@@ -142,11 +142,12 @@ export const UNORDERED_TOOLS = ['browser.console', 'browser.network', 'browser.e
 
 /** The value both accepted flow_cancel outcomes get as `state`. */
 export const CANCEL_ACCEPTED = '<cancel-accepted>';
-/** Keys only one of the two accepted outcomes carries (flow-registry.ts
- * toFlowStatus: the live entry answers `running`, the persisted record
- * answers `cancelled`), so which ones appear depends on when the stop landed:
- * dropped from the response. The e2e's flow_status calls after the cancel
- * record the terminal state, so nothing is lost from the comparison. */
+/** Keys only one of the two accepted outcomes carries (core
+ * flow/flow-registry.ts toFlowStatus: the live entry answers `running`, the
+ * persisted record answers `cancelled`), so which ones appear depends on
+ * when the stop landed: dropped from the response. The e2e's flow_status
+ * calls after the cancel record the terminal state, so nothing is lost from
+ * the comparison. */
 export const CANCEL_SHAPE_KEYS = [
   // `running` only: a stop was requested and the runner has not seen it yet.
   'cancelling',

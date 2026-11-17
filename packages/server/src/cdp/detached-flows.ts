@@ -1,6 +1,7 @@
 /**
  * Detached-flow bookkeeping for the cdp-direct transport — the in-process
- * counterpart of the extension's `flow-registry.ts`.
+ * counterpart of the extension's flow aggregates (core `flow/flow-registry.ts`,
+ * `flow/flow-history.ts`, `flow/detached-flows.ts`).
  *
  * The two exist for the same reason and answer the same three questions
  * (`what is running on this tab`, `what is this flow doing`, `stop it`),
@@ -24,7 +25,7 @@
 
 import type { FlowResult } from '../generated/core/flow/flow-engine.js';
 
-/** Mirrors `MAX_DETACHED_FLOW_MS` in the extension's `flow-registry.ts` and
+/** Mirrors `MAX_DETACHED_FLOW_MS` in core's `support/flow-limits.ts` and
  * `MAX_DETACHED_FLOW_TIMEOUT_MS` in `tools/browser-dispatch.ts`. Kept in
  * sync manually — the three live in packages that share no module. */
 export const MAX_DETACHED_FLOW_MS = 30 * 60_000;
@@ -36,7 +37,7 @@ export const MAX_DETACHED_FLOW_MS = 30 * 60_000;
 export const MAX_DETACHED_FLOW_RECORDS = 10;
 
 /** Byte ceiling on ONE finished flow's manifest. Mirrors
- * `MAX_DETACHED_MANIFEST_BYTES` in the extension's `flow-registry.ts`: over
+ * `MAX_DETACHED_MANIFEST_BYTES` in core's `flow/detached-flows.ts`: over
  * there the pressure is a session-storage quota, here it is process memory
  * times `MAX_DETACHED_FLOW_RECORDS`, but the agent-visible answer has to be
  * the same one on both transports. Over the ceiling the manifest is dropped
@@ -48,8 +49,9 @@ export type FlowStopReason = 'cancelled' | 'expired' | 'grant-revoked';
 export type FlowState = 'running' | 'completed' | 'cancelled' | 'failed' | 'expired' | 'unknown';
 
 /** The wire payload `browser.flow_status` returns. Same keys the extension
- * produces (`flow-registry.ts`'s `FlowStatusPayload`) so an agent cannot
- * tell the two transports apart; the dispatcher stamps `tab_id` on top. */
+ * produces (core `flow/flow-registry.ts`'s `FlowStatusPayload`) so an agent
+ * cannot tell the two transports apart; the dispatcher stamps `tab_id` on
+ * top. */
 export interface FlowStatusPayload {
   flow_id: string;
   state: FlowState;

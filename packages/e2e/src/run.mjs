@@ -1270,6 +1270,35 @@ async function dragPermissionTabsFlows(T, page, cdp) {
       `status after cancel ${describe(b)}`,
     { label: 'browser.flow_status.cancelled' },
   );
+
+  // flow_status after the record cap: ten more detached flows end, one at a
+  // time (one detached flow per tab). The worker keeps ten records
+  // (MAX_DETACHED_FLOW_RECORDS), so the eleventh evicts the oldest finished
+  // one and its status answers `unknown`. This is also the only case that
+  // reaches the detached-flow store's `remove` (R6, condition 1).
+  for (let i = 0; i < 10; i += 1) {
+    const more = json(
+      await call(
+        'browser.flow',
+        { tab_id: T, detach: true, steps: [{ sleep: { ms: 1 } }] },
+        (b) => (b?.detached === true && typeof b.flow_id === 'string') || `detach ${describe(b)}`,
+        quiet,
+      ),
+    );
+    await pollUntil(
+      'browser.flow_status',
+      { tab_id: T, flow_id: more.flow_id },
+      (b) => b?.state !== 'running',
+      'flow_status.evicted',
+    );
+  }
+  await call(
+    'browser.flow_status',
+    ids,
+    (b) =>
+      (b?.flow_id === flowId && b.state === 'unknown') || `status after the cap ${describe(b)}`,
+    { label: 'browser.flow_status.evicted' },
+  );
 }
 
 /** Run a step; a StepFailure is printed and recorded (it fails the run)

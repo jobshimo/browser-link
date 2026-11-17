@@ -604,6 +604,18 @@ with today's keys, so stored data keeps its format across the refactor
 (item 1 of the high-risk list is not touched); cdp-direct does not use them
 (Q4).
 
+As built in slice 17: the keys and parsing live in core `flow/flow-history.ts`
+(`flowHistoryKey`, `parseFlowHistory`) and `flow/detached-flows.ts`
+(`detachedFlowKey`, `parseDetachedFlowRecord`, `detachedFlowRecordsIn`);
+`FlowHistoryEntry` and `DetachedFlowRecord` live in `ports/values.ts`. The
+extension adapters (`adapters/chrome-flow-history-store.ts`,
+`adapters/chrome-detached-flow-store.ts`) are stateless objects over
+`chrome.storage.session` that call those functions, built once for the
+worker. `DetachedFlowStore` has no single-record
+read: `FlowHistory.record(flowId)` finds the record in `list()`. A test
+reads a history and a record written in the 1.4.22 format and checks the
+values written now (`chrome-adapters.test.ts`).
+
 `Downloads` returns `CaptureOutcome` and `DownloadSettleOutcome`, which with
 `CapturedDownload`, `CaptureActOutcome` and `CaptureAroundResult` live in
 `ports/values.ts` (slice 16; `download-capture.ts` re-exports the first three).
@@ -990,8 +1002,7 @@ As built in slice 12 (1.4.18), for the extension only:
   true at `expiresAt = start + MAX_DETACHED_FLOW_MS` (30 min) or on cancel;
   **cancel is idempotent**; **finished exactly once** (`finish` returns the
   result once; a second call is a no-op).
-- **`FlowRegistry`** (one per tab, today `flow-registry.ts`
-  `createFlowRegistry`): **one detached flow per tab**; cancel of an unknown or
+- **`FlowRegistry`** (one per worker, across tabs, `createFlowRegistry`): **one detached flow per tab**; cancel of an unknown or
   finished id is a no-op; the foreground deadlines (today
   `foregroundFlowDeadlines`) live here.
 - **`FlowHistory`** (persistence, over `FlowHistoryStore` and
@@ -1002,6 +1013,18 @@ As built in slice 12 (1.4.18), for the extension only:
   and one `flow-finished` event** per detached flow (today
   `flushingFlowEvents`); **worker restart** turns a record still `running`
   into `worker-terminated` (today `recoverDetachedFlows`).
+
+As built in slice 17 (1.4.23), for the extension only: `FlowRun` is the
+run's data (`flow-run.ts`, the former `FlowRegistryEntry`) with
+`stopFlowRun` and `flowRunShouldStop`, and `summarizeFlow`, the one
+reading of a result; `createFlowRegistry(clock)` holds the runs and the
+foreground deadlines (`register({ foregroundDeadlineAt })`, dropped at
+`finish`) and answers the idle sweep's `idleHolds()`; `createFlowHistory`
+takes both stores, the `Clock` and two functions of `background.ts`:
+`publish` (the `flow-finished` event on the tab's socket; `EventsOut` is
+not a port yet) and `onRecordLost` (the warning when even the minimal
+terminal record is refused). Each invariant above is unit-tested on the
+in-memory stores (`flow/flow-registry.test.ts`, `flow/flow-history.test.ts`).
 
 ### `PendingReplies<T>` (core/session/pending-replies.ts)
 
@@ -1073,6 +1096,8 @@ CI runs it until the last listed module lives in core: each slice that moves
 a listed module removes it from `"files"` in the same PR (6: `inpage/*`; 7:
 `settle`, `expect`, `keymap`, `screenshot`, `observer-host`; 8: `flow.ts`,
 `clock.ts`), and slice 17, which moves `flow-registry.ts`, deletes the file.
+Since slice 17 (1.4.23) the file and its CI step are gone; core's own
+`tsc -p packages/core` checks every moved module.
 `utf8.ts`, `flow-limits.ts` and `idle-rules.ts` never need a move: 5b-2
 creates them in core, where core's own `tsc -p packages/core` checks them from
 the start; they reach the server through the mirror, unused there and
@@ -1548,7 +1573,11 @@ taken:
    by an e2e case (V8 coverage of the worker collected through CDP
    `Profiler.startPreciseCoverage` on the service-worker target during the
    e2e, intersected with the adapter files' exported functions; a method with
-   zero calls fails the job);
+   zero calls fails the job). Since 1.4.23 the check
+   (`packages/e2e/src/adapter-coverage.mjs`) parses each adapter's part of
+   the bundle and lists its functions statically, so a method that V8 never
+   compiled (an object built at module load, before coverage starts) fails
+   it too;
 2. adapters stay free of logic (fitness test, 5.3 item 3);
 3. the contract suite also runs against an in-memory fake of every port
    (5.3 item 5).

@@ -17,7 +17,7 @@ import type { FlowResult } from '../generated/core/flow/flow-engine.js';
 
 /**
  * The cdp-direct half of detached execution. The agent-visible contract
- * here is the SAME one the extension's `flow-registry.ts` implements —
+ * here is the SAME one the extension's flow registry (core) implements —
  * same status keys, same `'unknown'`, same one-per-tab rule, same
  * 30-minute ceiling — so these tests are deliberately shaped like their
  * counterparts over there. The implementations differ (no service worker

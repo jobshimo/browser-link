@@ -29,7 +29,11 @@ export const TOOL_CASES = {
   'browser.network_body': ['browser.network_body'],
   'browser.wait_for': ['browser.wait_for', 'error.timeout'],
   'browser.wait_for_tab': ['browser.wait_for_tab'],
-  'browser.flow_status': ['browser.flow_status', 'browser.flow_status.cancelled'],
+  'browser.flow_status': [
+    'browser.flow_status',
+    'browser.flow_status.cancelled',
+    'browser.flow_status.evicted',
+  ],
   'browser.navigate': ['browser.navigate', 'browser.navigate.cdp'],
   'browser.click': [
     'browser.click',

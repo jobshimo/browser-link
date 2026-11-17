@@ -18,7 +18,9 @@
 // slice 15 the page read and capture entries, the canvas-screenshot builder
 // and the navigator, screen capture and response bodies; slice 16 the dialog,
 // permission and download entries, the dialog input, and the downloads and
-// content-settings ports.
+// content-settings ports; slice 17 the flow aggregates (`flow/flow-run`,
+// `flow/flow-registry`, `flow/flow-history`, `flow/detached-flows`) and the
+// two flow store ports.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -30,6 +32,10 @@ export * from './support/keymap.js';
 export * from './support/screenshot.js';
 export * from './support/observer-host.js';
 export * from './flow/flow-engine.js';
+export * from './flow/flow-run.js';
+export * from './flow/flow-registry.js';
+export * from './flow/flow-history.js';
+export * from './flow/detached-flows.js';
 export * from './policies/idle-rules.js';
 export * from './session/load-wait.js';
 export * from './session/page-driver.js';

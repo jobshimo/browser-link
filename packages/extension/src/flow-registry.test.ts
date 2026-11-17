@@ -24,21 +24,22 @@ import {
   toFlowStatus,
   toHistoryEntry,
   type FlowHistoryEntry,
-  type FlowRegistryEntry,
-} from './flow-registry.js';
-import type { FlowResult } from '@browser-link/core';
+  type FlowRun,
+  type FlowResult,
+} from '@browser-link/core';
+import { systemClock } from './adapters/system-clock.js';
 
 /**
  * The in-flight registry and the flow history behind the popup's Flows
- * panel. Pure — no `chrome.*`, no service worker — which is the whole
- * reason this logic lives outside `background.ts`.
+ * panel (core `flow/`, since slice 17), and the popup's wording of them
+ * (`flow-labels.ts`). Pure — no `chrome.*`, no service worker.
  *
  * The privacy assertions here are the important ones: a history entry is
  * the only part of the kill switch that gets PERSISTED, and the rule (same
  * as the persistent map's) is UI structure and outcomes only.
  */
 
-function entryFor(overrides: Partial<FlowRegistryEntry> = {}): FlowRegistryEntry {
+function entryFor(overrides: Partial<FlowRun> = {}): FlowRun {
   return {
     flowId: 'flow_abc',
     tabId: 7,
@@ -56,7 +57,7 @@ const EN = messages('en');
 const ES = messages('es');
 describe('flow registry — lifecycle', () => {
   test('a registered flow is listed as running with its starting progress', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 4, title: 'Inbox' });
 
     const running = registry.listRunning(Date.now());
@@ -73,7 +74,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('finish removes the flow and hands back its final entry', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 2 });
     const finished = registry.finish('f1');
 
@@ -83,7 +84,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('cancel flips a running flow and reports that it did', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 2 });
 
     expect(registry.cancel('f1')).toBe(true);
@@ -94,20 +95,20 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('cancelling an unknown flow_id is a clean no-op, not an error', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     expect(registry.cancel('never-existed')).toBe(false);
     expect(registry.listRunning(Date.now())).toEqual([]);
   });
 
   test('cancelling an already-finished flow_id is a clean no-op', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 2 });
     registry.finish('f1');
     expect(registry.cancel('f1')).toBe(false);
   });
 
   test('a second Stop press reports false without disturbing the first', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 2 });
     expect(registry.cancel('f1')).toBe(true);
     expect(registry.cancel('f1')).toBe(false);
@@ -115,7 +116,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('cancelForTab stops only that tab’s flows', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'a', tabId: 1, steps: 1 });
     registry.register({ flowId: 'b', tabId: 1, steps: 1 });
     registry.register({ flowId: 'c', tabId: 2, steps: 1 });
@@ -129,7 +130,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('lists concurrent flows across different tabs, oldest first', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'first', tabId: 1, steps: 1, title: 'One' });
     registry.register({ flowId: 'second', tabId: 2, steps: 1, title: 'Two' });
     registry.register({ flowId: 'third', tabId: 3, steps: 1, title: 'Three' });
@@ -142,7 +143,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('elapsed time is measured against the caller-supplied clock and never goes negative', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 1, steps: 1 });
     const startedAt = registry.get('f1')!.startedAt;
 
@@ -152,7 +153,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('progress written by the runner surfaces in the running view', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 1, steps: 5 });
     registry.get('f1')!.progress = { step: 3, steps: 5, iteration: 12, iterations: 50 };
 
@@ -165,7 +166,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('a flow with no repeat leaves the iteration fields absent, not zero', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 1, steps: 2 });
     registry.get('f1')!.progress = { step: 1, steps: 2 };
     const view = registry.listRunning(Date.now())[0]!;
@@ -175,7 +176,7 @@ describe('flow registry — lifecycle', () => {
   });
 
   test('an empty registry lists nothing', () => {
-    expect(createFlowRegistry().listRunning(Date.now())).toEqual([]);
+    expect(createFlowRegistry(systemClock).listRunning(Date.now())).toEqual([]);
   });
 });
 
@@ -500,7 +501,7 @@ describe('detached flows — the registry half', () => {
     // The JSDoc promised this from the start and the method returned void;
     // the detach wiring needs the entry (title stamping, progress sink,
     // expiry read) without a second lookup per step.
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const entry = registry.register({ flowId: 'f1', tabId: 3, steps: 2 });
     entry.title = 'Wants list';
     entry.progress = { step: 2, steps: 2 };
@@ -510,7 +511,7 @@ describe('detached flows — the registry half', () => {
   });
 
   test('a detached flow is flagged in the running view and gets a deadline', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const entry = registry.register({
       flowId: 'f1',
       tabId: 3,
@@ -527,14 +528,14 @@ describe('detached flows — the registry half', () => {
   test('a synchronous flow never carries a deadline, even if one is passed', () => {
     // Only a detached flow escapes MAX_FLOW_TIMEOUT_MS, so only a detached
     // flow needs a ceiling of its own.
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const entry = registry.register({ flowId: 'f1', tabId: 3, steps: 2, expiresAt: 5 });
     expect(entry.expiresAt).toBeUndefined();
     expect(registry.shouldStop('f1', 1_000_000)).toBe(false);
   });
 
   test('one detached flow per tab is answerable by NAME, not just yes/no', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'sync', tabId: 3, steps: 1 });
     expect(registry.detachedForTab(3)).toBeUndefined();
 
@@ -547,14 +548,14 @@ describe('detached flows — the registry half', () => {
   });
 
   test('a finished detached flow frees its tab for the next one', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 1, detached: true });
     registry.finish('f1');
     expect(registry.detachedForTab(3)).toBeUndefined();
   });
 
   test('shouldStop is false while running, true once cancelled', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     registry.register({ flowId: 'f1', tabId: 3, steps: 1 });
     expect(registry.shouldStop('f1', 1_000)).toBe(false);
     registry.cancel('f1');
@@ -562,7 +563,7 @@ describe('detached flows — the registry half', () => {
   });
 
   test('shouldStop expires a detached flow at its deadline and records WHY', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const entry = registry.register({
       flowId: 'f1',
       tabId: 3,
@@ -584,7 +585,7 @@ describe('detached flows — the registry half', () => {
   });
 
   test('an expiry never overwrites a stop that was already requested', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const entry = registry.register({
       flowId: 'f1',
       tabId: 3,
@@ -601,12 +602,12 @@ describe('detached flows — the registry half', () => {
     // A flow whose bookkeeping is gone cannot be seen, listed or stopped —
     // continuing to dispatch irreversible actions on its behalf is exactly
     // the runaway this module exists to prevent.
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     expect(registry.shouldStop('never-registered', 1_000)).toBe(true);
   });
 
   test('cancelForTab stops a detached flow along with everything else on the tab', () => {
-    const registry = createFlowRegistry();
+    const registry = createFlowRegistry(systemClock);
     const detached = registry.register({ flowId: 'f1', tabId: 3, steps: 1, detached: true });
     const sync = registry.register({ flowId: 'f2', tabId: 3, steps: 1 });
     registry.register({ flowId: 'f3', tabId: 4, steps: 1 });
@@ -1236,7 +1237,7 @@ describe('summarizeFlow — timeout', () => {
     startedAt: 0,
     progress: { step: 1, steps: 2 },
     cancelled: false,
-  } as unknown as FlowRegistryEntry;
+  } as unknown as FlowRun;
 
   test('a deadline stop is reported as expired, with the steps it completed', () => {
     const summary = summarizeFlow(entry, {
