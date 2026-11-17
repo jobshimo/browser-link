@@ -41,6 +41,10 @@ function deps(evaluate: Evaluator['evaluate'] = () => Promise.resolve(undefined)
     settler,
     drag,
     'cdp-events': events,
+    page: {
+      info: () => Promise.resolve({ url: '', title: '' }),
+      armLoadWait: () => ({ done: new Promise<void>(() => undefined), cancel: () => undefined }),
+    },
     clock: createManualClock(),
   };
 }
@@ -108,7 +112,7 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds find, click, type, press, wait_for and drag, all listed', () => {
+  it('holds the interaction, wait_for, drag and page read tools, all listed', () => {
     expect([...TOOL_REGISTRY.keys()]).toEqual([
       'find',
       'click',
@@ -116,6 +120,13 @@ describe('dispatchTool', () => {
       'press',
       'wait_for',
       'drag',
+      'ping',
+      'snapshot',
+      'state',
+      'evaluate',
+      'canvas_screenshot',
+      'console',
+      'network',
     ]);
     expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
   });

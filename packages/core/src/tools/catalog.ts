@@ -5,6 +5,15 @@
  */
 import { dragTool } from './drag.js';
 import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
+import {
+  canvasScreenshotTool,
+  consoleTool,
+  evaluateTool,
+  networkTool,
+  pingTool,
+  snapshotTool,
+  stateTool,
+} from './page-read.js';
 import { createToolRegistry, type ToolRegistry } from './registry.js';
 import { waitForTool } from './wait-for.js';
 
@@ -15,4 +24,11 @@ export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([
   pressTool,
   waitForTool,
   dragTool,
+  pingTool,
+  snapshotTool,
+  stateTool,
+  evaluateTool,
+  canvasScreenshotTool,
+  consoleTool,
+  networkTool,
 ]);

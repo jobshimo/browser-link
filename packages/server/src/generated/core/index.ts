@@ -14,7 +14,8 @@
 // the type and press actions and the keyboard contract; slice 12 the
 // extension's per-tab aggregates (`session/tab-session`, `session/tab-registry`);
 // slice 13 the wait_for action and entry, and the capture watch it reads;
-// slice 14 the drag action and entry, and the drag input and CDP event wait.
+// slice 14 the drag action and entry, and the drag input and CDP event wait;
+// slice 15 the page read and capture entries and the canvas-screenshot builder.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -43,9 +44,11 @@ export * from './tools/registry.js';
 export * from './tools/interaction.js';
 export * from './tools/wait-for.js';
 export * from './tools/drag.js';
+export * from './tools/page-read.js';
 export * from './tools/catalog.js';
 export * from './tools/outcome-mapping.contract.js';
 export * from './inpage/builders.js';
+export * from './inpage/canvas.js';
 export * from './inpage/observer.js';
 export * from './inpage/deep-query.js';
 export * from './inpage/dom-helpers.js';

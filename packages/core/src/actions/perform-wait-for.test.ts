@@ -139,7 +139,11 @@ describe('performWaitFor', () => {
 });
 
 describe('wait_for network_url mode and the capture-buffers requirement', () => {
-  const finished = (...urls: string[]): CaptureWatch => ({ finishedUrls: () => urls });
+  const finished = (...urls: string[]): CaptureWatch => ({
+    finishedUrls: () => urls,
+    consoleEntries: () => [],
+    networkEntries: () => [],
+  });
 
   test('matches a finished request by URL, ignoring case', async () => {
     const clock = createManualClock();

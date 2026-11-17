@@ -95,13 +95,47 @@ export interface DialogWatch {
   isOpen(): boolean;
 }
 
-/** The transport's view of the requests its tab has captured. Read-only and
- * outside `ports/` (design revisions 7 and 8): the extension's watch reads
- * its tab's `TabSession` network buffer (`session/tab-session.ts`
- * `sessionCaptureWatch`); cdp-direct captures nothing and gives none. */
+/** One console message a tab captured (`Runtime.consoleAPICalled`,
+ * `Log.entryAdded`). */
+export interface ConsoleEntry {
+  timestamp: number;
+  level: string;
+  text: string;
+  source: 'console' | 'log';
+  url?: string;
+  line?: number;
+}
+
+/** One request a tab captured (the `Network.*` events). */
+export interface NetworkEntry {
+  request_id: string;
+  url: string;
+  method: string;
+  resource_type?: string;
+  status?: number;
+  status_text?: string;
+  mime_type?: string;
+  request_headers?: Record<string, string>;
+  response_headers?: Record<string, string>;
+  request_post_data?: string;
+  encoded_data_length?: number;
+  started_at: number;
+  finished_at?: number;
+  failed?: string;
+}
+
+/** The transport's view of the console messages and requests its tab has
+ * captured. Read-only and outside `ports/` (design revisions 7 and 8): the
+ * extension's watch reads its tab's `TabSession` console and network
+ * buffers (`session/tab-session.ts` `sessionCaptureWatch`); cdp-direct
+ * captures nothing and gives none. */
 export interface CaptureWatch {
   /** The URLs of the captured requests that have finished, oldest first. */
   finishedUrls(): Iterable<string>;
+  /** The captured console messages, oldest first. */
+  consoleEntries(): readonly ConsoleEntry[];
+  /** The captured requests, in the order they were first seen. */
+  networkEntries(): readonly NetworkEntry[];
 }
 
 export interface PageDriverDeps {

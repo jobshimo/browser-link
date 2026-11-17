@@ -12,6 +12,7 @@ import {
   CONSOLE_BUFFER_MAX,
   idleTabs,
   NETWORK_BUFFER_MAX,
+  sessionCaptureWatch,
   sessionDialogWatch,
   TabSession,
 } from './tab-session.js';
@@ -247,5 +248,22 @@ describe('TabSession: the pending dialog', () => {
     expect(watch.isOpen()).toBe(true);
     current = undefined;
     expect(watch.isOpen()).toBe(false);
+  });
+});
+
+describe('TabSession: the capture watch', () => {
+  test('reads the console and network buffers live, in buffer order', () => {
+    const { session } = sessionAt();
+    const watch = sessionCaptureWatch(session);
+    expect(watch.consoleEntries()).toEqual([]);
+    expect(watch.networkEntries()).toEqual([]);
+    session.pushConsole({ timestamp: 1, level: 'warn', text: 'a', source: 'console' });
+    session.pushConsole({ timestamp: 2, level: 'log', text: 'b', source: 'log' });
+    session.networkEntry('r1').url = 'https://x.test/one';
+    session.networkEntry('r2').url = 'https://x.test/two';
+    session.networkEntry('r1').finished_at = 5;
+    expect(watch.consoleEntries().map((e) => e.text)).toEqual(['a', 'b']);
+    expect(watch.networkEntries().map((e) => e.request_id)).toEqual(['r1', 'r2']);
+    expect([...watch.finishedUrls()]).toEqual(['https://x.test/one']);
   });
 });

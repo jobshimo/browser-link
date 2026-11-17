@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.21](https://github.com/jobshimo/browser-link/compare/v1.4.20...v1.4.21) (2026-11-17)
+
+### Notes
+
+- Slice 15 of the service worker plan; no behaviour change. `browser.ping`, `browser.snapshot`, `browser.state`, `browser.evaluate`, `browser.canvas_screenshot`, `browser.console` and `browser.network` now have one body each, in core (`packages/core/src/tools/page-read.ts`), run by both transports through the tool registry. Every result, key order and error text is the one before; `browser.evaluate` keeps each transport's reading of a missing expression.
+- The registry gains two requirements: `page` (the `PageInfo` port, which both transports provide) and `canvas` (a provides-set entry only the extension provides). `browser.canvas_screenshot`, `browser.console` and `browser.network` on a `cdp:` tab are refused by the registry with the same sentence as before. The capture watch also reads the console and network buffers (`consoleEntries()`, `networkEntries()`); the canvas-screenshot builder moved to core's `inpage/canvas.ts`.
+- cdp-direct sends no raw `Runtime.evaluate` any more: `browser.evaluate` gets an evaluator whose session uses the call's budget as the client's per-command timeout, so a timeout still reads `cdp-direct: command "Runtime.evaluate" timed out after Nms`. The raw-evaluate fitness test allows no call site.
+- `browser.navigate`, `browser.screenshot` and `browser.network_body` still run in each transport's own code.
+- `background.ts` shrinks by 226 lines and its line budget goes from 3152 to 2926; `cdp/transport.ts` goes from 695 to 664 lines.
+
 ## [1.4.20](https://github.com/jobshimo/browser-link/compare/v1.4.19...v1.4.20) (2026-11-17)
 
 ### Notes

@@ -12,16 +12,13 @@ import type {
 import {
   buildSnapshotJs,
   withValuesHiddenNote,
-  buildStateJs,
   buildElementRectJs,
-  type SnapshotOffset,
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
   idleHoldUntil,
   shouldScheduleIdleSweep,
   type IdleFlowHold,
   idleTabs,
-  type NetworkEntry,
   sessionCaptureWatch,
   sessionDialogWatch,
   TabRegistry,
@@ -756,12 +753,14 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'settler',
   'drag',
   'cdp-events',
+  'page',
   'capture-buffers',
+  'canvas',
 ]);
 
 /** What the core actions and the registry handlers use on one tab. */
 function actionDeps(tabId: number, session?: TabSession): ToolDeps {
-  const { evaluator, keyboard, pointer, drag, events, settler, dialogs } = pageDriver(tabId);
+  const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = pageDriver(tabId);
   return {
     evaluator,
     keyboard,
@@ -769,9 +768,10 @@ function actionDeps(tabId: number, session?: TabSession): ToolDeps {
     drag,
     'cdp-events': events,
     settler,
+    page,
     clock: systemClock,
     dialogs,
-    // The tab's captured requests, for a `network_url` wait.
+    // The tab's captured console messages and requests.
     captureBuffers: session && sessionCaptureWatch(session),
   };
 }
@@ -890,140 +890,17 @@ async function reportTopDocument(
   sendBridgeEvent(state, 'tab-navigated', { url: outcome.url, title });
 }
 
-/** Build the canvas-screenshot expression. Walks nested Shadow DOM roots
- * (Qt-WASM apps hide their canvas behind two layers of attachShadow), then
- * either dumps the whole canvas via `toDataURL` or crops to a region via a
- * temp 2D canvas. Returns the base64 body (no `data:` prefix) plus enough
- * size metadata for callers to convert CSS-pixel coordinates to canvas
- * pixels and vice versa.
- *
- * Caveat (also documented in the tool's `doc.gotchas`): pure WebGL canvases
- * created without `preserveDrawingBuffer: true` may return blank pixels —
- * the framebuffer is cleared between frames. Qt-WASM enables preservation,
- * so the headline use case (Victron VRM Remote Console, Venus OS) works.
- */
-interface CanvasScreenshotOpts {
-  selector?: string;
-  region?: { x: number; y: number; w: number; h: number };
-  format: 'png' | 'jpeg';
-}
-
-function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
-  const optsJson = JSON.stringify({
-    selector: opts.selector ?? null,
-    region: opts.region ?? null,
-    format: opts.format,
-  });
-  return `
-(() => {
-  const opts = ${optsJson};
-
-  function findCanvas(root) {
-    if (!root) return null;
-    // If a selector was provided, try it on this root first. The selector
-    // may target the canvas directly or a host that contains it.
-    if (opts.selector) {
-      try {
-        const direct = root.querySelector(opts.selector);
-        if (direct) {
-          if (direct.tagName === 'CANVAS') return direct;
-          const nested = direct.querySelector ? direct.querySelector('canvas') : null;
-          if (nested) return nested;
-        }
-      } catch (_) { /* invalid selector — fall through to heuristic */ }
-    }
-    // Heuristic: first visible canvas in this root.
-    const c = root.querySelector && root.querySelector('canvas');
-    if (c && c.offsetParent !== null) return c;
-    if (root.querySelectorAll) {
-      for (const el of root.querySelectorAll('*')) {
-        if (el.shadowRoot) {
-          const r = findCanvas(el.shadowRoot);
-          if (r) return r;
-        }
-      }
-    }
-    return null;
-  }
-
-  const canvas = findCanvas(document);
-  if (!canvas) {
-    return { ok: false, reason: 'no-canvas', message: 'No <canvas> found in the document or any reachable Shadow DOM root.' };
-  }
-
-  const rect = canvas.getBoundingClientRect();
-  const cssSize = { w: rect.width, h: rect.height };
-  const pixelSize = { w: canvas.width, h: canvas.height };
-  const mime = opts.format === 'jpeg' ? 'image/jpeg' : 'image/png';
-
-  let imageUrl;
-  let region = { x: 0, y: 0, w: canvas.width, h: canvas.height };
-
-  if (opts.region) {
-    // Clamp the requested region against the canvas backing store so a
-    // bad x/y/w/h never produces a black band outside the real pixels.
-    const x = Math.max(0, Math.min(canvas.width - 1, Math.round(opts.region.x)));
-    const y = Math.max(0, Math.min(canvas.height - 1, Math.round(opts.region.y)));
-    const w = Math.max(1, Math.min(canvas.width - x, Math.round(opts.region.w)));
-    const h = Math.max(1, Math.min(canvas.height - y, Math.round(opts.region.h)));
-    region = { x, y, w, h };
-    const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
-    const ctx = tmp.getContext('2d');
-    if (!ctx) {
-      return { ok: false, reason: 'crop-failed', message: '2D context unavailable for crop canvas.' };
-    }
-    try {
-      ctx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
-      imageUrl = tmp.toDataURL(mime);
-    } catch (err) {
-      return { ok: false, reason: 'tainted', message: err && err.message ? err.message : String(err) };
-    }
-  } else {
-    try {
-      imageUrl = canvas.toDataURL(mime);
-    } catch (err) {
-      return { ok: false, reason: 'tainted', message: err && err.message ? err.message : String(err) };
-    }
-  }
-
-  const commaIdx = imageUrl.indexOf(',');
-  const imageB64 = commaIdx >= 0 ? imageUrl.slice(commaIdx + 1) : imageUrl;
-
-  return {
-    ok: true,
-    canvas_size: cssSize,
-    canvas_pixels: pixelSize,
-    region,
-    format: opts.format,
-    image_b64: imageB64,
-    taken_at_ms: Date.now(),
-  };
-})()
-`;
-}
-
 /**
- * `handlePing` through `handleSetPermission` — the extracted bodies of the
- * remaining standalone tool cases in `handleTool` below, which do not run
- * through core's tool registry (the actions moved to core's `actions/` in
- * slices 10, 11, 13 and 14). Each takes exactly the locals its original
+ * `handleNavigate` through `handleSetPermission` — the extracted bodies of
+ * the remaining standalone tool cases in `handleTool` below, which do not
+ * run through core's tool registry (the actions moved to core's `actions/`
+ * in slices 10, 11, 13 and 14, the page reads to core's `tools/page-read.ts`
+ * in slice 15). Each takes exactly the locals its original
  * `case` block closed over (`tabId`, `state`, `msg`, the raw params `p`,
  * and/or the `str`/`optStr` readers) and returns the same wire-level
  * `tool.response` envelope the case used to build inline — pure code
  * motion, not a rewrite of tool behavior.
  */
-
-async function handlePing(tabId: number, msg: ToolRequestMessage): Promise<ExtensionToServer> {
-  const tab = await chrome.tabs.get(tabId);
-  return {
-    kind: 'tool.response',
-    id: msg.id,
-    ok: true,
-    result: { title: tab.title ?? '', url: tab.url ?? '' },
-  };
-}
 
 async function handleNavigate(
   tabId: number,
@@ -1049,58 +926,6 @@ async function handleNavigate(
     ok: true,
     result: await page.info(),
   };
-}
-
-async function handleSnapshot(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  optStr: (key: string) => string | undefined,
-): Promise<ExtensionToServer> {
-  const value = await pageDriver(tabId).evaluator.evaluate(
-    buildSnapshotJs({
-      within_selector: optStr('within_selector'),
-      only_interactive: p.only_interactive === true,
-      exclude: Array.isArray(p.exclude)
-        ? p.exclude.filter((x): x is string => typeof x === 'string')
-        : undefined,
-      max_interactive: typeof p.max_interactive === 'number' ? p.max_interactive : undefined,
-      since: optStr('since'),
-      offset:
-        typeof p.offset === 'object' && p.offset !== null
-          ? (p.offset as SnapshotOffset)
-          : undefined,
-      hide_password_values: p.hide_password_values === true,
-    }),
-  );
-  return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-}
-
-async function handleCanvasScreenshot(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  optStr: (key: string) => string | undefined,
-): Promise<ExtensionToServer> {
-  const selector = optStr('selector');
-  const format = optStr('format') === 'jpeg' ? 'jpeg' : 'png';
-  const regionRaw = p.region;
-  let region: { x: number; y: number; w: number; h: number } | undefined;
-  if (regionRaw && typeof regionRaw === 'object') {
-    const r = regionRaw as Record<string, unknown>;
-    if (
-      typeof r.x === 'number' &&
-      typeof r.y === 'number' &&
-      typeof r.w === 'number' &&
-      typeof r.h === 'number'
-    ) {
-      region = { x: r.x, y: r.y, w: r.w, h: r.h };
-    }
-  }
-  const value = await pageDriver(tabId).evaluator.evaluate(
-    buildCanvasScreenshotJs({ selector, region, format }),
-  );
-  return { kind: 'tool.response', id: msg.id, ok: true, result: value };
 }
 
 /**
@@ -1132,31 +957,6 @@ async function handleScreenshot(
     },
   );
   return { kind: 'tool.response', id: msg.id, ok: true, result };
-}
-
-function handleConsole(
-  state: TabSession,
-  msg: ToolRequestMessage,
-  optStr: (key: string) => string | undefined,
-): ExtensionToServer {
-  const level = optStr('level');
-  const entries = level
-    ? state.consoleBuffer.filter((e) => e.level === level)
-    : state.consoleBuffer;
-  return { kind: 'tool.response', id: msg.id, ok: true, result: entries };
-}
-
-function handleNetwork(
-  state: TabSession,
-  msg: ToolRequestMessage,
-  optStr: (key: string) => string | undefined,
-): ExtensionToServer {
-  const filter = optStr('url_filter')?.toLowerCase();
-  const list = state.networkOrder
-    .map((id) => state.networkBuffer.get(id))
-    .filter((e): e is NetworkEntry => e !== undefined)
-    .filter((e) => (filter ? e.url.toLowerCase().includes(filter) : true));
-  return { kind: 'tool.response', id: msg.id, ok: true, result: list };
 }
 
 async function handleNetworkBody(
@@ -1878,31 +1678,11 @@ async function handleTool(
     typeof p[key] === 'string' ? p[key] : undefined;
   try {
     switch (msg.tool) {
-      case 'ping':
-        return await handlePing(tabId, msg);
-
       case 'navigate':
         return await handleNavigate(tabId, msg, p, str);
 
-      case 'snapshot':
-        return await handleSnapshot(tabId, msg, p, optStr);
-
-      case 'state': {
-        const value = await pageDriver(tabId).evaluator.evaluate(buildStateJs());
-        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-      }
-
-      case 'canvas_screenshot':
-        return await handleCanvasScreenshot(tabId, msg, p, optStr);
-
       case 'screenshot':
         return await handleScreenshot(tabId, msg, p, optStr);
-
-      case 'console':
-        return handleConsole(state.session, msg, optStr);
-
-      case 'network':
-        return handleNetwork(state.session, msg, optStr);
 
       case 'network_body':
         return await handleNetworkBody(tabId, msg, str);
@@ -1917,12 +1697,6 @@ async function handleTool(
         // an agent can still read a finished flow's manifest through any
         // connected tab after the flow's own tab has closed.
         return await handleFlowStatus(msg, p);
-
-      case 'evaluate': {
-        const expression = str('expression');
-        const value = await pageDriver(tabId).evaluator.evaluate(expression);
-        return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-      }
 
       case 'dialog_respond':
         return await handleDialogRespond(tabId, msg, p, optStr);

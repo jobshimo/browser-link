@@ -220,6 +220,7 @@ describe('callCdpTool — tool dispatch', () => {
     grantAccess(port);
     const result = await callCdpTool(`cdp:${targetId}`, 'ping', {});
     expect(result).toEqual({ title: 'Example', url: 'https://example.com/' });
+    expect(Object.keys(result as object)).toEqual(['title', 'url']);
   });
 
   test('evaluate resolves with the Runtime.evaluate result value', async () => {

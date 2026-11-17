@@ -230,7 +230,10 @@ Consequences, measured:
   comparison machinery and a guard that no `perform*` is declared on a
   transport again, until slice 22 deletes it; slice 14, 1.4.20, moved the
   extension-only `performDrag` into core `actions/`, so that guard allows
-  none.)
+  none; slice 15, 1.4.21, moved the `ping`, `snapshot`, `state` and
+  `evaluate` cases of both transports and the extension's
+  `canvas_screenshot`, `console` and `network` into core
+  `tools/page-read.ts`.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -715,8 +718,9 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   provides no `capture-buffers`) answers exactly what its `performWaitFor`
   answered. `capture-buffers` is a provides-set entry, not a port: the
   extension gives `CommonDeps.captureBuffers`, a read-only `CaptureWatch`
-  (`session/page-driver.ts`, `finishedUrls()`) over its `TabSession` network
-  buffer (`sessionCaptureWatch`), outside `ports/` as the dialog watch is. A
+  (`session/page-driver.ts`, `finishedUrls()`) over its `TabSession` console
+  and network buffers (`sessionCaptureWatch`), outside `ports/` as the dialog
+  watch is. A
   flow's wait step reaches `performWaitFor` without the registry, so the action
   makes the same check on the absence of the watch. `CDP_DIRECT_PROVIDES` is
   pinned by `cdp/provides.test.ts`.
@@ -729,6 +733,27 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   `callCdpTool`'s `default` threw before. A flow's drag step reaches
   `performDrag` without the registry; cdp-direct's flow deps keep a
   `performDrag` that fails with that text.
+- As built in slice 15 (1.4.21): `ping`, `snapshot`, `state`, `evaluate`,
+  `canvas_screenshot`, `console` and `network` are registered in
+  `tools/page-read.ts`. `ping` requires `page` (the `PageInfo` port, now a
+  requirement both transports provide) and answers `{ title, url }` in that
+  key order. `snapshot`, `state` and `evaluate` require `evaluator`;
+  `evaluate` keeps each transport's coercion of a missing expression.
+  `canvas_screenshot` requires `evaluator` and `canvas`, a provides-set entry
+  like `capture-buffers` that only the extension provides (v1 scope); its
+  in-page builder is `inpage/canvas.ts`. `console` and `network` require
+  `capture-buffers` and read the `CaptureWatch`, which also gives
+  `consoleEntries()` and `networkEntries()` over the `TabSession` buffers
+  (`ConsoleEntry` and `NetworkEntry` live next to it in
+  `session/page-driver.ts`). cdp-direct gives `browser.evaluate` an evaluator
+  whose session sends with the call's budget as the client's per-command
+  timeout (`cdp/adapters/cdp-client-session.ts` `commandTimeoutMs`), so its
+  timeout text is unchanged and no raw `Runtime.evaluate` is left under
+  `cdp/` (`cdp/raw-evaluate.fitness.test.ts` allows none). `navigate`,
+  `screenshot` and `network_body` still run in each transport's own `case`:
+  they send `Page.navigate`, `Page.getLayoutMetrics` and
+  `Page.captureScreenshot`, and `Network.getResponseBody`, which no page
+  capability sends.
 
 ### 3.4 Failure contract
 
