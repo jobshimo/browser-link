@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.2](https://github.com/jobshimo/browser-link/compare/v1.4.1...v1.4.2) (2026-11-17)
+
+### Notes
+
+- Slice 5 of the service worker plan; no behaviour change. A private `packages/core` holds the first ports (clock, values, CDP session, page info, settings, content settings), the `CdpSession` and `PageInfo` contracts, and in-memory fakes.
+- Architecture tests keep the design: core imports neither `chrome` nor `node:`, the declared layers have no cycles, the extension zones are respected, wake listeners stay at the top level, and `background.ts` has a budget of 5039 lines.
+- `scripts/sync-core.mjs` keeps a checked copy of core in `packages/server/src/generated`. The npm package gains those compiled files; nothing imports them yet.
+- The design document is now in the repository at `docs/design/service-worker-architecture.md`.
+
 ## [1.4.1](https://github.com/jobshimo/browser-link/compare/v1.4.0...v1.4.1) (2026-11-17)
 
 ### Bug Fixes

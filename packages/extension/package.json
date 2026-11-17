@@ -1,6 +1,6 @@
 {
   "name": "@browser-link/extension",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node build.mjs && node copy-assets.mjs",
@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@browser-link/core": "workspace:*",
     "@browser-link/shared": "workspace:*"
   },
   "devDependencies": {

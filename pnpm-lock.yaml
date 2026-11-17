@@ -27,6 +27,22 @@ importers:
         specifier: ^8.72.1
         version: 8.72.1(eslint@10.14.0)(typescript@6.0.3)
 
+  packages/core:
+    dependencies:
+      '@browser-link/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.3.6
+        version: 8.3.6(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(@vitest/coverage-v8@4.1.12)(jsdom@30.1.3)(vite@8.3.6(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15))
+
   packages/e2e:
     devDependencies:
       '@modelcontextprotocol/sdk':
@@ -35,6 +51,9 @@ importers:
 
   packages/extension:
     dependencies:
+      '@browser-link/core':
+        specifier: workspace:*
+        version: link:../core
       '@browser-link/shared':
         specifier: workspace:*
         version: link:../shared
