@@ -1,11 +1,18 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 2, for arch re-audit. Revision 1 (`5486e34`) was audited as
+Status: revision 3. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
-Slices 0-4 may start; nothing from slice 5 on moves before the re-audit passes.
+Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
+changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
+before slice 5, N1 before slice 6, and arch verifies those fixes at the slice
+reviews unless they change the layering or the slice plan. Revision 3 changes
+both (ports become the bottom layer, as arch suggested; slice 5b becomes two
+PRs; the purity check lives until slice 17), so it goes back to arch before
+slice 5.
 Source of the requirement: `.eng/answers/20261116-2108-claude-9a69c2cf.ask-1.md`
 (verdict "accept with conditions", guarantees a-f).
-Measured on branch `docs/service-worker-design` at `5ce3055` (1.3.2).
+Measured on branch `docs/service-worker-design` at `5ce3055` (1.3.2); slice 0's
+CI jobs are read at `9bc84a7` (1.3.3, `main`).
 
 Code is cited by symbol: `file.ts` `symbol`. Where a range has no symbol of its
 own, the line range is given at `5ce3055`. "Moved lines" in the slice plan
@@ -43,7 +50,23 @@ while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
 
-Slice 0 is being implemented now on branch `ci/e2e-chrome-118-and-stable`.
+### Revision 3 (2026-11-17)
+
+The second audit (arch, 2026-11-17, on revision 2) found eight new problems.
+Each, and where this revision fixes it:
+
+| ID | Problem | Now fixed in |
+|---|---|---|
+| N1 | The mirror cannot resolve `@browser-link/shared` on the server | 2.3 "Specifiers" (sync-core rewrites it to a relative path); 5.2 module table |
+| N2 | The layer table forbids `expect.ts` (support) taking a `Clock` (ports) | 5.2: `ports` is the bottom layer; 3.1 `ports/values.ts`; 5.3 item 2 fixture; slices 5 and 7 |
+| N3 | Two fitness rules are RED or vacuous | 5.3 item 3 (worker zone vs UI zone; wake-listener rule); 3.1; R1 |
+| N4 | Slice 5b also changes the server copies of `flow.ts` and `expect.ts` | 5.1; slice 5b, now two PRs (5b-1 Clock, 5b-2 the rest), re-estimated; 2.5 |
+| N5 | Purity unguarded between slice 8 and the slices that move the last modules | 5.1 "Proof"; 5b-2 creates `utf8.ts`, `flow-limits.ts`, `idle-rules.ts` in core; slices 8 and 17; R8 |
+| N6 | R6 condition 1 not stated as cumulative; unreachable adapter methods | section 8, R6 |
+| N7 | Slice 0's job layout and issue permission | slice 0 (done, 1.3.3); 6.3; 7(a) |
+| N8 | The "complexity 1" rule leaves open what counts | 5.3 item 3 |
+
+Slice 0 is merged (release 1.3.3); 7(a) describes what it built.
 
 ---
 
@@ -140,10 +163,10 @@ Consequences, measured:
 | `architecture:transport-handlers-mirrored-unguarded` | registry, argument coercion and the failure taxonomy live once in core; each transport only maps a `ToolOutcome` to its wire (3.4), checked by the contract suite |
 | `code-quality:hand-copied-transport-actions` | one body per action in core; `transport-parity.test.ts` deleted last |
 
-Slice 0 also closes the partial `testing:real-chrome-gaps-for-1-1-rules`
-(Chrome 118 exists only as README prose; CI runs the runner's own Chrome,
-`ci.yml` job `e2e`, `CHROME_PATH: /usr/bin/google-chrome`, and records no
-version).
+Slice 0 (merged, 1.3.3) closed the partial
+`testing:real-chrome-gaps-for-1-1-rules`: before it, Chrome 118 existed only as
+README prose, and CI ran only the runner's own Chrome (`ci.yml` job `e2e`,
+`CHROME_PATH: /usr/bin/google-chrome`) and recorded no version.
 
 ### Goals
 
@@ -209,6 +232,32 @@ output to shape).
   Production means: `*.ts` that is not `*.test.ts`, not under `fitness/`, not
   under `ports/contract/` fixtures, not `*.fixture.json`. Core's tests run once,
   in `packages/core`; the server never runs them twice.
+- **Specifiers (decided, N1).** Core files import `@browser-link/shared`
+  (5.2), and the server can resolve neither form today:
+  `packages/server/package.json` has no `@browser-link/shared` dependency and
+  `packages/server/tsconfig.json` has no `paths`. `sync-core.mjs` therefore
+  rewrites, in the copied text of every mirrored core file, each
+  `@browser-link/shared` specifier (static `import`, `import type` and
+  `export ... from`; dynamic `import(` is already forbidden in core) to the
+  relative path of the mirrored `generated/shared/index.js` from that file,
+  for example `../shared/index.js` from `generated/core/x.ts` and
+  `../../shared/index.js` from `generated/core/tools/x.ts`. The header says
+  so (`// GENERATED from ... Specifiers rewritten.`); `--check` compares the
+  rewritten text, and fails if any file under `src/generated/` still contains
+  the bare specifier. Its unit test adds two RED probes: an un-rewritten
+  specifier, and a wrong relative depth. Why not the alternatives:
+  - *Server gains `"@browser-link/shared": "workspace:*"`.* `tsc` keeps a bare
+    specifier as written in the emitted `.js`, so the published `dist/` would
+    import a package that is `"private": true`, never on npm, and whose
+    `main` is `./src/index.ts`: the installed CLI would fail at load. The
+    npm package stops being self-contained.
+  - *A `paths` entry.* `paths` changes only how `tsc` resolves types, not the
+    emitted specifier (same failure at runtime), and pointing it at
+    `packages/shared/src` puts a file outside the server's `rootDir: "src"`,
+    which `tsc` rejects.
+  Rewriting keeps `dist/` self-contained, the server's `package.json`
+  unchanged, and `tsx` and vitest resolving the mirror like any other
+  relative import.
 - **Server vitest.** `packages/server/vitest.config.ts` adds
   `exclude: ['src/generated/**', ...defaults]` to `test` and
   `src/generated/**` to `coverage.exclude`, so a copied file can never be
@@ -242,9 +291,10 @@ packages/core/src/
                     utf8.ts (utf8ByteLength) flow-limits.ts
   inpage/           builders.ts observer.ts deep-query.ts dom-helpers.ts
   policies/         idle-rules.ts
-  ports/            clock.ts cdp-session.ts page-driver.ts page-info.ts
+  ports/            clock.ts values.ts cdp-session.ts page-driver.ts page-info.ts
                     settings.ts flow-history-store.ts detached-flow-store.ts
                     events-out.ts downloads.ts content-settings.ts index.ts
+                    (bottom layer, 5.2)
   session/          tab-session.ts tab-registry.ts pending-replies.ts
                     page-driver.ts (CDP implementation of the PageDriver port)
   flow/             flow-engine.ts (today flow.ts) flow-run.ts
@@ -266,21 +316,24 @@ packages/extension/src/
                     chrome-settings.ts ws-events-out.ts chrome-downloads.ts
                     chrome-content-settings.ts chrome-windows.ts
                     chrome-alarms.ts chrome-runtime.ts chrome-tab-events.ts
-                    web-socket.ts
+                    web-socket.ts system-clock.ts (from slice 5b-1)
   app/              tab-connection.ts connection.ts recording.ts repair.ts
                     popup-router.ts windows.ts activity-admin.ts tab-events.ts
-  (stays)           popup.ts activity.ts admin.ts admin-view.ts i18n.ts
-                    ui-language.ts notice-policy.ts reconnect-policy.ts
+  (UI zone, 5.3)    popup.ts activity.ts admin.ts ui-language.ts
+  (stays)           admin-view.ts i18n.ts notice-policy.ts reconnect-policy.ts
                     repair-policy.ts connect-failure-policy.ts
                     flow-recording-policy.ts handshake-diagnosis.ts
                     version-status.ts worker-messages.ts recording.ts
                     download-capture.ts inpage/recorder.ts
-                    idle-settings.ts flow-labels.ts (both from slice 5b)
+                    idle-settings.ts flow-labels.ts (both from slice 5b-2)
+                    clock.ts (slices 5b-1 to 8 only, see 5.1)
 
 packages/server/src/cdp/
   transport.ts      cdp-direct adapter: connections, gate, outcome -> wire
   adapters/         cdp-client-session.ts cdp-page-info.ts
                     config-settings.ts bridge-events-out.ts
+                    system-clock.ts (from slice 5b-1)
+  clock.ts          slices 5b-1 to 8 only, byte-identical sibling (5.1)
   (unchanged)       client.ts targets.ts gate.ts grant.ts
                     detached-flows.ts (section 8, Q4)
   support.ts        re-exports CDP_TOOL_SUPPORT derived from the registry (3.3)
@@ -293,7 +346,7 @@ functions: `reconnect-policy.ts`, `notice-policy.ts`, `repair-policy.ts`,
 `connect-failure-policy.ts`, `flow-recording-policy.ts`,
 `handshake-diagnosis.ts`, `version-status.ts`. The idle rules move to core
 because `TabSession` uses them; the idle settings (storage keys, console
-command text) stay in the extension (slice 5b). `download-capture.ts` stays in
+command text) stay in the extension (slice 5b-2). `download-capture.ts` stays in
 the extension: it owns the held-download state and only the extension has
 downloads (`CDP_TOOL_SUPPORT` `download: false`).
 
@@ -316,7 +369,8 @@ reaches for a global.
 ### 3.1 Ports
 
 ```ts
-// clock.ts: all time in core goes through this (slice 5b).
+// clock.ts: all time in core goes through this (declared in slice 5; flow
+// and expect adopt it in slice 5b-1, 5.1).
 export interface Clock {
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -325,6 +379,15 @@ export interface Clock {
   /** Run `tick` every `ms`; returns stop. Replaces setInterval. */
   every(ms: number, tick: () => void): () => void;
 }
+
+// values.ts: the value types the ports speak, declared here so `ports`
+// imports nothing in core (5.2). Moved verbatim in slice 7 from
+// settle.ts (`SettleParams`, `EvaluateFn`) and observer-host.ts
+// (`ObserverMark`); slice 5 declares them, slice 7 deletes the originals
+// and re-points `support/` at these.
+export interface SettleParams { settleMs: number; settleTimeoutMs: number; /* ... */ }
+export type EvaluateFn = (expression: string) => Promise<unknown>;
+export interface ObserverMark { /* as observer-host.ts today */ }
 
 // cdp-session.ts: one debugger session on one page.
 export interface CdpSession {
@@ -391,9 +454,12 @@ with today's keys, so stored data keeps its format across the refactor
 `createDownloadCapture(chrome.downloads)` and its `captureAround`. Core never
 holds the `DownloadCapture` object.
 
-Extension-only capabilities get adapters too, so "`chrome` only in
-`adapters/**` and `background.ts`" (5.3) is true. They are not core ports:
-their interfaces live next to the `app/` module that uses them.
+Extension-only capabilities get adapters too, so "in the worker zone,
+`chrome` only in `adapters/**` and `background.ts`" (5.3 item 3) stays true as
+code leaves `background.ts`. They are not core ports: their interfaces live
+next to the `app/` module that uses them. The UI pages (popup, Activity,
+Admin) are a separate zone and keep calling `chrome` directly (5.3 item 3
+says why).
 
 | Extension interface (in `app/`) | Adapter | Wraps today's |
 |---|---|---|
@@ -406,7 +472,7 @@ their interfaces live next to the `app/` module that uses them.
 
 | Core port | Extension adapter | cdp-direct adapter |
 |---|---|---|
-| `Clock` | `Date.now`, `setTimeout`, `setInterval` | same Node globals |
+| `Clock` | `adapters/system-clock.ts` over `Date.now`, `setTimeout`, `setInterval` | `cdp/adapters/system-clock.ts`, same globals |
 | `CdpSession` | `chrome.debugger.sendCommand` + `onEvent` filtered by `source.tabId` (`background.ts` `cdp`, `attachDebuggerListener`) | `cdp/client.ts` `CdpClient` |
 | `PageInfo` | `chrome.tabs.get`, `onUpdated` status complete (`background.ts` `waitForLoad`) | `Target.getTargetInfo`, `Page.loadEventFired` (`transport.ts` `getTargetInfo`, `waitForLoad`) |
 | `IdleSettings` | `chrome-settings.ts` | not used by cdp-direct (Q4) |
@@ -632,44 +698,83 @@ stay in `DownloadCapture` (`download-capture.ts`, already tested).
 
 Core compiles with `"lib": ["ES2022"]` and `"types": []`: no `chrome`, no
 `process`, no `Buffer`, no DOM, no `TextEncoder`, no `setTimeout`. Verified
-against the code to be moved, three modules fail that today and are fixed in
-place by slice 5b, before anything moves:
+against the code to be moved, four modules fail that today and are fixed by
+slice 5b, before anything moves. Two of them, `flow.ts` and `expect.ts`, have
+server copies compared full-body by `cdp/drift.test.ts` (everything below the
+file-header comment, imports included), so their fix lands in both copies and
+in both copies' callers in the same PR (N4):
 
 | Module | Impurity at `5ce3055` | Fix in slice 5b |
 |---|---|---|
-| `flow-registry.ts` | `import type { Messages } from './i18n.js'` (UI copy) for `flowTabLabel`, `describeFlowProgress`, `stopReasonLabel`, `describeFlowHistoryEntry` | those four move to a new extension module `flow-labels.ts`; callers re-pointed |
-| `flow-registry.ts` | `measureJsonBytes` uses `new TextEncoder()` | `support/utf8.ts` `utf8ByteLength(s)`, a pure UTF-8 byte count; a test asserts it equals `new TextEncoder().encode(s).length` for ASCII, CJK, emoji and lone surrogates (encoded as U+FFFD, 3 bytes) |
-| `idle-policy.ts` | storage keys (`CONSOLE_IDLE_TTL_STORAGE_KEY`, legacy keys), storage parsing (`effectiveIdleTtlMinutes`, `legacyIdleChoice`, `parseIncomingSettings`, `shouldAcceptIncomingSettings`) and CLI copy (`idleTtlCommand`) mixed with the rules; imports `MAX_DETACHED_FLOW_MS` from `flow-registry` | rules (`clampIdleTtlMinutes`, `shouldDisconnectForIdle`, `idleHoldUntil`, `activityAfterFlowEnded`, `tabsToDisconnectForIdle`, `shouldScheduleIdleSweep` and the limits) become `idle-rules.ts`; the rest becomes extension `idle-settings.ts`; `MAX_DETACHED_FLOW_MS` moves to `flow-limits.ts`, which `flow-registry` re-exports |
-| `flow.ts` | the wait step calls `setTimeout`; `deps.now ?? Date.now` | `FlowDeps` takes a `clock: Clock` |
-| `expect.ts` | default deps `now: () => Date.now()` and `setTimeout`; `withProbeTimeout` uses `setTimeout`/`clearTimeout` | take a `Clock`; `withProbeTimeout` uses `clock.after` |
+| `flow-registry.ts` | `import type { Messages } from './i18n.js'` (UI copy) for `flowTabLabel`, `describeFlowProgress`, `stopReasonLabel`, `describeFlowHistoryEntry` | 5b-2: those four move to a new extension module `flow-labels.ts`; callers re-pointed |
+| `flow-registry.ts` | `measureJsonBytes` uses `new TextEncoder()` | 5b-2: `utf8ByteLength(s)`, a pure UTF-8 byte count, created directly in core as `support/utf8.ts`; a test asserts it equals `new TextEncoder().encode(s).length` for ASCII, CJK, emoji and lone surrogates (encoded as U+FFFD, 3 bytes) |
+| `idle-policy.ts` | storage keys (`CONSOLE_IDLE_TTL_STORAGE_KEY`, legacy keys), storage parsing (`effectiveIdleTtlMinutes`, `legacyIdleChoice`, `parseIncomingSettings`, `shouldAcceptIncomingSettings`) and CLI copy (`idleTtlCommand`) mixed with the rules; imports `MAX_DETACHED_FLOW_MS` from `flow-registry` | 5b-2: rules (`clampIdleTtlMinutes`, `shouldDisconnectForIdle`, `idleHoldUntil`, `activityAfterFlowEnded`, `tabsToDisconnectForIdle`, `shouldScheduleIdleSweep` and the limits) are created directly in core as `policies/idle-rules.ts`; the rest becomes extension `idle-settings.ts`; `MAX_DETACHED_FLOW_MS` moves to core `support/flow-limits.ts`, which `flow-registry` re-exports |
+| `flow.ts` (and server `cdp/flow.ts`) | `pause` calls `setTimeout`; `haltReason` and `pause` read `deps.now ?? Date.now` | 5b-1: `FlowDeps` takes a required `clock: Clock` instead of `now?`; `pause` uses `clock.sleep`. Callers: extension `buildFlowDeps`, server `transport.ts` `buildCdpFlowDeps` and the `deadlineAt` spread around it |
+| `expect.ts` (and server `cdp/expect.ts`) | `realClock` default (`Date.now`, `setTimeout`); `withProbeTimeout` uses `setTimeout`/`clearTimeout` | 5b-1: `ExpectClock` becomes `Clock`, `verifyExpect`'s `clock` parameter becomes required and `realClock` is deleted; `withProbeTimeout` uses `clock.after`. Callers: `performClick`, `performType`, `performPress` in both `background.ts` and `transport.ts` |
 
-Proof that the set is complete: slice 5b adds
-`packages/core/tsconfig.purity.json` with core's compiler options and
+**How the `Clock` type reaches both copies in 5b-1.** The import lines of
+`flow.ts` and `expect.ts` are inside the full-body comparison, so both copies
+must import `Clock` with the same specifier, and the server cannot import
+core before the mirror exists. 5b-1 adds a sibling `clock.ts` on each side
+(`packages/extension/src/clock.ts`, `packages/server/src/cdp/clock.ts`), both
+declaring the `Clock` interface of 3.1, byte-identical below the header, with
+a new `drift.test.ts` section; a type test in the extension asserts it is
+mutually assignable with core's `ports/clock.ts` `Clock`. The real clocks are
+`adapters/system-clock.ts` (extension) and `cdp/adapters/system-clock.ts`
+(server), each exporting `systemClock` under the same name, so the three
+`perform*` call sites stay identical and `transport-parity.test.ts` `HANDLERS`
+stays green. Both sibling `clock.ts` files are deleted in slice 8, when the
+last module that imports them (`flow.ts`) moves to core and imports
+`ports/clock.ts`. The tests that inject time (`flow-deadline.test.ts` and
+`expect.test.ts`, both sides) switch from `now` and `ExpectClock` fakes to a
+fake `Clock`; the server's `transport.test.ts` fakes `Date` with
+`vi.useFakeTimers` and runs unchanged, which checks that `systemClock` reads
+the same `Date.now`.
+
+**Proof that the set is complete, and that it stays pure (N5).** Slice 5b-2
+adds `packages/core/tsconfig.purity.json` with core's compiler options and
 `"files"` set to the extension modules slated to move (the closure of their
 imports is checked with them). `tsc -p packages/core/tsconfig.purity.json`
-fails at the start of 5b (RED, recorded in the PR) and passes at its end; CI
-runs it until slice 8, after which every listed module is in core and core's
-own `tsc -p packages/core` covers it, and the file is deleted.
+fails at the start of 5b-2 (RED, recorded in the PR) and passes at its end.
+CI runs it until the last listed module lives in core: each slice that moves
+a listed module removes it from `"files"` in the same PR (6: `inpage/*`; 7:
+`settle`, `expect`, `keymap`, `screenshot`, `observer-host`; 8: `flow.ts`,
+`clock.ts`), and slice 17, which moves `flow-registry.ts`, deletes the file.
+`utf8.ts`, `flow-limits.ts` and `idle-rules.ts` never need a move: 5b-2
+creates them in core, where core's own `tsc -p packages/core` checks them from
+the start; they reach the server through the mirror, unused there and
+harmless.
 
 ### 5.2 Layers inside core
 
 ```
-tools         -> actions, flow, session, ports, support, policies, inpage
-actions       -> session, ports, support, inpage
-session, flow -> ports, support, policies, inpage     (session and flow do not import each other)
-ports         -> support (types only), shared
-support       -> inpage
-policies      -> support (flow-limits only)
+tools         -> actions, flow, session, policies, support, inpage, ports
+actions       -> session, support, inpage, ports
+session, flow -> policies, support, inpage, ports    (session and flow do not import each other)
+policies      -> support (flow-limits only), ports
+support       -> inpage, ports
 inpage        -> (nothing in core)
+ports         -> (nothing in core)
 ```
+
+`ports` is the bottom layer (revision 3, N2, as arch suggested): the port
+interfaces, `Clock`, and the value types they speak (`ports/values.ts`,
+3.1) import nothing in core, so every layer above may depend on them and no
+port can pull behavior in. That is the hexagon read literally: the core's
+vocabulary at the bottom, the code that uses it above. Revision 2 had
+`ports -> support` (for the settle types) and `support -> inpage` only, which
+forbade `expect.ts` (support) taking a `Clock` (ports) and would have needed a
+cycle to allow it. `support` modules that declare those types today
+(`settle.ts`, `observer-host.ts`) import them from `ports/values.ts` once they
+move (slice 7).
 
 The layers file `core/src/fitness/layers.ts` states this table as data:
 folder name to allowed folders. Within a folder, imports are free but
 acyclic. `@browser-link/shared` is allowed everywhere.
 
 The existing `idle-policy.ts` → `flow-registry.ts` edge (policies → flow)
-would break the rule; slice 5b removes it by moving `MAX_DETACHED_FLOW_MS` to
-`support/flow-limits.ts`.
+would break the rule; slice 5b-2 removes it by moving `MAX_DETACHED_FLOW_MS`
+to `support/flow-limits.ts`.
 
 | Module | May import | Must not import |
 |---|---|---|
@@ -677,7 +782,9 @@ would break the rule; slice 5b removes it by moving `MAX_DETACHED_FLOW_MS` to
 | `packages/extension/src/adapters/**` | core, shared, `chrome` | other adapters |
 | `packages/extension/src/app/**` | core, shared, extension policies, interfaces of its own module | `chrome` |
 | `packages/extension/src/background.ts` | anything in the extension | tool logic (no tool `case` labels) |
+| `packages/extension/src/{popup,activity,admin,ui-language}.ts` (UI zone) | `chrome`, shared, core, the pure extension modules they import today (`i18n`, `admin-view`, the policies, `recording`, `flow-registry`, ...) | `background.ts`, `adapters/**`, `app/**`; and no worker-zone module imports a UI-zone module |
 | `packages/server/src/cdp/**` | `generated/core`, `generated/shared` | `packages/core` by relative path |
+| `packages/server/src/generated/**` | relative paths inside `generated/` only (2.3 "Specifiers") | `@browser-link/shared`, `@browser-link/core` |
 
 ### 5.3 Enforcement, all run by `pnpm test` in CI
 
@@ -695,16 +802,76 @@ would break the rule; slice 5b removes it by moving `MAX_DETACHED_FLOW_MS` to
    the same function and expected to fail with a named rule: a `chrome`
    identifier; a `node:fs` import; an npm import; a dynamic `import(`; a
    `policies` file importing `flow`; an `actions` file importing `tools`; a
-   two-file cycle. Fixtures are excluded from the mirror (2.3).
-3. **`extension/src/fitness.test.ts`:**
-   - `chrome` identifiers appear only in `adapters/**` and `background.ts`;
-   - adapters stay free of logic: no `if`/`switch`/loop in an adapter beyond
-     argument mapping, checked as "every exported function body has
-     cyclomatic complexity 1 or is listed with a reason" (condition 2 of R6);
+   `ports` file importing `support`; a two-file cycle. Fixtures are excluded
+   from the mirror (2.3).
+3. **`extension/src/fitness.test.ts`** (lands in slice 5; every rule below is
+   green at `5ce3055` as written, and each has a RED fixture):
+   - **Two zones, `chrome` confined in the worker zone (N3).** The *worker
+     zone* is `background.ts` plus its transitive import closure inside
+     `packages/extension/src` (computed from the import graph, type-only
+     imports included). The *UI zone* is a closed list in the test:
+     `popup.ts`, `activity.ts`, `admin.ts` (the scripts of the three HTML
+     pages) and `ui-language.ts` (imported only by those three). Rules:
+     in the worker zone, `chrome` identifiers (AST identifiers, so comments
+     do not count) appear only in `adapters/**` and `background.ts`; no
+     worker-zone module imports a UI-zone module; UI-zone modules import
+     neither `background.ts`, `adapters/**` nor `app/**`. At `5ce3055` the
+     only modules with `chrome` identifiers outside comments are
+     `background.ts`, `popup.ts`, `activity.ts`, `admin.ts` and
+     `ui-language.ts`; `recording.ts`, `admin-view.ts` and `i18n.ts` name
+     `chrome` in comments only, and `download-capture.ts` receives the
+     `chrome.downloads` API as a parameter, so the rule is green on day one
+     without an exemption.
+     Why the UI pages get no adapters: each page is its own small composition
+     root running in a document whose lifetime is the window's, not the MV3
+     worker's, so the wake-up rule (R1) does not apply; cdp-direct has no UI,
+     so no port would have a second implementation; and their testable logic
+     already sits in pure modules with seams (`admin-view.ts`, `i18n.ts`,
+     `ui-language.ts` `LanguageStore` with an in-memory fake). A UI file that
+     grows logic moves it into a pure module, as `admin-view.ts` did; a new
+     file joins the UI zone only by being added to the list with a reason, in
+     a reviewed PR.
+   - **Adapters stay free of logic (N8).** For every function-like node in
+     an `adapters/**` file (function declarations, arrow functions, function
+     expressions, methods, and the methods of object literals a factory
+     returns: the walk visits every function body, not only exported ones),
+     the decision count is 0. One decision each: `if`, `?:`, each `case`
+     clause, `for`/`for...of`/`for...in`/`while`/`do`, `catch`, `&&`, `||`.
+     Not counted: `??` and `?.`, because in an adapter they only default or
+     guard an argument while mapping it, and every alternative they select is
+     a value, not a path. A filter that needs a decision (for example the
+     extension `CdpSession` keeping only events whose `source.tabId` matches)
+     is written once as a pure, unit-tested combinator in `app/`
+     (`filtered(predicate, listener)` with `isForTab(tabId)`) and passed as
+     the listener, so the adapter body stays a single call. An exemption names
+     the function, the reason and the test that covers its branch; the list
+     is capped at three entries and each addition needs arch's sign-off in
+     the PR (condition 2 of R6).
    - `background.ts` line budget, constant `BACKGROUND_LINE_BUDGET` (5.4);
    - `background.ts` contains no `case '<tool>'` for any registry name;
-   - every `addListener` call in `background.ts` is a top-level statement
-     (R1);
+   - **Wake listeners are registered synchronously by the composition root
+     (R1, N3).** The test holds `WAKE_SUBSCRIPTIONS`, the events of the ten
+     permanent registrations of section 1 (eight distinct events:
+     `storage.onChanged` and `windows.onRemoved` are subscribed twice;
+     `debugger.onEvent`, `alarms.onAlarm`, `runtime.onMessage`,
+     `tabs.onRemoved`, `tabs.onCreated`, `debugger.onDetach`), each mapped to
+     the calls that subscribe to it: `chrome.<ns>.<event>.addListener` today,
+     plus the adapter method that wraps it from the slice that introduces
+     that adapter (for example `alarms.onAlarm` to `Alarms.onFire` in slice
+     19), resolved with the type checker. The slice that adds an adapter
+     updates the map in the same PR. Rules: for each entry, `background.ts`
+     holds at least one subscription as a top-level expression statement (not
+     inside a function, callback or block); a mapped adapter method is called
+     only from those top-level statements; and its body in the adapter is the
+     single `addListener` call (plus returning the unsubscribe), with no
+     `await`. Moving a wake listener into a function, behind an `await`, or
+     into `app/` fails the test, before and after slices 19-21. Transient
+     subscriptions scoped to one operation and paired with a
+     `removeListener` (today `background.ts` `waitForLoad` on
+     `tabs.onUpdated`, the per-call `debugger.onEvent` handlers, and the
+     recording navigation listener) are not wake listeners and are not
+     constrained by this rule; after slices 9-21 they go through
+     `CdpSession.onEvent`, `PageInfo.waitForLoad` and `TabEvents.onUpdated`.
    - no bundled module other than `background.ts` declares a top-level
      `BRIDGE_PORT` (Q3).
 4. **Mirror:** `sync-core.mjs --check` in the server's `test` script (2.3).
@@ -729,8 +896,8 @@ would break the rule; slice 5b removes it by moving `MAX_DETACHED_FLOW_MS` to
 `BACKGROUND_LINE_BUDGET` starts at **4922** in slice 5 and every slice that
 moves code out lowers it to the new count; it is never raised without arch
 sign-off. With adapters for `windows`, `alarms`, `runtime`, tab events and the
-socket, the composition root holds: imports (~45 lines), construction of 13
-extension adapters and the core services (~70), ten listener registrations as
+socket, the composition root holds: imports (~45 lines), construction of 14
+extension adapters (with `system-clock.ts`) and the core services (~70), ten listener registrations as
 one-line delegations plus the interval (~25), three startup calls and
 `BRIDGE_PORT` with its comment (~15), and file comments. Estimate: **about
 200 lines**. The ceiling stays **400**; slice 22 sets the constant to the
@@ -754,18 +921,19 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 
 | # | Slice | What moves or changes | Size (est.) | Proof | Revert |
 |---|---|---|---|---|---|
-| 0 | Chrome 118 + stable in CI (in progress, `ci/e2e-chrome-118-and-stable`) | e2e job becomes a 118 leg and a stable leg (7(a)); Chrome for Testing 118.0.5993.70 installed with `npx @puppeteer/browsers install chrome@118.0.5993.70` (cached); `run.mjs` writes `{browser, product, revision}` to `$GITHUB_STEP_SUMMARY` and `e2e-result-<leg>.json` from the version it already reads | ~80 authored | both legs run; summary shows the two versions | revert the PR; CI falls back to one leg |
+| 0 | Chrome 118 + stable in CI (**done**, merged as release 1.3.3, `9bc84a7`) | three jobs in `ci.yml` (7(a)): `e2e` on Chrome for Testing 118.0.5993.70 (installed with `@puppeteer/browsers`, cached), the only e2e job in `release.needs`; `e2e-stable` on the runner's `/usr/bin/google-chrome`, reporting; `e2e-stable-issue`, the only job with `issues: write`. `run.mjs` writes the browser record to `packages/e2e/build/e2e-result.json` and to `$GITHUB_STEP_SUMMARY` titled with `E2E_LEG`; each job uploads it as `e2e-result-chrome-118` or `e2e-result-chrome-stable` | ~80 authored | both jobs run; summary shows the two versions | revert the PR; CI falls back to one job |
 | 1 | e2e: page read and capture | cases for `navigate`, `state`, `ping`, `screenshot`, `canvas_screenshot`, `console`, `network`, `network_body`; fixtures in `packages/e2e/pages/` | ~350 authored | each case fails under `E2E_EXPECT_FAIL=<tool>` and passes otherwise | revert; no product code touched |
 | 2 | e2e: drag, permission, tabs, flow control | cases for `drag`, `set_permission`, `wait_for_tab`, `flow_status`, `flow_cancel` | ~350 authored | same as 1 | revert |
 | 3 | Differential harness | `E2E_EXT_DIST`, `E2E_SERVER_CLI`, `E2E_SERVER_EXTENSION_ID` overrides in `lib.mjs`; `E2E_RECORD=<file>`; per-run `HOME`; `scripts/e2e-diff.mjs` (7(b)); CI job `e2e-diff` | ~350 authored | self-diff of two runs of the same build is empty; a one-token change in a result string and in an error string are both reported | revert |
 | 3b | e2e: error paths | one case per `ToolFailure` kind reachable in Chrome (3.4): `action` (click on a missing selector), `sensitive` (type/press failure on a password field carries `sensitive_field`), `thrown` (evaluate throws), `unknown-tool` asserted through the contract suite only (no MCP path sends one), plus timeouts (`wait_for` expiry); the exact error text is asserted | ~250 authored | `E2E_EXPECT_FAIL` RED probe per case; the differential records them | revert |
 | 4 | Bundler alone | `packages/extension/build.mjs` (esbuild `0.28.2` exact, entries `background`, `popup`, `activity`, `admin`, `format: 'esm'`, `target: 'chrome118'`, `bundle: true`, no minify, `sourcemap: 'linked'`); `build` becomes `tsc --noEmit && node build.mjs && node copy-assets.mjs`; `smoke-tarball.mjs` assertions (7(c)). No source file changes. | ~120 authored | 7(c) | revert restores tsc output |
-| 5 | Core skeleton | `packages/core` (private, `0.0.0`, 2.4) with `ports/` (types only), `fitness/` with layers and cycle test and their RED fixtures, contract functions with in-memory fakes, `scripts/sync-core.mjs` with `--check` and its test, server `vitest.config.ts` exclusion, explicit `build`/`test` scripts, empty mirror, budget = 4922; the extension's `tsc --noEmit` proven with one runtime import from core (2.2) | ~400 authored | fitness and mirror checks green and RED-probed | revert |
-| 5b | Core purity | slice 5.1 fixes in the extension, in place: `flow-labels.ts`, `utf8ByteLength`, `idle-rules.ts` / `idle-settings.ts` split, `flow-limits.ts`, `Clock` through `flow.ts` and `expect.ts`; `tsconfig.purity.json` in CI | ~300 authored / moved | `tsc -p packages/core/tsconfig.purity.json` RED then GREEN; unit tests of moved functions unchanged and green; e2e; differential equal | revert |
+| 5 | Core skeleton | `packages/core` (private, `0.0.0`, 2.4) with `ports/` (types only, the bottom layer, including `clock.ts` and `values.ts`, 5.2), `fitness/` with layers and cycle test and their RED fixtures, extension `fitness.test.ts` with its zones and wake-listener rules and their RED fixtures (5.3 item 3), contract functions with in-memory fakes, `scripts/sync-core.mjs` with `--check`, the specifier rewrite (2.3) and its test, server `vitest.config.ts` exclusion, explicit `build`/`test` scripts, empty mirror, budget = 4922; the extension's `tsc --noEmit` proven with one runtime import from core (2.2) | ~450 authored | fitness and mirror checks green and RED-probed | revert |
+| 5b-1 | Core purity: `Clock` | 5.1 rows `flow.ts` and `expect.ts`, in both copies and their callers in one PR (N4): sibling `clock.ts` on each side with a `drift.test.ts` section, `systemClock` adapters on each side, `FlowDeps.clock`, required `verifyExpect` `clock`, `withProbeTimeout` on `clock.after`; extension `buildFlowDeps`, server `buildCdpFlowDeps`, the three `perform*` call sites on each side; `flow-deadline.test.ts` and `expect.test.ts` on both sides moved to a fake `Clock` | ~260 authored (about 110 per side plus ~40 tests of the new files) | `drift.test.ts` and `transport-parity.test.ts` green (both copies changed identically); the timer-driven tests green on a fake `Clock`; e2e; differential equal | revert |
+| 5b-2 | Core purity: the rest | 5.1 rows `flow-registry.ts` and `idle-policy.ts`: `flow-labels.ts`; `utf8.ts`, `flow-limits.ts`, `idle-rules.ts` created in core; `idle-settings.ts`; `tsconfig.purity.json` in CI | ~280 authored / moved | `tsc -p packages/core/tsconfig.purity.json` RED at the start (recorded) then GREEN; unit tests of moved functions unchanged and green; e2e; differential equal | revert |
 | 5c | Server `messages.ts` from the mirror | `generated/shared/` populated; `server/src/messages.ts` becomes a re-export of `./generated/shared/index.js`; the "wire protocol drift guard" block of `config.drift.test.ts` deleted (the mirror check covers it) | ~20 authored, copy deleted ~400 | server `tsc` green; a test lists the names `messages.ts` exported before and asserts each is still exported; e2e; differential | revert |
 | 6 | In-page code | `inpage/{builders,observer,deep-query,dom-helpers}` to core; server copies replaced by the mirror; `builders-parity.test.ts` deleted | moved ~4k (renames), copies deleted | e2e, differential, unit tests re-homed | revert |
-| 7 | Support modules | `settle`, `expect`, `keymap`, `screenshot`, `observer-host` to `core/support/` (after 6: `settle` and `expect` import `inpage/builders`, `observer-host` imports `inpage/observer`); their `drift.test.ts` sections deleted | moved ~1.15k, copies deleted ~1.25k | same | revert |
-| 8 | Flow engine | `flow.ts` to `core/flow/flow-engine.ts`; `cdp/flow.ts` copy deleted; `tsconfig.purity.json` deleted | moved 1352 (rename), copy deleted 1348 | same | revert |
+| 7 | Support modules | `settle`, `expect`, `keymap`, `screenshot`, `observer-host` to `core/support/` (after 6: `settle` and `expect` import `inpage/builders`, `observer-host` imports `inpage/observer`); their `drift.test.ts` sections deleted; `SettleParams`, `EvaluateFn` and `ObserverMark` declarations replaced by imports from `ports/values.ts` (type-only, 5.2); their entries removed from `tsconfig.purity.json` | moved ~1.15k, copies deleted ~1.25k | same | revert |
+| 8 | Flow engine | `flow.ts` to `core/flow/flow-engine.ts`, importing `ports/clock.ts`; `cdp/flow.ts` copy and both sibling `clock.ts` files deleted with their `drift.test.ts` sections; `flow.ts` and `clock.ts` removed from `tsconfig.purity.json` (the file stays, 5.1) | moved 1352 (rename), copy deleted 1348 | same | revert |
 | 9 | Sessions and page driver | `CdpSession`/`PageInfo` adapters both sides; `PageDriver` (3.2) from `background.ts` `cdp`, `evaluateObserverJs`, `takeObserverMark`, `settleWithChanges`, `handleObserverMessage`, `installObserver`, `dispatchKeyEvent`, `evaluateInTab`, `waitForLoad`, and the nine twins in `transport.ts` | ~330 from background, ~250 deleted from server | contract suite green on fakes, cdp-direct and in the worker; R6 conditions 1-3 green (section 8); e2e; differential | revert |
 | — | **Checkpoint A** (6.2) | | | | |
 | 10 | Registry + interaction: find, click | `ToolRegistry`, `ToolFailure` and both outcome mappings; `performFind`, `performClick`, click landing, frame watch; their entries | ~380 | outcome-mapping contract; error-path cases from 3b; the two handlers leave `transport-parity` `HANDLERS` | revert |
@@ -775,7 +943,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 14 | drag | `performDrag`, `handleDrag`; requires `drag`, which cdp-direct does not provide | ~330 | e2e case from slice 2 | revert |
 | 15 | Page read and capture | `handlePing` ... `handleNetworkBody`, canvas builder; server cases `navigate`, `snapshot`, `state`, `screenshot`, `ping`, `evaluate` | ~300 | e2e from slice 1 | revert |
 | 16 | Dialogs, permission, downloads | `handleDialogRespond`, `handleSetPermission`, `handleDownloadCapture`, `handleDownloadSettle`; `ContentSettings` and `Downloads` adapters | ~220 | e2e `dialog_respond`, `set_permission`, `download` | revert |
-| 17 | `FlowRun`, `FlowRegistry`, `FlowHistory` | aggregates and the two store adapters (lines 3025-3287, `foregroundFlowDeadlines`) | ~330 | unit tests of each invariant with in-memory stores; store contract on fakes and in the worker | revert |
+| 17 | `FlowRun`, `FlowRegistry`, `FlowHistory` | aggregates and the two store adapters (lines 3025-3287, `foregroundFlowDeadlines`); `flow-registry.ts` moves to core and `tsconfig.purity.json` is deleted (5.1) | ~330 | unit tests of each invariant with in-memory stores; store contract on fakes and in the worker | revert |
 | 18 | Flow tools | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; `CDP_TOOL_SUPPORT` now derived (3.3) with its snapshot test | revert |
 | — | **Checkpoint B** (6.2) | | | | |
 | 19 | Connection lifecycle | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
@@ -785,7 +953,10 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 
 Order rationale: the safety net first (0-3b), then the build change alone
 (4), then the empty core and its rules (5), core purity and the protocol copy
-(5b, 5c), then modules whose move is a rename, bottom layer first (6-8), then
+(5b-1, 5b-2, 5c; `Clock` first because it is the change that touches both
+copies of `flow.ts` and has the least proof, so it lands alone and the purity
+check that 5b-2 adds can go GREEN in one PR), then modules whose move is a
+rename, bottom layer first (6-8), then
 the page driver every handler needs (9), then handler families from the most
 covered and most mirrored (10-11) to extension-only ones (14-16), aggregates
 before the code that uses them (12 before 13, 17 before 18), and
@@ -811,15 +982,16 @@ only needs testability.
 
 ### 6.3 CI cost per PR
 
-Wall times are not measured yet (audit: no Chrome was run); slice 0 records
-the e2e legs and slice 3 the differential, and checkpoint A compares them
-with these budgets.
+Wall times are not in this document yet: slice 0's two e2e jobs now run on
+every PR and record them, slice 3 adds the differential, and checkpoint A
+compares them with these budgets.
 
 | Job | When | Timeout | Runs per PR |
 |---|---|---|---|
 | `ci` (unit, fitness, mirror check, build, smoke) | every PR | unchanged | 1 |
-| `e2e` 118 leg | every PR | 10 min (today's) | 1 |
-| `e2e` stable leg | every PR | 10 min | 1 |
+| `e2e` (Chrome 118, blocks `release`) | every PR | 10 min | 1 |
+| `e2e-stable` (reports) | every PR | 10 min | 1 |
+| `e2e-stable-issue` | only after an `e2e-stable` failure on a push to `main` | default | 0 |
 | `e2e-diff` | PRs touching the paths in 7(b) | 20 min, its own | 1 HEAD run, plus 1 base run on a cache miss, plus 1 self-diff run when the normalise table or fixtures change |
 | `e2e-diff` nightly self-diff | schedule, on `main` | 20 min | 2 runs |
 
@@ -838,18 +1010,31 @@ with these budgets.
   only and outside this plan. Slice 3b adds the error paths.
 - A table in `packages/e2e/src/run.mjs` maps each wire tool to its case; a
   unit test fails if a registry entry with `listed: true` has no case.
-- **Release gate (owner decision, 2026-11-17).** The Chrome 118 leg blocks the
-  publish: `release` `needs` the `ci` job and the 118 leg. The stable leg
-  (the runner's auto-updating `/usr/bin/google-chrome`) runs on every PR and
-  push, reports in the step summary and the PR checks, but is not in
-  `release.needs` and does not block. When the stable leg fails on `main` (or
-  on the nightly run), a step opens an issue with `gh issue create`, labelled
-  `chrome-stable`, titled with the Chrome version, and skips creation when an
-  open issue with that label and version exists. Each leg writes the browser
-  version it ran on to the step summary and its `e2e-result-<leg>.json`
-  artifact. Chrome for Testing 118 still honours `--load-extension`
-  (`lib.mjs` `launchChrome`); this is P4 of the audit, not yet observed, and
-  slice 0 observes it.
+- **Release gate (owner decision, 2026-11-17; built by slice 0, merged as
+  release 1.3.3).** `ci.yml` (triggers: pushes to `main` and PRs against
+  `main`) has two separate e2e jobs, not a matrix, so "leg" below means a
+  job and the stable one cannot block through a matrix:
+  - `e2e` ("e2e (Chrome 118, ubuntu)"): Chrome for Testing `118.0.5993.70`
+    installed by `@puppeteer/browsers` into a cached directory, 10 min
+    timeout. `release` has `needs: [ci, e2e]`, so this job blocks the
+    publish.
+  - `e2e-stable` ("e2e (stable Chrome, ubuntu)"): the runner's
+    auto-updating `/usr/bin/google-chrome`, 10 min timeout, on every PR and
+    push; not in `release.needs`, so it reports in the step summary and the
+    PR checks and never blocks. It exposes the browser version as a job
+    output.
+  - `e2e-stable-issue`: `needs: e2e-stable`, runs only when it failed on a
+    push to `main`. It is the only job with `permissions: issues: write`
+    (the workflow default stays `contents: read`), so none of the code under
+    test runs with that token. It looks for an open issue titled
+    "e2e: stable Chrome leg failing on main" and comments on it, or creates
+    it, with the run URL, the Chrome version and the commit.
+  Each e2e job sets `E2E_LEG`; `run.mjs` writes the browser record to
+  `packages/e2e/build/e2e-result.json` and appends it to the step summary
+  under that title, and the job uploads it as the `e2e-result-chrome-118` or
+  `e2e-result-chrome-stable` artifact. Whether Chrome for Testing 118 honours
+  `--load-extension` (`lib.mjs` `launchChrome`; P4 of the first audit) is now
+  observed by every run of the `e2e` job.
 
 ### (b) Differential check: old build and new build, equal outputs
 
@@ -963,11 +1148,12 @@ deletion commit is not pushed before the first commit's CI is green.
 
 ### (f) Fitness tests
 
-Section 5: compile-time lib restriction, the purity check of slice 5b, and
-`architecture.test.ts` (imports, layers, cycles) for core; `fitness.test.ts`
-for `chrome` confinement, logic-free adapters, no tool `case` in
-`background.ts`, top-level listeners, `BRIDGE_PORT` uniqueness and the line
-budget; `sync-core.mjs --check` for the generated server copy; the port
+Section 5: compile-time lib restriction, the purity check of slices 5b-2 to
+17, and `architecture.test.ts` (imports, layers with `ports` at the bottom,
+cycles) for core; `fitness.test.ts` for `chrome` confinement in the worker
+zone (the UI zone listed apart), logic-free adapters with a defined decision
+count, no tool `case` in `background.ts`, wake listeners registered at top
+level by the composition root, `BRIDGE_PORT` uniqueness and the line budget; `sync-core.mjs --check` for the generated server copy; the port
 contract suite run against fakes and both adapters, after which the parity
 tests are deleted.
 
@@ -1001,7 +1187,8 @@ maps embed `packages/core` sources with workspace-relative paths; slice 4
 reports their size.
 
 **Release gate (owner, 2026-11-17).** Chrome 118 blocks the publish; stable
-reports without blocking and a failure opens an issue (7(a)).
+reports without blocking, and a failure on a push to `main` opens or updates
+one tracking issue (7(a)). Built by slice 0, in place since 1.3.3.
 
 **R6 (arch). Contract suite inside the worker; the fallback.** The plan is to
 run the extension adapters' contract suite in the real service worker: a
@@ -1022,6 +1209,20 @@ taken:
 3. the contract suite also runs against an in-memory fake of every port
    (5.3 item 5).
 
+The three conditions are **cumulative** (N6): slice 9 is the first gate, for
+the adapters that exist then (`CdpSession`, `PageInfo`, `system-clock`), and
+from slice 9 on the coverage check runs in every PR, so each later slice that
+adds an adapter (16: `ContentSettings`, `Downloads`; 17: the two stores; 19:
+`chrome-alarms`, `web-socket`; 21: `chrome-windows`, `chrome-runtime`,
+`chrome-tab-events`) merges only with all its methods reached. Reaching some
+of them from e2e is not yet proven, for example `Alarms.onFire` (the
+reconnect safety net only fires after the alarm's period) and
+`Windows.focus` (needs an already open Activity or Admin window). Each such
+method gets either a new e2e case in the slice that adds the adapter, or the
+in-worker contract entry of the primary path above; it is never exempted
+silently: if neither is possible, the PR lists the method with its reason
+and arch decides, as with the logic-free exemptions (5.3 item 3).
+
 ### Risks
 
 **R1. MV3 service-worker lifetime.** The worker can be stopped while idle;
@@ -1029,9 +1230,14 @@ today's design already survives it (flow records in `chrome.storage.session`,
 reconnect state, `recoverDetachedFlows`). Moving code must not move any
 startup work behind an `await` that delays listener registration: Chrome only
 delivers wake-up events to listeners registered synchronously in the first
-turn. The composition root registers all listeners synchronously at top level,
-and `fitness.test.ts` checks that every `addListener` call in `background.ts`
-is a top-level statement.
+turn. The composition root registers all wake listeners synchronously at top
+level, and `fitness.test.ts` checks it for each wake event, whether it is
+subscribed with `chrome.*.addListener` or, after slices 19-21, through an
+adapter's `on*` method (5.3 item 3); transient per-operation listeners are
+outside that rule. ("Every `addListener` in `background.ts` is top-level",
+revision 2's wording, was RED at `5ce3055`, where four transient
+`addListener` calls sit inside functions, and would have become vacuous once
+the adapters own the calls.)
 
 **R2. Module service worker constraints.** `manifest.json` declares
 `"type": "module"`. A module service worker cannot use dynamic `import()` or
@@ -1040,8 +1246,8 @@ top-level `await`; `architecture.test.ts` rejects `import(` in core and slice
 
 **R3. Chrome 118.** The minimum stays 118 (`manifest.json`
 `minimum_chrome_version`). esbuild `target: 'chrome118'` lowers any newer
-syntax. Download attribution relies on `Page.downloadWillBegin`; slice 0 is
-the first CI run of the download cases on 118, and if they fail there the fix
+syntax. Download attribution relies on `Page.downloadWillBegin`; slice 0 made
+the `e2e` job run the download cases on 118, and if they fail there the fix
 (raise the minimum or degrade) is a behavior decision for the owner, not part
 of the refactor.
 
@@ -1063,10 +1269,14 @@ not raised silently.
 
 **R8. Purity check reach.** `tsconfig.purity.json` checks the modules on the
 move list and their imports; a module added to the move list later must be
-added to its `files`. Slice 8 deletes the file once every listed module lives
-in core, where core's own `tsc` takes over.
+added to its `files`. Each moving slice removes its modules from `files`, and
+slice 17 deletes the file once the last one (`flow-registry.ts`) lives in
+core, where core's own `tsc` takes over; the modules 5b-2 creates
+(`utf8.ts`, `flow-limits.ts`, `idle-rules.ts`) are born in core and never on
+the list (5.1).
 
 ### Open questions
 
-None blocking. Wall times (6.3) and P3/P4 (Chrome 118 behavior) are measured
-by slices 0 and 3 and reported at checkpoint A.
+None blocking. Wall times (6.3) and P3/P4 (Chrome 118 behavior) are recorded
+by slice 0's jobs (running since 1.3.3) and slice 3, and reported at
+checkpoint A.
