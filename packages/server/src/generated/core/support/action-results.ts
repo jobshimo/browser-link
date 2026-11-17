@@ -3,9 +3,10 @@
  * What an action reports, shared by the actions (`actions/perform-*.ts`),
  * the flow engine that sequences them (`flow/flow-engine.ts`) and the tool
  * entries that map them to a `ToolOutcome` (`tools/`): the outcome shape,
- * the error texts both transports report, and the find and click results.
- * Moved verbatim from `flow/flow-engine.ts` in slice 10, because `actions`
- * may not import `flow` (design 5.2); the flow engine re-exports them.
+ * the error texts both transports report, and the find, click, type and
+ * press results. Moved verbatim from `flow/flow-engine.ts` in slices 10
+ * (find, click) and 11 (type, press), because `actions` may not import
+ * `flow` (design 5.2); the flow engine re-exports them.
  */
 import type { ExpectMet } from './expect.js';
 
@@ -176,6 +177,32 @@ export interface ClickStepResult {
    * `hit_check_note` says why. Absent when the landing was verified. */
   hit_check?: 'not_verifiable';
   hit_check_note?: string;
+  settle?: Record<string, unknown>;
+  expect?: ExpectMet;
+}
+
+export interface TypeStepResult {
+  typed: number;
+  selector?: string;
+  ref?: string;
+  reresolved?: boolean;
+  /** True when the focused field is one the page declares sensitive (see
+   * `buildFocusedFieldJs`), false when it is not; absent when the probe
+   * answered nothing usable. */
+  sensitive_field?: boolean;
+  settle?: Record<string, unknown>;
+  expect?: ExpectMet;
+}
+
+export interface PressStepResult {
+  key: string;
+  modifiers: string[];
+  ref?: string;
+  reresolved?: boolean;
+  /** True when the focused field is one the page declares sensitive (see
+   * `buildFocusedFieldJs`), false when it is not; absent when the probe
+   * answered nothing usable. */
+  sensitive_field?: boolean;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }

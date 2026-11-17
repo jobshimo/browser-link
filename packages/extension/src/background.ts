@@ -11,12 +11,7 @@ import type {
 } from '@browser-link/shared';
 import {
   buildSnapshotJs,
-  buildTypeResolveJs,
-  buildFocusJs,
-  buildFocusedFieldJs,
   withValuesHiddenNote,
-  isFocusedField,
-  actionFailure,
   buildStateJs,
   buildDragProbeJs,
   buildElementRectJs,
@@ -36,29 +31,20 @@ import {
   dispatchTool,
   performClick,
   performFind,
+  performPress,
+  performType,
   type Requirement,
   TOOL_REGISTRY,
   type ToolDeps,
   toolResponse,
   NAVIGATE_LOAD_TIMEOUT_MS,
-  pressKey,
   type CdpSession,
   type ObserverMessageOutcome,
   type PageDriverHandle,
   runScreenshot,
   type ElementRectOutcome,
   type ScreenshotMode,
-  resolveKey,
-  modifiersToBitmask,
-  MODIFIER_BITS,
-  resolveSettleParams,
-  beginExpect,
-  resolveExpectParams,
-  verifyExpect,
-  type ExpectParams,
-  notFocusedMessage,
   refFailureMessage,
-  notWalkedSuffix,
   runFlow,
   type ActionOutcome,
   type DragStepParams,
@@ -66,8 +52,6 @@ import {
   type FlowDeps,
   type FlowResult,
   type FlowStep,
-  type PressStepResult,
-  type TypeStepResult,
   type WaitForStepResult,
 } from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
@@ -963,14 +947,15 @@ function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDri
 /** Every requirement of the tool registry: the extension provides them all. */
 const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
+  'keyboard',
   'pointer',
   'settler',
 ]);
 
 /** What the core actions and the registry handlers use on one tab. */
 function actionDeps(tabId: number): ToolDeps {
-  const { evaluator, pointer, settler, dialogs } = pageDriver(tabId);
-  return { evaluator, pointer, settler, clock: systemClock, dialogs };
+  const { evaluator, keyboard, pointer, settler, dialogs } = pageDriver(tabId);
+  return { evaluator, keyboard, pointer, settler, clock: systemClock, dialogs };
 }
 
 function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
@@ -1430,34 +1415,11 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 `;
 }
 
-/** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
-type TypeResolveResult =
-  | { ok: true; reresolved?: boolean }
-  | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found'; not_walked?: string }
-  | FocusRefusal
-  | RefResolveFailure;
-
-/** A `ref` target the page could not resolve — see `resolveTarget` in
- * `inpage/builders.ts`; `refFailureMessage` (core's flow/flow-engine.ts) turns it into the
- * error string. */
-type RefResolveFailure =
-  | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
-  | { ok: false; reason: 'observer-unavailable' };
-
-/** The target of a type / press did not take focus — see `FOCUS_REFUSAL_JS`
- * in `inpage/builders.ts`; `notFocusedMessage` (core's flow/flow-engine.ts) gives the error. */
-type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
-
-/** Result shape of `buildFocusJs` with a `ref` (with a selector it is
- * `true`, `false` when not found, or a `FocusRefusal`). */
-type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
-
 /**
- * `performType` / `performPress` / `performWaitFor` / `performDrag` — the
- * extracted bodies of the standalone `type` / `press` / `wait_for` / `drag`
- * cases in `handleTool` below. `performFind` and `performClick` live in
- * core's `actions/` since slice 10 and run through the tool registry.
+ * `performWaitFor` / `performDrag` — the extracted bodies of the standalone
+ * `wait_for` / `drag` cases in `handleTool` below. `performFind` and
+ * `performClick` (slice 10), `performType` and `performPress` (slice 11)
+ * live in core's `actions/` and run through the tool registry.
  *
  * Both the standalone `case` handlers AND `browser.flow`'s step executor
  * (`runFlow` in core's `flow/flow-engine.ts`) call these exact functions — there is one
@@ -1469,159 +1431,7 @@ type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefRes
  * fail-fast rules — e.g. `wait_for`'s `matched:false` is `ok:true` here,
  * matching the standalone tool's contract, and it is `runFlow`, not this
  * function, that decides a non-match should stop the flow).
- *
- * `performType`'s `selector` is optional here (the standalone tool's JSON
- * schema still requires it, so that path never changes): when omitted,
- * this skips element resolution entirely and types into whatever
- * currently has focus, mirroring how `performPress` already behaves with
- * no `selector`. That is what lets a `browser.flow` step continue typing
- * into a freshly-appeared, auto-focused input (e.g. a search box that
- * opened after a preceding click) without a selector for it.
  */
-
-async function performType(
-  tabId: number,
-  params: {
-    selector?: string;
-    /** Exclusive with `selector`. */
-    ref?: string;
-    text: string;
-    clear?: boolean;
-    settle_ms?: number;
-    settle_timeout_ms?: number;
-    expect?: ExpectParams;
-  },
-): Promise<ActionOutcome<TypeStepResult>> {
-  let field: unknown;
-  try {
-    const { selector, ref, text, clear = false } = params;
-    const settle = resolveSettleParams({
-      settle_ms: params.settle_ms,
-      settle_timeout_ms: params.settle_timeout_ms,
-    });
-    const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> =>
-      pageDriver(tabId).evaluator.evaluate(expression);
-    let reresolved = false;
-    if (ref !== undefined) {
-      const resolved = await pageDriver(tabId).evaluator.evaluate<TypeResolveResult>(
-        buildTypeResolveJs({ ref, clear }),
-      );
-      if (!resolved.ok) {
-        if (resolved.reason === 'not-focused') {
-          return { ok: false, error: notFocusedMessage(ref, resolved.why, 'typed') };
-        }
-        return {
-          ok: false,
-          error: refFailureMessage(resolved, ref) ?? `Element not found: ${ref}`,
-        };
-      }
-      reresolved = resolved.reresolved === true;
-    } else if (selector !== undefined) {
-      const resolved = await pageDriver(tabId).evaluator.evaluate<TypeResolveResult>(
-        buildTypeResolveJs({ selector, clear }),
-      );
-      if (!resolved.ok) {
-        if (resolved.reason === 'not-focused') {
-          return { ok: false, error: notFocusedMessage(selector, resolved.why, 'typed') };
-        }
-        if (resolved.reason === 'invalid-selector') {
-          return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
-        }
-        return { ok: false, error: `Element not found: ${selector}${notWalkedSuffix(resolved)}` };
-      }
-    }
-    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await pageDriver(tabId).settler.mark(settle);
-    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    await cdp(tabId, 'Input.insertText', { text });
-    const settleResult = await pageDriver(tabId).settler.settle(settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
-    if (!verdict.ok) return actionFailure(verdict.error, field);
-    const result: TypeStepResult = { typed: text.length };
-    if (selector !== undefined) result.selector = selector;
-    if (ref !== undefined) result.ref = ref;
-    if (reresolved) result.reresolved = true;
-    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
-    if (settleResult) result.settle = settleResult;
-    if (verdict.expect) result.expect = verdict.expect;
-    return { ok: true, result };
-  } catch (err) {
-    return actionFailure(err instanceof Error ? err.message : String(err), field);
-  }
-}
-
-async function performPress(
-  tabId: number,
-  params: {
-    key?: string;
-    modifiers?: string[];
-    selector?: string;
-    /** Exclusive with `selector`. */
-    ref?: string;
-    settle_ms?: number;
-    settle_timeout_ms?: number;
-    expect?: ExpectParams;
-  },
-): Promise<ActionOutcome<PressStepResult>> {
-  let field: unknown;
-  try {
-    const key = params.key;
-    if (!key) return { ok: false, error: 'press: key required' };
-    const def = resolveKey(key);
-    if (!def) return { ok: false, error: `press: unrecognized key "${key}"` };
-    const modifierNames = params.modifiers ?? [];
-    const modifiers =
-      modifiersToBitmask(modifierNames) | (def.needsShift ? MODIFIER_BITS.Shift : 0);
-    const settle = resolveSettleParams({
-      settle_ms: params.settle_ms,
-      settle_timeout_ms: params.settle_timeout_ms,
-    });
-    const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> =>
-      pageDriver(tabId).evaluator.evaluate(expression);
-    const ref = params.ref;
-    let reresolved = false;
-    if (ref !== undefined) {
-      const focused = await pageDriver(tabId).evaluator.evaluate<FocusRefResult>(
-        buildFocusJs({ ref }),
-      );
-      if (!focused.ok) {
-        if (focused.reason === 'not-focused') {
-          return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
-        }
-        return { ok: false, error: refFailureMessage(focused, ref) ?? `Element not found: ${ref}` };
-      }
-      reresolved = focused.reresolved === true;
-    } else if (params.selector) {
-      const focused = await pageDriver(tabId).evaluator.evaluate<boolean | FocusRefusal>(
-        buildFocusJs({ selector: params.selector }),
-      );
-      if (!focused) {
-        return { ok: false, error: `Element not found: ${params.selector}` };
-      }
-      if (focused !== true && 'why' in focused) {
-        return { ok: false, error: notFocusedMessage(params.selector, focused.why, 'pressed') };
-      }
-    }
-    field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await pageDriver(tabId).settler.mark(settle);
-    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    await pressKey(pageDriver(tabId).keyboard, def, modifiers);
-    const settleResult = await pageDriver(tabId).settler.settle(settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
-    if (!verdict.ok) return actionFailure(verdict.error, field);
-    const result: PressStepResult = { key, modifiers: modifierNames };
-    if (ref !== undefined) result.ref = ref;
-    if (reresolved) result.reresolved = true;
-    if (isFocusedField(field)) result.sensitive_field = field.sensitive_field;
-    if (settleResult) result.settle = settleResult;
-    if (verdict.expect) result.expect = verdict.expect;
-    return { ok: true, result };
-  } catch (err) {
-    return actionFailure(err instanceof Error ? err.message : String(err), field);
-  }
-}
 
 async function performWaitFor(
   tabId: number,
@@ -2475,8 +2285,8 @@ function buildFlowDeps(
     performFind: (params) =>
       performFind(actionDeps(tabId), { ...params, hide_password_values: hidePasswordValues }),
     performClick: (params) => performClick(actionDeps(tabId), params),
-    performType: (params) => performType(tabId, params),
-    performPress: (params) => performPress(tabId, params),
+    performType: (params) => performType(actionDeps(tabId), params),
+    performPress: (params) => performPress(actionDeps(tabId), params),
     performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
     performDrag: (params) => performDrag(tabId, params),
     clock: systemClock,
@@ -3016,55 +2826,6 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'network_body':
         return await handleNetworkBody(tabId, msg, str);
-
-      case 'type': {
-        const outcome = await performType(tabId, {
-          selector: optStr('ref') !== undefined ? optStr('selector') : str('selector'),
-          ref: optStr('ref'),
-          text: str('text'),
-          clear: p.clear === true,
-          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
-          settle_timeout_ms:
-            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
-          expect: p.expect as ExpectParams | undefined,
-        });
-        if (!outcome.ok) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: outcome.error,
-            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
-          };
-        }
-        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
-      }
-
-      case 'press': {
-        const modifierNames = Array.isArray(p.modifiers)
-          ? p.modifiers.filter((m): m is string => typeof m === 'string')
-          : [];
-        const outcome = await performPress(tabId, {
-          key: optStr('key'),
-          modifiers: modifierNames,
-          selector: optStr('selector'),
-          ref: optStr('ref'),
-          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
-          settle_timeout_ms:
-            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
-          expect: p.expect as ExpectParams | undefined,
-        });
-        if (!outcome.ok) {
-          return {
-            kind: 'tool.response',
-            id: msg.id,
-            ok: false,
-            error: outcome.error,
-            ...(outcome.sensitive_field === true ? { sensitive_field: true } : {}),
-          };
-        }
-        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
-      }
 
       case 'flow':
         return await handleFlow(tabId, state, msg, p);

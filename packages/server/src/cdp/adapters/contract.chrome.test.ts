@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
   defineCdpSessionContract,
+  defineKeyboardContract,
   definePageInfoContract,
   definePointerContract,
   type ContractCase,
@@ -18,6 +19,8 @@ import type { MouseEventParams } from '../../generated/core/ports/values.js';
 
 /** What Chrome answers for that wheel event. */
 const PROBE_MESSAGE = "'deltaX' and 'deltaY' are expected for mouseWheel event";
+/** What Chrome answers for an `Input.insertText` whose text is not a string. */
+const INSERT_TEXT_REFUSED = 'Invalid parameters';
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
@@ -160,6 +163,39 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
             event: { type: 'mouseWheel', x: 20, y: 20 } as unknown as MouseEventParams,
             message: PROBE_MESSAGE,
           },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("Keyboard contract: the page driver's keyboard over the CdpClient adapter", () => {
+    run(
+      defineKeyboardContract(async () => {
+        const { client, close } = await openPage();
+        // An empty field with focus: `Input.insertText` types into it.
+        await client.send('Runtime.evaluate', {
+          expression: `const field = document.createElement('input');
+            document.body.append(field);
+            field.focus();`,
+        });
+        const driver = createPageDriver({
+          session: createCdpClientSession(client),
+          page: createCdpPageInfo(client, systemClock),
+          clock: systemClock,
+        });
+        return {
+          keyboard: driver.keyboard,
+          focusedValue: async () => {
+            const res = await client.send<{ result: { value: string } }>('Runtime.evaluate', {
+              expression: 'document.activeElement.value',
+              returnByValue: true,
+            });
+            return res.result.value;
+          },
+          // A text that is not a string: Chrome refuses its params. The
+          // type is outside `insertText`'s on purpose, so the cast is the probe.
+          failing: { text: 5 as unknown as string, message: INSERT_TEXT_REFUSED },
           dispose: close,
         };
       }),

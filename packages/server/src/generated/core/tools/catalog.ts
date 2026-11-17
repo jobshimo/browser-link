@@ -4,7 +4,12 @@
  * handler family per slice (10-18); a wire tool not in it still runs through
  * its transport's own `case`.
  */
-import { clickTool, findTool } from './interaction.js';
+import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
 import { createToolRegistry, type ToolRegistry } from './registry.js';
 
-export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([findTool, clickTool]);
+export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([
+  findTool,
+  clickTool,
+  typeTool,
+  pressTool,
+]);

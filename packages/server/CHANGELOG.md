@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.17](https://github.com/jobshimo/browser-link/compare/v1.4.16...v1.4.17) (2026-11-17)
+
+### Notes
+
+- Slice 11 of the service worker plan; no behaviour change. `browser.type` and `browser.press` now have one body, in core (`packages/core/src/actions/perform-type.ts`, `perform-press.ts`), and both transports run them through the tool registry, as `find` and `click` since 1.4.16. Each keeps its transport's own argument coercion (a missing `selector` or `text` on `type` still reads `"undefined"` on the extension; on cdp-direct the selector stays absent and the text is `""`); `press` was already read the same way on both. Every error text is the one before.
+- The sensitive-field rule is unchanged: a `type` or `press` that fails after reading a sensitive focused field ends as the `sensitive` failure kind; the extension still sends `sensitive_field: true` on the wire, which the server turns into `SensitiveFieldError`, and cdp-direct still throws that class. The agent sees the plain error text and the activity trail stores `[sensitive field]`.
+- The page driver's keyboard gains `insertText(text)`, an input-only port member (one `Input.insertText` into whatever has focus, a failed dispatch rejects). Its contract runs on the in-memory session and, in the CI e2e job, on a real Chrome.
+- The type and press result types moved from the flow engine to core's `support/action-results.ts` (the flow engine re-exports them). `performType` and `performPress` leave the parity test's list, which now holds `performWaitFor` only.
+- `background.ts` shrinks by 239 lines and its line budget goes from 4393 to 4154; `cdp/transport.ts` goes from 1108 to 882 lines.
+
 ## [1.4.16](https://github.com/jobshimo/browser-link/compare/v1.4.15...v1.4.16) (2026-11-17)
 
 ### Notes

@@ -57,15 +57,19 @@ import {
   type ActionOutcome,
   type ClickStepResult,
   type FindStepResult,
+  type PressStepResult,
+  type TypeStepResult,
 } from '../support/action-results.js';
 
 // The action vocabulary lives in `support/action-results.ts` since slice 10
-// (the actions cannot import `flow`); re-exported for the modules that read
-// it from here.
+// (the actions cannot import `flow`; type and press joined in slice 11);
+// re-exported for the modules that read it from here.
 export {
   type ActionOutcome,
   type ClickStepResult,
   type FindStepResult,
+  type PressStepResult,
+  type TypeStepResult,
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
   notClickableMessage,
@@ -122,19 +126,6 @@ export interface TypeStepParams {
   expect?: ExpectParams;
 }
 
-export interface TypeStepResult {
-  typed: number;
-  selector?: string;
-  ref?: string;
-  reresolved?: boolean;
-  /** True when the focused field is one the page declares sensitive (see
-   * `buildFocusedFieldJs`), false when it is not; absent when the probe
-   * answered nothing usable. */
-  sensitive_field?: boolean;
-  settle?: Record<string, unknown>;
-  expect?: ExpectMet;
-}
-
 export interface PressStepParams {
   key: string;
   modifiers?: string[];
@@ -143,19 +134,6 @@ export interface PressStepParams {
   settle_ms?: number;
   settle_timeout_ms?: number;
   expect?: ExpectParams;
-}
-
-export interface PressStepResult {
-  key: string;
-  modifiers: string[];
-  ref?: string;
-  reresolved?: boolean;
-  /** True when the focused field is one the page declares sensitive (see
-   * `buildFocusedFieldJs`), false when it is not; absent when the probe
-   * answered nothing usable. */
-  sensitive_field?: boolean;
-  settle?: Record<string, unknown>;
-  expect?: ExpectMet;
 }
 
 export interface WaitForStepParams {
