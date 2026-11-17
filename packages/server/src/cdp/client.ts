@@ -45,6 +45,7 @@ export class CdpClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingCall>();
   private readonly eventHandlers = new Map<string, Set<CdpEventHandler>>();
+  private readonly anyEventHandlers = new Set<(method: string, params: unknown) => void>();
   private closed = false;
 
   constructor(
@@ -109,6 +110,7 @@ export class CdpClient {
     if (typeof msg.method === 'string') {
       const handlers = this.eventHandlers.get(msg.method);
       if (handlers) for (const handler of handlers) handler(msg.params);
+      for (const handler of this.anyEventHandlers) handler(msg.method, msg.params);
     }
   }
 
@@ -167,6 +169,14 @@ export class CdpClient {
     }
     set.add(handler);
     return () => set.delete(handler);
+  }
+
+  /** Subscribe to every CDP event of this connection, in arrival order
+   * (after the handlers of that method registered with `on`). Returns an
+   * unsubscribe function. The `CdpSession` adapter's `onEvent`. */
+  onAny(handler: (method: string, params: unknown) => void): () => void {
+    this.anyEventHandlers.add(handler);
+    return () => this.anyEventHandlers.delete(handler);
   }
 
   close(): void {

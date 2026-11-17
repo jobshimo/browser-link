@@ -37,14 +37,4 @@ describe('systemClock', () => {
     expect(fired).toHaveBeenCalledTimes(1);
     expect(cancelled).not.toHaveBeenCalled();
   });
-
-  it('every ticks each ms until stopped', async () => {
-    vi.useFakeTimers();
-    const tick = vi.fn();
-    const stop = systemClock.every(10, tick);
-    await vi.advanceTimersByTimeAsync(35);
-    stop();
-    await vi.advanceTimersByTimeAsync(100);
-    expect(tick).toHaveBeenCalledTimes(3);
-  });
 });

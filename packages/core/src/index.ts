@@ -6,6 +6,9 @@
 // (`support/{settle,expect,keymap,screenshot,observer-host}`, slice 7) and the
 // flow engine (`flow/flow-engine`, slice 8), which
 // the extension imports and the server compiles from its generated mirror.
+// Slice 9 adds the page driver (`session/page-driver`, the CDP implementation
+// of the `PageDriver` port) and the load wait behind `PageInfo.armLoadWait`
+// (`session/load-wait`).
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -18,6 +21,8 @@ export * from './support/screenshot.js';
 export * from './support/observer-host.js';
 export * from './flow/flow-engine.js';
 export * from './policies/idle-rules.js';
+export * from './session/load-wait.js';
+export * from './session/page-driver.js';
 export * from './inpage/builders.js';
 export * from './inpage/observer.js';
 export * from './inpage/deep-query.js';

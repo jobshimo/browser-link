@@ -20,7 +20,9 @@
 // when set, titled with E2E_LEG), E2E_RECORD=<path> writes every tool call's
 // request and result there (scripts/e2e-diff.mjs compares two of them),
 // E2E_EXT_DIST / E2E_SERVER_CLI / E2E_SERVER_EXTENSION_ID run another build
-// (lib.mjs buildPaths).
+// (lib.mjs buildPaths). E2E_ADAPTER_COVERAGE=0 skips the adapter coverage
+// check (R6 condition 1, adapter-coverage.mjs), which is on by default;
+// scripts/e2e-diff.mjs turns it off, since a base build may predate it.
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
 import {
@@ -69,6 +71,7 @@ import {
   writeResult,
 } from './lib.mjs';
 import { uncalledCases } from './tool-cases.mjs';
+import { adapterCoverageSummary, uncalledAdapterFunctions } from './adapter-coverage.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
 const TOTAL_TIMEOUT_MS = 300_000;
@@ -81,6 +84,7 @@ const ATTACHMENTS = {
   '/invoice.pdf.exe': { name: 'invoice.pdf.exe', bytes: REPORT_BYTES },
 };
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
+const ADAPTER_COVERAGE = process.env.E2E_ADAPTER_COVERAGE !== '0';
 const FRAME_FILE = join(E2E_DIR, 'pages/frame.html');
 /** The exact body /data.json answers (non-ASCII included): network_body must
  * return it unchanged. */
@@ -362,6 +366,16 @@ async function main() {
     targetId: sw.targetId,
     flatten: true,
   });
+  // R6 condition 1: count calls in the worker from before the tab connects
+  // (the adapters are built on connect), checked after the tool calls.
+  if (ADAPTER_COVERAGE) {
+    await cdp.send('Profiler.enable', {}, swSession);
+    await cdp.send(
+      'Profiler.startPreciseCoverage',
+      { callCount: true, detailed: false },
+      swSession,
+    );
+  }
   const tabId = await evaluateUntil(
     cdp,
     `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(page)} && t.status === 'complete') || {}).id ?? null)`,
@@ -551,6 +565,8 @@ async function main() {
 
   await dragPermissionTabsFlows(T, page, cdp);
 
+  if (ADAPTER_COVERAGE) await adapterCoverage(cdp, swSession, extDir, extId);
+
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
   // connected tab and the nine calls above prove that this browser's
@@ -565,6 +581,26 @@ async function main() {
   const keylessId =
     loadedKeylessId ?? (await cdp.send('Extensions.loadUnpacked', { path: keylessDir })).id;
   await refusedExtension(cdp, swSession, page, keylessId);
+}
+
+/**
+ * R6 condition 1: every function of every extension adapter was called by
+ * the run so far (V8 coverage of the worker, adapter-coverage.mjs). A
+ * function with zero calls fails the run, naming it.
+ */
+async function adapterCoverage(cdp, swSession, extDir, extId) {
+  const { result } = await cdp.send('Profiler.takePreciseCoverage', {}, swSession);
+  await cdp.send('Profiler.stopPreciseCoverage', {}, swSession);
+  const url = `chrome-extension://${extId}/background.js`;
+  const script = result.find((entry) => entry.url === url);
+  if (!script) throw new StepFailure('adapter.coverage', `no coverage for ${url}`);
+  const bundle = readFileSync(join(extDir, 'background.js'), 'utf8');
+  const uncalled = uncalledAdapterFunctions(bundle, script.functions);
+  if (uncalled.length > 0) {
+    const list = uncalled.map((u) => `${u.file}:${String(u.line)} ${u.name}`).join(', ');
+    throw new StepFailure('adapter.coverage', `adapter functions never called: ${list}`);
+  }
+  console.log(`adapter.coverage ok ${adapterCoverageSummary(bundle, script.functions).join(', ')}`);
 }
 
 /**

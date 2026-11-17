@@ -1,9 +1,12 @@
-// GENERATED from packages/core/src/ports/values.ts. Do not edit.
+// GENERATED from packages/core/src/ports/values.ts. Specifiers rewritten. Do not edit.
 // The value types the ports speak, declared here so `ports` imports nothing
 // in core (5.2). They were copied as they were from the extension's
 // settle.ts (`SettleParams`, `EvaluateFn`) and observer-host.ts
 // (`ObserverMark`); slice 7 deleted those originals and re-pointed
-// `support/` at these.
+// `support/` at these. Slice 9 added the values the page driver and
+// `PageInfo` speak (design revision 7), below `ObserverMark`.
+
+import type { SettleChanges } from '../../shared/index.js';
 
 export interface SettleParams {
   settleMs: number;
@@ -20,4 +23,57 @@ export type EvaluateFn = (expression: string) => Promise<unknown>;
 export interface ObserverMark {
   mark: number;
   doc_id: string;
+}
+
+/** Why an action reports no observer changes (`settle.observer`): the
+ * observer was never installed or gave no mark, the document changed under
+ * the action, or the changes read answered something unusable. */
+export type ObserverFailure = 'observer-unavailable' | 'doc-changed' | 'changes-error';
+
+/** The page observer's action mark, taken before an action dispatches
+ * (`Settler.mark`): `none` when settle is off for the call, `unavailable`
+ * with the reason the observer gave no usable mark, or `marked`. */
+export type ObserverMarkResult =
+  | { kind: 'none' }
+  | { kind: 'unavailable'; reason: ObserverFailure }
+  | { kind: 'marked'; mark: ObserverMark };
+
+/** What one settle wait reports, as it reaches the wire under `settle`: the
+ * fields the in-page wait answers (`inpage/builders.ts` `buildSettleJs`, or
+ * the degraded `{ settled: false, reason }` of `settleSafely`), plus the
+ * observer's `changes` or the `observer` failure. Absent fields stay absent.
+ * A type alias (not an interface), so it is assignable to the plain object
+ * the results carry. */
+export type SettleReport = {
+  settled?: boolean;
+  reason?: 'context-destroyed' | 'settle-error';
+  duration_ms?: number;
+  mutation_count?: number;
+  url_changed?: string;
+  focus_moved?: true;
+  unobserved?: { cross_origin_frames?: number; shadow_roots?: 'open-only'; hint?: string };
+  changes?: SettleChanges | null;
+  observer?: ObserverFailure;
+};
+
+/** One CDP `Input.dispatchKeyEvent` payload (`Keyboard.key`); the support
+ * module `keymap.ts` builds them (`CdpKeyEvent`, the same shape). */
+export type KeyEvent = {
+  type: 'keyDown' | 'rawKeyDown' | 'char' | 'keyUp';
+  modifiers: number;
+  key: string;
+  code: string;
+  windowsVirtualKeyCode: number;
+  nativeVirtualKeyCode: number;
+  text?: string;
+  unmodifiedText?: string;
+};
+
+/** A load wait armed before the navigation is sent (`PageInfo.armLoadWait`):
+ * `done` resolves when the page reports load complete and rejects when the
+ * timeout passes first; `cancel` releases the wait, after which `done`
+ * never settles. */
+export interface LoadWait {
+  done: Promise<void>;
+  cancel(): void;
 }

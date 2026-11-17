@@ -212,6 +212,8 @@ function harnessRun(name, root, scratch) {
   };
   delete env.GITHUB_STEP_SUMMARY;
   delete env.E2E_EXPECT_FAIL;
+  // A base build may predate the adapters the coverage check (R6) expects.
+  env.E2E_ADAPTER_COVERAGE = '0';
   console.log(`e2e-diff: harness run "${name}" against ${root}`);
   const t0 = Date.now();
   const r = spawnSync(process.execPath, [HARNESS], { cwd: REPO, env, stdio: 'inherit' });

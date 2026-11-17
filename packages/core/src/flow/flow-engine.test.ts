@@ -34,12 +34,6 @@ const systemClock: Clock = {
       clearTimeout(timer);
     };
   },
-  every: (ms, tick) => {
-    const timer = setInterval(tick, ms);
-    return () => {
-      clearInterval(timer);
-    };
-  },
 };
 
 /**

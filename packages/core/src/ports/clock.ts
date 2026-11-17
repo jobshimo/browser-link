@@ -7,6 +7,4 @@ export interface Clock {
   sleep(ms: number): Promise<void>;
   /** Run `fn` once after `ms`; returns cancel. Replaces setTimeout/clearTimeout. */
   after(ms: number, fn: () => void): () => void;
-  /** Run `tick` every `ms`; returns stop. Replaces setInterval. */
-  every(ms: number, tick: () => void): () => void;
 }

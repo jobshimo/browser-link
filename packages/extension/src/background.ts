@@ -16,8 +16,6 @@ import {
   buildClickHitCheckJs,
   buildClickMoveCheckJs,
   buildClickResolveJs,
-  buildFrameWatchReadJs,
-  buildFrameWatchStartJs,
   clickMissedMessage,
   clickMoveMissedMessage,
   CLICK_MOVE_TRIES,
@@ -45,10 +43,6 @@ import {
   type SnapshotOffset,
   type WaitForSelectorCondition,
   OBSERVER_BINDING,
-  buildObserverChangesJs,
-  buildObserverInstallJs,
-  buildObserverMarkJs,
-  buildObserverTeardownJs,
   DEFAULT_IDLE_TTL_MINUTES,
   activityAfterFlowEnded,
   clampIdleTtlMinutes,
@@ -57,24 +51,19 @@ import {
   tabsToDisconnectForIdle,
   type IdleCallInProgress,
   type IdleFlowHold,
-  TOP_DOCUMENT_PROBE_JS,
-  applyObserverMessage,
-  createObserverMirror,
-  isTopDocumentMessage,
-  mergeSettleChanges,
-  parseObserverMessage,
-  readObserverMark,
-  type ObserverMirror,
+  createPageDriver,
+  NAVIGATE_LOAD_TIMEOUT_MS,
+  pressKey,
+  type CdpSession,
+  type ObserverMessageOutcome,
+  type PageDriverHandle,
   runScreenshot,
   type ElementRectOutcome,
   type ScreenshotMode,
-  buildKeyEventSequence,
   resolveKey,
   modifiersToBitmask,
   MODIFIER_BITS,
-  type KeyDefinition,
   resolveSettleParams,
-  settleSafely,
   beginExpect,
   resolveExpectParams,
   verifyExpect,
@@ -101,6 +90,8 @@ import {
 } from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
+import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
+import { createChromePageInfo } from './adapters/chrome-page-info.js';
 import {
   captureAround,
   createDownloadCapture,
@@ -178,7 +169,6 @@ import {
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
 import { createConnectFailureTracker } from './connect-failure-policy.js';
-import { armLoadWait } from './load-wait.js';
 import { normalizeConsoleLevel } from './console-level.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
@@ -388,14 +378,16 @@ interface TabState {
    * ever outstanding — same single-slot pattern the IPC bridge's
    * `settings.push` uses. */
   pendingFlowSave?: (result: { ok: true } | { ok: false; error: string }) => void;
-  /** Host mirror of the page observer (see core's support/observer-host.ts). Present from
-   * `connectTab` on; `installed` stays false when the install commands
-   * failed, and actions then report `settle.changes: null`. */
-  observer?: ObserverMirror;
-  /** `Page.addScriptToEvaluateOnNewDocument` identifier of the observer,
-   * removed again in `cleanup`. */
-  observerScriptId?: string;
+  /** Listeners of this tab's CDP events other than `debuggerListener`
+   * (the page driver's observer binding), fed by the permanent
+   * `chrome.debugger.onEvent` listener below. */
+  eventListeners: Set<TabEventListener>;
+  /** The tab's page driver (core's `session/page-driver.ts`): evaluation,
+   * keys, settle, and the page observer whose host mirror it keeps. */
+  driver: PageDriverHandle;
 }
+
+type TabEventListener = (method: string, params: unknown) => void;
 
 /**
  * State for one tab's demonstration recording, see the module-level
@@ -459,14 +451,6 @@ interface StatusResult {
 // API hands us back `unknown` and leaves the typing to us. These shapes
 // describe just the slices we use, so the rest of the file can drop
 // `Record<string, any>` casts and `unknown` member access entirely.
-
-interface CdpRuntimeEvaluateResponse<T = unknown> {
-  result: { value: T };
-  exceptionDetails?: {
-    exception?: { description?: string };
-    text?: string;
-  };
-}
 
 interface CdpRuntimeConsoleAPICalled {
   args?: { value?: unknown; description?: string }[];
@@ -982,12 +966,41 @@ function safeParse(raw: string): ServerToExtension | null {
   }
 }
 
+/** A page driver over a tab's `chrome.debugger` session, whose events come
+ * from `listeners`. */
+function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDriverHandle {
+  return createPageDriver({
+    session: tabSession(tabId, listeners),
+    page: createChromePageInfo(tabId, systemClock),
+    clock: systemClock,
+  });
+}
+
+function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
+  return createChromeCdpSession(tabId, (listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+}
+
+/** The connected tab's page driver; for a tab with no state (a call racing
+ * its cleanup) a fresh one, whose commands fail as `chrome.debugger` does and
+ * whose observer is not installed, as before slice 9. */
+function pageDriver(tabId: number): PageDriverHandle {
+  return tabStates.get(tabId)?.driver ?? newPageDriver(tabId, new Set());
+}
+
+/** `cdp` only sends; nothing subscribes through it. */
+const NO_LISTENERS = new Set<TabEventListener>();
+
 function cdp<T = unknown>(
   tabId: number,
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<T> {
-  return chrome.debugger.sendCommand({ tabId }, method, params) as unknown as Promise<T>;
+  return tabSession(tabId, NO_LISTENERS).send<T>(method, params);
 }
 
 /**
@@ -1063,59 +1076,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-/** Run the shared post-action settle wait for a tab. Thin closure binder
- * over `settleSafely` (see core's support/settle.ts) — which is guaranteed not to throw,
- * so an action that navigated the page (destroying the settle expression's
- * execution context) still returns ok:true with a degraded settle object
- * instead of flipping the whole response to ok:false. */
-function runSettle(
-  tabId: number,
-  settle: ReturnType<typeof resolveSettleParams>,
-): Promise<Record<string, unknown> | undefined> {
-  return settleSafely((expression) => evaluateInTab(tabId, expression), settle);
-}
-
-const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
-const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
-
-/** Ceiling for one observer plumbing evaluation: a page frozen by a native
- * dialog never answers `Runtime.evaluate`, and `cleanup` must still be
- * able to detach. */
-const OBSERVER_EVAL_TIMEOUT_MS = 2_000;
-
-/** Race a CDP call against `OBSERVER_EVAL_TIMEOUT_MS`; rejects on timeout. */
-async function withObserverTimeout<T>(work: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`observer evaluation timed out after ${OBSERVER_EVAL_TIMEOUT_MS}ms`));
-    }, OBSERVER_EVAL_TIMEOUT_MS);
-  });
-  return Promise.race([work, timeout]).finally(() => {
-    clearTimeout(timer);
-  });
-}
-
-/**
- * `Runtime.evaluate` for page-observer plumbing (mark, changes, probes,
- * teardown). Unlike `evaluateInTab` it passes no `userGesture` — these
- * reads must never hand the page transient user activation it did not
- * earn — and it rejects after `OBSERVER_EVAL_TIMEOUT_MS`.
- */
-async function evaluateObserverJs(tabId: number, expression: string): Promise<unknown> {
-  const result = await withObserverTimeout(
-    cdp<CdpRuntimeEvaluateResponse>(tabId, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-    }),
-  );
-  if (result.exceptionDetails) {
-    const ex = result.exceptionDetails;
-    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
-  }
-  return result.result.value;
-}
-
 /** The press and release of a pointer click at (x, y); the move that
  * precedes them is sent by `moveOntoTarget`. */
 function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
@@ -1150,7 +1110,10 @@ async function readMoveCheck(
   });
   let check: unknown;
   try {
-    check = await Promise.race([evaluateInTab(session, buildClickMoveCheckJs()), late]);
+    check = await Promise.race([
+      pageDriver(session).evaluator.evaluate(buildClickMoveCheckJs()),
+      late,
+    ]);
   } catch {
     check = undefined;
   } finally {
@@ -1277,7 +1240,10 @@ async function checkClickLanding(
   });
   let landing: unknown;
   try {
-    landing = await Promise.race([evaluateInTab(session, buildClickHitCheckJs()), late]);
+    landing = await Promise.race([
+      pageDriver(session).evaluator.evaluate(buildClickHitCheckJs()),
+      late,
+    ]);
   } catch {
     landing = undefined;
   } finally {
@@ -1292,210 +1258,6 @@ async function checkClickLanding(
   if ('landed' in check && check.landed === true) return {};
   const landedOn = (check as { landed_on?: unknown }).landed_on;
   return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
-}
-
-/**
- * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
- * changes an action makes inside same-origin frames before the settle wait
- * starts, which neither the page observer (top document only) nor the
- * settle wait (from its own start) would count (owner decision D5). Never
- * throws: a watch that cannot be armed counts nothing.
- */
-async function startFrameWatch(session: number): Promise<void> {
-  try {
-    await evaluateInTab(session, buildFrameWatchStartJs());
-  } catch {
-    // nothing armed, nothing counted
-  }
-}
-
-/** Read and stop the frame watch right before the settle wait starts: the
- * records it saw, 0 when there is none. Never throws. */
-async function readFrameWatch(session: number): Promise<number> {
-  try {
-    const read = await evaluateInTab<{ ok: boolean; records?: unknown }>(
-      session,
-      buildFrameWatchReadJs(),
-    );
-    return read.ok && typeof read.records === 'number' && read.records > 0 ? read.records : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Add frame records seen before the settle wait to its result, the way the
- * wait reports its own (`frame_mutation_count`, already in `mutation_count`). */
-function addFrameRecords(settleResult: Record<string, unknown>, records: number): void {
-  const before =
-    typeof settleResult.frame_mutation_count === 'number' ? settleResult.frame_mutation_count : 0;
-  settleResult.frame_mutation_count = before + records;
-  if (typeof settleResult.mutation_count === 'number') settleResult.mutation_count += records;
-}
-
-/**
- * Take the page observer's action mark BEFORE an action dispatches (spec v4
- * §5.4). `null` when settle is off for this call (no changes are reported
- * then); an `observer-unavailable` marker when the observer was never
- * installed on this tab or the mark could not be taken.
- */
-async function takeObserverMark(
-  tabId: number,
-  settle: ReturnType<typeof resolveSettleParams>,
-): Promise<unknown> {
-  if (!settle) return null;
-  await startFrameWatch(tabId);
-  if (tabStates.get(tabId)?.observer?.installed !== true) return OBSERVER_UNAVAILABLE;
-  try {
-    return await evaluateObserverJs(tabId, buildObserverMarkJs());
-  } catch {
-    return OBSERVER_UNAVAILABLE;
-  }
-}
-
-/**
- * Run the settle wait, then read what the page observer saw since `mark`
- * and fold it into the settle result (`mergeSettleChanges`). Never throws:
- * a changes read that rejects — typically because the action navigated and
- * destroyed the context — is reported as `doc-changed`.
- */
-async function settleWithChanges(
-  tabId: number,
-  settle: ReturnType<typeof resolveSettleParams>,
-  mark: unknown,
-): Promise<Record<string, unknown> | undefined> {
-  const early = settle ? await readFrameWatch(tabId) : 0;
-  const settleResult = await runSettle(tabId, settle);
-  if (!settleResult) return undefined;
-  if (early > 0) addFrameRecords(settleResult, early);
-  const parsed = readObserverMark(mark);
-  let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
-  if (parsed) {
-    try {
-      changes = await evaluateObserverJs(tabId, buildObserverChangesJs(parsed.mark, parsed.doc_id));
-    } catch {
-      changes = OBSERVER_DOC_CHANGED;
-    }
-  }
-  return mergeSettleChanges(settleResult, changes) ?? undefined;
-}
-
-/**
- * Handle one page-observer binding message. Summaries only update the
- * mirror. `doc_start` / `nav` are first checked against the top document
- * (the install script also runs in same-process child frames, and the
- * binding is page-visible), then reported to the server as a
- * `tab-navigated` bridge event so it can keep the tab's URL and title
- * current. A `doc_info` passes the same top-document check and is reported
- * as a `tab-doc-info` bridge event (build fingerprint and view signature).
- */
-async function handleObserverMessage(state: TabState, payload: string): Promise<void> {
-  const mirror = state.observer;
-  if (!mirror) return;
-  const message = parseObserverMessage(payload);
-  if (!message) return;
-  if (message.type === 'summary') {
-    applyObserverMessage(mirror, message);
-    return;
-  }
-  let probe: unknown;
-  try {
-    probe = await evaluateObserverJs(state.tabId, TOP_DOCUMENT_PROBE_JS);
-  } catch {
-    return;
-  }
-  if (!isTopDocumentMessage(probe, message.doc_id)) return;
-  const outcome = applyObserverMessage(mirror, message);
-  if (outcome.kind === 'doc_info') {
-    // The page's build fingerprint and view signature: the server keys what
-    // the map learns on them (knowledge-loop S1). Before registration the
-    // mirror keeps it and the `tab.registered` handler delivers it.
-    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId)
-      send(state.ws, docInfoEvent(state.serverTabId, outcome));
-    return;
-  }
-  if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
-  let title = '';
-  try {
-    title = (await chrome.tabs.get(state.tabId)).title ?? '';
-  } catch {
-    // Best effort — the tab may be closing; the URL is still worth sending.
-  }
-  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
-    send(state.ws, {
-      kind: 'bridge.event',
-      eventKind: 'tab-navigated',
-      tabId: state.serverTabId,
-      data: { url: outcome.url, title },
-    });
-  }
-}
-
-/**
- * Install the page observer on a freshly attached tab: the push binding,
- * then the observer as a new-document script that also runs immediately in
- * the current document. Non-fatal — on failure the tab connects as before
- * and actions report `settle.changes: null` with `observer-unavailable`.
- */
-async function installObserver(state: TabState): Promise<void> {
-  const mirror = createObserverMirror();
-  state.observer = mirror;
-  try {
-    await cdp(state.tabId, 'Runtime.addBinding', { name: OBSERVER_BINDING });
-    const added = await cdp<{ identifier?: string } | undefined>(
-      state.tabId,
-      'Page.addScriptToEvaluateOnNewDocument',
-      { source: buildObserverInstallJs(), runImmediately: true },
-    );
-    if (typeof added?.identifier === 'string') state.observerScriptId = added.identifier;
-    mirror.installed = true;
-  } catch (err) {
-    console.warn(
-      'browser-link: page observer not installed',
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-}
-
-/** Best-effort observer removal before the debugger detaches. */
-async function uninstallObserver(state: TabState): Promise<void> {
-  if (!state.observer?.installed) return;
-  state.observer.installed = false;
-  if (state.observerScriptId !== undefined) {
-    try {
-      await withObserverTimeout(
-        cdp(state.tabId, 'Page.removeScriptToEvaluateOnNewDocument', {
-          identifier: state.observerScriptId,
-        }),
-      );
-    } catch {
-      // Best effort — the tab may already be gone.
-    }
-    state.observerScriptId = undefined;
-  }
-  try {
-    await evaluateObserverJs(state.tabId, buildObserverTeardownJs());
-  } catch {
-    // Best effort — the tab may already be gone.
-  }
-}
-
-/**
- * Dispatch the CDP `Input.dispatchKeyEvent` sequence for one resolved key.
- * The event shapes come from `buildKeyEventSequence` (core's support/keymap.ts) — pure and
- * unit-tested there; this wrapper only feeds them to chrome.debugger. This
- * is the ONLY path in this extension that produces `isTrusted: true`
- * keyboard events — see browser.press's doc block for why that matters
- * (Qt-WASM and similar runtimes discard synthetic KeyboardEvents dispatched
- * via browser.evaluate).
- */
-async function dispatchKeyEvent(
-  tabId: number,
-  def: KeyDefinition,
-  modifiers: number,
-): Promise<void> {
-  for (const event of buildKeyEventSequence(def, modifiers)) {
-    await cdp(tabId, 'Input.dispatchKeyEvent', event);
-  }
 }
 
 /**
@@ -1565,6 +1327,37 @@ function ensureNetworkEntry(state: TabState, requestId: string): NetworkEntry {
     }
   }
   return entry;
+}
+
+/**
+ * Report a top-document page-observer message the page driver applied: a
+ * `doc_info` as a `tab-doc-info` bridge event (build fingerprint and view
+ * signature; before registration the mirror keeps it and the
+ * `tab.registered` handler delivers it), a `doc_start` / `nav` as a
+ * `tab-navigated` bridge event so the server keeps the tab's URL and title
+ * current.
+ */
+async function reportTopDocument(state: TabState, outcome: ObserverMessageOutcome): Promise<void> {
+  if (outcome.kind === 'doc_info') {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId)
+      send(state.ws, docInfoEvent(state.serverTabId, outcome));
+    return;
+  }
+  if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
+  let title = '';
+  try {
+    title = (await state.driver.page.info()).title;
+  } catch {
+    // Best effort — the tab may be closing; the URL is still worth sending.
+  }
+  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
+    send(state.ws, {
+      kind: 'bridge.event',
+      eventKind: 'tab-navigated',
+      tabId: state.serverTabId,
+      data: { url: outcome.url, title },
+    });
+  }
 }
 
 function attachDebuggerListener(state: TabState): void {
@@ -1678,7 +1471,7 @@ function attachDebuggerListener(state: TabState): void {
       method === 'Runtime.bindingCalled' &&
       (params as { name?: string }).name === OBSERVER_BINDING
     ) {
-      void handleObserverMessage(state, (params as { payload?: string }).payload ?? '');
+      // The page driver's own subscription handles it (core's session/page-driver.ts).
       return;
     }
     if (method === 'Runtime.bindingCalled') {
@@ -1874,32 +1667,6 @@ type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
  * `true`, `false` when not found, or a `FocusRefusal`). */
 type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
 
-async function evaluateInTab<T = unknown>(tabId: number, expression: string): Promise<T> {
-  const result = await cdp<CdpRuntimeEvaluateResponse<T>>(tabId, 'Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-    userGesture: true,
-  });
-  if (result.exceptionDetails) {
-    const ex = result.exceptionDetails;
-    throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
-  }
-  return result.result.value;
-}
-
-/** Arm the load wait on this tab; see `armLoadWait` for why it precedes the navigation. */
-function armTabLoadWait(tabId: number): ReturnType<typeof armLoadWait> {
-  return armLoadWait(tabId, {
-    add: (h) => {
-      chrome.tabs.onUpdated.addListener(h);
-    },
-    remove: (h) => {
-      chrome.tabs.onUpdated.removeListener(h);
-    },
-  });
-}
-
 /**
  * `performFind` / `performClick` / `performType` / `performPress` /
  * `performWaitFor` / `performDrag` — the extracted bodies of the
@@ -1943,15 +1710,13 @@ async function performFind(
     const { text, ref } = params;
     const hide_password_values = params.hide_password_values === true;
     if (params.key !== undefined) {
-      const value = await evaluateInTab<FindStepResult>(
-        tabId,
+      const value = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
         buildFindJs({ key: params.key, hide_password_values }),
       );
       return { ok: true, result: value };
     }
     if (ref !== undefined) {
-      const found = await evaluateInTab<FindStepResult>(
-        tabId,
+      const found = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
         buildFindJs({ ref, hide_password_values }),
       );
       const refError = found.matched ? null : refFailureMessage(found, ref);
@@ -1959,8 +1724,7 @@ async function performFind(
       return { ok: true, result: found };
     }
     if (!text) return { ok: false, error: 'find: text required' };
-    const value = await evaluateInTab<FindStepResult>(
-      tabId,
+    const value = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
       buildFindJs({
         text,
         role: params.role,
@@ -1994,16 +1758,15 @@ async function performClick(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
-    let resolved = await evaluateInTab<ClickResolveResult>(
-      tabId,
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(tabId).evaluator.evaluate(expression);
+    let resolved = await pageDriver(tabId).evaluator.evaluate<ClickResolveResult>(
       buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
     if (resolved.ok && !('no_box' in resolved)) {
       // The resolve scrolled the target into view; aim once the new layout
       // was painted, and arm the watch that proves where the press lands.
-      resolved = await evaluateInTab<ClickResolveResult>(
-        tabId,
+      resolved = await pageDriver(tabId).evaluator.evaluate<ClickResolveResult>(
         buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
       );
     }
@@ -2033,13 +1796,12 @@ async function performClick(
         error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
       };
     }
-    const mark = await takeObserverMark(tabId, settle);
+    const mark = await pageDriver(tabId).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     let hitCheckNote: string | undefined;
     let dialogOpened = false;
     if ('no_box' in resolved) {
-      const clicked = await evaluateInTab<ProgrammaticClickResult>(
-        tabId,
+      const clicked = await pageDriver(tabId).evaluator.evaluate<ProgrammaticClickResult>(
         buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
       );
       if (!clicked.ok) {
@@ -2086,7 +1848,9 @@ async function performClick(
         hitCheckNote = landing.note;
       }
     }
-    const settleResult = dialogOpened ? undefined : await settleWithChanges(tabId, settle, mark);
+    const settleResult = dialogOpened
+      ? undefined
+      : await pageDriver(tabId).settler.settle(settle, mark);
     const verdict = dialogOpened
       ? { ok: true as const, expect: undefined }
       : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
@@ -2132,11 +1896,11 @@ async function performType(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(tabId).evaluator.evaluate(expression);
     let reresolved = false;
     if (ref !== undefined) {
-      const resolved = await evaluateInTab<TypeResolveResult>(
-        tabId,
+      const resolved = await pageDriver(tabId).evaluator.evaluate<TypeResolveResult>(
         buildTypeResolveJs({ ref, clear }),
       );
       if (!resolved.ok) {
@@ -2150,8 +1914,7 @@ async function performType(
       }
       reresolved = resolved.reresolved === true;
     } else if (selector !== undefined) {
-      const resolved = await evaluateInTab<TypeResolveResult>(
-        tabId,
+      const resolved = await pageDriver(tabId).evaluator.evaluate<TypeResolveResult>(
         buildTypeResolveJs({ selector, clear }),
       );
       if (!resolved.ok) {
@@ -2165,10 +1928,10 @@ async function performType(
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await takeObserverMark(tabId, settle);
+    const mark = await pageDriver(tabId).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await cdp(tabId, 'Input.insertText', { text });
-    const settleResult = await settleWithChanges(tabId, settle, mark);
+    const settleResult = await pageDriver(tabId).settler.settle(settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: TypeStepResult = { typed: text.length };
@@ -2211,11 +1974,14 @@ async function performPress(
       settle_timeout_ms: params.settle_timeout_ms,
     });
     const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
+    const evaluate = (expression: string): Promise<unknown> =>
+      pageDriver(tabId).evaluator.evaluate(expression);
     const ref = params.ref;
     let reresolved = false;
     if (ref !== undefined) {
-      const focused = await evaluateInTab<FocusRefResult>(tabId, buildFocusJs({ ref }));
+      const focused = await pageDriver(tabId).evaluator.evaluate<FocusRefResult>(
+        buildFocusJs({ ref }),
+      );
       if (!focused.ok) {
         if (focused.reason === 'not-focused') {
           return { ok: false, error: notFocusedMessage(ref, focused.why, 'pressed') };
@@ -2224,8 +1990,7 @@ async function performPress(
       }
       reresolved = focused.reresolved === true;
     } else if (params.selector) {
-      const focused = await evaluateInTab<boolean | FocusRefusal>(
-        tabId,
+      const focused = await pageDriver(tabId).evaluator.evaluate<boolean | FocusRefusal>(
         buildFocusJs({ selector: params.selector }),
       );
       if (!focused) {
@@ -2236,10 +2001,10 @@ async function performPress(
       }
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
-    const mark = await takeObserverMark(tabId, settle);
+    const mark = await pageDriver(tabId).settler.mark(settle);
     const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    await dispatchKeyEvent(tabId, def, modifiers);
-    const settleResult = await settleWithChanges(tabId, settle, mark);
+    await pressKey(pageDriver(tabId).keyboard, def, modifiers);
+    const settleResult = await pageDriver(tabId).settler.settle(settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: PressStepResult = { key, modifiers: modifierNames };
@@ -2318,7 +2083,7 @@ async function performWaitFor(
       const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(tabId, expr);
+          const result = await pageDriver(tabId).evaluator.evaluate(expr);
           return Boolean(result);
         } catch {
           // If the page is unreachable mid-poll, count as "not yet matched".
@@ -2332,7 +2097,7 @@ async function performWaitFor(
       );
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(tabId, expr);
+          const result = await pageDriver(tabId).evaluator.evaluate(expr);
           if (typeof result === 'object' && result !== null) {
             const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
             if (probe.reason === 'ref-stale') {
@@ -2358,7 +2123,7 @@ async function performWaitFor(
       const wrapped = `Boolean(${waitExpression})`;
       check = async (): Promise<boolean> => {
         try {
-          const result = await evaluateInTab(tabId, wrapped);
+          const result = await pageDriver(tabId).evaluator.evaluate(wrapped);
           return Boolean(result);
         } catch {
           return false;
@@ -2474,12 +2239,12 @@ async function performDrag(
       to_x: toXRaw,
       to_y: toYRaw,
     });
-    const probe = await evaluateInTab<{
+    const probe = await pageDriver(tabId).evaluator.evaluate<{
       err?: string;
       from?: { x: number; y: number; in_viewport: boolean };
       to?: { x: number; y: number; in_viewport: boolean };
       draggable?: boolean;
-    }>(tabId, probeExpr);
+    }>(probeExpr);
     if (probe.err) {
       return { ok: false, error: `drag: ${probe.err}` };
     }
@@ -2745,7 +2510,9 @@ async function handleNavigate(
 ): Promise<ExtensionToServer> {
   const url = str('url');
   const waitForLoadFlag = p.wait_for_load !== false;
-  const loadWait = waitForLoadFlag ? armTabLoadWait(tabId) : undefined;
+  const page = pageDriver(tabId).page;
+  // Armed before the navigation is sent (see core's session/load-wait.ts).
+  const loadWait = waitForLoadFlag ? page.armLoadWait(NAVIGATE_LOAD_TIMEOUT_MS) : undefined;
   try {
     await cdp(tabId, 'Page.navigate', { url });
   } catch (err) {
@@ -2753,12 +2520,11 @@ async function handleNavigate(
     throw err;
   }
   if (loadWait) await loadWait.done;
-  const tab = await chrome.tabs.get(tabId);
   return {
     kind: 'tool.response',
     id: msg.id,
     ok: true,
-    result: { url: tab.url ?? '', title: tab.title ?? '' },
+    result: await page.info(),
   };
 }
 
@@ -2768,8 +2534,7 @@ async function handleSnapshot(
   p: Record<string, unknown>,
   optStr: (key: string) => string | undefined,
 ): Promise<ExtensionToServer> {
-  const value = await evaluateInTab(
-    tabId,
+  const value = await pageDriver(tabId).evaluator.evaluate(
     buildSnapshotJs({
       within_selector: optStr('within_selector'),
       only_interactive: p.only_interactive === true,
@@ -2809,7 +2574,9 @@ async function handleCanvasScreenshot(
       region = { x: r.x, y: r.y, w: r.w, h: r.h };
     }
   }
-  const value = await evaluateInTab(tabId, buildCanvasScreenshotJs({ selector, region, format }));
+  const value = await pageDriver(tabId).evaluator.evaluate(
+    buildCanvasScreenshotJs({ selector, region, format }),
+  );
   return { kind: 'tool.response', id: msg.id, ok: true, result: value };
 }
 
@@ -2831,7 +2598,7 @@ async function handleScreenshot(
     {
       send: (method, params) => cdp(tabId, method, params ?? {}),
       resolveElementRect: (selector) =>
-        evaluateInTab<ElementRectOutcome>(tabId, buildElementRectJs({ selector })),
+        pageDriver(tabId).evaluator.evaluate<ElementRectOutcome>(buildElementRectJs({ selector })),
     },
     {
       mode,
@@ -3110,8 +2877,7 @@ function buildFlowDeps(
     performDrag: (params) => performDrag(tabId, params),
     clock: systemClock,
     buildRecoverySnapshot: () =>
-      evaluateInTab(
-        tabId,
+      pageDriver(tabId).evaluator.evaluate(
         buildSnapshotJs({
           only_interactive: true,
           max_interactive: 40,
@@ -3615,7 +3381,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return await handleSnapshot(tabId, msg, p, optStr);
 
       case 'state': {
-        const value = await evaluateInTab(tabId, buildStateJs());
+        const value = await pageDriver(tabId).evaluator.evaluate(buildStateJs());
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
 
@@ -3731,7 +3497,7 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'evaluate': {
         const expression = str('expression');
-        const value = await evaluateInTab(tabId, expression);
+        const value = await pageDriver(tabId).evaluator.evaluate(expression);
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
 
@@ -3804,7 +3570,7 @@ async function cleanup(tabId: number): Promise<void> {
   // does NOT remove the plain `window.addEventListener` listeners the
   // recorder installed in the page — those would leak, staying attached to
   // a page the user is still browsing. Tear them down in-page FIRST, while
-  // the debugger is still attached and `evaluateInTab` can reach the page.
+  // the debugger is still attached and the page driver can reach the page.
   // Best-effort: the tab may already be gone (tab-removal path), in which
   // case there is nothing left to tear down anyway.
   if (state.recording) {
@@ -3818,7 +3584,7 @@ async function cleanup(tabId: number): Promise<void> {
     }
   }
   if (state.debuggerAttached) {
-    await uninstallObserver(state);
+    await state.driver.uninstall(() => true);
     try {
       await chrome.debugger.detach({ tabId });
     } catch {
@@ -3830,8 +3596,9 @@ async function cleanup(tabId: number): Promise<void> {
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.tabId === undefined) return;
   const state = tabStates.get(source.tabId);
-  if (!state?.debuggerListener) return;
-  state.debuggerListener(method, params);
+  if (!state) return;
+  state.debuggerListener?.(method, params);
+  for (const listener of state.eventListeners) listener(method, params);
 });
 
 /**
@@ -4049,6 +3816,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     });
   }
 
+  const eventListeners = new Set<TabEventListener>();
   const state: TabState = {
     tabId,
     debuggerAttached: true,
@@ -4056,6 +3824,8 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     networkBuffer: new Map(),
     networkOrder: [],
     lastActivityAt: Date.now(),
+    eventListeners,
+    driver: newPageDriver(tabId, eventListeners),
   };
   tabStates.set(tabId, state);
   attachDebuggerListener(state);
@@ -4074,7 +3844,13 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
     });
   }
 
-  await installObserver(state);
+  // The page observer: non-fatal. On failure the tab connects as before and
+  // actions report `settle.changes: null` with `observer-unavailable`.
+  const installed = await state.driver.install({
+    enableRuntime: false,
+    onTopDocument: (outcome) => reportTopDocument(state, outcome),
+  });
+  if (!installed.ok) console.warn('browser-link: page observer not installed', installed.error);
 
   const ws = new WebSocket(WS_URL);
   state.ws = ws;
@@ -4145,7 +3921,7 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // killed under.
             void flushPendingFlowEvents(tabId);
             // A fingerprint the observer pushed before this registration.
-            const docInfo = pendingDocInfoEvent(state.observer, msg.payload.tabId);
+            const docInfo = pendingDocInfoEvent(state.driver.observer, msg.payload.tabId);
             if (docInfo) send(ws, docInfo);
             settle({ ok: true, serverTabId: msg.payload.tabId });
             return;
@@ -4456,8 +4232,7 @@ async function injectRecorder(
   tabId: number,
   session: { bindingName: string; activeFlag: string; stopFn: string; nonce: string },
 ): Promise<void> {
-  await evaluateInTab(
-    tabId,
+  await pageDriver(tabId).evaluator.evaluate(
     buildRecorderJs({
       bindingName: session.bindingName,
       activeFlag: session.activeFlag,
@@ -4479,7 +4254,7 @@ async function injectRecorder(
  * those must be removed in-page. */
 async function teardownRecorderInPage(tabId: number, stopFn: string): Promise<void> {
   try {
-    await evaluateInTab(tabId, buildStopRecorderJs(stopFn));
+    await pageDriver(tabId).evaluator.evaluate(buildStopRecorderJs(stopFn));
   } catch {
     // Tab closed/navigated/detached mid-teardown — nothing left to tear down.
   }
