@@ -12,7 +12,10 @@
  * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`),
  * slice 11 the keyboard's `insertText` (the `Input.insertText` of `performType`),
  * slice 14 the drag input and the CDP event wait (`background.ts`
- * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`).
+ * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`),
+ * slice 15 the navigator, the screen capture and the response bodies (the
+ * `Page.navigate`, `Page.getLayoutMetrics`, `Page.captureScreenshot` and
+ * `Network.getResponseBody` of `navigate`, `screenshot` and `network_body`).
  * What differs per transport stays outside: the install warning text, the
  * bridge events the extension reports for a top-document message, whether
  * `Runtime.enable` is sent here, and whether dialogs are watched
@@ -28,12 +31,23 @@ import {
 } from '../inpage/observer.js';
 import type { CdpSession } from '../ports/cdp-session.js';
 import type { Clock } from '../ports/clock.js';
-import type { CdpEvents, DragInput, Keyboard, PageDriver, Pointer } from '../ports/page-driver.js';
+import type {
+  CdpEvents,
+  DragInput,
+  Keyboard,
+  Navigator,
+  PageDriver,
+  Pointer,
+  ResponseBodies,
+  ScreenCapture,
+} from '../ports/page-driver.js';
 import type { PageInfo } from '../ports/page-info.js';
 import type {
+  LayoutMetrics,
   MouseEventParams,
   ObserverFailure,
   ObserverMarkResult,
+  ResponseBody,
   SettleParams,
   SettleReport,
 } from '../ports/values.js';
@@ -95,13 +109,47 @@ export interface DialogWatch {
   isOpen(): boolean;
 }
 
-/** The transport's view of the requests its tab has captured. Read-only and
- * outside `ports/` (design revisions 7 and 8): the extension's watch reads
- * its tab's `TabSession` network buffer (`session/tab-session.ts`
- * `sessionCaptureWatch`); cdp-direct captures nothing and gives none. */
+/** One console message a tab captured (`Runtime.consoleAPICalled`,
+ * `Log.entryAdded`). */
+export interface ConsoleEntry {
+  timestamp: number;
+  level: string;
+  text: string;
+  source: 'console' | 'log';
+  url?: string;
+  line?: number;
+}
+
+/** One request a tab captured (the `Network.*` events). */
+export interface NetworkEntry {
+  request_id: string;
+  url: string;
+  method: string;
+  resource_type?: string;
+  status?: number;
+  status_text?: string;
+  mime_type?: string;
+  request_headers?: Record<string, string>;
+  response_headers?: Record<string, string>;
+  request_post_data?: string;
+  encoded_data_length?: number;
+  started_at: number;
+  finished_at?: number;
+  failed?: string;
+}
+
+/** The transport's view of the console messages and requests its tab has
+ * captured. Read-only and outside `ports/` (design revisions 7 and 8): the
+ * extension's watch reads its tab's `TabSession` console and network
+ * buffers (`session/tab-session.ts` `sessionCaptureWatch`); cdp-direct
+ * captures nothing and gives none. */
 export interface CaptureWatch {
   /** The URLs of the captured requests that have finished, oldest first. */
   finishedUrls(): Iterable<string>;
+  /** The captured console messages, oldest first. */
+  consoleEntries(): readonly ConsoleEntry[];
+  /** The captured requests, in the order they were first seen. */
+  networkEntries(): readonly NetworkEntry[];
 }
 
 export interface PageDriverDeps {
@@ -354,6 +402,27 @@ export function createPageDriver({
       }),
   };
 
+  const navigator: Navigator = {
+    navigate: async (url) => {
+      await session.send('Page.navigate', { url });
+    },
+  };
+
+  const screen: ScreenCapture = {
+    layoutMetrics: () => session.send<LayoutMetrics>('Page.getLayoutMetrics'),
+    capture: async (params) =>
+      (await session.send<{ data: string }>('Page.captureScreenshot', params)).data,
+  };
+
+  const responses: ResponseBodies = {
+    body: async (requestId) => {
+      const { body, base64Encoded } = await session.send<ResponseBody>('Network.getResponseBody', {
+        requestId,
+      });
+      return { body, base64Encoded };
+    },
+  };
+
   return {
     observer,
     page,
@@ -366,6 +435,9 @@ export function createPageDriver({
     },
     drag,
     events,
+    navigator,
+    screen,
+    responses,
     evaluator: { evaluate },
     settler: {
       async mark(settle: SettleParams | null): Promise<ObserverMarkResult> {

@@ -3,14 +3,20 @@
 // `session/page-driver.ts`. Handlers require them one by one. Ports
 // describe what is used: the pointer joined with click (slice 10),
 // `insertText` with type (slice 11), the drag input and the CDP event wait
-// with drag (slice 14).
+// with drag (slice 14), the navigator, the screen capture and the response
+// bodies with navigate, screenshot and network_body (slice 15). A port may
+// answer the page's reply to the core's own command; it never reports state
+// the transport observes on its own (design revision 9).
 
 import type { PageInfo } from './page-info.js';
 import type {
+  CaptureParams,
   DragEventParams,
   KeyEvent,
+  LayoutMetrics,
   MouseEventParams,
   ObserverMarkResult,
+  ResponseBody,
   SettleParams,
   SettleReport,
 } from './values.js';
@@ -56,6 +62,28 @@ export interface CdpEvents {
   waitFor(method: string, timeoutMs: number): Promise<unknown>;
 }
 
+export interface Navigator {
+  /** One `Page.navigate` to `url`; resolves when the page answered it,
+   * rejects when the command fails. Input only: waiting for the load is
+   * `PageInfo.armLoadWait`. */
+  navigate(url: string): Promise<void>;
+}
+
+export interface ScreenCapture {
+  /** One `Page.getLayoutMetrics`: the page's answer, typed to the fields the
+   * screenshot plan reads. A failed command rejects. */
+  layoutMetrics(): Promise<LayoutMetrics>;
+  /** One `Page.captureScreenshot`: the image the page answers, base64. A
+   * failed command rejects. */
+  capture(params: CaptureParams): Promise<string>;
+}
+
+export interface ResponseBodies {
+  /** One `Network.getResponseBody`: the body the page answers for
+   * `requestId`; rejects with the page's error when it has none. */
+  body(requestId: string): Promise<ResponseBody>;
+}
+
 export interface Settler {
   /** Take the page observer's action mark before an action dispatches;
    * `none` when `settle` is null (settle off for this call). Never throws. */
@@ -71,6 +99,9 @@ export interface PageDriver {
   pointer: Pointer;
   drag: DragInput;
   events: CdpEvents;
+  navigator: Navigator;
+  screen: ScreenCapture;
+  responses: ResponseBodies;
   settler: Settler;
   page: PageInfo;
 }

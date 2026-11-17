@@ -3,6 +3,8 @@
 // a Chrome binary (the e2e CI job sets it); skipped otherwise, so `pnpm test`
 // needs no browser. E2E_NO_SANDBOX=1 adds --no-sandbox (Linux CI).
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,12 +15,19 @@ import {
   defineCdpSessionContract,
   defineDragInputContract,
   defineKeyboardContract,
+  defineNavigatorContract,
   definePageInfoContract,
   definePointerContract,
+  defineResponseBodiesContract,
+  defineScreenCaptureContract,
   type ContractCase,
 } from '../../generated/core/ports/contract/index.js';
 import { createPageDriver } from '../../generated/core/session/page-driver.js';
-import type { DragEventParams, MouseEventParams } from '../../generated/core/ports/values.js';
+import type {
+  CaptureParams,
+  DragEventParams,
+  MouseEventParams,
+} from '../../generated/core/ports/values.js';
 
 /** What Chrome answers for that wheel event. */
 const PROBE_MESSAGE = "'deltaX' and 'deltaY' are expected for mouseWheel event";
@@ -57,6 +66,15 @@ async function waitForPort(dir: string): Promise<number> {
   throw new Error('Chrome did not report its DevTools port');
 }
 
+/** What Chrome answers for a navigation to a string that is not a URL. */
+const INVALID_URL = 'Cannot navigate to invalid URL';
+/** What Chrome answers for a screenshot format it does not know. */
+const CAPTURE_REFUSED = 'Invalid image format';
+/** What Chrome answers for a response body it does not hold. */
+const NO_RESOURCE = 'No resource with given identifier found';
+/** The document the response-bodies contract loads over HTTP. */
+const SERVED = '<title>served</title><p>body</p>';
+
 /** A fresh page target on PAGE, loaded, with a connected client. */
 async function openPage(): Promise<{ client: CdpClient; close: () => Promise<void> }> {
   const res = await fetch(`http://127.0.0.1:${String(browserPort)}/json/new?about:blank`, {
@@ -81,6 +99,15 @@ async function openPage(): Promise<{ client: CdpClient; close: () => Promise<voi
       await fetch(`http://127.0.0.1:${String(browserPort)}/json/close/${target.id}`);
     },
   };
+}
+
+/** A page driver over the CdpClient adapter. */
+function driverOn(client: CdpClient) {
+  return createPageDriver({
+    session: createCdpClientSession(client),
+    page: createCdpPageInfo(client, systemClock),
+    clock: systemClock,
+  });
 }
 
 function run(cases: ContractCase[]): void {
@@ -274,6 +301,91 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
             await loaded;
           },
           elapse: sleep,
+          dispose: close,
+        };
+      }),
+    );
+  });
+  describe("Navigator contract: the page driver's navigator over the CdpClient adapter", () => {
+    run(
+      defineNavigatorContract(async () => {
+        const { client, close } = await openPage();
+        return {
+          navigator: driverOn(client).navigator,
+          url: PAGE,
+          failing: { url: 'not a url', message: INVALID_URL },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("ScreenCapture contract: the page driver's screen capture over the CdpClient adapter", () => {
+    run(
+      defineScreenCaptureContract(async () => {
+        const { client, close } = await openPage();
+        return {
+          screen: driverOn(client).screen,
+          // A format Chrome does not know: it refuses the params. The type
+          // is outside the port's on purpose, so the cast is the probe.
+          failing: {
+            params: {
+              format: 'gif',
+              captureBeyondViewport: false,
+              clip: { x: 0, y: 0, width: 8, height: 8, scale: 1 },
+            } as unknown as CaptureParams,
+            message: CAPTURE_REFUSED,
+          },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("ResponseBodies contract: the page driver's response bodies over the CdpClient adapter", () => {
+    let server: Server | undefined;
+    let url = '';
+    beforeAll(async () => {
+      server = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html', connection: 'close' });
+        res.end(SERVED);
+      });
+      await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
+      url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/served`;
+    });
+    afterAll(async () => {
+      // close() waits for open keep-alive connections, and Chrome keeps its own open.
+      await new Promise<void>((resolve) => {
+        server?.close(() => {
+          resolve();
+        });
+        server?.closeAllConnections();
+      });
+    });
+
+    run(
+      defineResponseBodiesContract(async () => {
+        const { client, close } = await openPage();
+        await client.send('Network.enable');
+        let requestId = '';
+        const finished = new Promise<void>((resolve) => {
+          const offResponse = client.on('Network.responseReceived', (params) => {
+            const p = params as { requestId: string; response: { url: string } };
+            if (p.response.url === url) requestId = p.requestId;
+          });
+          const offFinished = client.on('Network.loadingFinished', (params) => {
+            if ((params as { requestId: string }).requestId !== requestId) return;
+            offResponse();
+            offFinished();
+            resolve();
+          });
+        });
+        await client.send('Page.navigate', { url });
+        await finished;
+        return {
+          responses: driverOn(client).responses,
+          captured: { requestId, body: { body: SERVED, base64Encoded: false } },
+          failing: { requestId: 'contract-unknown', message: NO_RESOURCE },
           dispose: close,
         };
       }),

@@ -6,16 +6,13 @@ import { describe, expect, test } from 'vitest';
 
 /*
  * FITNESS: cdp-direct evaluates in the page through the page driver (core's
- * `session/page-driver.ts`, slice 9). One raw `Runtime.evaluate` is allowed
- * to stay until slice 15 moves its tool case onto the driver: the
- * `evaluate` case of `callCdpTool`, whose `timeout_ms` is the client's own
- * per-command timeout and whose timeout error text reaches the agent.
+ * `session/page-driver.ts`, slice 9). No raw `Runtime.evaluate` is allowed:
+ * the last one, the `evaluate` case of `callCdpTool`, moved onto the driver
+ * in slice 15 (its `timeout_ms` is now the per-command timeout of the
+ * session its evaluator sends through).
  *
  * A raw call site is a `'Runtime.evaluate'` string literal in a production
- * file under `cdp/` (tests excluded). The rule: the sites are exactly
- * `ALLOWED_RAW_EVALUATE`. A second site fails (the exception cannot grow);
- * an entry whose site is gone fails as stale, so slice 15 deletes the entry
- * with the call (the exception cannot outlive it).
+ * file under `cdp/` (tests excluded). The rule: there is none.
  */
 
 interface RawEvaluateSite {
@@ -24,10 +21,6 @@ interface RawEvaluateSite {
   /** The enclosing function, and the `case` label when inside one. */
   where: string;
 }
-
-const ALLOWED_RAW_EVALUATE: readonly (RawEvaluateSite & { removedBy: string })[] = [
-  { file: 'transport.ts', where: "callCdpTool case 'evaluate'", removedBy: 'slice 15' },
-];
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -68,62 +61,51 @@ function rawEvaluateSites(files: { file: string; text: string }[]): RawEvaluateS
   return sites;
 }
 
-/** Sites outside the allowlist, and allowlist entries with no site. */
 function rawEvaluateViolations(sites: RawEvaluateSite[]): string[] {
-  const key = (s: RawEvaluateSite): string => `${s.file}: ${s.where}`;
-  const allowed = new Set(ALLOWED_RAW_EVALUATE.map(key));
-  const found = sites.map(key);
-  const extra = found.filter((k) => !allowed.has(k));
-  const counted = found.filter((k) => allowed.has(k));
-  const repeated = counted.filter((k, i) => counted.indexOf(k) !== i);
-  const stale = [...allowed].filter((k) => !found.includes(k));
-  return [
-    ...extra.map((k) => `raw Runtime.evaluate outside the page driver: ${k}`),
-    ...repeated.map((k) => `second raw Runtime.evaluate in the allowed place: ${k}`),
-    ...stale.map((k) => `stale exception (the raw call is gone; delete its entry): ${k}`),
-  ];
+  return sites.map((s) => `raw Runtime.evaluate outside the page driver: ${s.file}: ${s.where}`);
 }
 
 const transportText = readFileSync(join(here, 'transport.ts'), 'utf8');
 
-describe('cdp-direct raw Runtime.evaluate (slice 9, removed by slice 15)', () => {
-  test('the only raw call site is the allowed one', () => {
+describe('cdp-direct raw Runtime.evaluate (none since slice 15)', () => {
+  test('no production file under cdp/ sends a raw Runtime.evaluate', () => {
     const files = productionFiles(here).map((path) => ({
       file: relative(here, path).split('\\').join('/'),
       text: readFileSync(path, 'utf8'),
     }));
+    expect(files.some((f) => f.file === 'transport.ts')).toBe(true);
     expect(rawEvaluateViolations(rawEvaluateSites(files))).toEqual([]);
   });
 
-  test('every exception names the slice that removes it', () => {
-    for (const entry of ALLOWED_RAW_EVALUATE) expect(entry.removedBy).toMatch(/^slice \d+$/);
-  });
-
-  test('RED: a second raw call site fails', () => {
+  test('RED: a raw call site in the transport fails', () => {
     const probe = `${transportText}\nasync function probe(c: { send(m: string): Promise<unknown> }) {\n  return c.send('Runtime.evaluate');\n}\n`;
     expect(
       rawEvaluateViolations(rawEvaluateSites([{ file: 'transport.ts', text: probe }])),
     ).toEqual(['raw Runtime.evaluate outside the page driver: transport.ts: probe']);
   });
 
-  test('RED: a second raw call inside the allowed case fails', () => {
+  test("RED: a raw call back in callCdpTool's case fails", () => {
     const probe = transportText.replace(
-      "case 'evaluate': {",
-      "case 'evaluate': {\n      void client.send('Runtime.evaluate', {});",
+      "case 'flow': {",
+      "case 'flow': {\n      void client.send('Runtime.evaluate', {});",
     );
+    expect(probe).not.toBe(transportText);
     expect(
       rawEvaluateViolations(rawEvaluateSites([{ file: 'transport.ts', text: probe }])),
     ).toEqual([
-      "second raw Runtime.evaluate in the allowed place: transport.ts: callCdpTool case 'evaluate'",
+      "raw Runtime.evaluate outside the page driver: transport.ts: callCdpTool case 'flow'",
     ]);
   });
 
-  test('RED: the exception goes stale once the raw call is gone', () => {
-    const probe = transportText.replace(/'Runtime\.evaluate'/g, "'Runtime.somethingElse'");
+  test('RED: a raw call in an adapter fails', () => {
+    const probe =
+      "export const send = (c: { send(m: string): Promise<unknown> }) => c.send('Runtime.evaluate');\n";
     expect(
-      rawEvaluateViolations(rawEvaluateSites([{ file: 'transport.ts', text: probe }])),
+      rawEvaluateViolations(
+        rawEvaluateSites([{ file: 'adapters/cdp-client-session.ts', text: probe }]),
+      ),
     ).toEqual([
-      "stale exception (the raw call is gone; delete its entry): transport.ts: callCdpTool case 'evaluate'",
+      'raw Runtime.evaluate outside the page driver: adapters/cdp-client-session.ts: <module>',
     ]);
   });
 });

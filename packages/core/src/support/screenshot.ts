@@ -1,13 +1,17 @@
 /**
- * `browser.screenshot` planning and capture, shared by the extension
- * (`chrome.debugger`) and — through the server's generated mirror of
- * core — the cdp-direct transport. Both speak raw CDP, so the logic is one;
- * it only needs a `send(method, params)` primitive and an element-rect
- * resolver, which makes it unit-testable without Chrome.
+ * `browser.screenshot` planning and capture, shared by the extension and
+ * — through the server's generated mirror of core — the cdp-direct
+ * transport. It needs the page's `ScreenCapture` (layout metrics and one
+ * capture per attempt) and an element-rect resolver, which makes it
+ * unit-testable without Chrome.
  *
- * Coordinates: `Page.captureScreenshot`'s `clip` is in CSS pixels of the
- * page (document) space; `scale` multiplies it into output pixels.
+ * Coordinates: the capture's `clip` is in CSS pixels of the page (document)
+ * space; `scale` multiplies it into output pixels.
  */
+import type { ScreenCapture } from '../ports/page-driver.js';
+import type { CaptureParams, LayoutMetrics } from '../ports/values.js';
+
+export type { LayoutMetrics };
 
 export type ScreenshotMode = 'viewport' | 'full_page' | 'element';
 export type ScreenshotFormat = 'png' | 'jpeg';
@@ -29,15 +33,6 @@ export interface Size {
 export interface Rect extends Size {
   x: number;
   y: number;
-}
-export interface LayoutMetrics {
-  cssContentSize?: Size;
-  contentSize?: Size;
-  cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
-  visualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
-  /** Layout viewport in device pixels / CSS pixels — their ratio is the DPR. */
-  layoutViewport?: { clientWidth: number };
-  cssLayoutViewport?: { clientWidth: number };
 }
 export interface ScreenshotPlan {
   clip: Rect & { scale: number };
@@ -165,7 +160,7 @@ export type ElementRectOutcome =
   ({ ok: true } & Rect) | { ok: false; reason: 'invalid-selector' | 'not-found'; error?: string };
 
 export interface ScreenshotDeps {
-  send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  screen: ScreenCapture;
   resolveElementRect: (selector: string) => Promise<ElementRectOutcome>;
 }
 
@@ -211,7 +206,7 @@ export async function runScreenshot(
   }
   // Always read the metrics: besides the page size they carry the DPR the
   // output dimensions depend on.
-  const metrics = (await deps.send('Page.getLayoutMetrics')) as LayoutMetrics;
+  const metrics = await deps.screen.layoutMetrics();
   const plan = planClip(mode, metrics, elementRect, maxDimension);
 
   let attempt: Attempt = {
@@ -222,7 +217,7 @@ export async function runScreenshot(
   let reduced = false;
   let lastBytes = 0;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const params: Record<string, unknown> = {
+    const params: CaptureParams = {
       format: attempt.format,
       captureBeyondViewport: mode !== 'viewport',
       clip: { ...plan.clip, scale: attempt.scale },
@@ -230,8 +225,8 @@ export async function runScreenshot(
     if (attempt.format === 'jpeg' && attempt.quality !== undefined) {
       params.quality = attempt.quality;
     }
-    const res = (await deps.send('Page.captureScreenshot', params)) as { data: string };
-    const bytes = base64ByteLength(res.data);
+    const data = await deps.screen.capture(params);
+    const bytes = base64ByteLength(data);
     lastBytes = bytes;
     if (bytes <= MAX_IMAGE_BYTES) {
       const result: ScreenshotResult = {
@@ -242,7 +237,7 @@ export async function runScreenshot(
         height: Math.max(1, Math.round(plan.clip.height * attempt.scale * plan.dpr)),
         scale: attempt.scale,
         bytes,
-        image_b64: res.data,
+        image_b64: data,
       };
       if (plan.truncated) result.truncated = true;
       if (reduced) result.size_reduced = true;

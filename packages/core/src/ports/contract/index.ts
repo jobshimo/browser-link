@@ -14,8 +14,17 @@ export { type CdpEventsHarness, defineCdpEventsContract } from './cdp-events.con
 export { type CdpSessionHarness, defineCdpSessionContract } from './cdp-session.contract.js';
 export { defineDragInputContract, type DragInputHarness } from './drag-input.contract.js';
 export { defineKeyboardContract, type KeyboardHarness } from './keyboard.contract.js';
+export { defineNavigatorContract, type NavigatorHarness } from './navigator.contract.js';
 export { definePageInfoContract, type PageInfoHarness } from './page-info.contract.js';
 export { definePointerContract, type PointerHarness } from './pointer.contract.js';
+export {
+  defineResponseBodiesContract,
+  type ResponseBodiesHarness,
+} from './response-bodies.contract.js';
+export {
+  defineScreenCaptureContract,
+  type ScreenCaptureHarness,
+} from './screen-capture.contract.js';
 export {
   countingSession,
   createManualClock,

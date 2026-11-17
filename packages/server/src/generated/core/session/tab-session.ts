@@ -13,38 +13,18 @@ import {
   shouldDisconnectForIdle,
   type IdleFlowHold,
 } from '../policies/idle-rules.js';
-import type { CaptureWatch, DialogWatch, PageDriverHandle } from './page-driver.js';
+import type {
+  CaptureWatch,
+  ConsoleEntry,
+  DialogWatch,
+  NetworkEntry,
+  PageDriverHandle,
+} from './page-driver.js';
 
 /** Console entries kept per tab; the oldest is dropped first. */
 export const CONSOLE_BUFFER_MAX = 200;
 /** Network entries kept per tab; the oldest request is dropped first. */
 export const NETWORK_BUFFER_MAX = 200;
-
-export interface ConsoleEntry {
-  timestamp: number;
-  level: string;
-  text: string;
-  source: 'console' | 'log';
-  url?: string;
-  line?: number;
-}
-
-export interface NetworkEntry {
-  request_id: string;
-  url: string;
-  method: string;
-  resource_type?: string;
-  status?: number;
-  status_text?: string;
-  mime_type?: string;
-  request_headers?: Record<string, string>;
-  response_headers?: Record<string, string>;
-  request_post_data?: string;
-  encoded_data_length?: number;
-  started_at: number;
-  finished_at?: number;
-  failed?: string;
-}
 
 /** A native dialog blocking the tab, set on `Page.javascriptDialogOpening`
  * and cleared on `Page.javascriptDialogClosed`. */
@@ -200,8 +180,9 @@ export function sessionDialogWatch(current: () => TabSession | undefined): Dialo
   return { isOpen: () => current()?.pendingDialog !== undefined };
 }
 
-/** A capture watch over `session`'s network buffer: the URLs of the
- * requests that have finished, read live on every call. */
+/** A capture watch over `session`'s console and network buffers, read
+ * live on every call: the console messages, the requests in the order they
+ * were first seen, and the URLs of those that have finished. */
 export function sessionCaptureWatch(session: TabSession): CaptureWatch {
   return {
     *finishedUrls() {
@@ -210,6 +191,11 @@ export function sessionCaptureWatch(session: TabSession): CaptureWatch {
         if (entry?.finished_at !== undefined) yield entry.url;
       }
     },
+    consoleEntries: () => session.consoleBuffer,
+    networkEntries: () =>
+      session.networkOrder
+        .map((id) => session.networkBuffer.get(id))
+        .filter((entry): entry is NetworkEntry => entry !== undefined),
   };
 }
 
