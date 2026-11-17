@@ -6,6 +6,7 @@ import {
   createManualClock,
   createMemoryCdpSession,
   createMemoryPageInfo,
+  countingSession,
   defineCdpEventsContract,
   defineDragInputContract,
   type CdpEventsHarness,
@@ -52,9 +53,14 @@ function dragHarness(): DragInputHarness & { sent: [string, unknown][] } {
 }
 
 function eventsHarness(): CdpEventsHarness {
-  const { clock, session, driver } = driverOn({});
+  const clock = createManualClock();
+  const session = createMemoryCdpSession({});
+  const counted = countingSession(session);
+  const page = createMemoryPageInfo({ url: 'https://t.test/', title: 'T' }, clock);
+  const driver = createPageDriver({ session: counted, page, clock });
   return {
     events: driver.events,
+    listening: () => counted.listening(),
     method: 'Input.dragIntercepted',
     emit: () => {
       session.emit('Input.dragIntercepted', { data: { items: [], dragOperationsMask: 1 } });
@@ -94,7 +100,7 @@ describe('CdpEvents contract: page driver on an in-memory session', () => {
 
   it('an event of another method does not settle the wait', async () => {
     const { clock, session, driver } = driverOn({});
-    const waiting = driver.events.waitFor('Input.dragIntercepted', () => true, 100);
+    const waiting = driver.events.waitFor('Input.dragIntercepted', 100);
     session.emit('Page.loadEventFired', {});
     await clock.advance(100);
     expect(await waiting).toBeNull();
@@ -103,7 +109,7 @@ describe('CdpEvents contract: page driver on an in-memory session', () => {
   it('an event that arrived before the call is not seen', async () => {
     const { clock, session, driver } = driverOn({});
     session.emit('Input.dragIntercepted', { data: {} });
-    const waiting = driver.events.waitFor('Input.dragIntercepted', () => true, 100);
+    const waiting = driver.events.waitFor('Input.dragIntercepted', 100);
     await clock.advance(100);
     expect(await waiting).toBeNull();
   });
@@ -142,25 +148,24 @@ describe('the DragInput and CdpEvents contracts catch a broken port (RED probes)
     ).rejects.toThrow(/error message/);
   });
 
-  it('an event wait that ignores the predicate', async () => {
+  it('an event wait that settles on any event', async () => {
     const cases = defineCdpEventsContract(() => {
       const h = eventsHarness();
       const events: CdpEvents = {
-        waitFor: (method, _predicate, timeoutMs) => h.events.waitFor(method, () => true, timeoutMs),
+        waitFor: (_method, timeoutMs) => h.events.waitFor(h.method, timeoutMs),
       };
       return { ...h, events };
     });
     await expect(
-      caseNamed(cases, 'an event the predicate refuses does not settle the wait').run(),
-    ).rejects.toThrow(/refused events/);
+      caseNamed(cases, 'an event of another method does not settle the wait').run(),
+    ).rejects.toThrow(/another method/);
   });
 
   it('an event wait that never times out', async () => {
     const cases = defineCdpEventsContract(() => {
       const h = eventsHarness();
       const events: CdpEvents = {
-        waitFor: (method, predicate) =>
-          h.events.waitFor(method, predicate, Number.MAX_SAFE_INTEGER),
+        waitFor: (method) => h.events.waitFor(method, Number.MAX_SAFE_INTEGER),
       };
       return { ...h, events };
     });
@@ -176,30 +181,16 @@ describe('the DragInput and CdpEvents contracts catch a broken port (RED probes)
     const cases = defineCdpEventsContract(() => {
       const h = eventsHarness();
       const events: CdpEvents = {
-        waitFor: (method, predicate, timeoutMs) => {
-          let first: ((params: unknown) => void) | undefined;
-          const settled = new Promise<unknown>((resolve) => (first = resolve));
-          // A listener that never unsubscribes: it keeps asking the predicate.
-          const listen = (): void => {
-            void h.events.waitFor(
-              method,
-              (params) => {
-                const accepted = predicate(params);
-                if (accepted) first?.(params);
-                listen();
-                return accepted;
-              },
-              timeoutMs,
-            );
-          };
-          listen();
-          return settled;
+        waitFor: (method, timeoutMs) => {
+          // A second, never-settling wait left subscribed alongside the real one.
+          void h.events.waitFor('Contract.leaked', Number.MAX_SAFE_INTEGER);
+          return h.events.waitFor(method, timeoutMs);
         },
       };
       return { ...h, events };
     });
-    await expect(caseNamed(cases, 'once settled the wait stops listening').run()).rejects.toThrow(
-      /after the wait settled/,
-    );
+    await expect(
+      caseNamed(cases, 'once settled the wait stops listening, by event or by timeout').run(),
+    ).rejects.toThrow(/listeners after the wait settled/);
   });
 });

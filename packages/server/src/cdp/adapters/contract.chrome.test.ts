@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
+  countingSession,
   defineCdpEventsContract,
   defineCdpSessionContract,
   defineDragInputContract,
@@ -235,13 +236,15 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
       defineCdpEventsContract(async () => {
         const { client, close } = await openPage();
         await client.send('Runtime.enable');
+        const session = countingSession(createCdpClientSession(client));
         const driver = createPageDriver({
-          session: createCdpClientSession(client),
+          session,
           page: createCdpPageInfo(client, systemClock),
           clock: systemClock,
         });
         return {
           events: driver.events,
+          listening: () => session.listening(),
           method: 'Runtime.consoleAPICalled',
           emit: async () => {
             await client.send('Runtime.evaluate', { expression: 'console.log("contract")' });

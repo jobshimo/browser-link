@@ -335,11 +335,11 @@ export function createPageDriver({
   };
 
   const events: CdpEvents = {
-    waitFor: (method, predicate, timeoutMs) =>
+    waitFor: (method, timeoutMs) =>
       new Promise<unknown>((resolve) => {
         let settled = false;
         const unsubscribe = session.onEvent((name, params) => {
-          if (settled || name !== method || !predicate(params)) return;
+          if (settled || name !== method) return;
           settled = true;
           cancelTimer();
           unsubscribe();

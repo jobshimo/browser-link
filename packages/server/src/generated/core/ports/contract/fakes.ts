@@ -135,3 +135,25 @@ export function createMemoryPageInfo(
     },
   };
 }
+
+/** A `CdpSession` that counts its current listeners, for contracts that
+ * check a subscriber unsubscribed. Passes every call through unchanged. */
+export function countingSession(session: CdpSession): CdpSession & { listening(): number } {
+  let count = 0;
+  return {
+    send: <T>(method: string, params?: Record<string, unknown>) => session.send<T>(method, params),
+    onEvent(listener) {
+      const off = session.onEvent(listener);
+      count += 1;
+      let done = false;
+      return () => {
+        if (!done) {
+          done = true;
+          count -= 1;
+        }
+        off();
+      };
+    },
+    listening: () => count,
+  };
+}

@@ -15,6 +15,9 @@ export interface CdpEventsHarness {
   emit: () => Promise<void>;
   /** Let `ms` of the harness's time pass. */
   elapse: (ms: number) => Promise<void>;
+  /** How many listeners the session under `events` holds now
+   * (`countingSession`). */
+  listening: () => number;
   dispose?: () => Promise<void> | void;
 }
 
@@ -38,57 +41,43 @@ export function defineCdpEventsContract(
 
   return [
     {
-      name: 'waitFor resolves with the params the predicate saw, for an event after the call',
+      name: 'waitFor resolves with the params of an event that arrives after the call',
       run: withHarness(async ({ events, method, emit }) => {
-        const seen: unknown[] = [];
-        const waiting = events.waitFor(
-          method,
-          (params) => {
-            seen.push(params);
-            return true;
-          },
-          LONG_MS,
-        );
+        const waiting = events.waitFor(method, LONG_MS);
         await emit();
         const params = await waiting;
         check(params !== null && typeof params === 'object', 'no event params');
-        check(seen[0] === params, 'the result is not the params the predicate saw');
       }),
     },
     {
       name: 'waitFor resolves null when no such event arrives in time',
       run: withHarness(async ({ events, elapse }) => {
-        const waiting = events.waitFor('Contract.neverSent', () => true, SHORT_MS);
+        const waiting = events.waitFor('Contract.neverSent', SHORT_MS);
         await elapse(SHORT_MS * 2);
         equal(await waiting, null, 'result after the timeout');
       }),
     },
     {
-      name: 'an event the predicate refuses does not settle the wait',
-      run: withHarness(async ({ events, method, emit, elapse }) => {
-        const waiting = events.waitFor(method, () => false, SHORT_MS);
+      name: 'an event of another method does not settle the wait',
+      run: withHarness(async ({ events, emit, elapse }) => {
+        const waiting = events.waitFor('Contract.neverSent', SHORT_MS);
         await emit();
         await elapse(SHORT_MS * 2);
-        equal(await waiting, null, 'result after refused events');
+        equal(await waiting, null, 'result after events of another method');
       }),
     },
     {
-      name: 'once settled the wait stops listening',
-      run: withHarness(async ({ events, method, emit }) => {
-        let calls = 0;
-        const waiting = events.waitFor(
-          method,
-          () => {
-            calls += 1;
-            return true;
-          },
-          LONG_MS,
-        );
+      name: 'once settled the wait stops listening, by event or by timeout',
+      run: withHarness(async ({ events, method, emit, elapse, listening }) => {
+        const before = listening();
+        const matched = events.waitFor(method, LONG_MS);
         await emit();
-        await waiting;
-        const settledAfter = calls;
-        await emit();
-        equal(calls, settledAfter, 'predicate calls after the wait settled');
+        await matched;
+        equal(listening(), before, 'listeners after the wait settled on its event');
+        const expired = events.waitFor('Contract.neverSent', SHORT_MS);
+        await elapse(SHORT_MS * 2);
+        await expired;
+        equal(listening(), before, 'listeners after the wait timed out');
       }),
     },
   ];

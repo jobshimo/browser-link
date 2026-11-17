@@ -18,6 +18,7 @@ export { defineKeyboardContract, type KeyboardHarness } from './keyboard.contrac
 export { definePageInfoContract, type PageInfoHarness } from './page-info.contract.js';
 export { definePointerContract, type PointerHarness } from './pointer.contract.js';
 export {
+  countingSession,
   createManualClock,
   createMemoryCdpSession,
   createMemoryPageInfo,

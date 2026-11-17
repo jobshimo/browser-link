@@ -183,11 +183,7 @@ export async function performDrag(
 
       if (interceptionEnabled) {
         // Arm the wait BEFORE the press+wiggle that may trigger it.
-        const interceptPromise = events.waitFor(
-          'Input.dragIntercepted',
-          () => true,
-          INTERCEPT_TIMEOUT_MS,
-        );
+        const interceptPromise = events.waitFor('Input.dragIntercepted', INTERCEPT_TIMEOUT_MS);
         await pointer.mouse({ type: 'mouseMoved', x: fromX, y: fromY });
         await press();
         if (holdBeforeMoveMs > 0) await pause(clock, holdBeforeMoveMs);

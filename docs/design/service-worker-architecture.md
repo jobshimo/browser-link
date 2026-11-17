@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 8. Revision 1 (`5486e34`) was audited as
+Status: revision 9. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,17 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 9 (2026-11-17)
+
+Arch's decisions on slice 14 (3.2 code block and text, 3.3 "As built in
+slice 14"), and the wording of the revision 8 rule:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `DragInput` (`interceptDrags(enabled)`, `dragEvent(event)`) is a separate input-only capability of the `PageDriver`, the registry requirement `drag`; cdp-direct's page driver has it, but `CDP_DIRECT_PROVIDES` lacks `drag`, so `browser.drag` stays refused there | drag sends `Input.setInterceptDrags` and `Input.dispatchDragEvent`, which no existing port sends; folding them into `Pointer` would change the meaning of a mouse-only port (revision 8) |
+| 2 | `CdpEvents.waitFor(method, timeoutMs)` has no `predicate` until a real caller needs one | its only caller (drag's wait for `Input.dragIntercepted`) accepts every event; same rule as `Clock.every` (revision 7): ports describe what is used |
+| 3 | The revision 8 rule reads: a port must not report state the transport observes on its own; a command whose answer is the page's reply to the core's own request is allowed (`Evaluator`, `PageInfo.info()`) | so the rule cannot be misread as forbidding every port method that returns data |
 
 ### Revision 8 (2026-11-17)
 
@@ -623,9 +634,9 @@ export interface DragInput {           // input only (slice 14)
   dragEvent(event: DragEventParams): Promise<void>;
 }
 export interface CdpEvents {           // the drag's wait for Input.dragIntercepted (slice 14)
-  /** The params of the first event named `method` that `predicate` accepts,
-   * after the call; null when none arrives within `timeoutMs`. Never rejects. */
-  waitFor(method: string, predicate: (params: unknown) => boolean, timeoutMs: number): Promise<unknown>;
+  /** The params of the first event named `method` after the call; null when
+   * none arrives within `timeoutMs`. Never rejects. No predicate (revision 9). */
+  waitFor(method: string, timeoutMs: number): Promise<unknown>;
 }
 export interface PageDriver {
   evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; drag: DragInput;
@@ -658,7 +669,7 @@ the nine twin helpers in `transport.ts` are deleted with slice 9.
 `CdpEvents` is a wait the core asks for, as `PageInfo.armLoadWait`: the page
 driver subscribes through `CdpSession.onEvent` for the call and unsubscribes
 when it settles, so no state a transport keeps reaches core through it
-(revision 8). `DragInput` is input only, as `Pointer`.
+(revisions 8 and 9). `DragInput` is input only, as `Pointer`.
 
 ### 3.3 `ToolRegistry`: handlers declare what they require
 

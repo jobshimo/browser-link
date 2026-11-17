@@ -47,16 +47,12 @@ export interface DragInput {
 
 export interface CdpEvents {
   /** Wait for one event of the session: resolves with the params of the
-   * first event named `method` that `predicate` accepts, among those that
-   * arrive after the call; with null when none arrives within `timeoutMs`
-   * (or when that event carries no params). Never rejects; it stops
-   * listening once it settles. A wait the core asks for, as
-   * `PageInfo.armLoadWait`: no state the transport keeps is read through it. */
-  waitFor(
-    method: string,
-    predicate: (params: unknown) => boolean,
-    timeoutMs: number,
-  ): Promise<unknown>;
+   * first event named `method` that arrives after the call; with null when
+   * none arrives within `timeoutMs` (or when that event carries no params).
+   * Never rejects; it stops listening once it settles. A wait the core asks
+   * for, as `PageInfo.armLoadWait`: no state the transport keeps is read
+   * through it. No predicate until a caller needs one (design revision 9). */
+  waitFor(method: string, timeoutMs: number): Promise<unknown>;
 }
 
 export interface Settler {
