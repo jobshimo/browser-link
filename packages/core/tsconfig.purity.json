@@ -5,15 +5,6 @@
   },
   "include": [],
   "files": [
-    "./src/inpage/builders.ts",
-    "./src/inpage/deep-query.ts",
-    "./src/inpage/dom-helpers.ts",
-    "./src/inpage/observer.ts",
-    "../extension/src/settle.ts",
-    "../extension/src/expect.ts",
-    "../extension/src/keymap.ts",
-    "../extension/src/screenshot.ts",
-    "../extension/src/observer-host.ts",
     "../extension/src/flow.ts",
     "../extension/src/clock.ts",
     "../extension/src/flow-registry.ts"

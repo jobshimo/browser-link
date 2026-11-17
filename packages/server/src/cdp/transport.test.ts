@@ -36,7 +36,7 @@ import {
   buildSettleJs,
 } from '../generated/core/inpage/builders.js';
 import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
-import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
+import { TOP_DOCUMENT_PROBE_JS } from '../generated/core/support/observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
 import { SENSITIVE_PAYLOAD_MARKER, UNIDENTIFIED_FIELD_MARKER } from '../activity/extract.js';
 import { query, record } from '../activity/queries.js';

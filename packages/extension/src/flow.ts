@@ -50,7 +50,7 @@
  * `browser.drag` returns on a `cdp:` tab.
  */
 import type { Clock } from './clock.js';
-import type { ExpectMet, ExpectParams } from './expect.js';
+import type { ExpectMet, ExpectParams } from '@browser-link/core';
 
 /** Structured success/failure outcome shared by every perform* function
  * (`background.ts` in the extension, `cdp/transport.ts` on the server).

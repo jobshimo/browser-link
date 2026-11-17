@@ -1,14 +1,20 @@
+// GENERATED from packages/core/src/support/observer-host.ts. Specifiers rewritten. Do not edit.
 /**
  * Host side of the page observer (spec v4 §5.4–§5.5): the per-tab mirror of
  * what the in-page observer (`inpage/observer.ts`) has pushed through its
  * binding, and the rule that folds an action's "changes since mark" into
  * the settle result. Caller-context logic, not injected page JS, and free of
- * `chrome.*` / CDP calls so it is unit-testable on its own and can be copied
- * verbatim by the cdp-direct transport on the server. The caller owns every
- * evaluation; this module only parses and decides.
+ * `chrome.*` / CDP calls so it is unit-testable on its own and shared by
+ * both transports (the server compiles it from its generated mirror of
+ * core). The caller owns every evaluation; this module only parses and
+ * decides.
  */
-import type { PageObserverMessage, PageObserverSummary, SettleChanges } from '@browser-link/shared';
-import { OBSERVER_GLOBAL } from '@browser-link/core';
+// Two statements so the mirrored copy, whose rewritten specifier is one
+// character longer, still fits Prettier's print width unchanged.
+import type { PageObserverMessage, PageObserverSummary } from '../../shared/index.js';
+import type { SettleChanges } from '../../shared/index.js';
+import { OBSERVER_GLOBAL } from '../inpage/observer.js';
+import type { ObserverMark } from '../ports/values.js';
 
 /** Summaries kept in the host mirror (the page keeps its own, larger ring). */
 export const OBSERVER_RECENT_CAP = 32;
@@ -203,12 +209,6 @@ export const TOP_DOCUMENT_PROBE_JS = `(() => {
 /** True when the top-document probe reports the message's `doc_id`. */
 export function isTopDocumentMessage(probe: unknown, docId: string): boolean {
   return isRecord(probe) && typeof probe.doc_id === 'string' && probe.doc_id === docId;
-}
-
-/** The part of an action mark (`buildObserverMarkJs`) the changes read needs. */
-export interface ObserverMark {
-  mark: number;
-  doc_id: string;
 }
 
 /**

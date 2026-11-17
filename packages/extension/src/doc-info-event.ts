@@ -4,7 +4,7 @@
  * session and `list_tabs` reports them. Pure, no `chrome.*`.
  */
 import type { BridgeEventMessage, TabId } from '@browser-link/shared';
-import type { ObserverDocInfo, ObserverMirror } from './observer-host.js';
+import type { ObserverDocInfo, ObserverMirror } from '@browser-link/core';
 
 export function docInfoEvent(tabId: TabId, info: ObserverDocInfo): BridgeEventMessage {
   return {

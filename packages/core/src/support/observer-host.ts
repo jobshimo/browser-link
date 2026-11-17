@@ -1,119 +1,19 @@
 /**
- * Independent copy of `packages/extension/src/observer-host.ts` — this
- * package publishes standalone and cannot import these modules. The extension original imports the
- * observer message types from `@browser-link/shared`, which this standalone
- * package cannot resolve, so they are declared below, copied from that
- * package; `cdp/drift.test.ts` asserts both the declarations and everything
- * from "Summaries kept in the host mirror" to the end of the file stay
- * byte-identical to the originals.
- *
- * Host side of the page observer (spec v4 §5.4–§5.5): the per-connection
- * mirror of what the in-page observer (`generated/core/inpage/observer.ts`) has pushed
- * through its binding, and the rule that folds an action's "changes since
- * mark" into the settle result. Free of CDP calls; `cdp/transport.ts` owns
- * every evaluation.
+ * Host side of the page observer (spec v4 §5.4–§5.5): the per-tab mirror of
+ * what the in-page observer (`inpage/observer.ts`) has pushed through its
+ * binding, and the rule that folds an action's "changes since mark" into
+ * the settle result. Caller-context logic, not injected page JS, and free of
+ * `chrome.*` / CDP calls so it is unit-testable on its own and shared by
+ * both transports (the server compiles it from its generated mirror of
+ * core). The caller owns every evaluation; this module only parses and
+ * decides.
  */
-import { OBSERVER_GLOBAL } from '../generated/core/inpage/observer.js';
-
-/** Per-kind MutationRecord counts reported by the page observer. */
-interface PageObserverKinds {
-  childList: number;
-  attributes: number;
-  characterData: number;
-}
-
-/** Which kinds of root the counted records came from. `frame` is true when
- * the observer runs in a child frame (`window !== window.top`). */
-interface PageObserverRoots {
-  document: boolean;
-  shadow: boolean;
-  frame: boolean;
-}
-
-/** One mutated target, as described by the page observer. `path` is a short
- * structural path such as `body>div#app>ul` (at most six element segments,
- * no indexes), with a `#shadow` segment at each shadow-root boundary. A
- * shadow root that was itself the mutation target is reported with tag
- * `#shadow-root`. */
-interface PageObserverDescriptor {
-  tag: string;
-  id?: string;
-  role?: string;
-  path: string;
-}
-
-/** One coalesced flush of the page observer: every MutationRecord seen
- * since the previous flush, folded per target element. */
-interface PageObserverSummary {
-  type: 'summary';
-  doc_id: string;
-  /** Monotonic per document, starting at 1. */
-  seq: number;
-  /** `performance.now()` at the first record and at the flush. */
-  t0: number;
-  t1: number;
-  records: number;
-  /** Distinct target elements in this flush. */
-  targets: number;
-  kinds: PageObserverKinds;
-  roots: PageObserverRoots;
-  /** Up to the descriptor cap, ordered by record count (highest first). */
-  descriptors: PageObserverDescriptor[];
-  /** Targets beyond the descriptor cap. */
-  overflow: number;
-}
-
-/** Pushed once when the page observer installs in a document. */
-interface PageObserverDocStart {
-  type: 'doc_start';
-  doc_id: string;
-  url: string;
-  version: number;
-  /** `partial` when `attachShadow` could not be patched and the observer
-   * falls back to a periodic rescan for open shadow roots. */
-  coverage: 'full' | 'partial';
-}
-
-/** Pushed on `pushState`, `replaceState`, `popstate` and `hashchange`. */
-interface PageObserverNav {
-  type: 'nav';
-  doc_id: string;
-  url: string;
-}
-
-/** Pushed by the top document once it is loaded and again 300 ms after the
- * last SPA navigation (knowledge-loop S1). `build` is a hash of the sorted
- * script and stylesheet URLs with query strings removed; `view_sig` a hash
- * of the first h1-h3 texts and the landmark roles present. */
-interface PageObserverDocInfo {
-  type: 'doc_info';
-  doc_id: string;
-  url: string;
-  build: string;
-  view_sig: string;
-  title: string;
-}
-
-/** The messages about the document itself, as opposed to mutation summaries. */
-type PageObserverDocMessage = PageObserverDocStart | PageObserverNav | PageObserverDocInfo;
-
-/** Every message the page observer pushes through its binding (JSON). */
-type PageObserverMessage = PageObserverSummary | PageObserverDocMessage;
-
-/** What an action caused, aggregated from the page observer's summaries
- * since the action mark; attached to settle results. `targets` sums the
- * distinct targets of each flush, so an element touched in two flushes counts
- * twice. `truncated` is set when the observer's ring no longer held every
- * summary since the mark. */
-interface SettleChanges {
-  records: number;
-  targets: number;
-  kinds: PageObserverKinds;
-  roots: PageObserverRoots;
-  descriptors: PageObserverDescriptor[];
-  overflow: number;
-  truncated?: true;
-}
+// Two statements so the mirrored copy, whose rewritten specifier is one
+// character longer, still fits Prettier's print width unchanged.
+import type { PageObserverMessage, PageObserverSummary } from '@browser-link/shared';
+import type { SettleChanges } from '@browser-link/shared';
+import { OBSERVER_GLOBAL } from '../inpage/observer.js';
+import type { ObserverMark } from '../ports/values.js';
 
 /** Summaries kept in the host mirror (the page keeps its own, larger ring). */
 export const OBSERVER_RECENT_CAP = 32;
@@ -308,12 +208,6 @@ export const TOP_DOCUMENT_PROBE_JS = `(() => {
 /** True when the top-document probe reports the message's `doc_id`. */
 export function isTopDocumentMessage(probe: unknown, docId: string): boolean {
   return isRecord(probe) && typeof probe.doc_id === 'string' && probe.doc_id === docId;
-}
-
-/** The part of an action mark (`buildObserverMarkJs`) the changes read needs. */
-export interface ObserverMark {
-  mark: number;
-  doc_id: string;
 }
 
 /**

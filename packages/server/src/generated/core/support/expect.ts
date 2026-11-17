@@ -1,8 +1,8 @@
+// GENERATED from packages/core/src/support/expect.ts. Do not edit.
 /**
  * Shared `expect` handling for the click / type / press actions
- * (`background.ts` in the extension, `cdp/transport.ts` on the server;
- * the server keeps an independent, drift-tested copy at
- * `packages/server/src/cdp/expect.ts`).
+ * (`background.ts` in the extension, `cdp/transport.ts` on the server,
+ * which compiles this file from its generated mirror of core).
  *
  * WHY THIS EXISTS: `settle` proves the page went QUIET, not that the
  * action had an EFFECT. A click on an element whose handler never fired
@@ -16,9 +16,9 @@
  * takes the evaluate function as a parameter so it is unit-testable
  * without a live connection.
  */
-import type { Clock } from './clock.js';
-import { buildExpectProbeJs } from '@browser-link/core';
-import type { EvaluateFn } from './settle.js';
+import { buildExpectProbeJs } from '../inpage/builders.js';
+import type { Clock } from '../ports/clock.js';
+import type { EvaluateFn } from '../ports/values.js';
 
 /** Default and hard ceiling of the expectation window. The ceiling keeps
  * the worst-case budget of an action (settle + expect) inside the bridge

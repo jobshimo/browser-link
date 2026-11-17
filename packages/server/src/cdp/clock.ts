@@ -1,7 +1,7 @@
 /**
  * Independent copy of `packages/extension/src/clock.ts`: the `Clock` this
- * package's `cdp/flow.ts` and `cdp/expect.ts` read time through (design
- * 5.1, slice 5b-1). Everything below this header is byte-identical, which
+ * package's `cdp/flow.ts` reads time through (design 5.1, slice 5b-1; core's
+ * `support/expect.ts` takes core's identical `ports/clock.ts` since slice 7). Everything below this header is byte-identical, which
  * `cdp/drift.test.ts` asserts. The real clock is
  * `cdp/adapters/system-clock.ts`. Deleted in slice 8 with the `flow.ts`
  * copy.
