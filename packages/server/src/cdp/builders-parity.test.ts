@@ -204,12 +204,16 @@ describe('cdp page observer emits byte-identical output to the extension origina
     expect(srv.buildClickHitCheckJs()).toBe(ext.buildClickHitCheckJs());
     expect(srv.CLICK_MOVE_TRIES).toBe(ext.CLICK_MOVE_TRIES);
     const point = { x: 1.6, y: 2.2 };
-    expect(srv.clickMoveMissedMessage('#go', point, 10)).toBe(
-      ext.clickMoveMissedMessage('#go', point, 10),
-    );
-    expect(srv.clickMoveMissedMessage('#go', point, 10, 'div#c')).toBe(
-      ext.clickMoveMissedMessage('#go', point, 10, 'div#c'),
-    );
+    for (const miss of [
+      { why: 'not-seen' },
+      { why: 'elsewhere', moved_on: 'div#c' },
+      { why: 'no-answer' },
+      { why: 'replaced' },
+    ] as const) {
+      expect(srv.clickMoveMissedMessage('#go', point, 3, miss)).toBe(
+        ext.clickMoveMissedMessage('#go', point, 3, miss),
+      );
+    }
     expect(srv.clickMissedMessage('#go', point)).toBe(ext.clickMissedMessage('#go', point));
   });
 

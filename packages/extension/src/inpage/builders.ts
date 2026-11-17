@@ -1250,24 +1250,46 @@ export function buildClickMoveCheckJs(): string {
 `;
 }
 
-/** The error of a pointer click whose move was never seen on the target
- * (`buildClickMoveCheckJs` kept answering `moved: false`): no press was
- * sent. Shared by both transports. */
+/** Why a pointer click sent no press (`moveOntoTarget` in both transports):
+ *   'not-seen'  — every move check answered that no move reached the
+ *                 target's document;
+ *   'elsewhere' — the last move seen reached another element (`moved_on`);
+ *   'no-answer' — the move check threw, timed out or answered nothing usable;
+ *   'replaced'  — the watch was gone: the document was replaced between the
+ *                 aim and the move, so the aimed point is stale. */
+export type ClickMoveMiss =
+  | { why: 'not-seen' }
+  | { why: 'elsewhere'; moved_on: string }
+  | { why: 'no-answer' }
+  | { why: 'replaced' };
+
+/** The error of a pointer click whose move was never confirmed on the
+ * target (see `ClickMoveMiss`): no press was sent. Shared by both
+ * transports. */
 export function clickMoveMissedMessage(
   target: string,
   point: { x: number; y: number },
   tries: number,
-  movedOn?: string,
+  miss: ClickMoveMiss,
 ): string {
   const at = `(${String(Math.round(point.x))}, ${String(Math.round(point.y))})`;
-  const where =
-    typeof movedOn === 'string' && movedOn.length > 0
-      ? `it reached ${movedOn} instead`
-      : "it was never seen in the target's document (the browser routed it elsewhere, possibly into another frame drawn there before the page scrolled)";
+  const moved = `the mouse was moved to ${at} ${String(tries)} time${tries === 1 ? '' : 's'}, but `;
+  let why: string;
+  if (miss.why === 'elsewhere') {
+    why = `it reached ${miss.moved_on} instead`;
+  } else if (miss.why === 'no-answer') {
+    why =
+      'the page did not answer the move check (it threw, timed out or answered nothing usable), so whether the move reached the target is unknown';
+  } else if (miss.why === 'replaced') {
+    why =
+      'the document was replaced between aiming and the move (it navigated), so the aimed point is stale';
+  } else {
+    why =
+      "no move was seen in the target's document. Either the browser routed it elsewhere (possibly into another frame drawn there before the page scrolled), or a page listener stopped pointermove/mousemove before anything else saw it (stopImmediatePropagation at window capture)";
+  }
   return (
-    `Click on ${target} did not reach it: the mouse was moved to ${at} ${String(tries)} times, but ` +
-    `${where}, so no press was sent and nothing was clicked. Check the page ` +
-    '(browser.snapshot or browser.screenshot) before retrying'
+    `Click on ${target} did not reach it: ${moved}${why}; no press was sent and nothing was clicked. ` +
+    'Check the page (browser.snapshot or browser.screenshot) before retrying'
   );
 }
 

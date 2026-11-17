@@ -4276,12 +4276,21 @@ describe('buildClickAimJs / buildClickHitCheckJs: a click is reported only where
     });
   });
 
-  test('clickMoveMissedMessage: says no press was sent, and where the move went when known', () => {
-    expect(clickMoveMissedMessage('#add', { x: 295.27, y: 90.4 }, 10)).toBe(
-      "Click on #add did not reach it: the mouse was moved to (295, 90) 10 times, but it was never seen in the target's document (the browser routed it elsewhere, possibly into another frame drawn there before the page scrolled), so no press was sent and nothing was clicked. Check the page (browser.snapshot or browser.screenshot) before retrying",
+  test('clickMoveMissedMessage: says why no press was sent, for each way the move went unconfirmed', () => {
+    expect(clickMoveMissedMessage('#add', { x: 295.27, y: 90.4 }, 10, { why: 'not-seen' })).toBe(
+      "Click on #add did not reach it: the mouse was moved to (295, 90) 10 times, but no move was seen in the target's document. Either the browser routed it elsewhere (possibly into another frame drawn there before the page scrolled), or a page listener stopped pointermove/mousemove before anything else saw it (stopImmediatePropagation at window capture); no press was sent and nothing was clicked. Check the page (browser.snapshot or browser.screenshot) before retrying",
     );
-    expect(clickMoveMissedMessage('#add', { x: 1, y: 2 }, 10, 'div#cover')).toContain(
-      'the mouse was moved to (1, 2) 10 times, but it reached div#cover instead, so no press was sent',
+    expect(
+      clickMoveMissedMessage('#add', { x: 1, y: 2 }, 10, {
+        why: 'elsewhere',
+        moved_on: 'div#cover',
+      }),
+    ).toContain('moved to (1, 2) 10 times, but it reached div#cover instead; no press was sent');
+    expect(clickMoveMissedMessage('#add', { x: 1, y: 2 }, 1, { why: 'no-answer' })).toContain(
+      'moved to (1, 2) 1 time, but the page did not answer the move check',
+    );
+    expect(clickMoveMissedMessage('#add', { x: 1, y: 2 }, 1, { why: 'replaced' })).toContain(
+      'the document was replaced between aiming and the move (it navigated), so the aimed point is stale; no press was sent',
     );
   });
 

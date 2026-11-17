@@ -34,6 +34,7 @@ import {
   clickMoveMissedMessage,
   CLICK_MOVE_TRIES,
   type ClickMoveCheck,
+  type ClickMoveMiss,
   HIT_CHECK_DIALOG_NOTE,
   HIT_CHECK_FRAME_NOTE,
   HIT_CHECK_NO_ANSWER_NOTE,
@@ -571,16 +572,19 @@ function dispatchPointerPress(
 
 /**
  * Read the move half of the click's hit watch (`buildClickMoveCheckJs`),
- * bounded by `HIT_CHECK_TIMEOUT_MS`; `undefined` when the page did not
- * answer or answered nothing usable (cdp-direct does not track dialogs; a
- * paused page shows as no answer).
+ * bounded by `timeoutMs`; `'no-answer'` when the check threw, timed out or
+ * answered nothing usable (cdp-direct does not track dialogs; a paused page
+ * shows as no answer).
  */
-async function readMoveCheck(session: CdpClient): Promise<ClickMoveCheck | undefined> {
+async function readMoveCheck(
+  session: CdpClient,
+  timeoutMs: number,
+): Promise<ClickMoveCheck | 'no-answer'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => {
       resolve(undefined);
-    }, HIT_CHECK_TIMEOUT_MS);
+    }, timeoutMs);
   });
   let check: unknown;
   try {
@@ -590,7 +594,11 @@ async function readMoveCheck(session: CdpClient): Promise<ClickMoveCheck | undef
   } finally {
     clearTimeout(timer);
   }
-  return check && typeof check === 'object' ? (check as ClickMoveCheck) : undefined;
+  return check &&
+    typeof check === 'object' &&
+    typeof (check as { armed?: unknown }).armed === 'boolean'
+    ? (check as ClickMoveCheck)
+    : 'no-answer';
 }
 
 /**
@@ -600,33 +608,58 @@ async function readMoveCheck(session: CdpClient): Promise<ClickMoveCheck | undef
  * frame it drew before, into whatever was under that point then (another
  * frame, possibly a cross-origin one); the move shows where input goes now,
  * so it is sent again one animation frame later, up to `CLICK_MOVE_TRIES`
- * times. `missed` (with `moved_on` when the move reached another element)
- * means no move ever reached the target: the caller sends no press.
+ * times and within `HIT_CHECK_TIMEOUT_MS` overall (moves and checks
+ * together, so a slow page cannot stretch the tries to one timeout each).
  *
- * Not checked, the press then follows as before: a frame element
- * (`watched: false`), whose events go into the document inside it, where
- * the move cannot be watched (the click reports `hit_check:
- * 'not_verifiable'`); and a watch that is gone or a page that does not
- * answer, where the hit check after the press says it was not verified.
+ * Fails closed: `miss` (see `ClickMoveMiss`) means the move was not
+ * confirmed — never seen on the target, seen elsewhere, the check did not
+ * answer, or the watch was gone (the document was replaced, so the aimed
+ * point is stale) — and the caller sends no press. `tries` counts the moves
+ * sent.
+ *
+ * Not checked: a frame element (`watched: false`), whose events go into the
+ * document inside it, where the move cannot be watched; its press follows
+ * the move as before and the click reports `hit_check: 'not_verifiable'`.
+ * A JavaScript dialog opened by a move answers `dialog: true`: nothing is
+ * pressed and the click reports it, as before.
  */
 async function moveOntoTarget(
   session: CdpClient,
   x: number,
   y: number,
   watched: boolean,
-): Promise<{ dialog: boolean; missed?: true; moved_on?: string }> {
+): Promise<{ dialog: boolean; tries: number; miss?: ClickMoveMiss }> {
   const move = [{ type: 'mouseMoved', x, y }];
-  if (!watched) return dispatchMouseEvents(session, move);
-  let movedOn: string | undefined;
-  for (let i = 0; i < CLICK_MOVE_TRIES; i++) {
-    await dispatchMouseEvents(session, move);
-    const check = await readMoveCheck(session);
-    if (!check?.armed || check.moved) return { dialog: false };
-    if (typeof check.moved_on === 'string') movedOn = check.moved_on;
+  if (!watched) return { ...(await dispatchMouseEvents(session, move)), tries: 1 };
+  const deadline = Date.now() + HIT_CHECK_TIMEOUT_MS;
+  let last: ClickMoveMiss = { why: 'not-seen' };
+  let answered = false;
+  // A check that does not answer after others did ran out of the budget:
+  // report what the answers said; with no answer at all, say so.
+  const noAnswer = (): ClickMoveMiss => (answered ? last : { why: 'no-answer' });
+  let tries = 0;
+  while (tries < CLICK_MOVE_TRIES) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    tries++;
+    // The client's own per-command timeout bounds the dispatch by the
+    // budget left (the extension's dispatch is bounded by its dialog watch).
+    try {
+      await session.send('Input.dispatchMouseEvent', move[0], left);
+    } catch {
+      return { dialog: false, tries, miss: noAnswer() };
+    }
+    const check = await readMoveCheck(session, Math.max(1, deadline - Date.now()));
+    if (check === 'no-answer') return { dialog: false, tries, miss: noAnswer() };
+    if (!check.armed) return { dialog: false, tries, miss: { why: 'replaced' } };
+    if (check.moved) return { dialog: false, tries };
+    answered = true;
+    last =
+      typeof check.moved_on === 'string'
+        ? { why: 'elsewhere', moved_on: check.moved_on }
+        : { why: 'not-seen' };
   }
-  return movedOn !== undefined
-    ? { dialog: false, missed: true, moved_on: movedOn }
-    : { dialog: false, missed: true };
+  return { dialog: false, tries, miss: last };
 }
 
 /**
@@ -954,15 +987,10 @@ async function performClick(
         resolved.y,
         resolved.hit_check !== 'not_verifiable',
       );
-      if (moved.missed) {
+      if (moved.miss) {
         return {
           ok: false,
-          error: clickMoveMissedMessage(
-            ref ?? selector ?? '',
-            resolved,
-            CLICK_MOVE_TRIES,
-            moved.moved_on,
-          ),
+          error: clickMoveMissedMessage(ref ?? selector ?? '', resolved, moved.tries, moved.miss),
         };
       }
       dialogOpened =
