@@ -347,18 +347,20 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
     let url = '';
     beforeAll(async () => {
       server = createServer((_req, res) => {
-        res.writeHead(200, { 'content-type': 'text/html' });
+        res.writeHead(200, { 'content-type': 'text/html', connection: 'close' });
         res.end(SERVED);
       });
       await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
       url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/served`;
     });
     afterAll(async () => {
-      await new Promise<void>((resolve) =>
+      // close() waits for open keep-alive connections, and Chrome keeps its own open.
+      await new Promise<void>((resolve) => {
         server?.close(() => {
           resolve();
-        }),
-      );
+        });
+        server?.closeAllConnections();
+      });
     });
 
     run(
