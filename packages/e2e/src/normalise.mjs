@@ -79,6 +79,43 @@ export const STRING_RULES = [
  * is kept). */
 export const UNORDERED_TOOLS = ['browser.console', 'browser.network', 'browser.events'];
 
+/** The value both accepted flow_cancel outcomes get as `state`. */
+export const CANCEL_ACCEPTED = '<cancel-accepted>';
+/** Keys only one of the two accepted outcomes carries, or whose value is how
+ * far the flow got before the stop landed: dropped from the response. The
+ * e2e's flow_status calls after the cancel record the terminal state, its
+ * counts and its manifest, so nothing is lost from the comparison. */
+const CANCEL_TIMING_KEYS = [
+  'cancelling',
+  'expires_at',
+  'ended_at',
+  'steps_completed',
+  'iterations_completed',
+  'stopped_by',
+  'manifest',
+];
+
+/**
+ * flow_cancel answers in one of two shapes, depending on whether the flow
+ * stopped before the response was built: `state: 'cancelled'` (with its
+ * manifest), or `state: 'running'` with `cancelling: true`. The contract
+ * allows both, so both become one shape: `state` is CANCEL_ACCEPTED and
+ * CANCEL_TIMING_KEYS are dropped. Any other body, `running` without
+ * `cancelling: true` included, is returned unchanged.
+ */
+export function normaliseCancelOutcome(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const accepted =
+    body.state === 'cancelled' || (body.state === 'running' && body.cancelling === true);
+  if (!accepted) return body;
+  const out = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (!CANCEL_TIMING_KEYS.includes(k)) out[k] = v;
+  }
+  out.state = CANCEL_ACCEPTED;
+  return out;
+}
+
 /** JSON with sorted keys: equal values give equal strings. */
 export function canonical(value) {
   if (value === undefined) return 'undefined';
@@ -253,6 +290,7 @@ function normaliseResult(ctx, tool, result) {
         return { type: 'text', text: normaliseString(ctx, block.text) };
       }
       if (UNORDERED_TOOLS.includes(tool)) parsed = sortEntries(ctx, parsed);
+      if (tool === 'browser.flow_cancel') parsed = normaliseCancelOutcome(parsed);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const k of TIMING_COUNTS[tool] ?? []) {
           if (typeof parsed[k] === 'number') parsed[k] = '<count>';

@@ -296,3 +296,52 @@ test('a call that threw keeps its message; ok and the call labels are kept', () 
     calls: [{ label: 'ping.late', tool: 'browser.ping', args: {}, thrown: 'Request timed out' }],
   });
 });
+
+test('both accepted flow_cancel outcomes normalise equal; any other state does not', () => {
+  const common = {
+    flow_id: 'flow_aaa',
+    tab_id: 7,
+    detached: true,
+    started_at: 1_700_000_000_000,
+    steps: 1,
+    cancel_requested: true,
+    pending_wrap_up: 64,
+  };
+  const cancelled = {
+    ...common,
+    state: 'cancelled',
+    ended_at: 1_700_000_001_000,
+    steps_completed: 1,
+    iterations_completed: 2,
+    stopped_by: 'cancelled',
+    manifest: [{ iterations: [[{ ok: true }], [{ ok: true }]], stopped_by: 'cancelled' }],
+  };
+  const cancelling = {
+    ...common,
+    state: 'running',
+    cancelling: true,
+    expires_at: 1_700_000_900_000,
+    steps_completed: 0,
+    iterations_completed: 1,
+  };
+  const cancel = (body) =>
+    normaliseRecord(record([{ tool: 'browser.flow_cancel', args: {}, result: textResult(body) }]));
+  const a = cancel(cancelled);
+  assert.equal(canonical(a), canonical(cancel(cancelling)));
+  assert.equal(bodyOf(a).state, '<cancel-accepted>');
+  assert.equal(bodyOf(a).pending_wrap_up, 64);
+  for (const other of [
+    { ...cancelling, cancelling: false },
+    { ...common, state: 'running', iterations_completed: 1 },
+    { ...cancelled, state: 'failed' },
+  ]) {
+    assert.notEqual(canonical(cancel(other)), canonical(a));
+    assert.equal(bodyOf(cancel(other)).state, other.state);
+  }
+  // The same body under another tool keeps its state.
+  const status = normaliseRecord(
+    record([{ tool: 'browser.flow_status', args: {}, result: textResult(cancelled) }]),
+  );
+  assert.equal(bodyOf(status).state, 'cancelled');
+  assert.equal(bodyOf(status).iterations_completed, 2);
+});
