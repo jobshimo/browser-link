@@ -1041,11 +1041,15 @@ export const CLICK_AIM_STABLE_MS = 500;
  *      new layout was produced;
  *   2. recomputes the point and runs the same occlusion check as the resolve
  *      (the page may have moved meanwhile), failing with the same reasons;
- *   3. arms a hit watch: a capture listener for `pointerdown` / `mousedown`
- *      on the target's own window, which `buildClickHitCheckJs` reads after
- *      the dispatch, so a click is reported only once its press was seen
- *      landing on the target (or on the element the hit test said it lands
- *      on: a pointer-events:none target, or a forced click on a cover).
+ *   3. arms a hit watch: capture listeners on the target's own window for
+ *      `pointermove` / `mousemove`, which `buildClickMoveCheckJs` reads
+ *      after the move is dispatched (the press is sent only once a move was
+ *      seen on the target, so it cannot be delivered by a stale frame into
+ *      something else), and for `pointerdown` / `mousedown`, which
+ *      `buildClickHitCheckJs` reads after the press, so a click is reported
+ *      only once its press was seen landing on the target (or on the element
+ *      the hit test said it lands on: a pointer-events:none target, or a
+ *      forced click on a cover).
  * A frame element (`iframe`, `frame`, `embed`, `object`) is not watched:
  * its press is delivered into the document inside it, so the answer carries
  * `hit_check: 'not_verifiable'` instead. With `force`, a target whose box
@@ -1142,15 +1146,39 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
     return result;
   }
   const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
-  const watch = { el: el, expected: expected, received: null, stop: null };
+  const watch = {
+    el: el,
+    expected: expected,
+    received: null,
+    moved: false,
+    movedOn: null,
+    stop: null,
+  };
+  const firstOf = (event) => {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    return path[0] || event.target || null;
+  };
   const onDown = (event) => {
     if (watch.received) return;
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-    watch.received = path[0] || event.target || null;
+    watch.received = firstOf(event);
   };
+  // A move counts once it reaches the target, an element inside it, or the
+  // element the hit test said the click lands on; another element is kept
+  // only to name it.
+  const onMove = (event) => {
+    if (watch.moved) return;
+    const got = firstOf(event);
+    const inside = (outer) => !!outer && !!got && (got === outer || composedContains(outer, got));
+    if (inside(watch.el) || inside(watch.expected)) watch.moved = true;
+    else if (got) watch.movedOn = got;
+  };
+  win.addEventListener('pointermove', onMove, true);
+  win.addEventListener('mousemove', onMove, true);
   win.addEventListener('pointerdown', onDown, true);
   win.addEventListener('mousedown', onDown, true);
   watch.stop = () => {
+    win.removeEventListener('pointermove', onMove, true);
+    win.removeEventListener('mousemove', onMove, true);
     win.removeEventListener('pointerdown', onDown, true);
     win.removeEventListener('mousedown', onDown, true);
   };
@@ -1163,6 +1191,106 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
   return result;
 })()
 `;
+}
+
+/** How many times a pointer click moves the mouse to its point, one
+ * animation frame apart, before giving up without a press. */
+export const CLICK_MOVE_TRIES = 10;
+
+/** Result of `buildClickMoveCheckJs`. */
+export type ClickMoveCheck =
+  | { armed: false }
+  | { armed: true; moved: true }
+  | { armed: true; moved: false; moved_on?: string };
+
+/**
+ * Build the read of the move half of the hit watch `buildClickAimJs` armed,
+ * run after each `mouseMoved` of a pointer click and before its press; it
+ * leaves the watch armed. The browser may hand a move to the page only with
+ * the next animation frame, so when none was seen yet it waits one frame
+ * (a throttled frame falls back to a 50 ms timer) and looks again. Returns
+ *   { armed: false } — no watch here (the document was replaced): nothing
+ *     can be said either way;
+ *   { armed: true, moved: true } — a move reached the target, an element
+ *     inside it, or the element the hit test said it lands on;
+ *   { armed: true, moved: false } — no move arrived in the target's
+ *     document: the browser routed it elsewhere (another frame, typically
+ *     by a frame drawn before the page scrolled);
+ *   { armed: true, moved: false, moved_on } — the move reached another
+ *     element of that document (`moved_on` describes it; it is forgotten,
+ *     so the next check sees only the next move).
+ */
+export function buildClickMoveCheckJs(): string {
+  return `
+(async () => {
+  ${DEEP_QUERY_JS}
+  const key = ${JSON.stringify(CLICK_WATCH_GLOBAL)};
+  const watch = window[key];
+  if (!watch || typeof watch.stop !== 'function' || !('moved' in watch)) return { armed: false };
+  if (!watch.moved) {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      try {
+        requestAnimationFrame(finish);
+      } catch (e) {}
+      setTimeout(finish, 50);
+    });
+  }
+  if (watch.moved) return { armed: true, moved: true };
+  const other = watch.movedOn;
+  watch.movedOn = null;
+  if (other) return { armed: true, moved: false, moved_on: describeElement(other) };
+  return { armed: true, moved: false };
+})()
+`;
+}
+
+/** Why a pointer click sent no press (`moveOntoTarget` in both transports):
+ *   'not-seen'  — every move check answered that no move reached the
+ *                 target's document;
+ *   'elsewhere' — the last move seen reached another element (`moved_on`);
+ *   'no-answer' — the move check threw, timed out or answered nothing usable;
+ *   'replaced'  — the watch was gone: the document was replaced between the
+ *                 aim and the move, so the aimed point is stale. */
+export type ClickMoveMiss =
+  | { why: 'not-seen' }
+  | { why: 'elsewhere'; moved_on: string }
+  | { why: 'no-answer' }
+  | { why: 'replaced' };
+
+/** The error of a pointer click whose move was never confirmed on the
+ * target (see `ClickMoveMiss`): no press was sent. Shared by both
+ * transports. */
+export function clickMoveMissedMessage(
+  target: string,
+  point: { x: number; y: number },
+  tries: number,
+  miss: ClickMoveMiss,
+): string {
+  const at = `(${String(Math.round(point.x))}, ${String(Math.round(point.y))})`;
+  const moved = `the mouse was moved to ${at} ${String(tries)} time${tries === 1 ? '' : 's'}, but `;
+  let why: string;
+  if (miss.why === 'elsewhere') {
+    why = `it reached ${miss.moved_on} instead`;
+  } else if (miss.why === 'no-answer') {
+    why =
+      'the page did not answer the move check (it threw, timed out or answered nothing usable), so whether the move reached the target is unknown';
+  } else if (miss.why === 'replaced') {
+    why =
+      'the document was replaced between aiming and the move (it navigated), so the aimed point is stale';
+  } else {
+    why =
+      "no move was seen in the target's document. Either the browser routed it elsewhere (possibly into another frame drawn there before the page scrolled), or a page listener stopped pointermove/mousemove before anything else saw it (stopImmediatePropagation at window capture)";
+  }
+  return (
+    `Click on ${target} did not reach it: ${moved}${why}; no press was sent and nothing was clicked. ` +
+    'Check the page (browser.snapshot or browser.screenshot) before retrying'
+  );
 }
 
 /** Result of `buildClickHitCheckJs`. */

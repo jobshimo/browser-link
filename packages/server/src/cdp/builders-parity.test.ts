@@ -193,6 +193,30 @@ describe('cdp page observer emits byte-identical output to the extension origina
     expect(srvObserver.buildObserverInstallJs(opts)).toBe(extObserver.buildObserverInstallJs(opts));
   });
 
+  test('the pointer click aim, its move and hit checks, and their messages', () => {
+    for (const opts of [
+      { selector: '#go', force: false },
+      { ref: 'k3x9ab:e7', force: true },
+    ]) {
+      expect(srv.buildClickAimJs(opts)).toBe(ext.buildClickAimJs(opts));
+    }
+    expect(srv.buildClickMoveCheckJs()).toBe(ext.buildClickMoveCheckJs());
+    expect(srv.buildClickHitCheckJs()).toBe(ext.buildClickHitCheckJs());
+    expect(srv.CLICK_MOVE_TRIES).toBe(ext.CLICK_MOVE_TRIES);
+    const point = { x: 1.6, y: 2.2 };
+    for (const miss of [
+      { why: 'not-seen' },
+      { why: 'elsewhere', moved_on: 'div#c' },
+      { why: 'no-answer' },
+      { why: 'replaced' },
+    ] as const) {
+      expect(srv.clickMoveMissedMessage('#go', point, 3, miss)).toBe(
+        ext.clickMoveMissedMessage('#go', point, 3, miss),
+      );
+    }
+    expect(srv.clickMissedMessage('#go', point)).toBe(ext.clickMissedMessage('#go', point));
+  });
+
   test('buildObserverMarkJs, buildObserverChangesJs and buildObserverTeardownJs', () => {
     expect(srvObserver.buildObserverMarkJs()).toBe(extObserver.buildObserverMarkJs());
     expect(srvObserver.buildObserverChangesJs(3)).toBe(extObserver.buildObserverChangesJs(3));

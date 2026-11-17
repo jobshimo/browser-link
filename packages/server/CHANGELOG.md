@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.6](https://github.com/jobshimo/browser-link/compare/v1.3.5...v1.3.6) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: the fix below also changes the extension.
+
+### Bug Fixes
+
+- **click:** right after the click's own scroll, Chrome could route the mouse events by the previously drawn frame, so the press could land in a cross-origin iframe that was under that point before the scroll; the 1.2.0 check then reported "did not reach it", but the press had already been delivered. Now the click sends a mouse move first and presses only after the move is seen on the target (or on the element the hit test named, for example a forced click on a covered target), retrying one frame at a time within one 1.5 s budget. If the move never lands, or the page does not answer, the click fails with `no press was sent` and no press is sent. This applies to `browser.click`, flow click steps and `browser.download` selector mode, on extension and cdp-direct tabs.
+
+### Notes
+
+- A page listener that stops `pointermove` or `mousemove` at window capture now makes such a click fail, with that cause named in the message.
+
 ## [1.3.5](https://github.com/jobshimo/browser-link/compare/v1.3.4...v1.3.5) (2026-11-17)
 
 ### Bug Fixes

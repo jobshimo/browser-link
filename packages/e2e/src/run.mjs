@@ -490,6 +490,7 @@ async function main() {
     cdp,
     swSession,
   });
+  await recorded(() => downloadStressAfterScroll(T, join(dataDir, 'downloads')));
 
   await pageReadAndCapture(T, page);
 
@@ -595,6 +596,51 @@ async function clickAfterScroll(T) {
     throw new StepFailure(
       'click.after-scroll',
       `${String(misses.length)} of 5 clicks reported as done did not reach #add: ${misses.join(' | ')}`,
+    );
+  }
+  stepDone(label, t);
+}
+
+/**
+ * The press must never be delivered to something other than the target.
+ * Scrolled to the bottom, the cross-origin frame is drawn where #dl lands
+ * once the click scrolls it into view, and Chrome can still route the mouse
+ * by the frame drawn before that scroll, into the foreign frame. It showed
+ * after a click that opened an alert (the download step follows one): each
+ * of the thirty tries opens and closes the alert, scrolls to the bottom,
+ * then `browser.download` on #dl must save the file (before the press waited
+ * for a move seen on the target, 2 and 6 of 30 failed). Prints the median
+ * call time.
+ */
+async function downloadStressAfterScroll(T, downloadsDir) {
+  const label = 'browser.download.stress-after-scroll';
+  const t = now();
+  const TRIES = 30;
+  const misses = [];
+  const times = [];
+  for (let i = 1; i <= TRIES; i++) {
+    // What the download step follows: a click that opened an alert, closed.
+    await attempt('browser.click', { tab_id: T, selector: '#alert-btn', settle_ms: 0 }, label);
+    await attempt('browser.dialog_respond', { tab_id: T, accept: true }, label);
+    await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
+    const c = now();
+    const r = await attempt(
+      'browser.download',
+      { tab_id: T, selector: '#dl', timeout_ms: 10_000 },
+      label,
+    );
+    times.push(now() - c);
+    if (r.isError || !insideDir(r.body?.path, downloadsDir)) {
+      misses.push(`try ${String(i)}: ${r.text.slice(0, 300)}`);
+    }
+  }
+  times.sort((a, b) => a - b);
+  const median = Math.round(times[Math.floor(times.length / 2)]);
+  console.log(`${label} median ${String(median)} ms over ${String(TRIES)}`);
+  if (misses.length) {
+    throw new StepFailure(
+      'download.stress-after-scroll',
+      `${String(misses.length)} of ${String(TRIES)} downloads failed: ${misses.join(' | ')}`,
     );
   }
   stepDone(label, t);

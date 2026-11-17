@@ -26,10 +26,15 @@ import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import {
   buildClickAimJs,
   buildClickHitCheckJs,
+  buildClickMoveCheckJs,
   buildClickResolveJs,
   buildFrameWatchReadJs,
   buildFrameWatchStartJs,
   clickMissedMessage,
+  clickMoveMissedMessage,
+  CLICK_MOVE_TRIES,
+  type ClickMoveCheck,
+  type ClickMoveMiss,
   HIT_CHECK_DIALOG_NOTE,
   HIT_CHECK_FRAME_NOTE,
   HIT_CHECK_NO_ANSWER_NOTE,
@@ -531,32 +536,130 @@ function runSettle(
 const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
 const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
 
-/** The three mouse events of a pointer click at (x, y). */
-function pointerClickEvents(x: number, y: number): Record<string, unknown>[] {
+/** The press and release of a pointer click at (x, y); the move that
+ * precedes them is sent by `moveOntoTarget`. */
+function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
   return [
-    { type: 'mouseMoved', x, y },
     { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
     { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
   ];
 }
 
 /**
- * Dispatch a pointer click. A JavaScript dialog opened by the click pauses
- * the page, and the event that opened it is answered only once the dialog
- * is closed: `dialog: true` says one opened, and the click answers then
- * instead of waiting for someone to close it.
+ * Dispatch mouse events in order. The extension also watches for a
+ * JavaScript dialog opened by one (`dialog: true`); cdp-direct does not
+ * track dialogs (browser.dialog_respond is extension-only): the events are
+ * sent in order and awaited.
  */
-async function dispatchPointerClick(
+async function dispatchMouseEvents(
+  session: CdpClient,
+  events: Record<string, unknown>[],
+): Promise<{ dialog: boolean }> {
+  for (const event of events) {
+    await session.send('Input.dispatchMouseEvent', event);
+  }
+  return { dialog: false };
+}
+
+/** Dispatch the press and release of a pointer click (see `dispatchMouseEvents`). */
+function dispatchPointerPress(
   session: CdpClient,
   x: number,
   y: number,
 ): Promise<{ dialog: boolean }> {
-  // cdp-direct does not track JavaScript dialogs (browser.dialog_respond is
-  // extension-only): the events are sent in order and awaited.
-  for (const event of pointerClickEvents(x, y)) {
-    await session.send('Input.dispatchMouseEvent', event);
+  return dispatchMouseEvents(session, pointerPressEvents(x, y));
+}
+
+/**
+ * Read the move half of the click's hit watch (`buildClickMoveCheckJs`),
+ * bounded by `timeoutMs`; `'no-answer'` when the check threw, timed out or
+ * answered nothing usable (cdp-direct does not track dialogs; a paused page
+ * shows as no answer).
+ */
+async function readMoveCheck(
+  session: CdpClient,
+  timeoutMs: number,
+): Promise<ClickMoveCheck | 'no-answer'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(undefined);
+    }, timeoutMs);
+  });
+  let check: unknown;
+  try {
+    check = await Promise.race([evaluateInTab(session, buildClickMoveCheckJs()), late]);
+  } catch {
+    check = undefined;
+  } finally {
+    clearTimeout(timer);
   }
-  return { dialog: false };
+  return check &&
+    typeof check === 'object' &&
+    typeof (check as { armed?: unknown }).armed === 'boolean'
+    ? (check as ClickMoveCheck)
+    : 'no-answer';
+}
+
+/**
+ * Move the mouse to the click point and, when the target is watched, wait
+ * until the move was seen on it (`buildClickMoveCheckJs`) before the press
+ * is sent. Right after a scroll the browser can still route input by the
+ * frame it drew before, into whatever was under that point then (another
+ * frame, possibly a cross-origin one); the move shows where input goes now,
+ * so it is sent again one animation frame later, up to `CLICK_MOVE_TRIES`
+ * times and within `HIT_CHECK_TIMEOUT_MS` overall (moves and checks
+ * together, so a slow page cannot stretch the tries to one timeout each).
+ *
+ * Fails closed: `miss` (see `ClickMoveMiss`) means the move was not
+ * confirmed — never seen on the target, seen elsewhere, the check did not
+ * answer, or the watch was gone (the document was replaced, so the aimed
+ * point is stale) — and the caller sends no press. `tries` counts the moves
+ * sent.
+ *
+ * Not checked: a frame element (`watched: false`), whose events go into the
+ * document inside it, where the move cannot be watched; its press follows
+ * the move as before and the click reports `hit_check: 'not_verifiable'`.
+ * A JavaScript dialog opened by a move answers `dialog: true`: nothing is
+ * pressed and the click reports it, as before.
+ */
+async function moveOntoTarget(
+  session: CdpClient,
+  x: number,
+  y: number,
+  watched: boolean,
+): Promise<{ dialog: boolean; tries: number; miss?: ClickMoveMiss }> {
+  const move = [{ type: 'mouseMoved', x, y }];
+  if (!watched) return { ...(await dispatchMouseEvents(session, move)), tries: 1 };
+  const deadline = Date.now() + HIT_CHECK_TIMEOUT_MS;
+  let last: ClickMoveMiss = { why: 'not-seen' };
+  let answered = false;
+  // A check that does not answer after others did ran out of the budget:
+  // report what the answers said; with no answer at all, say so.
+  const noAnswer = (): ClickMoveMiss => (answered ? last : { why: 'no-answer' });
+  let tries = 0;
+  while (tries < CLICK_MOVE_TRIES) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    tries++;
+    // The client's own per-command timeout bounds the dispatch by the
+    // budget left (the extension's dispatch is bounded by its dialog watch).
+    try {
+      await session.send('Input.dispatchMouseEvent', move[0], left);
+    } catch {
+      return { dialog: false, tries, miss: noAnswer() };
+    }
+    const check = await readMoveCheck(session, Math.max(1, deadline - Date.now()));
+    if (check === 'no-answer') return { dialog: false, tries, miss: noAnswer() };
+    if (!check.armed) return { dialog: false, tries, miss: { why: 'replaced' } };
+    if (check.moved) return { dialog: false, tries };
+    answered = true;
+    last =
+      typeof check.moved_on === 'string'
+        ? { why: 'elsewhere', moved_on: check.moved_on }
+        : { why: 'not-seen' };
+  }
+  return { dialog: false, tries, miss: last };
 }
 
 /**
@@ -874,9 +977,24 @@ async function performClick(
         };
       }
     } else {
+      // The press is sent only once the move was seen on the target (a
+      // frame element's cannot be: it is clicked as before, not verified).
       // A JavaScript dialog the click opens pauses the page: the dispatch
       // answers at once, and nothing after it can be checked.
-      dialogOpened = (await dispatchPointerClick(client, resolved.x, resolved.y)).dialog;
+      const moved = await moveOntoTarget(
+        client,
+        resolved.x,
+        resolved.y,
+        resolved.hit_check !== 'not_verifiable',
+      );
+      if (moved.miss) {
+        return {
+          ok: false,
+          error: clickMoveMissedMessage(ref ?? selector ?? '', resolved, moved.tries, moved.miss),
+        };
+      }
+      dialogOpened =
+        moved.dialog || (await dispatchPointerPress(client, resolved.x, resolved.y)).dialog;
       if (dialogOpened) {
         hitCheckNote = HIT_CHECK_DIALOG_NOTE;
       } else {

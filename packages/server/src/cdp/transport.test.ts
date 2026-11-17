@@ -27,7 +27,10 @@ import {
 import {
   PASSWORD_VALUES_HIDDEN_NOTE,
   UNOBSERVED_FRAMES_HINT,
+  CLICK_MOVE_TRIES,
+  HIT_CHECK_TIMEOUT_MS,
   buildClickHitCheckJs,
+  buildClickMoveCheckJs,
   buildFocusedFieldJs,
   buildProgrammaticClickJs,
   buildSettleJs,
@@ -512,6 +515,9 @@ describe('callCdpTool — tool dispatch', () => {
         const expression = (params as { expression: string }).expression;
         if (expression.includes("reason: 'invalid-selector'")) {
           return { result: { value: { ok: true, x: 5, y: 6, tag: 'a' } } };
+        }
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
         }
         probes += 1;
         return { result: { value: { url: 'u', selector_appears: probes > 1 } } };
@@ -1234,6 +1240,10 @@ describe('callCdpTool — page observer', () => {
         }
         if (expression === DEFAULT_SETTLE_JS) return { result: { value: QUIET } };
         // The press was seen on the target.
+        // The move was seen on the target.
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
+        }
         if (expression === buildClickHitCheckJs()) {
           return { result: { value: { armed: true, landed: true } } };
         }
@@ -1808,6 +1818,10 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
           seen.push(expression);
           return { result: { value: answer } };
         }
+        // The move was seen on the target.
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
+        }
         if (expression === buildClickHitCheckJs()) {
           return { result: { value: { armed: true, landed: true } } };
         }
@@ -2037,6 +2051,10 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
         if (expression.includes('"selector":"#go"')) {
           return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
         }
+        // The move was seen on the target.
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
+        }
         if (expression === buildClickHitCheckJs()) {
           return { result: { value: { armed: true, landed: true } } };
         }
@@ -2054,6 +2072,10 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
         const expression = (params as { expression: string }).expression;
         if (expression.includes('"selector":"#go"')) {
           return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
+        }
+        // The move was seen on the target.
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
         }
         if (expression === buildClickHitCheckJs()) return { result: { value: { armed: false } } };
         return { result: { value: true } };
@@ -2077,6 +2099,10 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
         if (expression.includes('"selector":"#go"')) {
           return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
         }
+        // The move was seen on the target.
+        if (expression === buildClickMoveCheckJs()) {
+          return { result: { value: { armed: true, moved: true } } };
+        }
         if (expression === buildClickHitCheckJs()) {
           return { result: { value: { armed: true, landed: false } } };
         }
@@ -2087,6 +2113,169 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
     await expect(
       callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 }),
     ).rejects.toThrow(/^Click on #go did not reach it: .*stopImmediatePropagation/);
+  });
+});
+
+describe('callCdpTool — the press is sent only after the move was seen on the target', () => {
+  /** A page whose move check answers `moves` in turn (the last one repeats);
+   * `log` gets each mouse event type and each move check, in order. */
+  function movePage(
+    log: string[],
+    moves: unknown[],
+    aim: Record<string, unknown> = { ok: true, x: 1, y: 2, tag: 'a' },
+  ): Record<string, Handler> {
+    let checks = 0;
+    return {
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"selector":"#go"')) return { result: { value: aim } };
+        if (expression === buildClickMoveCheckJs()) {
+          log.push('move-check');
+          const answer = moves[Math.min(checks, moves.length - 1)];
+          checks++;
+          return { result: { value: answer } };
+        }
+        if (expression === buildClickHitCheckJs()) {
+          return { result: { value: { armed: true, landed: true } } };
+        }
+        return { result: { value: true } };
+      },
+      'Input.dispatchMouseEvent': (params) => {
+        log.push((params as { type: string }).type);
+        return {};
+      },
+    };
+  }
+
+  test('a first move not seen on the target is sent again; the press follows the confirmed move', async () => {
+    const log: string[] = [];
+    const { port, targetId } = await startFakeTarget(
+      movePage(log, [
+        { armed: true, moved: false },
+        { armed: true, moved: true },
+      ]),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 });
+    expect(result).toEqual({ clicked: '#go', tag: 'a' });
+    expect(log).toEqual([
+      'mouseMoved',
+      'move-check',
+      'mouseMoved',
+      'move-check',
+      'mousePressed',
+      'mouseReleased',
+    ]);
+  });
+
+  test('a move never seen on the target fails the click and sends no press', async () => {
+    const log: string[] = [];
+    const { port, targetId } = await startFakeTarget(
+      movePage(log, [{ armed: true, moved: false }]),
+    );
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 }),
+    ).rejects.toThrow(/^Click on #go did not reach it: .*no press was sent/);
+    expect(log).not.toContain('mousePressed');
+    expect(log).not.toContain('mouseReleased');
+    expect(log.filter((e) => e === 'mouseMoved')).toHaveLength(CLICK_MOVE_TRIES);
+  });
+
+  test('a forced click on a covered target: the move seen on the cover counts, the press is sent', async () => {
+    const log: string[] = [];
+    const { port, targetId } = await startFakeTarget(
+      movePage(log, [{ armed: true, moved: true }], {
+        ok: true,
+        x: 1,
+        y: 2,
+        tag: 'a',
+        hit_element: 'div#cover',
+      }),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+      selector: '#go',
+      force: true,
+      settle_ms: 0,
+    });
+    expect(result).toEqual({ clicked: '#go', tag: 'a', hit_element: 'div#cover' });
+    expect(log).toEqual(['mouseMoved', 'move-check', 'mousePressed', 'mouseReleased']);
+  });
+
+  test.each([
+    [
+      'throws',
+      { exceptionDetails: { text: 'boom' } },
+      /did not reach it: .*the page did not answer the move check.*no press was sent/,
+    ],
+    [
+      'answers nothing usable',
+      { result: { value: true } },
+      /did not reach it: .*the page did not answer the move check.*no press was sent/,
+    ],
+    [
+      'answers that the watch is gone',
+      { result: { value: { armed: false } } },
+      /did not reach it: .*document was replaced.*no press was sent/,
+    ],
+  ])('a move check that %s fails the click closed: no press', async (_name, reply, error) => {
+    const log: string[] = [];
+    const page = movePage(log, []);
+    const evaluate = page['Runtime.evaluate'];
+    page['Runtime.evaluate'] = (params) => {
+      if ((params as { expression: string }).expression === buildClickMoveCheckJs()) {
+        log.push('move-check');
+        return reply;
+      }
+      return evaluate(params);
+    };
+    const { port, targetId } = await startFakeTarget(page);
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 }),
+    ).rejects.toThrow(error);
+    expect(log).toEqual(['mouseMoved', 'move-check']);
+  });
+
+  test('a move check that never answers fails the click closed within the move budget: no press', async () => {
+    const log: string[] = [];
+    const page = movePage(log, []);
+    const evaluate = page['Runtime.evaluate'];
+    page['Runtime.evaluate'] = (params) => {
+      if ((params as { expression: string }).expression === buildClickMoveCheckJs()) {
+        log.push('move-check');
+        return NO_REPLY;
+      }
+      return evaluate(params);
+    };
+    const { port, targetId } = await startFakeTarget(page);
+    grantAccess(port);
+    const started = Date.now();
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 }),
+    ).rejects.toThrow(
+      /did not reach it: .*the page did not answer the move check.*no press was sent/,
+    );
+    expect(Date.now() - started).toBeLessThan(HIT_CHECK_TIMEOUT_MS + 1000);
+    expect(log).toEqual(['mouseMoved', 'move-check']);
+  });
+
+  test('a frame element cannot have its move confirmed: the click is sent as before, not verified', async () => {
+    const log: string[] = [];
+    const { port, targetId } = await startFakeTarget(
+      movePage(log, [{ armed: true, moved: false }], {
+        ok: true,
+        x: 1,
+        y: 2,
+        tag: 'iframe',
+        hit_check: 'not_verifiable',
+      }),
+    );
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 });
+    expect(result).toMatchObject({ clicked: '#go', tag: 'iframe', hit_check: 'not_verifiable' });
+    expect(log).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
   });
 });
 
