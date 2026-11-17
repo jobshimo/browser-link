@@ -235,12 +235,24 @@ jobs:
   # Differential e2e (scripts/e2e-diff.mjs): HEAD's harness drives the
   # build of merge-base(origin/<PR target>, HEAD) and HEAD's build on Chrome
   # 118; the normalised call records must be equal. A PR gate for refactor
-  # PRs, so it is not in `release.needs`. On a pull request it runs only
-  # when the PR touches the paths below (checked against the merge-base,
-  # since a job cannot carry a `paths:` filter) and adds a self-diff (two
-  # HEAD runs) when the harness, the normalise table or the fixtures change.
-  # On a push to main it runs the self-diff alone (table completeness). The
-  # normalised base record is cached per base sha, harness hash and Chrome.
+  # PRs, so it is not in `release.needs`. A job cannot carry a `paths:`
+  # filter, so the first step lists the PR's files against the merge-base
+  # (NUL-separated, unquoted, so no name can slip past) and decides:
+  # - runs (base vs HEAD) for any non-test, non-docs change under
+  #   packages/server (src, package.json, tsconfig), packages/extension (src,
+  #   manifest, HTML, icons, package.json, tsconfig, build scripts),
+  #   packages/shared (src, package.json), packages/core, and the dependency
+  #   files (root package.json, pnpm-lock.yaml, pnpm-workspace.yaml, .npmrc);
+  # - adds a self-diff (two HEAD runs) when the harness, the normalise table,
+  #   packages/e2e/package.json or the fixtures change;
+  # - skips otherwise: tests (*.test.*, *.spec.*, __tests__, vitest configs)
+  #   and docs (*.md) never trigger it.
+  # On a push to main it runs the self-diff alone; that replaces the nightly
+  # self-diff of the design (the workflow has no schedule trigger). Stacked
+  # PRs do not trigger it: the workflow runs only on PRs to main, although the
+  # script itself compares with merge-base(<target>, HEAD) and supports them.
+  # Script exit codes: 1 difference, 2 harness failure, 3 setup error.
+  # The normalised base record is cached per base sha, harness hash and Chrome.
   e2e-diff:
     name: e2e differential (Chrome 118, ubuntu)
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -253,6 +265,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Decide what runs
         id: scope
@@ -266,12 +279,25 @@ jobs:
             exit 0
           fi
           base=$(git merge-base "origin/$BASE_REF" HEAD)
-          changed=$(git diff --name-only "$base" HEAD)
-          product='^(packages/extension/src/|packages/core/|packages/server/src/cdp/|packages/server/src/generated/|packages/server/src/messages\.ts$|packages/extension/build\.mjs$)'
-          harness='^(packages/e2e/src/(run|lib|normalise)\.mjs$|packages/e2e/pages/)'
-          if printf '%s\n' "$changed" | grep -Eq "$harness"; then
+          product=0
+          harness=0
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              packages/e2e/src/run.mjs | packages/e2e/src/lib.mjs | packages/e2e/src/normalise.mjs | \
+                packages/e2e/pages/* | packages/e2e/package.json)
+                harness=1 ;;
+              *.md | *.test.* | *.spec.* | */__tests__/* | */vitest.config.*) ;;
+              packages/server/src/* | packages/server/package.json | packages/server/tsconfig*.json | \
+                packages/extension/src/* | packages/extension/*.json | packages/extension/*.html | \
+                packages/extension/*.mjs | packages/extension/icons/* | \
+                packages/shared/src/* | packages/shared/package.json | packages/core/* | \
+                package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .npmrc)
+                product=1 ;;
+            esac
+          done < <(git -c core.quotePath=false diff --name-only -z "$base" HEAD)
+          if [ "$harness" = 1 ]; then
             mode=diff-self
-          elif printf '%s\n' "$changed" | grep -Eq "$product"; then
+          elif [ "$product" = 1 ]; then
             mode=diff
           else
             mode=none

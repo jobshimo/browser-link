@@ -39,18 +39,21 @@ export const REF_PATTERN = /^([a-z0-9]{4,}):(e\d+)$/;
 export const TIME_KEYS = ['elapsedMs', 'durationMs', 'started_at', 'finished_at', 'timestamp'];
 /** Keys ending in `_ms` (or `_ms_<word>`, such as drag's `duration_ms_actual`). */
 export const TIME_KEY_PATTERN = /_ms(_[a-z]+)?$/;
-/** A number above 1e12 (epoch ms) under such a key becomes `<ms>`. */
-export const EPOCH_KEY_PATTERN = /at$|time/i;
+/** A number above 1e12 (epoch ms) under a snake_case key ending in `_at`
+ * becomes `<ms>` (the runs show `expires_at` and `ended_at`; `started_at` and
+ * `finished_at` are also in TIME_KEYS). Anchored: `format`, `stat` or
+ * `limit` never match. */
+export const EPOCH_KEY_PATTERN = /^[a-z]+(_[a-z]+)*_at$/;
 
 /** Counts that measure timing, per tool, at the top of the result: they
  * become `<count>`. `wait_for.checks` is how many polls ran before the
  * condition held (2 or 3 between two runs of the same build). */
 export const TIMING_COUNTS = { 'browser.wait_for': ['checks'] };
 
-/** browser-link's own release number (`extension_version`): a release bump
- * in the base or HEAD is not a behavior change. Semver values under such a
- * key become `<version>`. */
-export const VERSION_KEY_PATTERN = /(^|_)version$/;
+/** browser-link's own release number: a release bump in the base or HEAD is
+ * not a behavior change. Semver values under exactly these keys become
+ * `<version>`; `extension_version` (list_tabs) is the only one the runs show. */
+export const VERSION_KEYS = ['extension_version'];
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 /** String rewrites, in order. */
@@ -62,9 +65,9 @@ export const STRING_RULES = [
     /(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT/g,
     '<http-date>',
   ],
-  // Epoch milliseconds inside a string (the harness's `?n=<Date.now()>`
-  // cache-busting query).
-  [/(?<![\d.])1\d{12}(?![\d.])/g, '<ms>'],
+  // The harness's cache-busting query `?n=<Date.now()>` (or `&n=`): the only
+  // epoch milliseconds the runs show inside a string.
+  [/([?&]n=)1\d{12}(?!\d)/g, '$1<ms>'],
   // Loopback ports (any; the run's own ports are also replaced elsewhere).
   [/\b(127\.0\.0\.1|localhost):\d+/g, '$1:<port>'],
   // mkdtemp suffixes of harness temp dirs that are not in the record context.
@@ -195,7 +198,7 @@ function normaliseValue(ctx, value, key = '') {
     if (at > 0) return `${rename(ctx, 'doc', value.slice(0, at))}${value.slice(at)}`;
   }
   if (isTimeKey(key) && (typeof value === 'number' || typeof value === 'string')) return '<ms>';
-  if (VERSION_KEY_PATTERN.test(key) && typeof value === 'string' && SEMVER.test(value)) {
+  if (VERSION_KEYS.includes(key) && typeof value === 'string' && SEMVER.test(value)) {
     return '<version>';
   }
   if (typeof value === 'number') {

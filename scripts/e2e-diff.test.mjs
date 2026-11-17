@@ -2,7 +2,7 @@
 // are equal, or the first differing call is printed with both values.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { firstDifference, formatDifference, leafPath } from './e2e-diff.mjs';
+import { EXIT, exitCode, firstDifference, formatDifference, leafPath } from './e2e-diff.mjs';
 
 const call = (label, json) => ({
   label,
@@ -67,4 +67,14 @@ test('the names of the two sides are printed', () => {
   const out = formatDifference(diff, ['head', 'head-2']);
   assert.match(out, /^--- head$/m);
   assert.match(out, /^--- head-2$/m);
+});
+
+test('exit codes: 0 equal, 1 difference, 2 harness failure, 3 setup error; highest wins', () => {
+  assert.equal(exitCode({}), 0);
+  assert.equal(exitCode({ differs: true }), 1);
+  assert.equal(exitCode({ harnessFailed: true }), 2);
+  assert.equal(exitCode({ harnessFailed: true, differs: true }), 2);
+  assert.equal(exitCode({ setupError: true }), 3);
+  assert.equal(exitCode({ setupError: true, harnessFailed: true, differs: true }), 3);
+  assert.deepEqual(EXIT, { equal: 0, difference: 1, harness: 2, setup: 3 });
 });

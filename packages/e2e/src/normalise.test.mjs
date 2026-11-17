@@ -91,7 +91,7 @@ test('a known id inside free text gets its name; refs and snapshot ids keep thei
   assert.equal(r.calls[1].args.ref, '<ref-doc#1>:e3');
 });
 
-test('timing: *_ms keys, the named keys, epoch ms under *at/time keys, ISO and HTTP dates', () => {
+test('timing: *_ms keys, the named keys, epoch ms under *_at keys, ISO and HTTP dates', () => {
   const r = normaliseRecord(
     record([
       {
@@ -107,6 +107,10 @@ test('timing: *_ms keys, the named keys, epoch ms under *at/time keys, ISO and H
           timestamp: 1794904113670.873,
           expires_at: 1794905934426,
           small_at: 12,
+          format: 1794904133234,
+          limit: 1794904133234,
+          stat_time: 1794904133234,
+          note: 'id 1794904133215 kept',
           last_ok_at: '2026-11-17T08:28:37.942Z',
           Date: 'Tue, 17 Nov 2026 08:28:53 GMT',
           url: 'http://127.0.0.1:5000/capture.html?n=1794904133215',
@@ -125,6 +129,10 @@ test('timing: *_ms keys, the named keys, epoch ms under *at/time keys, ISO and H
     timestamp: '<ms>',
     expires_at: '<ms>',
     small_at: 12,
+    format: 1794904133234,
+    limit: 1794904133234,
+    stat_time: 1794904133234,
+    note: 'id 1794904133215 kept',
     last_ok_at: '<iso>',
     Date: '<http-date>',
     url: 'http://127.0.0.1:<port>/capture.html?n=<ms>',
@@ -264,11 +272,15 @@ test("browser-link's own release number becomes <version>; other values do not",
       {
         tool: 'browser.list_tabs',
         args: {},
-        result: textResult([{ extension_version: '1.3.7', title: 'v 1.3.7', version: 'x' }]),
+        result: textResult([
+          { extension_version: '1.3.7', server_version: '1.3.7', title: 'v 1.3.7', version: 'x' },
+        ]),
       },
     ]),
   );
-  assert.deepEqual(bodyOf(r), [{ extension_version: '<version>', title: 'v 1.3.7', version: 'x' }]);
+  assert.deepEqual(bodyOf(r), [
+    { extension_version: '<version>', server_version: '1.3.7', title: 'v 1.3.7', version: 'x' },
+  ]);
 });
 
 test('a call that threw keeps its message; ok and the call labels are kept', () => {
