@@ -35,15 +35,31 @@ export const DOC_SCOPED_KEYS = ['snapshot_id'];
 /** A ref (`ggz92g:e12`): its prefix is per document, the element number is kept. */
 export const REF_PATTERN = /^([a-z0-9]{4,}):(e\d+)$/;
 
-/** Timing keys: the value becomes `<ms>`. */
-export const TIME_KEYS = ['elapsedMs', 'durationMs', 'started_at', 'finished_at', 'timestamp'];
-/** Keys ending in `_ms` (or `_ms_<word>`, such as drag's `duration_ms_actual`). */
-export const TIME_KEY_PATTERN = /_ms(_[a-z]+)?$/;
-/** A number above 1e12 (epoch ms) under a snake_case key ending in `_at`
- * becomes `<ms>` (the runs show `expires_at` and `ended_at`; `started_at` and
- * `finished_at` are also in TIME_KEYS). Anchored: `format`, `stat` or
- * `limit` never match. */
-export const EPOCH_KEY_PATTERN = /^[a-z]+(_[a-z]+)*_at$/;
+/** Timing keys: in a tool RESULT (at any depth) the value becomes `<ms>`.
+ * Recorded args are never masked, so a changed default the harness sends
+ * (`timeout_ms`, `settle_ms`, ...) is a difference. Exactly the keys whose
+ * value differs between two runs of the same build (self-diff without this
+ * list); a key not listed here is compared as is. */
+export const TIME_KEYS = [
+  // settle (click, type, press, flow steps): how long the page took to go quiet.
+  'duration_ms',
+  // drag: the measured length of the gesture (the requested one is in args).
+  'duration_ms_actual',
+  // expect / wait_for: how long the condition took to hold.
+  'elapsed_ms',
+  // activity records: how long the recorded call took.
+  'durationMs',
+  // network entries and flow / flow_status: epoch ms of the run itself.
+  'started_at',
+  'finished_at',
+  // flow_status of a detached flow: epoch ms its end and its expiry.
+  'ended_at',
+  'expires_at',
+  // canvas_screenshot: epoch ms of the capture.
+  'taken_at_ms',
+  // console entries: Chrome's epoch ms of each message.
+  'timestamp',
+];
 
 /** Counts that measure timing, per tool, at the top of the result: they
  * become `<count>`. `wait_for.checks` is how many polls ran before the
@@ -81,27 +97,35 @@ export const UNORDERED_TOOLS = ['browser.console', 'browser.network', 'browser.e
 
 /** The value both accepted flow_cancel outcomes get as `state`. */
 export const CANCEL_ACCEPTED = '<cancel-accepted>';
-/** Keys only one of the two accepted outcomes carries, or whose value is how
- * far the flow got before the stop landed: dropped from the response. The
- * e2e's flow_status calls after the cancel record the terminal state, its
- * counts and its manifest, so nothing is lost from the comparison. */
-const CANCEL_TIMING_KEYS = [
+/** Keys only one of the two accepted outcomes carries (flow-registry.ts
+ * toFlowStatus: the live entry answers `running`, the persisted record
+ * answers `cancelled`), so which ones appear depends on when the stop landed:
+ * dropped from the response. The e2e's flow_status calls after the cancel
+ * record the terminal state, so nothing is lost from the comparison. */
+export const CANCEL_SHAPE_KEYS = [
+  // `running` only: a stop was requested and the runner has not seen it yet.
   'cancelling',
+  // `running` only: the live entry's expiry (the record has none).
   'expires_at',
+  // `cancelled` only: when the flow ended.
   'ended_at',
-  'steps_completed',
-  'iterations_completed',
+  // `cancelled` only: why it stopped; flow_status.cancelled compares it.
   'stopped_by',
+  // `cancelled` only: the results so far; flow_status.cancelled compares it.
   'manifest',
 ];
+/** Present in both shapes, but the value is how far the flow got before the
+ * stop landed: kept as present, the number becomes `<count>`. */
+export const CANCEL_PROGRESS_KEYS = ['steps_completed', 'iterations_completed'];
 
 /**
  * flow_cancel answers in one of two shapes, depending on whether the flow
  * stopped before the response was built: `state: 'cancelled'` (with its
  * manifest), or `state: 'running'` with `cancelling: true`. The contract
- * allows both, so both become one shape: `state` is CANCEL_ACCEPTED and
- * CANCEL_TIMING_KEYS are dropped. Any other body, `running` without
- * `cancelling: true` included, is returned unchanged.
+ * allows both, so both become one shape: `state` is CANCEL_ACCEPTED,
+ * CANCEL_SHAPE_KEYS are dropped and CANCEL_PROGRESS_KEYS masked; every other
+ * field is compared. Any other body, `running` without `cancelling: true`
+ * included, is returned unchanged.
  */
 export function normaliseCancelOutcome(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
@@ -110,7 +134,8 @@ export function normaliseCancelOutcome(body) {
   if (!accepted) return body;
   const out = {};
   for (const [k, v] of Object.entries(body)) {
-    if (!CANCEL_TIMING_KEYS.includes(k)) out[k] = v;
+    if (CANCEL_SHAPE_KEYS.includes(k)) continue;
+    out[k] = CANCEL_PROGRESS_KEYS.includes(k) && typeof v === 'number' ? '<count>' : v;
   }
   out.state = CANCEL_ACCEPTED;
   return out;
@@ -222,11 +247,9 @@ function normaliseString(ctx, s) {
   return out;
 }
 
-function isTimeKey(key) {
-  return TIME_KEYS.includes(key) || TIME_KEY_PATTERN.test(key);
-}
-
-function normaliseValue(ctx, value, key = '') {
+/** `inResult`: true under a tool result, where TIME_KEYS apply; false under
+ * the recorded args, which are compared with no timing mask. */
+function normaliseValue(ctx, value, key = '', inResult = false) {
   if (Object.hasOwn(ID_KEYS, key) && (typeof value === 'string' || typeof value === 'number')) {
     return rename(ctx, ID_KEYS[key], value);
   }
@@ -234,20 +257,25 @@ function normaliseValue(ctx, value, key = '') {
     const at = value.lastIndexOf(':');
     if (at > 0) return `${rename(ctx, 'doc', value.slice(0, at))}${value.slice(at)}`;
   }
-  if (isTimeKey(key) && (typeof value === 'number' || typeof value === 'string')) return '<ms>';
+  if (
+    inResult &&
+    TIME_KEYS.includes(key) &&
+    (typeof value === 'number' || typeof value === 'string')
+  ) {
+    return '<ms>';
+  }
   if (VERSION_KEYS.includes(key) && typeof value === 'string' && SEMVER.test(value)) {
     return '<version>';
   }
   if (typeof value === 'number') {
-    if (value > 1e12 && EPOCH_KEY_PATTERN.test(key)) return '<ms>';
     if (/port/i.test(key) && ctx.ports.includes(String(value))) return '<port>';
     return value;
   }
   if (typeof value === 'string') return normaliseString(ctx, value);
-  if (Array.isArray(value)) return value.map((v) => normaliseValue(ctx, v));
+  if (Array.isArray(value)) return value.map((v) => normaliseValue(ctx, v, '', inResult));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const k of Object.keys(value)) out[k] = normaliseValue(ctx, value[k], k);
+    for (const k of Object.keys(value)) out[k] = normaliseValue(ctx, value[k], k, inResult);
     return out;
   }
   return value;
@@ -260,7 +288,7 @@ function sortEntries(ctx, body) {
   const order = (arr) => {
     const keyed = arr.map((entry) => {
       const scratch = { ...ctx, ids: new Map() };
-      return { entry, key: canonical(normaliseValue(scratch, entry)) };
+      return { entry, key: canonical(normaliseValue(scratch, entry, '', true)) };
     });
     keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return keyed.map((k) => k.entry);
@@ -296,9 +324,9 @@ function normaliseResult(ctx, tool, result) {
           if (typeof parsed[k] === 'number') parsed[k] = '<count>';
         }
       }
-      return { type: 'text', json: normaliseValue(ctx, parsed) };
+      return { type: 'text', json: normaliseValue(ctx, parsed, '', true) };
     }
-    return normaliseValue(ctx, block);
+    return normaliseValue(ctx, block, '', true);
   });
   return { content, ...(result.isError ? { isError: true } : {}) };
 }
