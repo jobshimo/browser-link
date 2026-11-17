@@ -187,6 +187,8 @@ jobs:
         if: always()
         run: |
           browser=$(jq -r '.browser // "unknown"' packages/e2e/build/e2e-result.json 2>/dev/null || echo unknown)
+          # Printable ASCII only: a CR/LF in the value cannot add output lines.
+          browser=$(printf '%s' "$browser" | tr -cd '\040-\176')
           echo "browser=$browser" >> "$GITHUB_OUTPUT"
 
       - name: Upload the browser record
