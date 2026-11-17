@@ -201,6 +201,16 @@ export interface BrowserLinkConfig {
    */
   downloadsMaxMb?: number;
   /**
+   * Whether `browser.download` may save executable file types (`.exe`,
+   * `.msi`, `.bat`, `.ps1`, `.lnk`, `.js`, … see `downloads.ts`'s
+   * `isExecutableFilename`). Default off: they are refused. It widens what an
+   * agent may do, so only the console changes it (`browser-link config set
+   * downloads.allow-executables <on|off>`); the Admin window shows it
+   * read-only. Read on every download through `allowsExecutableDownloads`:
+   * only an explicit `true` allows them.
+   */
+  allowExecutableDownloads?: boolean;
+  /**
    * Opt-in strict mode of the bridge's peer check, for experts. Absent or
    * empty: no path check (the peer must still run as the same OS user and
    * carry an allowlisted browser name). Non-empty: the peer's executable
@@ -768,6 +778,16 @@ export function activityHidesSensitive(cfg: BrowserLinkConfig): boolean {
     : DEFAULT_ACTIVITY_HIDE_SENSITIVE;
 }
 
+/** Default of `allowExecutableDownloads`: executable types are refused. */
+export const DEFAULT_ALLOW_EXECUTABLE_DOWNLOADS = false;
+
+/** The in-effect `allowExecutableDownloads`: only an explicit `true` allows
+ * executable types; anything else (absent, a hand-edited string) refuses
+ * them. */
+export function allowsExecutableDownloads(cfg: BrowserLinkConfig): boolean {
+  return cfg.allowExecutableDownloads === true;
+}
+
 /** The in-effect `hidePasswordValues`: a boolean as written, anything else
  * the default. */
 export function hidesPasswordValues(cfg: BrowserLinkConfig): boolean {
@@ -807,6 +827,7 @@ export function defaultSettings(): Readonly<Record<keyof BrowserLinkConfig, unkn
     activityHideSensitive: activityHidesSensitive(d),
     downloadsDir: d.downloadsDir,
     downloadsMaxMb: sanitizeDownloadsMaxMb(d.downloadsMaxMb),
+    allowExecutableDownloads: allowsExecutableDownloads(d),
     instructionsAutoRefresh: d.instructionsAutoRefresh,
     skipWelcome: d.skipWelcome === true,
     noticeAcknowledged: d.noticeAcknowledged,

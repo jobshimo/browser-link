@@ -162,6 +162,14 @@ of its row (it applies after a restart). The extension's Admin window shows
 both settings but does not change them; see
 [The activity trail](https://github.com/jobshimo/browser-link#the-activity-trail).
 
+`browser.download` refuses executable file types (`.exe`, `.msi`, `.bat`,
+`.ps1`, `.lnk`, `.js` and similar, also as `invoice.pdf.exe`) unless you run
+`browser-link config set downloads.allow-executables on`; the Admin window only
+shows that setting. On Windows every file it saves gets the Mark-of-the-Web
+(the `Zone.Identifier` stream Chrome writes), so SmartScreen and Office
+Protected View treat it as coming from the web; see
+[Downloads](https://github.com/jobshimo/browser-link#downloads).
+
 ## `browser-link map` — inspect and manage the persistent map
 
 The 6 map tools above are how an _agent_ reads and writes the map while it
@@ -273,7 +281,10 @@ it prints the draft and creates nothing.
   serving, and a step-down never targets the starting process or its
   ancestors. It also carries an optional `sessions`, the agent sessions
   using the primary. The console's Updates screen shows what an update will
-  do and asks first, and stops a server only on Windows. See
+  do and asks first, and stops a server only on Windows. It reports
+  "installed" only after reading the installed version back from disk, and
+  its last step is reloading the extension in `chrome://extensions`;
+  `list_tabs` and the popup report a version skew in either direction. See
   [Updating while a server is running](https://github.com/jobshimo/browser-link#updating-while-a-server-is-running).
 - **Admin panel**: the console's status view and the extension popup's
   Admin section render the same server-built sections and labels (English

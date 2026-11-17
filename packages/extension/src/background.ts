@@ -12,7 +12,19 @@ import type {
 import {
   buildSnapshotJs,
   buildFindJs,
+  buildClickAimJs,
+  buildClickHitCheckJs,
   buildClickResolveJs,
+  buildFrameWatchReadJs,
+  buildFrameWatchStartJs,
+  clickMissedMessage,
+  HIT_CHECK_DIALOG_NOTE,
+  HIT_CHECK_FRAME_NOTE,
+  HIT_CHECK_NO_ANSWER_NOTE,
+  HIT_CHECK_REPLACED_NOTE,
+  HIT_CHECK_TIMEOUT_MS,
+  type ClickHitCheck,
+  type ClickHitCheckFields,
   buildProgrammaticClickJs,
   buildTypeResolveJs,
   buildFocusJs,
@@ -1094,6 +1106,128 @@ async function evaluateObserverJs(tabId: number, expression: string): Promise<un
   return result.result.value;
 }
 
+/** The three mouse events of a pointer click at (x, y). */
+function pointerClickEvents(x: number, y: number): Record<string, unknown>[] {
+  return [
+    { type: 'mouseMoved', x, y },
+    { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
+    { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
+  ];
+}
+
+/**
+ * Dispatch a pointer click. A JavaScript dialog opened by the click pauses
+ * the page, and the event that opened it is answered only once the dialog
+ * is closed: `dialog: true` says one opened, and the click answers then
+ * instead of waiting for someone to close it.
+ */
+async function dispatchPointerClick(
+  session: number,
+  x: number,
+  y: number,
+): Promise<{ dialog: boolean }> {
+  const isOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
+  const events = pointerClickEvents(x, y);
+  for (const event of events) {
+    const sent = cdp(session, 'Input.dispatchMouseEvent', event);
+    // Answered late (after the dialog is closed) or never: nobody waits then.
+    sent.catch(() => undefined);
+    const stop = { done: false };
+    const opened = new Promise<'dialog'>((resolve) => {
+      const tick = (): void => {
+        if (stop.done) return;
+        if (isOpen()) resolve('dialog');
+        else setTimeout(tick, 50);
+      };
+      tick();
+    });
+    try {
+      const outcome = await Promise.race([sent.then(() => 'sent' as const), opened]);
+      if (outcome === 'dialog') return { dialog: true };
+    } finally {
+      stop.done = true;
+    }
+  }
+  return { dialog: isOpen() };
+}
+
+/**
+ * Read the hit watch of a pointer click (`buildClickHitCheckJs`), bounded by
+ * `HIT_CHECK_TIMEOUT_MS` (a JavaScript dialog pauses the page). Answers
+ * `missed` (with `landed_on` when the press reached another element) only
+ * when the watch saw the press elsewhere or saw none; otherwise `note` says
+ * why the landing could not be verified, or nothing when it landed.
+ */
+async function checkClickLanding(
+  session: number,
+  frameElement: boolean,
+): Promise<{ missed?: true; landed_on?: string; note?: string }> {
+  if (frameElement) return { note: HIT_CHECK_FRAME_NOTE };
+  const dialogOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
+  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, HIT_CHECK_TIMEOUT_MS);
+  });
+  let landing: unknown;
+  try {
+    landing = await Promise.race([evaluateInTab(session, buildClickHitCheckJs()), late]);
+  } catch {
+    landing = undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  if (landing === 'timeout') return { note: HIT_CHECK_NO_ANSWER_NOTE };
+  const check = landing as Partial<ClickHitCheck> | undefined;
+  if (!check || typeof check !== 'object' || check.armed !== true) {
+    return { note: HIT_CHECK_REPLACED_NOTE };
+  }
+  if ('landed' in check && check.landed === true) return {};
+  const landedOn = (check as { landed_on?: unknown }).landed_on;
+  return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
+}
+
+/**
+ * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
+ * changes an action makes inside same-origin frames before the settle wait
+ * starts, which neither the page observer (top document only) nor the
+ * settle wait (from its own start) would count (owner decision D5). Never
+ * throws: a watch that cannot be armed counts nothing.
+ */
+async function startFrameWatch(session: number): Promise<void> {
+  try {
+    await evaluateInTab(session, buildFrameWatchStartJs());
+  } catch {
+    // nothing armed, nothing counted
+  }
+}
+
+/** Read and stop the frame watch right before the settle wait starts: the
+ * records it saw, 0 when there is none. Never throws. */
+async function readFrameWatch(session: number): Promise<number> {
+  try {
+    const read = await evaluateInTab<{ ok: boolean; records?: unknown }>(
+      session,
+      buildFrameWatchReadJs(),
+    );
+    return read.ok && typeof read.records === 'number' && read.records > 0 ? read.records : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Add frame records seen before the settle wait to its result, the way the
+ * wait reports its own (`frame_mutation_count`, already in `mutation_count`). */
+function addFrameRecords(settleResult: Record<string, unknown>, records: number): void {
+  const before =
+    typeof settleResult.frame_mutation_count === 'number' ? settleResult.frame_mutation_count : 0;
+  settleResult.frame_mutation_count = before + records;
+  if (typeof settleResult.mutation_count === 'number') settleResult.mutation_count += records;
+}
+
 /**
  * Take the page observer's action mark BEFORE an action dispatches (spec v4
  * §5.4). `null` when settle is off for this call (no changes are reported
@@ -1105,6 +1239,7 @@ async function takeObserverMark(
   settle: ReturnType<typeof resolveSettleParams>,
 ): Promise<unknown> {
   if (!settle) return null;
+  await startFrameWatch(tabId);
   if (tabStates.get(tabId)?.observer?.installed !== true) return OBSERVER_UNAVAILABLE;
   try {
     return await evaluateObserverJs(tabId, buildObserverMarkJs());
@@ -1124,8 +1259,10 @@ async function settleWithChanges(
   settle: ReturnType<typeof resolveSettleParams>,
   mark: unknown,
 ): Promise<Record<string, unknown> | undefined> {
+  const early = settle ? await readFrameWatch(tabId) : 0;
   const settleResult = await runSettle(tabId, settle);
   if (!settleResult) return undefined;
+  if (early > 0) addFrameRecords(settleResult, early);
   const parsed = readObserverMark(mark);
   let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
   if (parsed) {
@@ -1595,7 +1732,15 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 
 /** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
 type ClickResolveResult =
-  | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
+  | {
+      ok: true;
+      x: number;
+      y: number;
+      tag: string;
+      hit_element?: string;
+      reresolved?: boolean;
+      hit_check?: 'not_verifiable';
+    }
   | { ok: true; no_box: true; tag: string; reresolved?: boolean }
   | { ok: false; reason: 'no-box' }
   | { ok: false; reason: 'invalid-selector'; error: string }
@@ -1761,10 +1906,18 @@ async function performClick(
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
-    const resolved = await evaluateInTab<ClickResolveResult>(
+    let resolved = await evaluateInTab<ClickResolveResult>(
       tabId,
       buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
+    if (resolved.ok && !('no_box' in resolved)) {
+      // The resolve scrolled the target into view; aim once the new layout
+      // was painted, and arm the watch that proves where the press lands.
+      resolved = await evaluateInTab<ClickResolveResult>(
+        tabId,
+        buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
+      );
+    }
     if (!resolved.ok) {
       const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
       if (refError) return { ok: false, error: refError };
@@ -1793,6 +1946,8 @@ async function performClick(
     }
     const mark = await takeObserverMark(tabId, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
+    let hitCheckNote: string | undefined;
+    let dialogOpened = false;
     if ('no_box' in resolved) {
       const clicked = await evaluateInTab<ProgrammaticClickResult>(
         tabId,
@@ -1809,34 +1964,41 @@ async function performClick(
         };
       }
     } else {
-      await cdp(tabId, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        x: resolved.x,
-        y: resolved.y,
-      });
-      await cdp(tabId, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x: resolved.x,
-        y: resolved.y,
-        button: 'left',
-        clickCount: 1,
-      });
-      await cdp(tabId, 'Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: resolved.x,
-        y: resolved.y,
-        button: 'left',
-        clickCount: 1,
-      });
+      // A JavaScript dialog the click opens pauses the page: the dispatch
+      // answers at once, and nothing after it can be checked.
+      dialogOpened = (await dispatchPointerClick(tabId, resolved.x, resolved.y)).dialog;
+      if (dialogOpened) {
+        hitCheckNote = HIT_CHECK_DIALOG_NOTE;
+      } else {
+        // Report the click only where its press was seen; when that cannot be
+        // known (a frame element, a dialog, a replaced document) say so.
+        const landing = await checkClickLanding(tabId, resolved.hit_check === 'not_verifiable');
+        if (landing.missed) {
+          return {
+            ok: false,
+            error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
+          };
+        }
+        hitCheckNote = landing.note;
+      }
     }
-    const settleResult = await settleWithChanges(tabId, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const settleResult = dialogOpened ? undefined : await settleWithChanges(tabId, settle, mark);
+    const verdict = dialogOpened
+      ? { ok: true as const, expect: undefined }
+      : await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
+    const result: ClickStepResult & ClickHitCheckFields = {
+      clicked: ref ?? selector ?? '',
+      tag: resolved.tag,
+    };
     if (ref !== undefined) result.ref = ref;
     if (resolved.reresolved === true) result.reresolved = true;
     if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
     else if (resolved.hit_element) result.hit_element = resolved.hit_element;
+    if (hitCheckNote !== undefined) {
+      result.hit_check = 'not_verifiable';
+      result.hit_check_note = hitCheckNote;
+    }
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };
@@ -3229,7 +3391,14 @@ async function handleDownloadCapture(
     () => performClick(tabId, { selector, settle_ms: 0 }),
   );
   if (!outcome.ok) {
-    return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+    // The click itself failed (not found, covered, or its press did not
+    // reach the target): say so, not "no download started".
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: `the click that should start the download failed, so no download was captured: ${outcome.error}`,
+    };
   }
   const result =
     outcome.outcome.state === 'captured'

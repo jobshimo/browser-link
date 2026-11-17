@@ -457,6 +457,39 @@ describe('config get/set map-learning', () => {
   });
 });
 
+describe('config get/set downloads.allow-executables', () => {
+  test('defaults to off (refused), listed by "config get", nothing written', async () => {
+    expect(await runConfigCommand(['get', 'downloads.allow-executables'])).toBe(
+      '  downloads.allow-executables   off: browser.download refuses executable file types (.exe, .msi, .bat, .ps1, .lnk, .js, ...) (default)',
+    );
+    expect(listConfig()).toContain('  downloads.allow-executables   off: ');
+    expect(loadConfig().allowExecutableDownloads).toBeUndefined();
+  });
+
+  test('"set on" persists true; "set off" removes the key (off is the default)', async () => {
+    expect(await runConfigCommand(['set', 'downloads.allow-executables', 'on'])).toBe(
+      'downloads.allow-executables set to on: browser.download may save executable file types; on Windows they carry the Mark-of-the-Web. Applies to the next download, no restart needed.',
+    );
+    expect(loadConfig().allowExecutableDownloads).toBe(true);
+    await runConfigCommand(['set', 'downloads.allow-executables', 'off']);
+    expect(loadConfig().allowExecutableDownloads).toBeUndefined();
+  });
+
+  test('rejects anything but on/off, and a missing value is a usage error', async () => {
+    await expect(runConfigCommand(['set', 'downloads.allow-executables', 'maybe'])).rejects.toThrow(
+      'Invalid downloads.allow-executables value: "maybe". Use "on" or "off".',
+    );
+    await expect(runConfigCommand(['set', 'downloads.allow-executables'])).rejects.toThrow(/Usage/);
+    expect(loadConfig().allowExecutableDownloads).toBeUndefined();
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['get', 'downloads.allow-executables'], 'es')).toMatch(
+      /^ {2}downloads\.allow-executables {3}desactivado: browser\.download rechaza/,
+    );
+  });
+});
+
 describe('config get/set hide-password-values (D12)', () => {
   test('defaults to off, listed by "config get", nothing written', async () => {
     expect(await runConfigCommand(['get', 'hide-password-values'])).toBe(

@@ -109,6 +109,22 @@ describe('attributedSignal', () => {
 });
 
 describe('createDownloadCapture — attribution (principle 1)', () => {
+  test('the capture carries the size Chrome reported, so the server can check its re-fetch (D17)', async () => {
+    for (const [totalBytes, expected] of [
+      [1234, 1234],
+      [0, null],
+      [-1, null],
+      [undefined, null],
+    ] as const) {
+      const { fire, report, arm } = setup();
+      const armed = arm();
+      report(TAB_URL);
+      fire(totalBytes === undefined ? {} : { totalBytes });
+      const outcome = await armed.result;
+      expect(outcome.state === 'captured' && outcome.download.total_bytes).toBe(expected);
+    }
+  });
+
   test('an attributed download is captured and held, nothing else is done to it yet', async () => {
     const { fire, report, calls, arm, subscriberCount } = setup();
     const armed = arm();
@@ -124,6 +140,7 @@ describe('createDownloadCapture — attribution (principle 1)', () => {
         original_url: TAB_URL,
         filename: 'export.csv',
         mime: 'text/csv',
+        total_bytes: null,
       },
     });
     await flush();

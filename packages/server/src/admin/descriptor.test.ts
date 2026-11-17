@@ -214,6 +214,7 @@ describe('buildAdminState — setup section', () => {
       ['activityHideSensitive', 'readout'],
       ['hidePasswordValues', 'readout'],
       ['downloadsDir', 'readout'],
+      ['allowExecutableDownloads', 'readout'],
       ['idleTtl', 'readout'],
       ['flowRecording', 'readout'],
     ]);
@@ -519,11 +520,34 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       'cdpDirectGrantTtlMinutes',
       'activityHideSensitive',
       'hidePasswordValues',
+      'allowExecutableDownloads',
       'client.register.claude',
     ]);
     for (const i of state.sections.flatMap((s) => s.items)) {
       if (i.consoleOnly === true) expect(i.kind).toBe('readout');
     }
+  });
+
+  test('executable downloads: a console-only readout, refused by default, with the command that flips it', () => {
+    const off = section(buildAdminState(input({ config: {} })), 'setup');
+    expect(item(off, 'allowExecutableDownloads')).toEqual({
+      id: 'allowExecutableDownloads',
+      kind: 'readout',
+      label: 'Save executable downloads (.exe, .msi, .bat, .ps1, ...)',
+      value: 'refused',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set downloads.allow-executables on',
+    });
+    const on = section(
+      buildAdminState(input({ config: { allowExecutableDownloads: true, language: 'es' } })),
+      'setup',
+    );
+    expect(item(on, 'allowExecutableDownloads')).toMatchObject({
+      value: 'permitidas',
+      consoleOnly: true,
+      hint: 'browser-link config set downloads.allow-executables off',
+    });
   });
 
   test('both switched: the status rows and the readouts follow the config', () => {

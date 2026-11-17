@@ -66,6 +66,10 @@ export interface AdminI18n {
   activitySensitiveHidden: string;
   activitySensitiveStored: string;
   downloadsDir: string;
+  /** Console-only: whether browser.download may save executable types. */
+  allowExecutableDownloads: string;
+  executablesAllowed: string;
+  executablesRefused: string;
   idleTtl: string;
   idleTtlHint: string;
   flowRecording: string;
@@ -183,6 +187,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     activitySensitiveHidden: 'hidden',
     activitySensitiveStored: 'stored unhidden',
     downloadsDir: 'Downloads folder',
+    allowExecutableDownloads: 'Save executable downloads (.exe, .msi, .bat, .ps1, ...)',
+    executablesAllowed: 'allowed',
+    executablesRefused: 'refused',
     idleTtl: 'Idle disconnect',
     idleTtlHint:
       "Change it in the popup's Idle disconnect control or with browser-link config set idle-ttl",
@@ -305,6 +312,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     activitySensitiveHidden: 'ocultas',
     activitySensitiveStored: 'sin ocultar',
     downloadsDir: 'Carpeta de descargas',
+    allowExecutableDownloads: 'Guardar descargas ejecutables (.exe, .msi, .bat, .ps1, ...)',
+    executablesAllowed: 'permitidas',
+    executablesRefused: 'rechazadas',
     idleTtl: 'Desconexión por inactividad',
     idleTtlHint:
       'Se cambia desde el popup (Desconexión por inactividad) o con browser-link config set idle-ttl',

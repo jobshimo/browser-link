@@ -35,15 +35,17 @@ import type {
   BridgeEventListener,
   SubscribeOptions,
 } from '../bridge/events.js';
-import { loadConfig } from '../config.js';
+import { allowsExecutableDownloads, loadConfig } from '../config.js';
 import {
   DOWNLOAD_BRIDGE_SLACK_MS,
   buildFetchDownloadJs,
   clampDownloadTimeoutMs,
   downloadMaxBytes,
+  notRefetchableError,
   pickFilename,
   shapeDownloadResult,
   validateRequestedFilename,
+  type ChromeReportedDownload,
   type DownloadResult,
   type FetchDownloadOutcome,
 } from '../downloads.js';
@@ -127,19 +129,83 @@ export interface EnrichedTabSnapshot extends TabSnapshot {
   /** Present (always `true`) only when `extension_version` is a plain
    * MAJOR.MINOR.PATCH lower than the server's version. */
   extension_outdated?: true;
+  /** Present (always `true`) only when `extension_version` is a plain
+   * MAJOR.MINOR.PATCH higher than the server's version: the server runs older
+   * code than the extension (an update was installed, the server was not
+   * restarted). */
+  extension_newer?: true;
+  /** Present with `extension_outdated` or `extension_newer`: what to ask the
+   * user and what does not work until then (`extensionSkewNote`). */
+  version_note?: string;
   /** The start pack (see `map/queries.ts`'s `getKnowledge`): what the map
    * knows for this tab's app and path, ranked, with confidence and evidence.
    * Omitted when the map has nothing with evidence. */
   knowledge?: Knowledge;
 }
 
-/** True when an extension tab's reported version is a plain semver lower
- * than this server's. Missing or malformed versions are never "outdated":
- * there is nothing reliable to compare. */
-function isExtensionOutdated(t: TabSnapshot): boolean {
-  if (t.transport === 'cdp' || t.extension_version === undefined) return false;
-  if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return false;
-  return compareSemver(t.extension_version, VERSION) < 0;
+/** An extension tab's version against this server's: `older` or `newer` when
+ * `extension_version` is a plain semver that differs; `null` when equal,
+ * missing or malformed (nothing reliable to compare) and on cdp tabs. */
+function extensionSkew(t: TabSnapshot): 'older' | 'newer' | null {
+  if (t.transport === 'cdp' || t.extension_version === undefined) return null;
+  if (!/^\d+\.\d+\.\d+$/.test(t.extension_version)) return null;
+  const order = compareSemver(t.extension_version, VERSION);
+  return order < 0 ? 'older' : order > 0 ? 'newer' : null;
+}
+
+/** The release where a skew stops being harmless: from 1.1.0 an admin action
+ * takes `code` instead of `confirm`, `hide-password-values` exists, and the
+ * extension holds a selector-mode download until the server settles it. */
+const SKEW_BREAK_VERSION = '1.1.0';
+
+/**
+ * The plain note `list_tabs` carries on a tab whose extension and server run
+ * different versions: what to ask the user and what does not work until
+ * then. Across 1.1.0 it names the known breakage (CHANGELOG 1.1.0, Breaking).
+ */
+export function extensionSkewNote(
+  direction: 'older' | 'newer',
+  extension: string,
+  server: string,
+): string {
+  const older = direction === 'older' ? extension : server;
+  const newer = direction === 'older' ? server : extension;
+  const crosses =
+    compareSemver(older, SKEW_BREAK_VERSION) < 0 && compareSemver(newer, SKEW_BREAK_VERSION) >= 0;
+  if (direction === 'older') {
+    return (
+      `extension ${extension} is older than server ${server}: ask the user to reload the extension in chrome://extensions. ` +
+      `Until then what changed after ${extension} may be missing` +
+      (crosses
+        ? ': the Admin window applies no change, snapshot and find answers are withheld while hide-password-values is on, ' +
+          "and a selector-mode download can erase Chrome's copy before the server saved the file"
+        : '')
+    );
+  }
+  return (
+    `extension ${extension} is newer than server ${server}: ask the user to run browser-link stop and restart the agent, ` +
+    `so the installed server starts (update it first if it is older than ${extension}). ` +
+    `Until then what changed after ${server} may be missing` +
+    (crosses
+      ? ': the Admin window shows the preview instead of applying a change, ' +
+        'and a download the extension holds for the server expires and Chrome saves it as well (a second copy)'
+      : '')
+  );
+}
+
+/** `extension_outdated` or `extension_newer`, plus `version_note`, for one
+ * tab; nothing when the versions match or cannot be compared. */
+function extensionSkewFields(
+  t: TabSnapshot,
+): Pick<EnrichedTabSnapshot, 'extension_outdated' | 'extension_newer' | 'version_note'> {
+  const skew = extensionSkew(t);
+  if (skew === null || t.extension_version === undefined) return {};
+  return {
+    ...(skew === 'older'
+      ? { extension_outdated: true as const }
+      : { extension_newer: true as const }),
+    version_note: extensionSkewNote(skew, t.extension_version, VERSION),
+  };
 }
 
 /**
@@ -282,6 +348,10 @@ export interface BrowserToolDeps {
    * Absent in unit tests and builds without a data dir, in which case
    * `browser.download` fails plainly instead of downloading into nowhere. */
   saveDownload?: (filename: string, data: Buffer) => string;
+  /** How a file `saveDownload` wrote gets its Mark-of-the-Web: on `win32`
+   * its Zone.Identifier stream is written (`downloads.ts`). Defaults to
+   * this process's platform and the real stream write; tests inject both. */
+  downloadMark?: { platform: NodeJS.Platform; write?: (path: string, content: string) => void };
   /** Appends a server-owned event to the `browser.events` log. Optional —
    * used by `browser.download` for `download-started`/`download-finished`;
    * absent in unit tests that do not care. */
@@ -1411,7 +1481,7 @@ async function handleListTabs(
       claimed_by: claim ? toPublicClaim(claim) : null,
       claimed_by_me: claim ? claim.agent_id === caller.agent_id : false,
       ...(hint ? { map: hint } : {}),
-      ...(isExtensionOutdated(t) ? { extension_outdated: true as const } : {}),
+      ...extensionSkewFields(t),
       ...(knowledge ? { knowledge } : {}),
     } satisfies EnrichedTabSnapshot;
   });
@@ -1949,6 +2019,13 @@ interface DownloadCapture {
   url?: string;
   filename?: string;
   mime?: string;
+  /** Chrome's total size of the download; null or absent when it did not
+   * know it (no Content-Length) or the extension predates the field. */
+  total_bytes?: number | null;
+  /** The HTTP method of the request that started the download, when the
+   * extension can know it. Chrome's download API and `Page.downloadWillBegin`
+   * report none today, so this is absent; see `runDownload`. */
+  method?: string;
 }
 
 /** What became of Chrome's own download in selector mode: `removed` (cancelled
@@ -2114,9 +2191,41 @@ async function runDownload(
   // The extension holds Chrome's download until told what happened here:
   // it is cancelled and erased only once the file is written, and released
   // untouched otherwise — also when the fetch throws.
+  //
+  // D17: the file is written (and Chrome's copy erased) only when it is
+  // certainly the right one. The re-fetch is a GET, so a download whose
+  // request was not a GET is never fetched again. Chrome does not report the
+  // method (neither `DownloadItem` nor `Page.downloadWillBegin` carries it),
+  // so when it is unknown the re-fetch must match everything Chrome did
+  // report (size when known, type when known, final URL) instead: a POST
+  // answer fetched again with GET gets an error status, another page or
+  // other bytes, and fails that check. With neither a size nor a type to
+  // compare, nothing is erased.
+  if (typeof capture.method === 'string' && capture.method.toUpperCase() !== 'GET') {
+    const refused: BrowserDownloadResult = {
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      filename: pickFilename({
+        url: captured.url,
+        suggested: captured.suggested,
+        ...(requested !== undefined ? { requested } : {}),
+      }),
+      bytes: 0,
+      mime: captured.mime,
+      url: captured.url,
+      error: notRefetchableError(capture.method.toUpperCase()),
+    };
+    return withChromeDownload(refused, await settleHeldDownload(tabId, downloadId, false, deps));
+  }
+  const expected = {
+    url: capture.url,
+    mime: capture.mime ?? null,
+    totalBytes: capture.total_bytes ?? null,
+  };
   let result: BrowserDownloadResult;
   try {
-    result = await fetchAndSave(tabId, captured, opts, deadline, deps, caller);
+    result = await fetchAndSave(tabId, captured, { ...opts, expected }, deadline, deps, caller);
   } catch (err) {
     const outcome = await settleHeldDownload(tabId, downloadId, false, deps);
     const note = CHROME_DOWNLOAD_NOTES.failed[outcome];
@@ -2208,6 +2317,9 @@ async function fetchAndSave(
     requested: string | undefined;
     timeoutMs: number;
     save: (filename: string, data: Buffer) => string;
+    /** A held Chrome download (selector mode): the file is saved only when
+     * the re-fetch matches what Chrome reported. */
+    expected?: ChromeReportedDownload;
   },
   deadline: number,
   deps: BrowserToolDeps,
@@ -2234,6 +2346,9 @@ async function fetchAndSave(
       error: `the ${timeoutMs}ms budget ran out before the file could be fetched`,
     };
   }
+  // Read per call: `config set downloads.max-mb` and
+  // `downloads.allow-executables` apply to the next download, no restart.
+  const config = loadConfig();
   const outcome = (await runAction(
     'evaluate',
     tabId,
@@ -2241,17 +2356,19 @@ async function fetchAndSave(
       expression: buildFetchDownloadJs({
         url: sourceUrl,
         timeoutMs: remainingMs,
-        // Read per call: `config set downloads.max-mb` applies to the next
-        // download without a restart.
-        maxBytes: downloadMaxBytes(loadConfig()),
+        maxBytes: downloadMaxBytes(config),
       }),
     },
     deps,
     caller,
     remainingMs + DOWNLOAD_BRIDGE_SLACK_MS,
   )) as FetchDownloadOutcome;
-  const withMime = outcome.mime ? outcome : { ...outcome, mime: capturedMime };
-  return shapeDownloadResult(withMime, sources, save);
+  return shapeDownloadResult(outcome, sources, save, {
+    fallbackMime: capturedMime,
+    allowExecutables: allowsExecutableDownloads(config),
+    markOfTheWeb: deps.downloadMark ?? { platform: process.platform },
+    ...(opts.expected ? { expected: opts.expected } : {}),
+  });
 }
 
 /**

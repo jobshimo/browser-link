@@ -38,6 +38,15 @@ describe('planRepair', () => {
     );
   });
 
+  test('a pre-release of the minimum ranks below it (semver 2.0) and cannot repair itself', () => {
+    expect(
+      planRepair({ connected: true, serverVersion: '0.41.0-rc.1', rememberedTabIds: [7] }).step,
+    ).toBe('manual');
+    expect(
+      planRepair({ connected: true, serverVersion: '0.41.1-rc.1', rememberedTabIds: [7] }).step,
+    ).toBe('ask-server-restart');
+  });
+
   test('a connected server that reports no version is treated as too old', () => {
     expect(planRepair({ connected: true, serverVersion: null, rememberedTabIds: [] })).toEqual({
       step: 'manual',

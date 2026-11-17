@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.2.0](https://github.com/jobshimo/browser-link/compare/v1.1.0...v1.2.0) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension and the server must be the same release. The popup and `browser.list_tabs` now say when they are not.
+
+### ⚠ BREAKING CHANGES
+
+- **download:** `browser.download` refuses executable and mountable file types (for example `exe`, `msi`, `dll`, `chm`, `iso`, `img`, `vhd`, `vhdx`, `appref-ms`) unless you allow them. The answer says the type is refused and names the command. Remedy: `browser-link config set downloads.allow-executables on`.
+- **download:** in selector mode the server erases Chrome's copy only when its re-fetch provably matches what Chrome reported (size, plus type and final URL when known). Chrome reports no HTTP method, so when the size is unknown or differs, the capture fails and Chrome's copy is kept. Before, a mismatch could still erase it.
+- **click:** a pointer click whose press is seen elsewhere, or not at all, now fails with `Click on <target> did not reach it`; before, such a click answered as done. Check the effect with `snapshot` or `screenshot` before retrying. A click on a target that is scrolling waits for it to settle first, so it may take longer than before.
+- **semver:** a pre-release version now ranks below its release (`1.2.0-rc.1` < `1.2.0`). The election take-over and the update check use this order; before, a pre-release could rank equal to or above its release.
+- **update:** on Windows, an update started from the console's Updates screen after Doctor or a map screen opened the map database is refused before anything is stopped or installed, because Windows keeps that module locked until the console exits. The refusal tells you to close that console, then in a new terminal run `browser-link stop`, close your MCP clients and run `npm install -g @jobshimo/browser-link@<version>`.
+
+### Features
+
+- **download:** `allowExecutableDownloads` (off by default), set with `browser-link config set downloads.allow-executables <on|off>`; the Admin window shows it read-only, with that console command.
+- **download:** on Windows a file the server saves carries the Mark-of-the-Web (`Zone.Identifier` stream) like one saved by Chrome. The result carries `mark_of_the_web` (`written` or `failed`) and, when it failed, `mark_of_the_web_error`.
+- **list_tabs:** `extension_newer` says the extension is newer than the server (the server runs older code), and `version_note` explains what does not work until the versions match. The popup shows the skew line for an older and for a newer extension.
+- **click:** a click and a flow click step carry `hit_check: "not_verifiable"` with `hit_check_note` when the landing could not be checked: the target is an iframe, frame, embed or object, a JavaScript dialog opened, the page did not answer in time, or the document was replaced.
+- **update:** the result ends with the step to reload the extension, reads the installed version back from disk and reports it as `installedVersion`. When npm exits 0 but the version cannot be read, the outcome is `unverified`.
+
+### Bug Fixes
+
+- **ipc:** an unauthenticated connection now has a deadline to complete the hello and a maximum line length, and is destroyed (not just ended) when the hello is rejected.
+- **click:** a click on a target that scrolls waits for it to settle before pressing, so it lands where the target is.
+- **click:** same-origin frame changes during a click are counted in its effect.
+- **click:** in the extension, a click that opens a JavaScript dialog answers at once with `hit_check_note` instead of waiting for the dialog to be closed.
+- **readme:** a test compares the tool counts in the READMEs with the tool catalogue.
+- **e2e:** the real-Chrome suite covers forced no-box clicks, fields that do not take focus, shadow roots, frames, cut results and download capture, and runs on Chrome 118.0.5993.70 and 157.0.8103.51.
+
+### Notes
+
+- A download served with gzip or chunked encoding always fails safe in selector mode: Chrome reports no size, so Chrome's copy is kept.
+- A cdp-direct click that opens a JavaScript dialog still waits for the dialog to be answered.
+- Closing the map database does not release Windows' lock on its native module; only exiting the process does.
+
 ## [1.1.0](https://github.com/jobshimo/browser-link/compare/v1.0.2...v1.1.0) (2026-11-16)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension and the server must be the same release (see the first breaking change below for what a mixed pair does).

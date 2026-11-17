@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
@@ -193,6 +194,157 @@ export function pickFilename(sources: FilenameSources): string {
   );
 }
 
+/**
+ * File types Windows (and the other desktops) run, open as code or install
+ * on a double-click. Chrome warns about these and SmartScreen checks them;
+ * a file the server writes gets neither, so `browser.download` refuses them
+ * unless the human allowed it (`config set downloads.allow-executables on`).
+ * Lower case, without the dot.
+ */
+const EXECUTABLE_EXTENSIONS = new Set([
+  // Windows programs, installers and libraries
+  'exe',
+  'com',
+  'scr',
+  'pif',
+  'cpl',
+  'msi',
+  'msp',
+  'mst',
+  'msc',
+  'dll',
+  'ocx',
+  'sys',
+  'drv',
+  'appx',
+  'appxbundle',
+  'msix',
+  'msixbundle',
+  'appinstaller',
+  'application',
+  'appref-ms',
+  'xbap',
+  'gadget',
+  // Windows scripts and script hosts
+  'bat',
+  'cmd',
+  'ps1',
+  'psm1',
+  'psd1',
+  'ps1xml',
+  'psc1',
+  'vb',
+  'vbs',
+  'vbe',
+  'js',
+  'jse',
+  'wsf',
+  'wsh',
+  'wsc',
+  'hta',
+  'sct',
+  'reg',
+  'inf',
+  'ins',
+  'isp',
+  // Windows shortcuts and shell files that point at or run something
+  'lnk',
+  'url',
+  'scf',
+  'settingcontent-ms',
+  'library-ms',
+  'search-ms',
+  'searchconnector-ms',
+  // Compiled help (runs script) and disk images Windows mounts on a
+  // double-click, which bypass the Mark-of-the-Web of what is inside
+  'chm',
+  'iso',
+  'img',
+  'vhd',
+  'vhdx',
+  // Java, Office macro add-ins
+  'jar',
+  'jnlp',
+  'xll',
+  'xlam',
+  'ppam',
+  // macOS and Linux
+  'app',
+  'command',
+  'pkg',
+  'dmg',
+  'sh',
+  'run',
+  'desktop',
+  'appimage',
+  'deb',
+  'rpm',
+]);
+
+/**
+ * Is `name` a type that runs or installs on a double-click? Checks the LAST
+ * extension, case-insensitively, after dropping the trailing dots and
+ * spaces Windows drops when it creates the file (`setup.exe.` is
+ * `setup.exe`), so a double extension (`invoice.pdf.exe`) is caught by what
+ * it really is.
+ */
+export function isExecutableFilename(name: string): boolean {
+  const trimmed = name.replace(/[.\s]+$/, '');
+  const dot = trimmed.lastIndexOf('.');
+  if (dot === -1) return false;
+  return EXECUTABLE_EXTENSIONS.has(trimmed.slice(dot + 1).toLowerCase());
+}
+
+/** The console command that lets `browser.download` save executable types. */
+export const ALLOW_EXECUTABLES_COMMAND = 'browser-link config set downloads.allow-executables on';
+
+function executableRefusal(filename: string): string {
+  return (
+    `refused: "${filename}" is an executable file type (it runs or installs when opened), and ` +
+    'saving those is off by default. Nothing was written. Only the human can allow it, with: ' +
+    ALLOW_EXECUTABLES_COMMAND
+  );
+}
+
+/** An http(s) URL, or null: what may go into a Zone.Identifier stream. A
+ * `data:` URL would put the payload there, a `blob:` one an opaque id. */
+function httpUrlOrNull(url: string | null | undefined): string | null {
+  if (typeof url !== 'string') return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
+  // No line break can reach the stream: it would add a line of its own.
+  return /[\r\n]/.test(url) ? null : url;
+}
+
+/**
+ * The `Zone.Identifier` alternate data stream Chrome writes on a download
+ * (the Mark-of-the-Web): zone 3 (Internet), so SmartScreen and Office
+ * Protected View treat the file as coming from the web. `ReferrerUrl` is the
+ * page, `HostUrl` the download; either is left out when it is unknown or not
+ * http(s).
+ */
+export function zoneIdentifierContent(urls: {
+  pageUrl?: string | null;
+  downloadUrl?: string | null;
+}): string {
+  const referrer = httpUrlOrNull(urls.pageUrl);
+  const host = httpUrlOrNull(urls.downloadUrl);
+  return (
+    '[ZoneTransfer]\r\nZoneId=3\r\n' +
+    (referrer ? `ReferrerUrl=${referrer}\r\n` : '') +
+    (host ? `HostUrl=${host}\r\n` : '')
+  );
+}
+
+/** Write the Zone.Identifier stream of the file at `path` (NTFS only). */
+function writeZoneIdentifier(path: string, content: string): void {
+  writeFileSync(`${path}:Zone.Identifier`, content);
+}
+
 export function clampDownloadTimeoutMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_DOWNLOAD_TIMEOUT_MS;
@@ -343,6 +495,9 @@ export interface FetchDownloadOutcome {
   /** Present only on `complete`. */
   data_b64?: string;
   error?: string;
+  /** The page the fetch ran in (`location.href`): the Mark-of-the-Web's
+   * `ReferrerUrl`. Absent from an outcome built before this field existed. */
+  page_url?: string | null;
 }
 
 /**
@@ -369,7 +524,8 @@ export function buildFetchDownloadJs(opts: {
   const ctrl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
-  const out = { state: 'interrupted', bytes: 0, mime: null, content_disposition: null, final_url: null };
+  const out = { state: 'interrupted', bytes: 0, mime: null, content_disposition: null, final_url: null, page_url: null };
+  try { out.page_url = String(location.href); } catch (e) { /* no location: left null */ }
   try {
     const res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
     out.status = res.status;
@@ -428,17 +584,137 @@ export interface DownloadResult {
   mime: string | null;
   url: string | null;
   error?: string;
+  /** Windows only, on a saved file: whether its Zone.Identifier stream (the
+   * Mark-of-the-Web) was written. Absent on other systems. */
+  mark_of_the_web?: 'written' | 'failed';
+  /** Why the stream could not be written; the file itself was kept. */
+  mark_of_the_web_error?: string;
+}
+
+/**
+ * What Chrome reported about a download it started and the extension holds
+ * (selector mode). The re-fetch is checked against it before Chrome's copy
+ * may be erased (owner decision D17).
+ */
+export interface ChromeReportedDownload {
+  /** Where Chrome's bytes come from (its final URL when it knows it). */
+  url: string;
+  /** Chrome's MIME type; empty or absent when it did not know it. */
+  mime?: string | null;
+  /** Chrome's total size in bytes; null, absent or <= 0 when unknown (no
+   * Content-Length). */
+  totalBytes?: number | null;
+}
+
+/** `type/subtype`, lower case, without parameters; null when there is none. */
+function mimeEssence(mime: string | null | undefined): string | null {
+  if (typeof mime !== 'string') return null;
+  const essence = mime.split(';')[0].trim().toLowerCase();
+  return essence.length > 0 ? essence : null;
+}
+
+/** The URL without its fragment, in its normalized form when it parses. */
+function comparableUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Is the re-fetched file certainly the download Chrome started? Chrome must
+ * have reported a size and the re-fetch must have exactly that size; the
+ * MIME type must match when Chrome knew it, and the final URL always.
+ * Returns null when all of that holds, else the reasons it does not. A size
+ * Chrome did not report (no Content-Length) is a doubt, not a pass: the
+ * re-fetch cannot be proven identical, and D17 erases nothing on a doubt.
+ */
+export function refetchMismatch(
+  chrome: ChromeReportedDownload,
+  outcome: FetchDownloadOutcome,
+): string[] | null {
+  const reasons: string[] = [];
+  const chromeSize =
+    typeof chrome.totalBytes === 'number' && chrome.totalBytes > 0 ? chrome.totalBytes : null;
+  const chromeMime = mimeEssence(chrome.mime);
+  if (chromeSize === null) {
+    reasons.push('Chrome did not report the size, so the re-fetch cannot be proven identical');
+  }
+  if (chromeSize !== null && outcome.bytes !== chromeSize) {
+    reasons.push(`Chrome reported ${chromeSize} bytes, the re-fetch got ${outcome.bytes}`);
+  }
+  const fetchedMime = mimeEssence(outcome.mime);
+  if (chromeMime !== null && fetchedMime !== chromeMime) {
+    reasons.push(
+      `Chrome reported the type ${chromeMime}, the re-fetch got ${fetchedMime ?? 'no type'}`,
+    );
+  }
+  const fetchedUrl = outcome.final_url ?? null;
+  if (fetchedUrl === null || comparableUrl(fetchedUrl) !== comparableUrl(chrome.url)) {
+    reasons.push(
+      `Chrome's download came from ${chrome.url}, the re-fetch ended at ${fetchedUrl ?? 'an unknown URL'}`,
+    );
+  }
+  return reasons.length > 0 ? reasons : null;
+}
+
+const USE_CHROME_COPY =
+  "use Chrome's own download, in Chrome's downloads list (chrome://downloads)";
+
+function mismatchError(reasons: string[]): string {
+  return (
+    `the capture failed: the file fetched again does not match the download Chrome started (${reasons.join('; ')}), ` +
+    `so nothing was saved here and Chrome's own download was not erased; ${USE_CHROME_COPY}`
+  );
+}
+
+/**
+ * The failure text of a captured download whose request was not a GET:
+ * fetching it again would send a different request (or repeat a POST), so
+ * it is not fetched at all.
+ */
+export function notRefetchableError(method: string): string {
+  return (
+    `the capture failed: Chrome's download came from a ${method} request, which cannot be fetched again safely, ` +
+    `so nothing was fetched or saved here and Chrome's own download was not erased; ${USE_CHROME_COPY}`
+  );
+}
+
+export interface ShapeDownloadOptions {
+  /** Selector mode with a held Chrome download: the file is saved only when
+   * the re-fetch matches it (`refetchMismatch`). */
+  expected?: ChromeReportedDownload;
+  /** The MIME type to report when the response carried none (Chrome's). */
+  fallbackMime?: string | null;
+  /** `config set downloads.allow-executables on`: save executable types. */
+  allowExecutables?: boolean;
+  /** Write the Mark-of-the-Web on a saved file when `platform` is win32.
+   * `write` defaults to writing the `:Zone.Identifier` stream. */
+  markOfTheWeb?: {
+    platform: NodeJS.Platform;
+    write?: (path: string, content: string) => void;
+  };
 }
 
 /**
  * Turn the in-page fetch outcome into the agent-facing result, writing the
  * file on `complete`. A failed write downgrades to `interrupted` with the
  * error — the agent must never be told a file exists when it does not.
+ *
+ * Before the write, in this order: a re-fetch that does not match what
+ * Chrome reported (`options.expected`) is not saved; an executable type is
+ * refused unless `options.allowExecutables`. After it, on Windows, the
+ * Zone.Identifier stream is written; a stream that cannot be written keeps
+ * the file and says so (`mark_of_the_web: 'failed'`).
  */
 export function shapeDownloadResult(
   outcome: FetchDownloadOutcome,
   sources: FilenameSources & { url: string },
   save: (filename: string, data: Buffer) => string,
+  options: ShapeDownloadOptions = {},
 ): DownloadResult {
   const filename = pickFilename({
     ...sources,
@@ -447,14 +723,34 @@ export function shapeDownloadResult(
   });
   const base = {
     filename,
-    mime: outcome.mime ?? null,
+    mime: outcome.mime || options.fallbackMime || null,
     url: outcome.final_url ?? sources.url,
   };
   if (outcome.state === 'complete' && typeof outcome.data_b64 === 'string') {
     const data = Buffer.from(outcome.data_b64, 'base64');
+    const refused = (error: string): DownloadResult => ({
+      ok: false,
+      state: 'interrupted',
+      path: null,
+      bytes: data.length,
+      ...base,
+      error,
+    });
+    const mismatch = options.expected ? refetchMismatch(options.expected, outcome) : null;
+    if (mismatch) return refused(mismatchError(mismatch));
+    if (!options.allowExecutables && isExecutableFilename(filename)) {
+      return refused(executableRefusal(filename));
+    }
     try {
       const path = save(filename, data);
-      return { ok: true, state: 'complete', path, bytes: data.length, ...base };
+      return {
+        ok: true,
+        state: 'complete',
+        path,
+        bytes: data.length,
+        ...base,
+        ...markSavedFile(path, outcome, base.url, options.markOfTheWeb),
+      };
     } catch (err) {
       return {
         ok: false,
@@ -472,6 +768,42 @@ export function shapeDownloadResult(
     path: null,
     bytes: outcome.bytes,
     ...base,
-    error: outcome.error ?? 'download did not complete',
+    error: options.expected
+      ? refetchFailedError(outcome.error ?? 'download did not complete')
+      : (outcome.error ?? 'download did not complete'),
   };
+}
+
+/** The failure text of a held Chrome download (selector mode) whose re-fetch
+ * did not complete (an HTTP error, such as a POST answer fetched with GET, or
+ * no time left): a capture failure like the others, Chrome's copy kept. */
+function refetchFailedError(why: string): string {
+  return (
+    `the capture failed: fetching the file again failed (${why}), ` +
+    `so nothing was saved here and Chrome's own download was not erased; ${USE_CHROME_COPY}`
+  );
+}
+
+/** Write the Mark-of-the-Web on the file just saved at `path`, on Windows
+ * only. Never throws: the file is kept either way, and a failure is
+ * reported. */
+function markSavedFile(
+  path: string,
+  outcome: FetchDownloadOutcome,
+  downloadUrl: string,
+  mark: ShapeDownloadOptions['markOfTheWeb'],
+): Pick<DownloadResult, 'mark_of_the_web' | 'mark_of_the_web_error'> {
+  if (!mark || mark.platform !== 'win32') return {};
+  const content = zoneIdentifierContent({ pageUrl: outcome.page_url, downloadUrl });
+  try {
+    (mark.write ?? writeZoneIdentifier)(path, content);
+    return { mark_of_the_web: 'written' };
+  } catch (err) {
+    return {
+      mark_of_the_web: 'failed',
+      mark_of_the_web_error:
+        `the file was saved, but its Mark-of-the-Web (Zone.Identifier stream) could not be written, ` +
+        `so Windows will not treat it as coming from the web: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }

@@ -18,6 +18,7 @@ import {
 import { noteOrigin, notePendingWork, peekSession, resetSessions } from '../map/session.js';
 import {
   type BrowserToolDeps,
+  extensionSkewNote,
   handleBrowserTool,
   isBrowserTool,
   outdatedServerHint,
@@ -34,6 +35,9 @@ function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
   return {
     listTabs: vi.fn(() => []),
     callBrowserTool: vi.fn(async () => undefined),
+    // Downloads are shaped as on a system without Mark-of-the-Web, so the
+    // results read the same on every OS; the win32 tests opt in.
+    downloadMark: { platform: 'linux' },
     ...overrides,
   };
 }
@@ -3421,11 +3425,14 @@ describe('browser.download', () => {
       download_id: 41,
       url: 'https://x.test/export?id=7',
       filename: 'Export 7.xlsx',
-      mime: 'application/vnd.ms-excel',
+      // What Chrome reported; it matches the default re-fetch (`okFetch`).
+      mime: 'text/csv',
+      total_bytes: 3,
     };
     const order: string[] = [];
 
     function heldDeps(opts: {
+      capture?: Record<string, unknown>;
       fetch?: () => unknown;
       settle?: () => unknown;
       save?: (filename: string, data: Buffer) => string;
@@ -3433,7 +3440,7 @@ describe('browser.download', () => {
       order.length = 0;
       const callBrowserTool = vi.fn(async (_tab: string, tool: string, params?: unknown) => {
         order.push(tool);
-        if (tool === 'download') return held;
+        if (tool === 'download') return opts.capture ?? held;
         if (tool === 'download_settle') {
           if (opts.settle) return opts.settle();
           const { saved } = params as { saved: boolean };
@@ -3492,7 +3499,9 @@ describe('browser.download', () => {
         state: 'interrupted',
         path: null,
         chrome_download: 'left_in_chrome',
-        error: expect.stringMatching(/^HTTP 405; Chrome's own download was left untouched/),
+        error: expect.stringMatching(
+          /^the capture failed: fetching the file again failed \(HTTP 405\), .*; Chrome's own download was left untouched/,
+        ),
       });
     });
 
@@ -3566,6 +3575,118 @@ describe('browser.download', () => {
         ok: true,
         chrome_download: 'unknown',
         chrome_download_note: expect.stringMatching(/second copy in Chrome's downloads/),
+      });
+    });
+
+    describe('the re-fetch is compared with what Chrome reported before anything is erased (D17)', () => {
+      // What Chrome reported for the held download: size, mime and final URL.
+      const reported = { ...held, mime: 'application/pdf', total_bytes: 5 };
+      const pdfFetch = {
+        state: 'complete',
+        status: 200,
+        mime: 'application/pdf',
+        content_disposition: null,
+        final_url: held.url,
+        bytes: 5,
+        data_b64: Buffer.from('%PDF-').toString('base64'),
+      };
+
+      async function expectKeptInChrome(
+        capture: Record<string, unknown>,
+        fetch: () => unknown,
+        why: RegExp,
+      ) {
+        const { deps, callBrowserTool, saveDownload } = heldDeps({ capture, fetch });
+        const out = (await run(deps)) as { error: string };
+        expect(saveDownload).not.toHaveBeenCalled();
+        const settle = callBrowserTool.mock.calls.find((c) => c[1] === 'download_settle');
+        expect(settle?.[2]).toEqual({ download_id: 41, saved: false });
+        expect(out).toMatchObject({
+          ok: false,
+          state: 'interrupted',
+          path: null,
+          chrome_download: 'left_in_chrome',
+        });
+        expect(out.error).toMatch(why);
+        expect(out.error).toMatch(/Chrome's own download was left untouched/);
+        return { out, callBrowserTool };
+      }
+
+      test("a matching re-fetch (size, mime, final URL) is saved and Chrome's copy removed", async () => {
+        const { deps, saveDownload } = heldDeps({ capture: reported, fetch: () => pdfFetch });
+        const out = await run(deps);
+        expect(saveDownload).toHaveBeenCalledOnce();
+        expect(out).toMatchObject({ ok: true, state: 'complete', chrome_download: 'removed' });
+      });
+
+      test('a mime type with parameters and other casing still matches', async () => {
+        const { deps, saveDownload } = heldDeps({
+          capture: { ...reported, mime: 'text/csv', total_bytes: 3 },
+          fetch: () => ({ ...okFetch, mime: 'Text/CSV; charset=utf-8', final_url: held.url }),
+        });
+        expect(await run(deps)).toMatchObject({ ok: true, chrome_download: 'removed' });
+        expect(saveDownload).toHaveBeenCalledOnce();
+      });
+
+      test('size mismatch: Chrome reported 5 bytes, the re-fetch got 3: kept in Chrome, nothing saved', async () => {
+        await expectKeptInChrome(
+          reported,
+          () => ({ ...pdfFetch, bytes: 3, data_b64: Buffer.from('%PD').toString('base64') }),
+          /^the capture failed: .*Chrome reported 5 bytes, the re-fetch got 3/,
+        );
+      });
+
+      test('mime mismatch: a 200 text/html answer for a binary download is not saved', async () => {
+        await expectKeptInChrome(
+          reported,
+          () => ({
+            ...pdfFetch,
+            mime: 'text/html; charset=utf-8',
+            data_b64: Buffer.from('<html').toString('base64'),
+          }),
+          /Chrome reported the type application\/pdf, the re-fetch got text\/html/,
+        );
+      });
+
+      test('final URL mismatch: the re-fetch ended somewhere else (a login page) and is not saved', async () => {
+        await expectKeptInChrome(
+          reported,
+          () => ({ ...pdfFetch, final_url: 'https://x.test/login' }),
+          /the re-fetch ended at https:\/\/x\.test\/login/,
+        );
+      });
+
+      test('a non-GET origin (POST) is never re-fetched: kept in Chrome, nothing fetched or saved', async () => {
+        const { callBrowserTool } = await expectKeptInChrome(
+          { ...reported, method: 'POST' },
+          () => pdfFetch,
+          /POST request.*cannot be fetched again safely/,
+        );
+        expect(callBrowserTool.mock.calls.map((c) => c[1])).toEqual([
+          'download',
+          'download_settle',
+        ]);
+      });
+
+      test('Chrome reported neither a size nor a type: kept in Chrome', async () => {
+        await expectKeptInChrome(
+          { ...held, mime: '', total_bytes: null },
+          () => pdfFetch,
+          /Chrome did not report the size, so the re-fetch cannot be proven identical/,
+        );
+      });
+
+      test('Chrome did not report the size: even a matching type and URL is a doubt, kept in Chrome', async () => {
+        await expectKeptInChrome(
+          { ...reported, total_bytes: null },
+          () => pdfFetch,
+          /^the capture failed: .*Chrome did not report the size, so the re-fetch cannot be proven identical/,
+        );
+      });
+
+      test('an older extension that sends no size: kept in Chrome', async () => {
+        const { total_bytes: _omitted, ...noSize } = reported;
+        await expectKeptInChrome(noSize, () => pdfFetch, /Chrome did not report the size/);
       });
     });
 
@@ -3767,8 +3888,11 @@ describe('browser.download', () => {
   test('the description promises only what the capture does: held, erased after the write, others left alone', () => {
     const def = BROWSER_TOOL_DEFINITIONS.find((d) => d.name === 'browser.download');
     expect(def?.description).toMatch(/cancelled and erased only after the file is written/);
-    expect(def?.description).toMatch(/released untouched/);
+    expect(def?.description).toMatch(/does not match Chrome.s download .*Chrome.s copy is kept/);
     expect(def?.description).toMatch(/chrome_download/);
+    expect(def?.description).toMatch(/Executable types .* refused unless/);
+    expect(def?.description).toMatch(/downloads\.allow-executables on/);
+    expect(def?.description).toMatch(/on Windows a saved file carries `mark_of_the_web`/);
     expect(def?.description).not.toMatch(/cancelled before it can prompt/);
     const gotchas = (def as { doc?: { gotchas?: string[] } } | undefined)?.doc?.gotchas ?? [];
     expect(gotchas.join('\n')).toMatch(/Page\.downloadWillBegin/);
@@ -4264,6 +4388,63 @@ describe('list_tabs — extension version (S3)', () => {
     );
     expect(tabs[0]).not.toHaveProperty('extension_version');
     expect(tabs[0]).not.toHaveProperty('extension_outdated');
+    expect(tabs[0]).not.toHaveProperty('extension_newer');
+    expect(tabs[0]).not.toHaveProperty('version_note');
+  });
+
+  test('an extension NEWER than the server is flagged too, with a note naming what does not work', async () => {
+    const { VERSION } = await import('../version.js');
+    const [major, minor, patch] = VERSION.split('.').map(Number) as [number, number, number];
+    const newer = `${major}.${minor}.${patch + 1}`;
+    const tabs = await listWith([
+      { tab_id: 'tab_1', url: 'http://a', title: 'A', extension_version: newer },
+      { tab_id: 'tab_2', url: 'http://b', title: 'B', extension_version: VERSION },
+    ]);
+    const byId = new Map(tabs.map((t) => [t.tab_id, t]));
+    expect(byId.get('tab_1')!.extension_newer).toBe(true);
+    expect(byId.get('tab_1')).not.toHaveProperty('extension_outdated');
+    expect(byId.get('tab_1')!.version_note).toBe(extensionSkewNote('newer', newer, VERSION));
+    expect(byId.get('tab_2')).not.toHaveProperty('extension_newer');
+    expect(byId.get('tab_2')).not.toHaveProperty('version_note');
+  });
+
+  test('an extension OLDER than the server keeps extension_outdated and gains the note', async () => {
+    const { VERSION } = await import('../version.js');
+    const tabs = await listWith([
+      { tab_id: 'tab_1', url: 'http://a', title: 'A', extension_version: '0.0.1' },
+    ]);
+    expect(tabs[0]!.extension_outdated).toBe(true);
+    expect(tabs[0]).not.toHaveProperty('extension_newer');
+    expect(tabs[0]!.version_note).toBe(extensionSkewNote('older', '0.0.1', VERSION));
+  });
+});
+
+describe('extensionSkewNote', () => {
+  test('older extension: says to reload it and, across 1.1.0, what does not work', () => {
+    expect(extensionSkewNote('older', '1.0.2', '1.1.0')).toBe(
+      'extension 1.0.2 is older than server 1.1.0: ask the user to reload the extension in chrome://extensions. ' +
+        'Until then what changed after 1.0.2 may be missing: the Admin window applies no change, ' +
+        'snapshot and find answers are withheld while hide-password-values is on, ' +
+        "and a selector-mode download can erase Chrome's copy before the server saved the file",
+    );
+    expect(extensionSkewNote('older', '1.1.0', '1.1.1')).toBe(
+      'extension 1.1.0 is older than server 1.1.1: ask the user to reload the extension in chrome://extensions. ' +
+        'Until then what changed after 1.1.0 may be missing',
+    );
+  });
+
+  test('newer extension: says to restart the server and, across 1.1.0, what does not work', () => {
+    expect(extensionSkewNote('newer', '1.1.0', '1.0.2')).toBe(
+      'extension 1.1.0 is newer than server 1.0.2: ask the user to run browser-link stop and restart the agent, ' +
+        'so the installed server starts (update it first if it is older than 1.1.0). ' +
+        'Until then what changed after 1.0.2 may be missing: the Admin window shows the preview instead of applying a change, ' +
+        'and a download the extension holds for the server expires and Chrome saves it as well (a second copy)',
+    );
+    expect(extensionSkewNote('newer', '1.1.2', '1.1.1')).toBe(
+      'extension 1.1.2 is newer than server 1.1.1: ask the user to run browser-link stop and restart the agent, ' +
+        'so the installed server starts (update it first if it is older than 1.1.2). ' +
+        'Until then what changed after 1.1.1 may be missing',
+    );
   });
 });
 
@@ -4676,6 +4857,60 @@ describe('browser.download — configurable size cap', () => {
   test('the over-cap error names the active cap in MiB', async () => {
     saveConfig({ downloadsMaxMb: 7 });
     expect(await fetchExpression()).toContain('download exceeds the 7 MiB cap (7340032 bytes)');
+  });
+
+  describe('executable types and the Mark-of-the-Web', () => {
+    const exeFetch = {
+      ...okFetch,
+      mime: 'application/octet-stream',
+      final_url: 'https://x.test/setup.exe',
+      page_url: 'https://x.test/downloads',
+    };
+
+    async function download(downloadMark?: BrowserToolDeps['downloadMark']) {
+      const saveDownload = vi.fn((filename: string) => `/dl/${filename}`);
+      const out = await handleBrowserTool(
+        'browser.download',
+        { tab_id: 'tab_1', url: 'https://x.test/setup.exe' },
+        makeDeps({
+          callBrowserTool: vi.fn(async () => exeFetch),
+          saveDownload,
+          ...(downloadMark ? { downloadMark } : {}),
+        }),
+        TEST_CALLER,
+      );
+      return { out, saveDownload };
+    }
+
+    test('without the setting an executable is refused and nothing is written', async () => {
+      const { out, saveDownload } = await download();
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ ok: false, state: 'interrupted', path: null });
+      expect((out as { error: string }).error).toMatch(
+        /executable file type.*browser-link config set downloads\.allow-executables on/,
+      );
+    });
+
+    test('downloads.allow-executables on in config.json lets it through, read per call', async () => {
+      saveConfig({ allowExecutableDownloads: true });
+      expect((await download()).out).toMatchObject({ ok: true, path: '/dl/setup.exe' });
+      writeFileSync(
+        join(dataDir, 'config.json'),
+        JSON.stringify({ allowExecutableDownloads: 'yes' }),
+      );
+      expect((await download()).out).toMatchObject({ ok: false });
+    });
+
+    test('on win32 the saved file gets the Zone.Identifier stream with the page and download URLs', async () => {
+      saveConfig({ allowExecutableDownloads: true });
+      const write = vi.fn();
+      const { out } = await download({ platform: 'win32', write });
+      expect(write).toHaveBeenCalledWith(
+        '/dl/setup.exe',
+        '[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://x.test/downloads\r\nHostUrl=https://x.test/setup.exe\r\n',
+      );
+      expect(out).toMatchObject({ ok: true, mark_of_the_web: 'written' });
+    });
   });
 });
 

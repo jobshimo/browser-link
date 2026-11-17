@@ -54,6 +54,8 @@ export interface DeterminingItem {
   finalUrl?: string;
   filename: string;
   mime?: string;
+  /** Size from Content-Length; 0 or -1 when Chrome does not know it. */
+  totalBytes?: number;
   /** Set only when an extension started the download (`chrome.downloads.download`). */
   byExtensionId?: string;
 }
@@ -91,6 +93,11 @@ export interface CapturedDownload {
   /** Chrome's suggested name — the server sanitizes it to a basename. */
   filename: string;
   mime: string;
+  /** Chrome's total size, or null when it does not know it. The server
+   * compares its re-fetch with this, the type and the URL before Chrome's
+   * copy may be erased (D17). Chrome reports no request method, so none is
+   * sent; the server reads a missing method as unknown. */
+  total_bytes: number | null;
 }
 
 /**
@@ -259,6 +266,8 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
             original_url: item.url,
             filename: item.filename,
             mime: item.mime ?? '',
+            total_bytes:
+              typeof item.totalBytes === 'number' && item.totalBytes > 0 ? item.totalBytes : null,
           },
         });
         return true;

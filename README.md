@@ -226,6 +226,7 @@ browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (of
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
 browser-link config set hide-password-values on  # snapshot and find show "filled, N characters" for password fields (off by default)
 browser-link config set activity.hide-sensitive off  # store sensitive trail rows unhidden (on in this version; applies after a restart)
+browser-link config set downloads.allow-executables on  # let browser.download save .exe, .msi, .bat, .ps1, ... (refused by default)
 browser-link config restore-defaults --yes # only when config.json cannot be read: keep a copy, write the defaults
 browser-link cdp allow                     # grant time-boxed cdp-direct access (only you can run this)
 browser-link cdp status                    # enabled?, port, grant remaining, endpoint reachable?
@@ -499,10 +500,13 @@ process checks keep out other users. Neither authenticates the extension itself.
 
 ### Chrome version
 
-The minimum is Chrome 118 (the manifest declares it). The end-to-end suite passed
-on Windows against Chrome for Testing 118.0.5993.70 and against the current
-stable Chrome, including a check that the pinned Origin is accepted while the
-server enforces it.
+The minimum is Chrome 118 (the manifest declares it). On 2026-11-17 the
+end-to-end suite passed on Windows against Chrome for Testing 118.0.5993.70 and
+against stable Chrome 157.0.8103.51 (three consecutive runs). It covers the
+pinned Origin being accepted while the server enforces it, the 1.1.0 click,
+focus, settle and cut rules (a click whose target first has to be scrolled into
+view included), and download attribution (a click's download captured, another
+tab's left alone), including the cases where Chrome's copy must be kept.
 
 ## How it works
 
@@ -604,24 +608,24 @@ knowledge loop, and 6 persistent-map tools (2 read, 4 write): 40 in all. All
 
 **Browser bridge — read-only** (no claim required, observation only):
 
-| Tool                        | Purpose                                                                                                                                                                                                                                                               |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`), the extension's `extension_version` and `extension_outdated: true` when it is older than the server                                                          |
-| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                            |
-| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                 |
-| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed; a cut result carries `truncated`, `offset` returns the rest                                                       |
-| `browser.find`              | Locate one element by visible text, by `ref` or by `semantic_key` (`key`) → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`; `truncated` and `offset` when candidates were cut                                            |
-| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                                                                                                                      |
-| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                                                                                                                              |
-| `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB; an element larger than its iframe/scroll container is only painted as far as that container shows it) |
-| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                                                                                                                                  |
-| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                                                                                                                                  |
-| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                                                                                                                                                |
-| `browser.wait_for`          | Wait for a selector / `ref` / JS expression / network request URL to match a condition                                                                                                                                                                                |
-| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                                                                                                                                          |
-| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                                                                                                                                      |
-| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`                                                                                                                           |
-| `browser.activity`          | On-disk [activity trail](#activity-trail) — every action every agent dispatched, filterable by agent, tab, tool, flow or outcome; survives restarts                                                                                                                   |
+| Tool                        | Purpose                                                                                                                                                                                                                                                                |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.list_tabs`         | List tabs currently connected through the extension, with claim status (`claimed_by` / `claimed_by_me`), the extension's `extension_version`, `extension_outdated: true` when it is older than the server or `extension_newer: true` when newer, with a `version_note` |
+| `browser.my_tabs`           | List the tabs the calling agent currently holds a claim on                                                                                                                                                                                                             |
+| `browser.ping`              | Verify the bridge to a tab; returns its title and URL                                                                                                                                                                                                                  |
+| `browser.snapshot`          | Title, URL, visible text and interactive elements with selectors; filterable, pierces open Shadow DOM + iframes; `since` returns only what changed; a cut result carries `truncated`, `offset` returns the rest                                                        |
+| `browser.find`              | Locate one element by visible text, by `ref` or by `semantic_key` (`key`) → selector + coordinates; `near_misses` on no match, `candidates` on ambiguity; carries `ref`; `truncated` and `offset` when candidates were cut                                             |
+| `browser.state`             | Compact orientation read — URL/title/viewport/focused element/open dialogs/scroll — cheaper than a full snapshot                                                                                                                                                       |
+| `browser.canvas_screenshot` | Screenshot a `<canvas>` as PNG/JPEG, for DOMless UIs (Qt-WASM, WebGL) where snapshot/find return nothing                                                                                                                                                               |
+| `browser.screenshot`        | Screenshot the viewport, the **full page** or one element as PNG/JPEG, returned as an image (long pages are scaled to `max_dimension`; results capped at ~8 MB; an element larger than its iframe/scroll container is only painted as far as that container shows it)  |
+| `browser.console`           | Rolling buffer of recent console messages (last 200)                                                                                                                                                                                                                   |
+| `browser.network`           | Rolling buffer of recent network requests (last 200)                                                                                                                                                                                                                   |
+| `browser.network_body`      | Fetch the response body of one request by `request_id`                                                                                                                                                                                                                 |
+| `browser.wait_for`          | Wait for a selector / `ref` / JS expression / network request URL to match a condition                                                                                                                                                                                 |
+| `browser.wait_for_tab`      | Wait for a popup/`window.open` tab spawned by a connected tab; auto-claims it for the caller                                                                                                                                                                           |
+| `browser.flow_status`       | Progress, outcome and action manifest of one `browser.flow` run by its `flow_id` — the handle on a detached flow                                                                                                                                                       |
+| `browser.events`            | Bridge lifecycle log (tab registered/disconnected/renamed/claimed/released, primary elected, detached flow finished); paged with `since_id`                                                                                                                            |
+| `browser.activity`          | On-disk [activity trail](#activity-trail) — every action every agent dispatched, filterable by agent, tab, tool, flow or outcome; survives restarts                                                                                                                    |
 
 **Browser bridge — actions** (most auto-claim the tab on first use — the
 two exceptions are footnoted):
@@ -675,16 +679,16 @@ iframes, nested arbitrarily.
   same-origin iframes as well, the same places `browser.find({ key })`
   searches.
 
-| Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shadow DOM / iframe piercing**   | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map.                   |
-| **Occlusion guard**                | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally: a covered target is then clicked at its position. A target with no visible box fails before the hit-test, see [A target with no visible box](#a-target-with-no-visible-box-and-a-target-that-takes-no-focus). |
-| **`near_misses`**                  | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                                                 |
-| **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                                                 |
-| **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                                               |
-| **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                                            |
-| **`extension_outdated`**           | Each extension tab in `browser.list_tabs` carries `extension_version` (what the extension reported when it connected). When that is a plain `MAJOR.MINOR.PATCH` lower than the server's version, the tab also carries `extension_outdated: true`: results from that tab may lack fields newer servers add, so update or reload the extension. An extension older than 0.39.0 sends no version, so its tabs carry neither field; cdp-direct tabs never do.                               |
-| **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                                                |
+| Behavior                           | What to know                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shadow DOM / iframe piercing**   | `snapshot`, `find`, `state`, `click`, `type`, `press` and `drag`'s selector endpoints reach into OPEN shadow roots and same-origin iframes, nested arbitrarily. They CANNOT reach CLOSED shadow roots (`attachShadow({mode:"closed"})`) or cross-origin iframes — there is no CDP-level workaround for either. A selector that matches structurally-identical twins across roots comes back with `ambiguous: true`; use it immediately and never cache it in the map.                                                                                                                                                                                                                                                                                                                                            |
+| **Occlusion guard**                | `browser.click` hit-tests the target's own click point before dispatching. If a different element covers that point, the call returns `ok:false` describing the blocker instead of clicking the wrong thing blindly. Pass `force:true` to bypass the guard intentionally: a covered target is then clicked at its position. A target with no visible box fails before the hit-test, see [A target with no visible box](#a-target-with-no-visible-box-and-a-target-that-takes-no-focus).                                                                                                                                                                                                                                                                                                                          |
+| **`near_misses`**                  | When `browser.find` matches nothing, the response can carry up to 3 ranked candidates as hints for a follow-up `find` call — they are suggestions for re-finding, never selectors to click on directly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **`browser.flow` recipes**         | The persistent map can store named, replayable flow recipes validated against the exact `browser.flow` step grammar, and the placeholder privacy rule that protects them — see [Persistent UI map](#persistent-ui-map).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **A cancelled flow is `ok:true`**  | Stopping a flow from the popup returns `{ ok: true, stopped_by: "cancelled", steps_completed: N, results: [...] }` — a success, not an error. The steps that already ran really ran, and reporting them as a failure (or dropping them) would be a lie about irreversible work. See [Stopping a running flow](#stopping-a-running-flow--the-kill-switch).                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Detached flows keep acting**     | `browser.flow({ detach: true })` returns at once and keeps clicking **between agent turns** — with no agent attached, and for up to 30 minutes. The popup's Stop button is the kill switch, and the only actor guaranteed to be present. One detached flow per tab. See [Detached execution](#detached-execution--flow_status--flow_cancel).                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **`extension_outdated`**           | Each extension tab in `browser.list_tabs` carries `extension_version` (what the extension reported when it connected). When that is a plain `MAJOR.MINOR.PATCH` lower than the server's version, the tab also carries `extension_outdated: true`: results from that tab may lack fields newer servers add, so update or reload the extension. When it is higher, the tab carries `extension_newer: true` instead: the server runs older code, so restart it (`browser-link stop`, then restart the agent). Either flag comes with `version_note`, a plain sentence naming what does not work until then. An extension older than 0.39.0 sends no version, so its tabs carry none of these fields; cdp-direct tabs never do. The extension popup shows the same skew, in either direction, in its version banner. |
+| **No auto-resume after a restart** | Chrome can terminate the extension's MV3 service worker mid-flow. browser-link marks such a flow `failed` / `worker-terminated` on the next worker start and NEVER resumes it — a resume could double-act on irreversible work whose real progress died with the worker. Its manifest is gone; re-derive from the page before relaunching. See [No auto-resume](#no-auto-resume-after-a-worker-restart).                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 #### `retargeted` — a click that would land on an ancestor
 
@@ -1790,12 +1794,13 @@ never lets it appear:
   which Chrome consults _before_ it prompts — by holding it there, so Chrome
   cannot prompt and the download does not complete. The held download's URL
   is then fetched like the `url` mode below. Chrome's own download is
-  cancelled and erased only after the file is saved.
+  cancelled and erased only after the file is saved, and only when the file
+  fetched again is certainly the same one (see below).
 - `browser.download({ tab_id, url })` fetches an http(s), `blob:` or
   `data:` URL in the page, with the page's cookies.
 
 The server writes the bytes into the downloads directory and returns
-`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download? }`.
+`{ ok, state: "complete" | "interrupted" | "timeout", path, filename, bytes, mime, url, error?, chrome_download?, mark_of_the_web? }`.
 Timeouts and failures still report what is known (URL, MIME type, bytes
 received so far). `browser.events` gets `download-started` and
 `download-finished` entries.
@@ -1811,6 +1816,23 @@ be tied to the tab with certainty, the tool answers
 failed" and `chrome_download: "left_in_chrome"`; the file is not saved. The
 agent can pass the file's link as `url`, or ask you. When nothing appeared the
 state is `timeout`.
+
+**Nothing is erased on a doubt (selector mode).** The server fetches the
+captured download a second time, with GET. Before it saves that file, and so
+before Chrome's own copy may be erased, it compares the second fetch with what
+Chrome reported for its download: the exact size, the MIME type (when Chrome
+knew it) and the final URL. When anything differs (a server that answers 200
+with an HTML error page, a one-time link that now redirects to a login page, a
+different file), or when Chrome did not report the size (no `Content-Length`,
+or an extension older than the server), the second fetch cannot be proven
+identical: nothing is saved and Chrome's download is left untouched: the call ends
+`ok: false`, `state: "interrupted"`, `chrome_download: "left_in_chrome"`, with "the
+capture failed" and every difference in `error`; use Chrome's own copy, in its
+downloads list (chrome://downloads). Chrome does not report which HTTP method
+started a download, so a download produced by a POST cannot be recognised
+directly: fetched again with GET it gets an error status, another page or
+other bytes, and fails the comparison. A capture that does report a method
+other than GET is never fetched again.
 
 **What happens to Chrome's own download (`chrome_download`, selector mode).**
 The extension holds the captured download until the server says whether the
@@ -1854,6 +1876,29 @@ Only you choose the directory: an agent's `filename` must be a plain
 basename (no separators, no `..`), and an existing file is never
 overwritten (`report (1).csv`).
 
+**Executable files are refused.** A file whose name ends in a type that runs
+or installs when opened (`.exe`, `.msi`, `.bat`, `.cmd`, `.com`, `.ps1`, `.lnk`,
+`.scr`, `.js`, `.vbs`, `.hta`, `.jar`, `.reg`, `.msix`, `.sh`, `.dmg` and similar; any
+case, judged by the last extension, so `invoice.pdf.exe` is an `.exe`) is
+not written: the call ends `ok: false` and `error` names the setting. Whether
+the name came from the agent or the page does not matter. Only you can allow
+them, from the console (the Admin window shows the setting read-only):
+
+```bash
+browser-link config set downloads.allow-executables on   # off (the default) refuses them again
+browser-link config get downloads.allow-executables
+```
+
+**Mark-of-the-Web on Windows.** Every file the server saves on Windows gets
+the same `Zone.Identifier` alternate data stream Chrome writes on its own
+downloads (`ZoneId=3`, the Internet zone, with `ReferrerUrl` the page and
+`HostUrl` the download when they are http(s) URLs; a `data:` or `blob:` URL is
+left out), so SmartScreen and Office Protected View treat it as coming from
+the web. The result says `mark_of_the_web: "written"`. Where the stream cannot
+be written (a FAT or exFAT drive, some network shares) the file is kept and
+the result says `mark_of_the_web: "failed"` with the reason in
+`mark_of_the_web_error`. Other systems get no such field.
+
 Why not just tell Chrome to save without asking? Because an extension
 cannot: Chromium answers `Browser.setDownloadBehavior` and
 `Page.setDownloadBehavior` with "Not allowed" for `chrome.debugger`
@@ -1862,7 +1907,8 @@ when the user's "Ask where to save" setting is on. Fetching the file a
 second time in the page sidesteps both — with these limits:
 
 - A download produced by a one-shot POST form or a single-use token cannot
-  be fetched again; it comes back `interrupted` with the HTTP error.
+  be fetched again; it comes back `interrupted` with the HTTP error or the
+  difference from what Chrome reported, and Chrome keeps its own copy.
 - A `blob:` URL the page revoked right after the click is gone.
 - 25 MiB per file.
 - `chrome.downloads` gives no tab id, so selector mode never guesses: a
@@ -1891,7 +1937,9 @@ is not atomic.
 | older     | new    | The older extension cancels and erases Chrome's download before the server fetches it, takes downloads by referrer and timing, and sends no id to settle; no `chrome_download`.                                                                                                               |
 
 `browser.list_tabs` marks an extension older than the server with
-`extension_outdated: true`.
+`extension_outdated: true`, and one newer than the server with
+`extension_newer: true`; either comes with `version_note`, which names what
+does not work until the extension is reloaded or the server restarted.
 
 ## Activity trail
 
@@ -2092,14 +2140,16 @@ auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
 and an update check; and install or remove the instructions block per client.
 Since 1.0.0 it only **shows** the settings that widen what an agent may see or
 do: each MCP tool, cdp-direct on or off, its port and grant lifetime, MCP client
-registration, and the two hide settings (password values, sensitive values in the
-trail) appear as a value plus the console command that changes it
+registration, the two hide settings (password values, sensitive values in the
+trail) and whether `browser.download` may save executable file types appear as a
+value plus the console command that changes it
 (`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
 `browser-link config set cdp-direct.port <port>`,
 `browser-link config set cdp-direct.grant-ttl <minutes>`,
 `browser-link install --client <id>`,
 `browser-link config set hide-password-values <on|off>`,
-`browser-link config set activity.hide-sensitive <on|off>`), and the server
+`browser-link config set activity.hide-sensitive <on|off>`,
+`browser-link config set downloads.allow-executables <on|off>`), and the server
 refuses a write for them if one arrives, with or without a confirmation code.
 Each of these rows has an info control next to its label. On hover, keyboard
 focus or click it says: "This setting is changed from the console, not from
@@ -2387,6 +2437,18 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   result lists everything that was stopped, whether it installed, npm's own
   error lines when it failed (not the log path npm prints last) and the next
   step. Once an update has finished, `u` does nothing.
+- **"Installed" means the version on disk was read back.** Before npm runs,
+  the console closes the databases it opened (Doctor and the map screens open
+  the map), and npm runs in your home directory, not the directory the console
+  was started from. After npm exits without an error, the console asks the
+  same npm for its global folder (`npm root -g`) and reads the installed
+  package's version there. Only that version decides the result: another
+  version than the one requested is a failure, and a version that cannot be
+  read leaves the update unconfirmed; both say to run `npm install -g` and
+  `npm ls -g` in a terminal. A confirmed install ends with the last step:
+  reload the extension in `chrome://extensions`. The console cannot see the
+  extension, so it does not check that; once a tab reconnects, the popup and
+  `browser.list_tabs` report a skew in either direction.
 - **A server is stopped only on Windows.** A running primary has loaded the
   package's native module (better-sqlite3) once it opened its map or activity
   database, and Windows keeps a loaded module's file locked, so npm cannot
@@ -2400,6 +2462,11 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
   stopped on any system. If one of them still locks the package on Windows,
   the result says so: close every browser-link console and MCP client, then
   run `npm install -g @jobshimo/browser-link` yourself in a new terminal.
+  Closing a database does not release that lock: Node never unloads a native
+  module. When the console itself loaded it (Doctor or a map screen opened the
+  map), the update on Windows refuses before stopping or installing anything:
+  close the console, run `browser-link stop` in a new terminal (it does not
+  open the map), close your MCP clients, then run `npm install -g` yourself.
 
 ### Idle-disconnect TTL
 

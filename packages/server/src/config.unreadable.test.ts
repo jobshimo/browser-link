@@ -236,6 +236,7 @@ describe('defaultSettings is derived from the loader, not hand-copied (S6.4)', (
         'activityHideSensitive',
         'activityRecordPayloads',
         'allowedExtensionIds',
+        'allowExecutableDownloads',
         'autoReelect',
         'cdpDirectEnabled',
         'cdpDirectGrantTtlMinutes',

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, type Socket } from 'node:net';
 import * as paths from '../map/paths.js';
-import { IpcServer } from './server.js';
+import { IPC_MAX_PREAUTH_LINE_BYTES, IpcServer } from './server.js';
 import { SERVER_INSTRUCTIONS } from '../tools/server-instructions.js';
 import { IPC_PROTOCOL_VERSION, encodeFrame, parseFrame, type Frame } from './protocol.js';
 import { readToken } from './token.js';
@@ -454,5 +454,151 @@ describe('IpcServer settings.push', () => {
     );
     const frames = await readNFrames(s, 1, 1500);
     expect(frames[0]).toEqual({ kind: 'settings.push-ack', notified: 0 });
+  });
+});
+
+describe('IpcServer pre-authentication limits', () => {
+  /** Resolves when the server closes the connection, false after `ms`. */
+  function closedWithin(s: Socket, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (s.destroyed) return resolve(true);
+      const timer = setTimeout(() => resolve(false), ms);
+      s.once('close', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  }
+
+  test('destroys an accepted socket that never completes the hello', async () => {
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      helloTimeoutMs: 150,
+    });
+    await server.start();
+    const silent = await dial(server.boundAddress());
+    expect(await closedWithin(silent, 3000)).toBe(true);
+    expect(server.sessionCount()).toBe(0);
+  });
+
+  test('a completed hello cancels the deadline', async () => {
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      helloTimeoutMs: 150,
+    });
+    await server.start();
+    const s = await dial(server.boundAddress());
+    s.write(
+      encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+    );
+    expect((await readNFrames(s, 1))[0]!.kind).toBe('hello-ack');
+    expect(await closedWithin(s, 500)).toBe(false);
+    expect(server.sessionCount()).toBe(1);
+  });
+
+  test('destroys a socket whose unauthenticated line grows past the bound', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    // No newline: the buffer would grow without limit.
+    s.write('x'.repeat(IPC_MAX_PREAUTH_LINE_BYTES + 1));
+    expect(await closedWithin(s, 3000)).toBe(true);
+    expect(server.sessionCount()).toBe(0);
+  });
+
+  test('destroys a socket whose complete first line is over the bound', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    s.write(`${'y'.repeat(IPC_MAX_PREAUTH_LINE_BYTES + 1)}
+`);
+    expect(await closedWithin(s, 3000)).toBe(true);
+    expect(server.sessionCount()).toBe(0);
+  });
+
+  test('destroys a socket whose multi-byte unterminated remainder is over the bound in bytes', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    // 3 bytes per char: fewer chars than the bound, more bytes than the bound.
+    const chars = Math.ceil(IPC_MAX_PREAUTH_LINE_BYTES / 3) + 1;
+    expect(chars).toBeLessThan(IPC_MAX_PREAUTH_LINE_BYTES);
+    s.write('€'.repeat(chars));
+    expect(await closedWithin(s, 3000)).toBe(true);
+  });
+
+  test('a hello and a post-auth frame pipelined in one chunk are both handled', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    const hello = encodeFrame({
+      kind: 'hello',
+      version: IPC_PROTOCOL_VERSION,
+      token: server.currentToken(),
+    });
+    const big = encodeFrame({
+      kind: 'mcp.notification',
+      payload: { pad: 'p'.repeat(IPC_MAX_PREAUTH_LINE_BYTES * 2) },
+    } as never);
+    s.write(hello + big + encodeFrame({ kind: 'ping' }));
+    const frames = await readNFrames(s, 2);
+    expect(frames.map((f) => f.kind)).toEqual(['hello-ack', 'pong']);
+    expect(server.sessionCount()).toBe(1);
+  });
+
+  test('a legitimate hello well under the bound is still accepted', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    const hello = encodeFrame({
+      kind: 'hello',
+      version: IPC_PROTOCOL_VERSION,
+      token: server.currentToken(),
+    });
+    expect(hello.length).toBeLessThan(IPC_MAX_PREAUTH_LINE_BYTES / 8);
+    s.write(hello);
+    expect((await readNFrames(s, 1))[0]!.kind).toBe('hello-ack');
+  });
+
+  test('a rejected hello stops parsing: a valid hello pipelined behind it opens no session', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    const bad = encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: 'wrong' });
+    const good = encodeFrame({
+      kind: 'hello',
+      version: IPC_PROTOCOL_VERSION,
+      token: server.currentToken(),
+    });
+    s.write(bad + good);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const frames = await readNFrames(s, 1);
+    expect(frames[0]!.kind).toBe('hello-reject');
+    expect((await readNFrames(s, 1, 300)).map((f) => f.kind)).not.toContain('hello-ack');
+    // A session opened by the pipelined hello would have been logged, even
+    // if the socket's close removed it again before the reject frame arrived.
+    const lines = logged.mock.calls.map((c) => String(c[0]));
+    logged.mockRestore();
+    expect(lines.some((l) => l.includes('Proxy connected'))).toBe(false);
+    expect(server.sessionCount()).toBe(0);
+    expect(await closedWithin(s, 3000)).toBe(true);
+  });
+
+  test('a version-mismatch reject also stops parsing', async () => {
+    server = await startEphemeral();
+    const s = await dial(server.boundAddress());
+    const bad = encodeFrame({ kind: 'hello', version: '999', token: server.currentToken() });
+    const good = encodeFrame({
+      kind: 'hello',
+      version: IPC_PROTOCOL_VERSION,
+      token: server.currentToken(),
+    });
+    s.write(bad + good);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const frames = await readNFrames(s, 1);
+    expect(frames[0]!.kind).toBe('hello-reject');
+    expect((await readNFrames(s, 1, 300)).map((f) => f.kind)).not.toContain('hello-ack');
+    // A session opened by the pipelined hello would have been logged, even
+    // if the socket's close removed it again before the reject frame arrived.
+    const lines = logged.mock.calls.map((c) => String(c[0]));
+    logged.mockRestore();
+    expect(lines.some((l) => l.includes('Proxy connected'))).toBe(false);
+    expect(server.sessionCount()).toBe(0);
   });
 });

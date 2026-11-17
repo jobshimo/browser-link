@@ -130,6 +130,10 @@ Uso:
                                 25 MiB). El techo es 64 MiB porque el archivo cruza el socket de
                                 la extensión en base64 dentro de un solo mensaje. Se aplica en
                                 la siguiente descarga, sin reiniciar.
+  browser-link config set downloads.allow-executables <on|off>
+                                Permite que browser.download guarde tipos de archivo ejecutables
+                                (.exe, .msi, .bat, .ps1, ...; apagado por defecto: se rechazan).
+                                Solo se cambia desde la consola.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Muestra la configuración de cdp-direct (ver "browser-link cdp"
                                 más abajo).
@@ -307,6 +311,10 @@ Usage:
                                 ceiling is 64 MiB because the file crosses the extension socket
                                 base64-encoded in one message. Applies to the next download, no
                                 restart needed.
+  browser-link config set downloads.allow-executables <on|off>
+                                Let browser.download save executable file types (.exe, .msi,
+                                .bat, .ps1, ...; off by default: they are refused). Changed from
+                                the console only.
   browser-link config get cdp-direct.enabled | cdp-direct.port | cdp-direct.grant-ttl
                                 Show cdp-direct's configuration (see "browser-link cdp" below).
   browser-link config set cdp-direct.enabled <true|false>

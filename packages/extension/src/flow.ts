@@ -249,6 +249,11 @@ export interface ClickStepResult {
    * and called its own `click()` instead of the mouse; the value is
    * `PROGRAMMATIC_CLICK_NOTE` (owner decision D4). */
   programmatic_click?: string;
+  /** `'not_verifiable'` when where the press landed could not be checked
+   * (a frame element, a JavaScript dialog, a replaced document, no answer);
+   * `hit_check_note` says why. Absent when the landing was verified. */
+  hit_check?: 'not_verifiable';
+  hit_check_note?: string;
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
@@ -589,7 +594,8 @@ export type FlowResult = FlowSuccess | FlowFailure;
  * a row is not worth the tokens. `settle` is kept because it carries NEW
  * information (did the page go quiet, did focus/URL drift), and so are a
  * click result's `hit_element` — where the click actually landed when
- * that differs from the resolved target (see `ClickStepResult`) — and a
+ * that differs from the resolved target (see `ClickStepResult`) — its
+ * `hit_check` / `hit_check_note` when that landing could not be checked, and a
  * drag result's `drag_mode` — whether HTML5 native drag or pointer-only
  * events fired (see `DragStepResult`). */
 function compactActionResult(result: {
@@ -597,6 +603,8 @@ function compactActionResult(result: {
   expect?: ExpectMet;
   hit_element?: string;
   programmatic_click?: string;
+  hit_check?: 'not_verifiable';
+  hit_check_note?: string;
   drag_mode?: string;
 }): {
   ok: true;
@@ -604,6 +612,8 @@ function compactActionResult(result: {
   expect?: ExpectMet;
   hit_element?: string;
   programmatic_click?: string;
+  hit_check?: 'not_verifiable';
+  hit_check_note?: string;
   drag_mode?: string;
 } {
   return {
@@ -612,6 +622,8 @@ function compactActionResult(result: {
     ...(result.expect ? { expect: result.expect } : {}),
     ...(result.hit_element ? { hit_element: result.hit_element } : {}),
     ...(result.programmatic_click ? { programmatic_click: result.programmatic_click } : {}),
+    ...(result.hit_check ? { hit_check: result.hit_check } : {}),
+    ...(result.hit_check_note ? { hit_check_note: result.hit_check_note } : {}),
     ...(result.drag_mode ? { drag_mode: result.drag_mode } : {}),
   };
 }

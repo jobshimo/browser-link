@@ -15,11 +15,74 @@
 <input id="pw" name="pw" type="password" autocomplete="current-password">
 <a id="dl" href="/file.bin">Get report</a>
 <button id="idle" type="button">Do nothing</button>
+<!-- 1.1.0 rules (D4-D6): a target with no box, a field that takes no focus,
+     closed shadow roots, a same-origin and a cross-origin frame, enough
+     buttons to cut a snapshot and a find. -->
+<button id="nobox" type="button" style="display:none">Hidden action</button>
+<div id="nofocus">Plain text block</div>
+<div id="closed-early"></div>
+<div id="closed-late"></div>
+<button id="make-closed" type="button">Make closed root</button>
+<button id="poke-closed" type="button">Poke closed root</button>
+<button id="poke-early" type="button">Poke early closed root</button>
+<iframe id="same-frame" title="same-origin frame" src="/frame.html"></iframe>
+<button id="poke-frame" type="button">Poke same-origin frame</button>
+<button id="poke-frame-late" type="button">Poke same-origin frame later</button>
+<button id="alert-btn" type="button" onclick="alert('e2e alert')">Open an alert</button>
+<iframe id="cross-frame" title="cross-origin frame"></iframe>
+<div id="many">
+  <button type="button">Row action 1</button>
+  <button type="button">Row action 2</button>
+  <button type="button">Row action 3</button>
+  <button type="button">Row action 4</button>
+  <button type="button">Row action 5</button>
+  <button type="button">Row action 6</button>
+  <button type="button">Row action 7</button>
+  <button type="button">Row action 8</button>
+</div>
+<!-- Download situations (S2/S3): each answers a re-fetch differently. -->
+<form id="postform" method="post" action="/post.pdf"><button id="dl-post" type="submit">Post for PDF</button></form>
+<a id="dl-token" href="/token.bin">One-time file</a>
+<a id="dl-chunked" href="/chunked.bin">Chunked file</a>
+<a id="dl-gzip" href="/gzip.bin">Gzip file</a>
 <div id="result" role="status">Nothing yet</div>
 <div id="count">Items: 0</div>
 <ul id="items"></ul>
 <div id="done" hidden>Saved</div>
 <script>
+  // The no-box button still has a handler: a forced click calls click().
+  document.getElementById('nobox').addEventListener('click', () => {
+    document.getElementById('result').textContent = 'Hidden clicked';
+  });
+  // A closed shadow root attached while the page parses (before any page
+  // observer), and one attached on demand later; both reachable only here.
+  const early = document.getElementById('closed-early').attachShadow({ mode: 'closed' });
+  early.innerHTML = '<span>early 0</span>';
+  let late = null;
+  document.getElementById('make-closed').addEventListener('click', () => {
+    late = document.getElementById('closed-late').attachShadow({ mode: 'closed' });
+    late.innerHTML = '<span>late 0</span>';
+  });
+  let pokes = 0;
+  document.getElementById('poke-closed').addEventListener('click', () => {
+    if (late) late.firstChild.textContent = 'late ' + String(++pokes);
+  });
+  document.getElementById('poke-early').addEventListener('click', () => {
+    early.firstChild.textContent = 'early ' + String(++pokes);
+  });
+  // The frame changes during the click itself, or 50 ms later, inside the
+  // settle wait: both must be counted.
+  function pokeFrame() {
+    const d = document.getElementById('same-frame').contentDocument;
+    d.getElementById('mark').textContent = 'poked ' + String(++pokes);
+  }
+  document.getElementById('poke-frame').addEventListener('click', pokeFrame);
+  document.getElementById('poke-frame-late').addEventListener('click', () => {
+    setTimeout(pokeFrame, 50);
+  });
+  // Another origin: the same server under the other loopback name.
+  const other = location.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+  document.getElementById('cross-frame').src = 'http://' + other + ':' + location.port + '/frame.html';
   // Each submit (button click or Enter in the input) appends the input value to
   // the list, updates #result/#count at once, and reveals #done 300 ms later so
   // wait_for has a late effect to wait on.

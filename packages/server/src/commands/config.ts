@@ -1,5 +1,6 @@
 import {
   DEFAULT_ACTIVITY_HIDE_SENSITIVE,
+  DEFAULT_ALLOW_EXECUTABLE_DOWNLOADS,
   DEFAULT_DOWNLOADS_MAX_MB,
   DEFAULT_HIDE_PASSWORD_VALUES,
   MAX_CDP_DIRECT_PORT,
@@ -11,6 +12,7 @@ import {
   MIN_GRANT_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
   activityHidesSensitive,
+  allowsExecutableDownloads,
   clampCdpDirectPort,
   clampGrantTtlMinutes,
   clampIdleTtlMinutes,
@@ -104,6 +106,11 @@ export interface ConfigI18n {
   invalidDownloadsMaxMbValue: (raw: string) => string;
   downloadsMaxMbSetSaved: (label: string) => string;
   downloadsMaxMbCeilingNote: string;
+  allowExecutablesLabel: string;
+  allowExecutablesOn: string;
+  allowExecutablesOff: string;
+  invalidAllowExecutablesValue: (raw: string) => string;
+  allowExecutablesSetSaved: (label: string) => string;
   mapLearningLabel: string;
   mapLearningOn: string;
   mapLearningOff: string;
@@ -143,9 +150,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
+      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning, hide-password-values, activity.hide-sensitive.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Unknown config action: ${action}. Use get, set or restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -186,6 +193,15 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     downloadsMaxMbSetSaved: (label) =>
       `downloads.max-mb set to ${label}. Applies to the next browser.download, no restart needed.`,
     downloadsMaxMbCeilingNote: ` ${MAX_DOWNLOADS_MAX_MB} MiB is the ceiling: the file crosses the extension socket base64-encoded in one message.`,
+    allowExecutablesLabel: 'downloads.allow-executables',
+    allowExecutablesOn:
+      'on: browser.download may save executable file types; on Windows they carry the Mark-of-the-Web',
+    allowExecutablesOff:
+      'off: browser.download refuses executable file types (.exe, .msi, .bat, .ps1, .lnk, .js, ...)',
+    invalidAllowExecutablesValue: (raw) =>
+      `Invalid downloads.allow-executables value: "${raw}". Use "on" or "off".`,
+    allowExecutablesSetSaved: (label) =>
+      `downloads.allow-executables set to ${label}. Applies to the next download, no restart needed.`,
     mapLearningLabel: 'map-learning',
     mapLearningOn: 'on (default)',
     mapLearningOff: 'off',
@@ -226,9 +242,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
+      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, map-learning, hide-password-values, activity.hide-sensitive.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Acción de config desconocida: ${action}. Usá get, set o restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -270,6 +286,15 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     downloadsMaxMbSetSaved: (label) =>
       `downloads.max-mb configurado a ${label}. Se aplica en la próxima browser.download, sin reiniciar.`,
     downloadsMaxMbCeilingNote: ` ${MAX_DOWNLOADS_MAX_MB} MiB es el máximo: el archivo cruza el socket de la extensión codificado en base64 en un solo mensaje.`,
+    allowExecutablesLabel: 'downloads.allow-executables',
+    allowExecutablesOn:
+      'activado: browser.download puede guardar tipos de archivo ejecutables; en Windows llevan la Mark-of-the-Web',
+    allowExecutablesOff:
+      'desactivado: browser.download rechaza los tipos de archivo ejecutables (.exe, .msi, .bat, .ps1, .lnk, .js, ...)',
+    invalidAllowExecutablesValue: (raw) =>
+      `Valor de downloads.allow-executables inválido: "${raw}". Usá "on" u "off".`,
+    allowExecutablesSetSaved: (label) =>
+      `downloads.allow-executables configurado a ${label}. Se aplica en la próxima descarga, sin reiniciar.`,
     mapLearningLabel: 'map-learning',
     mapLearningOn: 'activado (por defecto)',
     mapLearningOff: 'desactivado',
@@ -368,6 +393,7 @@ export function listConfig(language: Language = 'en'): string {
     getCdpDirectGrantTtlLine(language),
     getDownloadsDirLine(language),
     getDownloadsMaxMbLine(language),
+    getAllowExecutablesLine(language),
     getMapLearningLine(language),
     getHidePasswordValuesLine(language),
     getActivityHideSensitiveLine(language),
@@ -672,6 +698,40 @@ export function setDownloadsMaxMb(rawValue: string, language: Language = 'en'): 
   return t.downloadsMaxMbSetSaved(t.downloadsMaxMbValue(mb) + note) + ceiling;
 }
 
+/** One formatted line describing whether browser.download saves executable types. */
+export function getAllowExecutablesLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const value = onOffLabel(
+    allowsExecutableDownloads(loadConfig()),
+    DEFAULT_ALLOW_EXECUTABLE_DOWNLOADS,
+    t.allowExecutablesOn,
+    t.allowExecutablesOff,
+    t,
+  );
+  return `  ${t.allowExecutablesLabel}   ${value}`;
+}
+
+/**
+ * `config set downloads.allow-executables <on|off>`. Console only: it widens
+ * what an agent may do (see admin/descriptor.ts). "on" writes `true`; "off"
+ * removes the key (off is the default). No live push: the server reads
+ * config.json on every download.
+ */
+export function setAllowExecutables(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const allow = parseOnOff(rawValue, t.invalidAllowExecutablesValue);
+  saveConfig({ allowExecutableDownloads: allow ? true : undefined });
+  return t.allowExecutablesSetSaved(
+    onOffLabel(
+      allow,
+      DEFAULT_ALLOW_EXECUTABLE_DOWNLOADS,
+      t.allowExecutablesOn,
+      t.allowExecutablesOff,
+      t,
+    ),
+  );
+}
+
 /** One formatted line describing the `mapLearningEnabled` state. Only an
  * explicit `false` is off, same rule the learner applies. */
 export function getMapLearningLine(language: Language = 'en'): string {
@@ -848,6 +908,8 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
       downloadsDir:
         'folder browser.download writes into (config set downloads.dir; not set: <data dir>/downloads)',
       downloadsMaxMb: 'per-file size cap of browser.download, in MiB (config set downloads.max-mb)',
+      allowExecutableDownloads:
+        'browser.download may save executable file types (config set downloads.allow-executables)',
       instructionsAutoRefresh: 'refresh of the agent-instructions blocks at server start',
       skipWelcome: 'the console skips its welcome screen',
       noticeAcknowledged: 'you confirmed the product notice in the console',
@@ -901,6 +963,8 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
         'carpeta donde browser.download guarda los archivos (config set downloads.dir; sin valor: <directorio de datos>/downloads)',
       downloadsMaxMb:
         'tamaño máximo por archivo de browser.download, en MiB (config set downloads.max-mb)',
+      allowExecutableDownloads:
+        'browser.download puede guardar tipos de archivo ejecutables (config set downloads.allow-executables)',
       instructionsAutoRefresh: 'refresco de los bloques de instrucciones al arrancar el servidor',
       skipWelcome: 'la consola salta su pantalla de bienvenida',
       noticeAcknowledged: 'confirmaste el aviso del producto en la consola',
@@ -980,6 +1044,7 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
     if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
     if (key === 'downloads.dir') return getDownloadsDirLine(language);
     if (key === 'downloads.max-mb') return getDownloadsMaxMbLine(language);
+    if (key === 'downloads.allow-executables') return getAllowExecutablesLine(language);
     if (key === 'map-learning') return getMapLearningLine(language);
     if (key === 'hide-password-values') return getHidePasswordValuesLine(language);
     if (key === 'activity.hide-sensitive') return getActivityHideSensitiveLine(language);
@@ -1002,6 +1067,10 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
   if (key === 'downloads.max-mb') {
     if (value === undefined) throw new Error(t.usage);
     return setDownloadsMaxMb(value, language);
+  }
+  if (key === 'downloads.allow-executables') {
+    if (value === undefined) throw new Error(t.usage);
+    return setAllowExecutables(value, language);
   }
   if (key === 'map-learning') {
     if (value === undefined) throw new Error(t.usage);

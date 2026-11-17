@@ -2,6 +2,7 @@ import {
   DEFAULT_CDP_DIRECT_PORT,
   DEFAULT_GRANT_TTL_MINUTES,
   activityHidesSensitive,
+  allowsExecutableDownloads,
   hidesPasswordValues,
   type BrowserLinkConfig,
 } from '../config.js';
@@ -23,8 +24,9 @@ import { ADMIN_I18N, type AdminI18n } from './i18n.js';
  * actions: they would end the very primary that answers the popup, so they
  * are readouts carrying the console command instead. So are the settings
  * that widen what an agent may do (the tool set, cdp-direct and its grant
- * lifetime, MCP client registration, and what is hidden from an agent:
- * password values, sensitive trail rows): anything that can reach the bridge
+ * lifetime, MCP client registration, what is hidden from an agent:
+ * password values, sensitive trail rows, and whether downloads may be
+ * executable types): anything that can reach the bridge
  * could otherwise grant them, so only the console changes them.
  */
 
@@ -305,6 +307,13 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
     readout('downloadsDir', t.downloadsDir, input.downloadsDir, {
       hint: 'browser-link config set downloads.dir <absolute-path|default>',
     }),
+    // Saving executable types widens what an agent may do: console only.
+    consoleReadout(
+      'allowExecutableDownloads',
+      t.allowExecutableDownloads,
+      allowsExecutableDownloads(config) ? t.executablesAllowed : t.executablesRefused,
+      { hint: onOffCommand('downloads.allow-executables', allowsExecutableDownloads(config)) },
+    ),
     // These two keep their timestamped `settings.update` path (popup and
     // `config set`), so the admin panel only shows them.
     readout(
