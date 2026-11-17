@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 7. Revision 1 (`5486e34`) was audited as
+Status: revision 8. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,23 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 8 (2026-11-17)
+
+Arch's decisions on slice 10 (3.2 code block and text, 3.4 "As built"
+paragraph):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `DialogWatch` (`isOpen()`) lives in core `session/page-driver.ts`, outside `ports/`: optional and read-only, given by the extension only (its tab's pending dialog), transitional until slice 12 hands it `TabSession` state | the extension tracks JavaScript dialogs and cdp-direct does not; the click path needs to read that state, not own it |
+| 2 | `Pointer` is input only: `mouse(event: MouseEventParams): Promise<void>`, a failed dispatch rejects. The race of each mouse event against `dialogs?.isOpen()` (polled on `Clock`) and the time-bounded watched move are core page-driver operations (`dispatchMouseEvents`, `dispatchWatchedMove`, `dialogOpen`), not port members. cdp-direct passes no `DialogWatch`, so its behavior stays as it was | a `Pointer` reporting `{ dialog }` and `dialogOpen()` put dialog observation into an input port and duplicated `DialogWatch` |
+| 3 | The outcome-mapping contract lives in `core/src/tools/outcome-mapping.contract.ts`, not `ports/contract/`; the find and click results and error texts live in `core/src/support/action-results.ts` (the flow engine re-exports them) | the contract speaks `ToolOutcome` and `ports` imports nothing in core; `actions` may not import `flow` (5.2) |
+| 4 | Unifying the two click paths (cdp-direct tracking dialogs) stays out of this program | it is a behavior change (7(e)) |
+
+Also required before slice 10 merges: the differential must not need a
+rerun. Its one flaky field (`pending_wrap_up` at the first `flow_status`)
+came from a polled `browser.evaluate` wait in the harness, each call counted
+as pending work; the wait is now one in-page evaluate (`run.mjs`).
 
 ### Revision 7 (2026-11-17)
 
@@ -190,6 +207,9 @@ Consequences, measured:
   `evaluateObserverJs`, `dispatchKeyEvent`, `waitForLoad`) and a 14-case
   dispatch (`transport.ts` `callCdpTool`). Only the five `perform*` bodies are
   guarded, by an AST comparison (`cdp/transport-parity.test.ts` `HANDLERS`).
+  (Slice 10, 1.4.16, moved `performFind` and `performClick` into core
+  `actions/`, run by both transports through the tool registry; `HANDLERS`
+  now lists the other three.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -368,7 +388,8 @@ packages/core/src/
                     flow-registry.ts flow-history.ts detached-flows.ts
   actions/          perform-find.ts perform-click.ts perform-type.ts
                     perform-press.ts perform-wait-for.ts perform-drag.ts
-                    click-landing.ts frame-watch.ts
+                    click-landing.ts (the frame watch already lives in
+                    session/page-driver.ts, since slice 9)
   tools/            registry.ts (ToolRegistry, cdpToolSupport())
                     failure.ts (ToolFailure, ToolOutcome)
                     interaction.ts wait-for.ts drag.ts page-read.ts
@@ -579,14 +600,29 @@ export interface Settler {            // takeObserverMark, settleWithChanges, ru
   mark(settle: SettleParams | null): Promise<ObserverMarkResult>;
   settle(settle: SettleParams | null, mark: ObserverMarkResult): Promise<SettleReport | undefined>;
 }
-export interface PageDriver {
-  evaluator: Evaluator; keyboard: Keyboard; settler: Settler; page: PageInfo;
+export interface Pointer {             // input only (slice 10, revision 8)
+  /** One Input.dispatchMouseEvent; a failed dispatch rejects. */
+  mouse(event: MouseEventParams): Promise<void>;
 }
-// Join with their first callers: Pointer.mouse (slice 10),
-// Keyboard.insertText (11), CdpEvents.waitFor (14).
+export interface PageDriver {
+  evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; settler: Settler; page: PageInfo;
+}
+// Join with their first callers: Keyboard.insertText (11), CdpEvents.waitFor (14).
 ```
 
-`core/session/page-driver.ts` `createPageDriver({ session, page, clock })`
+The pointer port is the same for both transports. What differed between
+their click paths before slice 10 is decided in the core page driver
+(`session/page-driver.ts`), which holds `Clock` and the optional, read-only
+`DialogWatch` (`createPageDriver({ ..., dialogs? })`, outside `ports/`):
+`dispatchMouseEvents` races each event against `dialogs.isOpen()`, polled
+on `Clock`, when a watch is given (the extension: a failed dispatch fails
+the click), and awaits the events in turn without one (cdp-direct);
+`dispatchWatchedMove` bounds the watched move of a click by the budget left
+only without a watch (a failed or late dispatch counts as unanswered).
+`dialogOpen(deps)` reads the watch, false without one. Click uses these
+operations; they are not port members.
+
+`core/session/page-driver.ts` `createPageDriver({ session, page, clock, dialogs? })`
 returns the driver plus the observer lifecycle its transport drives:
 `observer` (the host mirror), `install({ enableRuntime, onTopDocument })`
 (`installObserver` and the binding subscription; each top-document
@@ -678,7 +714,12 @@ connection loss; extension socket closed) stay in each transport and are not
 part of `ToolFailure`.
 
 `defineToolOutcomeMappingContract` (5.3, item 5) feeds both mappings one
-outcome per kind and asserts the table above. Error-path e2e cases (slice 3b)
+outcome per kind and asserts the table above. As built in slice 10 (revision 8): the
+contract lives in `core/src/tools/outcome-mapping.contract.ts` (it speaks
+`ToolOutcome`, and `ports` imports nothing in core); the extension's mapping
+is core `tools/failure.ts` `toolResponse` (its wire is the shared protocol),
+cdp-direct's is `cdp/tool-outcome.ts` `cdpToolResult`; `thrown` carries the
+thrown value as `cause`, which cdp-direct rethrows unchanged. Error-path e2e cases (slice 3b)
 pin the real strings in Chrome (and the trail row for `sensitive`) before slice 10 moves the first handler, and
 the differential records `ok: false` results with their `error` text
 unmasked.

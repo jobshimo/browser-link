@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.16](https://github.com/jobshimo/browser-link/compare/v1.4.15...v1.4.16) (2026-11-17)
+
+### Notes
+
+- Slice 10 of the service worker plan; no behaviour change. `browser.find` and `browser.click` now have one body, in core (`packages/core/src/actions/perform-find.ts`, `perform-click.ts`, and `click-landing.ts` for the move check and the landing read), and both transports run them through a new tool registry (`packages/core/src/tools/`): each entry names what it requires from the transport, keeps each transport's own argument coercion (a missing `text` or `selector` still reads `"undefined"` on the extension and `""` on cdp-direct), and returns a typed outcome. The failure kinds (`action`, `sensitive`, `thrown`, `unknown-tool`, `unsupported`) are mapped once per transport: the extension's `tool.response` in core, cdp-direct's thrown errors in `cdp/tool-outcome.ts`; both pass the same outcome-mapping contract. Every error text is the one before.
+- The page driver gains the pointer, an input-only port (`Pointer.mouse(event)`: one mouse event, a failed dispatch rejects). How a click dispatches stays per transport, decided in the core page driver (design revision 8): the extension's driver is given the tab's JavaScript dialog state and races each mouse event against it, as before; cdp-direct's is given none and still bounds the watched move by the time left, counting a failed one as unanswered. The Pointer contract runs on the in-memory session and, in the CI e2e job, on a real Chrome.
+- The find and click result types and error texts moved from the flow engine to core's `support/action-results.ts` (the flow engine re-exports them). `performFind` and `performClick` leave the parity test's list.
+- `background.ts` shrinks by 415 lines and its line budget goes from 4808 to 4393.
+
 ## [1.4.15](https://github.com/jobshimo/browser-link/compare/v1.4.14...v1.4.15) (2026-11-17)
 
 No tool or wire-format changes.

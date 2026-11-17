@@ -1202,11 +1202,14 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   );
   const flowId = started.flow_id;
   const ids = { tab_id: T, flow_id: flowId };
-  // Polled: only the last read (true) is kept in the record.
-  for (const t0 = now(); (await pageValue(T, `${TICKS} >= 2`, { poll: true })) !== true;) {
-    if (now() - t0 > 10_000) throw new StepFailure('flow_status', 'the flow never clicked #tick');
-    await sleep(100);
-  }
+  // The wait is inside ONE evaluate (see `scrollToBottom`): the server counts
+  // every evaluate as pending_wrap_up, so a polled wait made the count the
+  // next result carries depend on how fast the flow ticked.
+  const ticked = await pageValue(
+    T,
+    `new Promise((r) => { const t0 = Date.now(); const f = () => (${TICKS} >= 2 ? r(true) : Date.now() - t0 > 10000 ? r(false) : setTimeout(f, 20)); f(); })`,
+  );
+  if (ticked !== true) throw new StepFailure('flow_status', 'the flow never clicked #tick');
   await call(
     'browser.flow_status',
     ids,

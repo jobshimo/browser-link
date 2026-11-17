@@ -5,12 +5,13 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 /*
- * PARITY GUARD for the hand-mirrored action handlers. `performFind`,
- * `performClick`, `performType`, `performPress` and `performWaitFor` exist
- * twice: in the extension's `background.ts` (driving a tab through
- * `chrome.debugger`) and in `cdp/transport.ts` (driving a cdp-direct target
- * through a raw CDP client). Extracting them into one shared module is a
- * 1.1 refactor; until then this test keeps the two copies from drifting.
+ * PARITY GUARD for the hand-mirrored action handlers. `performType`,
+ * `performPress` and `performWaitFor` exist twice: in the extension's
+ * `background.ts` (driving a tab through `chrome.debugger`) and in
+ * `cdp/transport.ts` (driving a cdp-direct target through a raw CDP
+ * client). Each leaves this list when its slice moves it into core
+ * (`performFind` and `performClick` left with slice 10, into core's
+ * `actions/`); until then this test keeps the two copies from drifting.
  *
  * How it compares: each handler BODY (not its signature, whose first
  * parameter is necessarily transport-specific) is re-printed from the
@@ -30,13 +31,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const EXT_BACKGROUND = join(here, '..', '..', '..', 'extension', 'src', 'background.ts');
 const SRV_TRANSPORT = join(here, 'transport.ts');
 
-const HANDLERS = [
-  'performFind',
-  'performClick',
-  'performType',
-  'performPress',
-  'performWaitFor',
-] as const;
+const HANDLERS = ['performType', 'performPress', 'performWaitFor'] as const;
 type Handler = (typeof HANDLERS)[number];
 
 /** A statement block present on one side only. `start` is the exact
@@ -157,8 +152,8 @@ describe('perform* parity guard: extension background.ts vs server cdp/transport
   });
 
   test('the comparison is not vacuous: a one-token change is reported', () => {
-    const { server } = normalised('performClick');
-    const mutated = server.map((l) => l.replace("'not_verifiable'", "'verified'"));
+    const { server } = normalised('performType');
+    const mutated = server.map((l) => l.replace("'typed'", "'pressed'"));
     expect(firstDifference(server, mutated)).toMatch(/line \d+:/);
   });
 });
