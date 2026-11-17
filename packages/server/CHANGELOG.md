@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.0](https://github.com/jobshimo/browser-link/compare/v1.2.0...v1.3.0) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension and the server must be the same release.
+
+### ⚠ BREAKING CHANGES
+
+- **idle:** the popup no longer sets the idle disconnect. `browser-link config set idle-ttl <minutes|never>` is the only value, and the server pushes it to the extension when it connects. A value chosen earlier in the popup is ignored; while it differs, the popup shows it with the console command that restores it. The server reads the pushed value from `config.json`, never from the IPC frame. Remedy: `browser-link config set idle-ttl <minutes|never>`.
+
+### Features
+
+- **claims:** `browser-link config set claim-ttl <minutes|never|default>` sets how long a tab claim lasts without activity. The default is 10 minutes (`default` restores it), the value is read on every check so no restart is needed, and `never` gives the claim `ttl_ms: null`: only a release, a disconnect or a reset ends it. A `ttl_minutes` an agent asks for is still capped at 60.
+- **admin:** the Admin window has a "Console settings" section: one notice at the top explains once why these settings are not changed there, and every console-only setting shows its current value, its exact console command and a Copy button. The hover info control is removed, and descriptor items carry `command`.
+
+### Bug Fixes
+
+- **idle:** a tool call that runs longer than the idle setting no longer gets its tab disconnected. A call in progress holds the tab's idle clock for up to 10 minutes.
+
 ## [1.2.0](https://github.com/jobshimo/browser-link/compare/v1.1.0...v1.2.0) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension and the server must be the same release. The popup and `browser.list_tabs` now say when they are not.
