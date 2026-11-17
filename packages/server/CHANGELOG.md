@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.7](https://github.com/jobshimo/browser-link/compare/v1.4.6...v1.4.7) (2026-11-17)
+
+### Notes
+
+- Slice 5b-2 of the service worker plan; no behaviour change. The UTF-8 byte length, the detached-flow limit and the idle rules now live in `packages/core`, with the compiled copy in `packages/server/src/generated`.
+- The extension's flow labels (`flow-labels.ts`) and idle storage and settings parsing (`idle-settings.ts`) are split out, so the modules that will move to core no longer depend on extension text or storage.
+- A "Core purity" CI step type-checks those modules with no DOM or Node types.
+
 ## [1.4.6](https://github.com/jobshimo/browser-link/compare/v1.4.5...v1.4.6) (2026-11-17)
 
 ### Notes

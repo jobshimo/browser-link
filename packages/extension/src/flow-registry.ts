@@ -4,7 +4,7 @@
  * `flow.ts`), and behind the `flow_status` wire tool that backs
  * `browser.flow_status`.
  *
- * Extracted out of `background.ts` for the same reason `idle-policy.ts`,
+ * Extracted out of `background.ts` for the same reason `idle-settings.ts`,
  * `reconnect-policy.ts` and `flow-recording-policy.ts` were: the service
  * worker itself is untestable (it reaches for `chrome.*` at import time),
  * while THIS is the part with rules worth pinning down — the lifecycle of a
@@ -40,7 +40,7 @@
  */
 
 import type { FlowProgress, FlowResult } from './flow.js';
-import type { Messages } from './i18n.js';
+import { utf8ByteLength } from '@browser-link/core';
 
 /** How many completed flows are kept per tab. Small on purpose — this is a
  * "what just happened on this tab" panel in a 320px-wide popup, not a log. */
@@ -54,27 +54,9 @@ export function flowHistoryKey(tabId: number): string {
   return `flow-history:${tabId}`;
 }
 
-/** Absolute wall-clock ceiling on a DETACHED flow, from the moment it is
- * registered. Mirrors `MAX_DETACHED_FLOW_TIMEOUT_MS` in the server's
- * `browser-dispatch.ts` (which rejects an over-ceiling flow up front) and
- * `cdp/detached-flows.ts` (the cdp-direct runner's own copy); kept in sync
- * manually, since the three packages share no module for it.
- *
- * A detached flow escapes `MAX_FLOW_TIMEOUT_MS` — nothing is parked on it,
- * so the 60s "do not hold a tool call open longer than this" rule simply
- * does not apply. What it must NOT escape is having an end: a flow that
- * keeps acting with no agent attached and no upper bound is exactly the
- * runaway this whole program exists to make impossible. Past the ceiling
- * the flow self-cancels and reports `stopped_by: 'expired'` — a distinct
- * outcome from a human pressing Stop, because "I ran out of time" and
- * "someone stopped me" are different facts about the same partial work.
- *
- * Enforced as a DEADLINE checked at the same points as the cancel flag
- * (see `shouldStop`), never as a timer: a timer would fire while the
- * runner is mid-step and could not stop anything anyway, and a
- * request-derived `setTimeout` duration is a resource-exhaustion finding
- * waiting to happen. */
-export const MAX_DETACHED_FLOW_MS = 30 * 60_000;
+/** Absolute wall-clock ceiling on a DETACHED flow; lives in core's
+ * `support/flow-limits.ts` (shared with the idle rules), re-exported here. */
+export { MAX_DETACHED_FLOW_MS } from '@browser-link/core';
 
 export type FlowOutcome = 'completed' | 'cancelled' | 'failed' | 'expired';
 
@@ -531,58 +513,6 @@ export function formatFlowDuration(ms: number): string {
   return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
 }
 
-/** What the popup calls a flow's tab. The title is best-effort (it is
- * captured asynchronously at flow start and can legitimately be empty on
- * a blank or still-loading tab), so the Chrome tab id is the fallback —
- * an unlabelled Stop button next to an unlabelled flow would be exactly
- * the wrong thing to hand someone trying to stop the right one. */
-export function flowTabLabel(view: { title: string; tabId: number }, t: Messages): string {
-  const trimmed = view.title.trim();
-  return trimmed.length > 0 ? trimmed : t.flowTab(view.tabId);
-}
-
-/** The progress line for one running flow: "step 2/5" outside a repeat,
- * "step 2/5 · iteration 12/50" inside one, "starting…" before the runner
- * has reported its first step. A detached flow is labelled as such: it is
- * the one row where the human is the ONLY party still watching. */
-export function describeFlowProgress(view: RunningFlowView, t: Messages): string {
-  const line = (): string => {
-    if (view.step < 1) return t.flowStarting;
-    const step = t.flowStep(view.step, view.steps);
-    if (view.iteration === undefined || view.iterations === undefined) return step;
-    return `${step} · ${t.flowIteration(view.iteration, view.iterations)}`;
-  };
-  return view.detached ? t.flowDetached(line()) : line();
-}
-
-/** How a stop reason reads in the panel. `worker-terminated` gets a real
- * sentence because it is the one outcome a user cannot otherwise explain:
- * Chrome killed the extension's service worker and the flow died with it.
- * `cancelled` has none: its badge already says so. */
-function stopReasonLabel(reason: Exclude<FlowStopReason, 'cancelled'>, t: Messages): string {
-  return reason === 'expired' ? t.flowExpired : t.flowWorkerTerminated;
-}
-
-/** The one-line summary for a finished flow: outcome, what it got through,
- * and how long it took. Structure and counts only. */
-export function describeFlowHistoryEntry(entry: FlowHistoryEntry, t: Messages): string {
-  const parts = [t.flowStepsDone(entry.stepsCompleted, entry.steps)];
-  if (entry.iterationsCompleted !== undefined) {
-    parts.push(t.flowIterationsDone(entry.iterationsCompleted));
-  }
-  parts.push(formatFlowDuration(entry.durationMs));
-  if (entry.outcome === 'failed' && entry.failedStep !== undefined) {
-    parts.push(t.flowFailedAt(entry.failedStep + 1, entry.failedStepKind));
-  }
-  // Only when it adds something: a `cancelled` entry already says
-  // "cancelled" in its own badge, so repeating it there would be noise.
-  if (entry.stoppedBy !== undefined && entry.stoppedBy !== 'cancelled') {
-    parts.push(stopReasonLabel(entry.stoppedBy, t));
-  }
-  const line = parts.join(' · ');
-  return entry.detached === true ? t.flowDetached(line) : line;
-}
-
 // === Detached-flow records ================================================
 
 /** `chrome.storage.session` key holding ONE detached flow's record. Keyed
@@ -718,7 +648,7 @@ function measureJsonBytes(value: unknown): number {
   try {
     const json = JSON.stringify(value);
     if (typeof json !== 'string') return Number.POSITIVE_INFINITY;
-    return new TextEncoder().encode(json).length;
+    return utf8ByteLength(json);
   } catch {
     return Number.POSITIVE_INFINITY;
   }

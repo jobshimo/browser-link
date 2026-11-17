@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { messages } from './i18n.js';
+import { describeFlowHistoryEntry, describeFlowProgress, flowTabLabel } from './flow-labels.js';
 import {
   MAX_DETACHED_FLOW_RECORDS,
   MAX_DETACHED_MANIFEST_BYTES,
@@ -7,14 +8,11 @@ import {
   MAX_MINIMAL_RECORD_ERROR_CHARS,
   appendFlowHistory,
   createFlowRegistry,
-  describeFlowHistoryEntry,
-  describeFlowProgress,
   detachedFlowKey,
   detachedFlowRecordsToEvict,
   finishedDetachedFlowRecord,
   flowHistoryKey,
   flowIdFromDetachedFlowKey,
-  flowTabLabel,
   formatFlowDuration,
   minimalDetachedFlowRecord,
   parseDetachedFlowRecord,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { shouldAcceptIncomingSettings } from './idle-policy.js';
+import { shouldAcceptIncomingSettings } from './idle-settings.js';
 import {
   DEFAULT_FLOW_RECORDING_ENABLED,
   FLOW_RECORDING_STORAGE_KEY,
@@ -86,7 +86,7 @@ describe('parseIncomingFlowRecordingSettings', () => {
   });
 });
 
-describe('flow-recording reuses idle-policy.shouldAcceptIncomingSettings for precedence', () => {
+describe('flow-recording reuses idle-settings.shouldAcceptIncomingSettings for precedence', () => {
   test('no local write yet — incoming always wins', () => {
     expect(shouldAcceptIncomingSettings(undefined, 500)).toBe(true);
   });

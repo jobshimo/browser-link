@@ -15,7 +15,7 @@ import { HANDSHAKE_CHECK_PATH, HANDSHAKE_REFUSAL_REASONS } from './bridge/handsh
 /*
  * DRIFT GUARD for the idle-TTL clamp — `config.ts`'s `clampIdleTtlMinutes`
  * (and its `MIN`/`MAX`/`DEFAULT_IDLE_TTL_MINUTES` constants) is a
- * hand-duplicate of `packages/extension/src/idle-policy.ts`'s function of
+ * hand-duplicate of `packages/core/src/policies/idle-rules.ts`'s function of
  * the same name, for the same npm-publish-isolation reason `cdp/drift.test.ts`'s
  * siblings are duplicated (see that file's header comment).
  *
@@ -37,7 +37,7 @@ import { HANDSHAKE_CHECK_PATH, HANDSHAKE_REFUSAL_REASONS } from './bridge/handsh
 
 const here = dirname(fileURLToPath(import.meta.url));
 // here = packages/server/src
-const EXT_IDLE_POLICY = join(here, '..', '..', 'extension', 'src', 'idle-policy.ts');
+const EXT_IDLE_POLICY = join(here, '..', '..', 'core', 'src', 'policies', 'idle-rules.ts');
 
 function read(file: string): string {
   return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
@@ -80,7 +80,7 @@ function functionBody(text: string, name: string): string {
 
 const extText = read(EXT_IDLE_POLICY);
 
-describe('config idle-ttl clamp drift guard: packages/extension/src/idle-policy.ts', () => {
+describe('config idle-ttl clamp drift guard: packages/core/src/policies/idle-rules.ts', () => {
   test('MIN/MAX/DEFAULT idle-ttl bounds match the extension original', () => {
     expect(MIN_IDLE_TTL_MINUTES).toBe(numericConst(extText, 'MIN_IDLE_TTL_MINUTES'));
     expect(MAX_IDLE_TTL_MINUTES).toBe(numericConst(extText, 'MAX_IDLE_TTL_MINUTES'));

@@ -1,25 +1,23 @@
-// idle-policy.ts IS shared with popup.ts (unlike the runtime-message shapes
+// idle-settings.ts IS shared with popup.ts (unlike the runtime-message shapes
 // mirrored below) — both entrypoints compile to sibling files under dist/,
 // so a plain relative import works the same way background.ts already
 // imports settle.js/keymap.js.
+import { IDLE_TTL_NEVER } from '@browser-link/core';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
-  IDLE_TTL_NEVER,
   LEGACY_IDLE_TTL_STORAGE_KEY,
   effectiveIdleTtlMinutes,
   idleTtlCommand,
   legacyIdleChoice,
-} from './idle-policy.js';
+} from './idle-settings.js';
 import {
   FLOW_RECORDING_STORAGE_KEY,
   FLOW_RECORDING_UPDATED_AT_STORAGE_KEY,
   normalizeFlowRecordingEnabled,
 } from './flow-recording-policy.js';
 import { describeFlowStep } from './recording.js';
+import { describeFlowHistoryEntry, describeFlowProgress, flowTabLabel } from './flow-labels.js';
 import {
-  describeFlowHistoryEntry,
-  describeFlowProgress,
-  flowTabLabel,
   formatFlowDuration,
   type FlowHistoryEntry,
   type RunningFlowView,

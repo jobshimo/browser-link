@@ -58,6 +58,9 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
+      - name: Core purity (the extension modules slated to move compile as core)
+        run: pnpm exec tsc -p packages/core/tsconfig.purity.json
+
       - name: Test
         run: pnpm test
 

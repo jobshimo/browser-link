@@ -7,7 +7,7 @@
  * lifecycle, the `chrome.storage.session` persistence, and the actual
  * `connectTab` call; this module owns WHEN to retry and at what pace, so
  * the backoff behavior is unit-tested without mocking sockets or storage.
- * Same separation idle-policy.ts already established for the WS-idle sweep.
+ * Same separation idle-settings.ts already established for the WS-idle sweep.
  *
  * The reconnect itself reuses the existing continuity machinery unchanged:
  * `connectTab` reads the preserved `prevTabId:*` session key and asks the

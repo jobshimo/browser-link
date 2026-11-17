@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../.."
+  },
+  "include": [],
+  "files": [
+    "../extension/src/inpage/builders.ts",
+    "../extension/src/inpage/deep-query.ts",
+    "../extension/src/inpage/dom-helpers.ts",
+    "../extension/src/inpage/observer.ts",
+    "../extension/src/settle.ts",
+    "../extension/src/expect.ts",
+    "../extension/src/keymap.ts",
+    "../extension/src/screenshot.ts",
+    "../extension/src/observer-host.ts",
+    "../extension/src/flow.ts",
+    "../extension/src/clock.ts",
+    "../extension/src/flow-registry.ts"
+  ]
+}
