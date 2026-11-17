@@ -28,11 +28,14 @@ import { gzipSync } from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
+  CAPTURE_FILE,
   Cdp,
   DEFAULT_PORTS,
   E2E_DIR,
   PAGE_FILE,
   SERVER_CLI,
+  colorNear,
+  decodePng,
   evaluateUntil,
   extensionCopy,
   freePort,
@@ -67,6 +70,9 @@ const ATTACHMENTS = {
 };
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
 const FRAME_FILE = join(E2E_DIR, 'pages/frame.html');
+/** The exact body /data.json answers (non-ASCII included): network_body must
+ * return it unchanged. */
+const DATA_BODY = '{"e2e":"network-body","n":7,"s":"ñ✓"}';
 /** What each download situation served, by path: `requests` counts every
  * request, `methods` lists them in order. */
 const served = {};
@@ -155,7 +161,7 @@ function json(res) {
   }
 }
 
-/** One MCP tool call: must succeed, then `check(body, text)` must return true
+/** One MCP tool call: must succeed, then `check(body, text, res)` must return true
  * (or a string saying what is wrong). Prints `tool ok ms`, or `label ok ms`
  * when a second check of the same tool needs its own name. */
 async function call(tool, args, check, { print = true, label = tool } = {}) {
@@ -171,7 +177,7 @@ async function call(tool, args, check, { print = true, label = tool } = {}) {
   }
   const ms = Math.round(now() - t);
   if (res.isError) throw new StepFailure(short, `tool error: ${text(res).slice(0, 300)}`);
-  let verdict = check ? check(json(res), text(res)) : true;
+  let verdict = check ? check(json(res), text(res), res) : true;
   if (print && EXPECT_FAIL === short) verdict = 'forced failure (E2E_EXPECT_FAIL)';
   if (verdict !== true) throw new StepFailure(short, `${String(verdict)} (${String(ms)} ms)`);
   if (print) console.log(`${label} ok ${String(ms)}`);
@@ -212,11 +218,17 @@ async function main() {
   // Two attachment files for the download steps (answered again on every GET:
   // selector mode re-fetches the URL Chrome reported); everything else is the page.
   const frameHtml = readFileSync(FRAME_FILE);
+  const captureHtml = readFileSync(CAPTURE_FILE);
   state.http = createServer((q, r) => {
     const path = (q.url ?? '/').split('?')[0];
-    if (path === '/frame.html') {
+    if (path === '/frame.html' || path === '/capture.html') {
       r.writeHead(200, { 'content-type': 'text/html' });
-      r.end(frameHtml);
+      r.end(path === '/frame.html' ? frameHtml : captureHtml);
+      return;
+    }
+    if (path === '/data.json') {
+      r.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      r.end(DATA_BODY);
       return;
     }
     if (serveDownloadSituation(q, r, path)) return;
@@ -479,6 +491,8 @@ async function main() {
     swSession,
   });
 
+  await pageReadAndCapture(T, page);
+
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
   // connected tab and the nine calls above prove that this browser's
@@ -587,6 +601,235 @@ async function clickAfterScroll(T) {
 }
 
 /** A page value read through browser.evaluate (setup, not a checked step). */
+/** Poll a quiet call (not printed, never forced to fail) until `ready(body)`. */
+async function pollUntil(tool, args, ready, label, timeoutMs = 5_000) {
+  const t0 = now();
+  for (;;) {
+    const body = json(await call(tool, args, undefined, { print: false }));
+    if (ready(body)) return body;
+    if (now() - t0 > timeoutMs) {
+      throw new StepFailure(
+        label,
+        `not ready after ${String(timeoutMs)} ms: ${JSON.stringify(body)?.slice(0, 300)}`,
+      );
+    }
+    await sleep(100);
+  }
+}
+
+/** The PNG an image result carries: from the MCP image block when there is
+ * one (browser.screenshot), else from `image_b64` (canvas_screenshot). */
+function pngOf(b, res) {
+  const block = res?.content?.find((c) => c.type === 'image');
+  const b64 = block ? block.data : b?.image_b64;
+  if (typeof b64 !== 'string' || b64.length === 0) return { error: 'no image data' };
+  const bytes = Buffer.from(b64, 'base64');
+  try {
+    return { img: decodePng(bytes), bytes, mimeType: block?.mimeType };
+  } catch (e) {
+    return { error: `image does not decode: ${e.message}` };
+  }
+}
+
+const RED = [255, 0, 0];
+const BLUE = [0, 0, 255];
+
+/**
+ * Page read and capture: the tab navigates to capture.html (a canvas with a
+ * red left half and a blue right half, an open dialog, three console lines
+ * and one fetch with a known body), and each tool is asserted on what it
+ * promises there. Every case fails under E2E_EXPECT_FAIL=<tool>.
+ */
+async function pageReadAndCapture(T, page) {
+  const target = new URL(`capture.html?n=${String(Date.now())}`, page).href;
+  const title = 'e2e capture page';
+  const describe = (b) => JSON.stringify(b)?.slice(0, 300);
+
+  // navigate: lands on the URL, waits for load, and the document is new
+  // (a mark left on the old one is gone). A failed call is recorded, not
+  // thrown: the tab may still have loaded the page, which ping then proves.
+  await pageValue(T, '(window.__e2eOldDocument = true)');
+  await recorded(() =>
+    call(
+      'browser.navigate',
+      { tab_id: T, url: target },
+      (b) => (b?.url === target && b?.title === title) || `landed on ${describe(b)}`,
+    ),
+  );
+  const mark = await pageValue(T, 'window.__e2eOldDocument === true');
+  if (mark !== false) {
+    throw new StepFailure('navigate', `the old document survived (mark ${String(mark)})`);
+  }
+
+  await call(
+    'browser.ping',
+    { tab_id: T },
+    (b) => (b?.url === target && b?.title === title) || `ping says ${describe(b)}`,
+  );
+
+  // state: where the tab is, its viewport, and the open <dialog> by its label.
+  await call('browser.state', { tab_id: T }, (b) => {
+    if (b?.url !== target || b?.title !== title) return `url/title ${describe(b)}`;
+    const { w, h } = b.viewport ?? {};
+    if (!(Number.isInteger(w) && w > 0 && Number.isInteger(h) && h > 0)) {
+      return `viewport ${describe(b.viewport)}`;
+    }
+    const dialog = (b.dialogs ?? []).find((d) => d.label === 'e2e note');
+    return dialog?.role === 'dialog' || `dialogs ${describe(b.dialogs)}`;
+  });
+
+  // canvas_screenshot: the backing store as drawn, and a crop of its right half.
+  await call('browser.canvas_screenshot', { tab_id: T }, (b, _t, res) => {
+    if (b?.ok !== true || b.format !== 'png') return `result ${describe(b)}`;
+    if (b.canvas_pixels?.w !== 64 || b.canvas_pixels?.h !== 32) {
+      return `canvas_pixels ${describe(b.canvas_pixels)}`;
+    }
+    if (b.canvas_size?.w !== 128 || b.canvas_size?.h !== 64) {
+      return `canvas_size ${describe(b.canvas_size)}`;
+    }
+    const { img, error } = pngOf(b, res);
+    if (error) return error;
+    if (img.width !== 64 || img.height !== 32) return `image is ${img.width}x${img.height}`;
+    const [left, right] = [img.pixel(8, 16), img.pixel(56, 16)];
+    return (
+      (colorNear(left, RED) && colorNear(right, BLUE)) ||
+      `left ${left.join(',')} / right ${right.join(',')}, expected red / blue`
+    );
+  });
+  await call(
+    'browser.canvas_screenshot',
+    { tab_id: T, region: { x: 32, y: 0, w: 32, h: 32 } },
+    (b, _t, res) => {
+      const r = b?.region;
+      if (r?.x !== 32 || r?.y !== 0 || r?.w !== 32 || r?.h !== 32) return `region ${describe(r)}`;
+      const { img, error } = pngOf(b, res);
+      if (error) return error;
+      if (img.width !== 32 || img.height !== 32) return `crop is ${img.width}x${img.height}`;
+      const corners = [img.pixel(0, 0), img.pixel(31, 31)];
+      return corners.every((p) => colorNear(p, BLUE)) || `crop corners ${describe(corners)}`;
+    },
+    { label: 'browser.canvas_screenshot.region' },
+  );
+
+  // screenshot: a real PNG image block whose size matches the metadata, and
+  // the page as painted (the canvas at 128x64 CSS px, red | blue).
+  let dpr = 1;
+  await call(
+    'browser.screenshot',
+    { tab_id: T, mode: 'element', selector: '#pic' },
+    (b, _t, res) => {
+      const { img, bytes, mimeType, error } = pngOf(b, res);
+      if (error) return error;
+      if (mimeType !== 'image/png' || b?.format !== 'png' || b?.mode !== 'element') {
+        return `mime ${String(mimeType)}, meta ${describe(b)}`;
+      }
+      if (img.width !== b.width || img.height !== b.height || bytes.length !== b.bytes) {
+        return `image ${img.width}x${img.height} ${bytes.length} B, meta ${describe(b)}`;
+      }
+      dpr = img.width / 128;
+      if (!(dpr >= 1) || img.height !== 64 * dpr) return `element image ${img.width}x${img.height}`;
+      const [left, right] = [img.pixel(32 * dpr, 32 * dpr), img.pixel(96 * dpr, 32 * dpr)];
+      return (
+        (colorNear(left, RED) && colorNear(right, BLUE)) ||
+        `left ${left.join(',')} / right ${right.join(',')}, expected red / blue`
+      );
+    },
+  );
+  await call(
+    'browser.screenshot',
+    { tab_id: T },
+    (b, _t, res) => {
+      const { img, bytes, error } = pngOf(b, res);
+      if (error) return error;
+      if (b?.mode !== 'viewport' || img.width !== b.width || img.height !== b.height) {
+        return `image ${img.width}x${img.height}, meta ${describe(b)}`;
+      }
+      if (bytes.length !== b.bytes || img.width < 200 || img.height < 100) {
+        return `implausible viewport image ${img.width}x${img.height} ${bytes.length} B`;
+      }
+      const p = img.pixel(32 * dpr, 16 * dpr);
+      return colorNear(p, RED) || `top-left of the canvas is ${p.join(',')}, expected red`;
+    },
+    { label: 'browser.screenshot.viewport' },
+  );
+
+  // console: the page's own lines, with level and text as logged.
+  const marker = 'e2e-console-marker 42';
+  await pollUntil(
+    'browser.console',
+    { tab_id: T },
+    (b) => Array.isArray(b) && b.some((e) => e.text === marker),
+    'console',
+  );
+  await call('browser.console', { tab_id: T }, (b) => {
+    const e = Array.isArray(b) ? b.find((x) => x.text === marker) : undefined;
+    return (e?.level === 'log' && e?.source === 'console') || `no log entry ${describe(e ?? b)}`;
+  });
+  await call(
+    'browser.console',
+    { tab_id: T, level: 'error' },
+    (b) =>
+      (Array.isArray(b) &&
+        b.every((e) => e.level === 'error') &&
+        b.some((e) => e.text === 'e2e-console-error')) ||
+      `level error gave ${describe(b)}`,
+    { label: 'browser.console.error' },
+  );
+
+  // network: the page's fetch, finished, with method, status and type; then
+  // network_body returns exactly what the server sent.
+  const dataUrl = new URL(`data.json${new URL(target).search}`, page).href;
+  const filter = { tab_id: T, url_filter: `data.json${new URL(target).search}` };
+  const isData = (e) => e.url === dataUrl && typeof e.finished_at === 'number';
+  await pollUntil('browser.network', filter, (b) => Array.isArray(b) && b.some(isData), 'network');
+  const listed = await call('browser.network', filter, (b) => {
+    const e = b.find(isData);
+    if (!b.every((x) => x.url.includes('data.json'))) return `url_filter let in ${describe(b)}`;
+    return (
+      (e.method === 'GET' &&
+        e.status === 200 &&
+        e.mime_type === 'application/json' &&
+        typeof e.request_id === 'string') ||
+      `entry ${describe(e)}`
+    );
+  });
+  const requestId = json(listed).find(isData).request_id;
+  await call(
+    'browser.network_body',
+    { tab_id: T, request_id: requestId },
+    (b) =>
+      (b?.body === DATA_BODY && b?.base64Encoded === false) ||
+      `body ${describe(b)}, expected ${DATA_BODY}`,
+  );
+
+  // console level "warn" (the value the tool's enum offers) must return the
+  // page's console.warn line. Recorded, not thrown: the steps after it still run.
+  const all = json(await call('browser.console', { tab_id: T }, undefined, { print: false }));
+  const stored = Array.isArray(all) ? all.find((e) => e.text === 'e2e-console-warn') : undefined;
+  await recorded(() =>
+    call(
+      'browser.console',
+      { tab_id: T, level: 'warn' },
+      (b) =>
+        (Array.isArray(b) && b.some((e) => e.text === 'e2e-console-warn')) ||
+        `level warn gave ${describe(b)}; the line is stored as ${describe(stored)}`,
+      { label: 'browser.console.warn' },
+    ),
+  );
+}
+
+/** Run a step; a StepFailure is printed and recorded (it fails the run)
+ * instead of stopping the steps after it. */
+async function recorded(step) {
+  try {
+    await step();
+  } catch (e) {
+    if (!(e instanceof StepFailure)) throw e;
+    console.log(`e2e: FAIL ${e.message}`);
+    deferredFailures.push(e.step);
+  }
+}
+
 async function pageValue(T, expression) {
   const res = await call('browser.evaluate', { tab_id: T, expression }, undefined, {
     print: false,

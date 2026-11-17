@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>e2e capture page</title>
+    <style>
+      body { margin: 0; background: #ffffff; }
+      #pic { display: block; width: 128px; height: 64px; }
+      #note { position: static; margin: 8px 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Page read and capture (slice 1): a canvas with two known halves
+         (backing store 64x32, drawn at 128x64 CSS px), an open dialog,
+         console lines and one fetch with a known body. -->
+    <canvas id="pic" width="64" height="32"></canvas>
+    <dialog id="note" open aria-label="e2e note"><p>Dialog body</p></dialog>
+    <div id="fetched">pending</div>
+    <script>
+      const ctx = document.getElementById('pic').getContext('2d');
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(0, 0, 32, 32);
+      ctx.fillStyle = '#0000ff';
+      ctx.fillRect(32, 0, 32, 32);
+      console.log('e2e-console-marker', 42);
+      console.warn('e2e-console-warn');
+      console.error('e2e-console-error');
+      // The data URL carries this page's own query (a per-run nonce), so the
+      // network case can tell this request from any earlier one.
+      fetch('/data.json' + location.search, { cache: 'no-store' })
+        .then((r) => r.text())
+        .then((t) => { document.getElementById('fetched').textContent = t; });
+    </script>
+  </body>
+</html>
