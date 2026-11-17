@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.8](https://github.com/jobshimo/browser-link/compare/v1.3.7...v1.3.8) (2026-11-17)
+
+### Bug Fixes
+
+- **ci:** a differential check (`scripts/e2e-diff.mjs <base-ref>` and the CI job `e2e-diff`) runs the same real-Chrome e2e against the base build and this build, normalises run-specific values (ids, timings, ports, paths, image payloads, the extension version and the harness nonce) and fails on any other difference. Exit codes: 1 a difference, 2 a harness failure, 3 a setup error. It runs on pull requests to main that touch product code or dependencies, and on pushes to main as a self-diff. The product is unchanged.
+
 ## [1.3.7](https://github.com/jobshimo/browser-link/compare/v1.3.6...v1.3.7) (2026-11-17)
 
 ### Bug Fixes
