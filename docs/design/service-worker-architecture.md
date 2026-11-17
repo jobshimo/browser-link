@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 8. Revision 1 (`5486e34`) was audited as
+Status: revision 9. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,17 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 9 (2026-11-17)
+
+Arch's decisions on slice 14 (3.2 code block and text, 3.3 "As built in
+slice 14"), and the wording of the revision 8 rule:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `DragInput` (`interceptDrags(enabled)`, `dragEvent(event)`) is a separate input-only capability of the `PageDriver`, the registry requirement `drag`; cdp-direct's page driver has it, but `CDP_DIRECT_PROVIDES` lacks `drag`, so `browser.drag` stays refused there | drag sends `Input.setInterceptDrags` and `Input.dispatchDragEvent`, which no existing port sends; folding them into `Pointer` would change the meaning of a mouse-only port (revision 8) |
+| 2 | `CdpEvents.waitFor(method, timeoutMs)` has no `predicate` until a real caller needs one | its only caller (drag's wait for `Input.dragIntercepted`) accepts every event; same rule as `Clock.every` (revision 7): ports describe what is used |
+| 3 | The revision 8 rule reads: a port must not report state the transport observes on its own; a command whose answer is the page's reply to the core's own request is allowed (`Evaluator`, `PageInfo.info()`) | so the rule cannot be misread as forbidding every port method that returns data |
 
 ### Revision 8 (2026-11-17)
 
@@ -217,7 +228,9 @@ Consequences, measured:
   sensitive-field mapping is the `sensitive` kind of 3.4; slice 13, 1.4.19,
   moved `performWaitFor`, so `HANDLERS` is empty and the file keeps only its
   comparison machinery and a guard that no `perform*` is declared on a
-  transport again, until slice 22 deletes it.)
+  transport again, until slice 22 deletes it; slice 14, 1.4.20, moved the
+  extension-only `performDrag` into core `actions/`, so that guard allows
+  none.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -614,10 +627,21 @@ export interface Pointer {             // input only (slice 10, revision 8)
   /** One Input.dispatchMouseEvent; a failed dispatch rejects. */
   mouse(event: MouseEventParams): Promise<void>;
 }
-export interface PageDriver {
-  evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; settler: Settler; page: PageInfo;
+export interface DragInput {           // input only (slice 14)
+  /** One Input.setInterceptDrags; a failed dispatch rejects. */
+  interceptDrags(enabled: boolean): Promise<void>;
+  /** One Input.dispatchDragEvent; a failed dispatch rejects. */
+  dragEvent(event: DragEventParams): Promise<void>;
 }
-// Joins with its first caller: CdpEvents.waitFor (14).
+export interface CdpEvents {           // the drag's wait for Input.dragIntercepted (slice 14)
+  /** The params of the first event named `method` after the call; null when
+   * none arrives within `timeoutMs`. Never rejects. No predicate (revision 9). */
+  waitFor(method: string, timeoutMs: number): Promise<unknown>;
+}
+export interface PageDriver {
+  evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; drag: DragInput;
+  events: CdpEvents; settler: Settler; page: PageInfo;
+}
 ```
 
 The pointer port is the same for both transports. What differed between
@@ -641,6 +665,11 @@ events) and `uninstall(tearDownPage)`.
 
 One implementation serves both transports, because both have a `CdpSession`;
 the nine twin helpers in `transport.ts` are deleted with slice 9.
+
+`CdpEvents` is a wait the core asks for, as `PageInfo.armLoadWait`: the page
+driver subscribes through `CdpSession.onEvent` for the call and unsubscribes
+when it settles, so no state a transport keeps reaches core through it
+(revisions 8 and 9). `DragInput` is input only, as `Pointer`.
 
 ### 3.3 `ToolRegistry`: handlers declare what they require
 
@@ -691,6 +720,15 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   flow's wait step reaches `performWaitFor` without the registry, so the action
   makes the same check on the absence of the watch. `CDP_DIRECT_PROVIDES` is
   pinned by `cdp/provides.test.ts`.
+- As built in slice 14 (1.4.20): `drag` is registered with
+  `requires: ['evaluator', 'pointer', 'drag', 'cdp-events']`. The requirement
+  `drag` is the `DragInput` port and `cdp-events` the `CdpEvents` port; both
+  page drivers have them, and `CDP_DIRECT_PROVIDES` holds `cdp-events` but not
+  `drag` (v1 scope), so `dispatchTool` refuses `drag` on cdp-direct as
+  `unsupported`, which `cdp/tool-outcome.ts` maps to the text
+  `callCdpTool`'s `default` threw before. A flow's drag step reaches
+  `performDrag` without the registry; cdp-direct's flow deps keep a
+  `performDrag` that fails with that text.
 
 ### 3.4 Failure contract
 

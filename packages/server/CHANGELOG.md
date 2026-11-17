@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.20](https://github.com/jobshimo/browser-link/compare/v1.4.19...v1.4.20) (2026-11-17)
+
+### Notes
+
+- Slice 14 of the service worker plan; no behaviour change. `browser.drag` now has one body, in core (`packages/core/src/actions/perform-drag.ts`), run by the extension through the tool registry and by a flow's drag step. Every CDP command, its params and its order are the ones before (an HTML5 drag when Chrome reports `Input.dragIntercepted`, pointer events with the left button held otherwise, interception always switched off again); time goes through core's `Clock`. Every result and error text is the one before.
+- The drag entry requires `drag`, which cdp-direct does not provide (v1 scope): `browser.drag` on a `cdp:` tab is refused by the registry with the same sentence as before (`browser.drag is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.`), and a flow's drag step on cdp-direct still fails at that step with it.
+- The page driver gains two ports: `DragInput` (`interceptDrags(enabled)`, `dragEvent(event)`: one `Input.setInterceptDrags` or `Input.dispatchDragEvent`, a failed dispatch rejects) and `CdpEvents` (`waitFor(method, timeoutMs)`: the params of the first event of that method after the call, or null on timeout; it never rejects; no predicate until a caller needs one). Their contracts run on the in-memory session and, in the CI e2e job, on a real Chrome. cdp-direct provides `cdp-events`; mouse events gain the optional `buttons` field the held moves send.
+- The drag result type moved from the flow engine to core's `support/action-results.ts` (the flow engine re-exports it). The parity test's guard now allows no `perform*` function on either transport.
+- `background.ts` shrinks by 381 lines and its line budget goes from 3533 to 3152; `cdp/transport.ts` goes from 683 to 695 lines (the two new ports in its tool deps, and comments).
+
 ## [1.4.19](https://github.com/jobshimo/browser-link/compare/v1.4.18...v1.4.19) (2026-11-17)
 
 ### Notes

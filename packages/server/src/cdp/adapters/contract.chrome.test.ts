@@ -8,19 +8,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
+  countingSession,
+  defineCdpEventsContract,
   defineCdpSessionContract,
+  defineDragInputContract,
   defineKeyboardContract,
   definePageInfoContract,
   definePointerContract,
   type ContractCase,
 } from '../../generated/core/ports/contract/index.js';
 import { createPageDriver } from '../../generated/core/session/page-driver.js';
-import type { MouseEventParams } from '../../generated/core/ports/values.js';
+import type { DragEventParams, MouseEventParams } from '../../generated/core/ports/values.js';
 
 /** What Chrome answers for that wheel event. */
 const PROBE_MESSAGE = "'deltaX' and 'deltaY' are expected for mouseWheel event";
 /** What Chrome answers for an `Input.insertText` whose text is not a string. */
 const INSERT_TEXT_REFUSED = 'Invalid parameters';
+/** What Chrome answers for drag input whose params have the wrong type. */
+const DRAG_PARAMS_REFUSED = 'Invalid parameters';
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
@@ -196,6 +201,55 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
           // A text that is not a string: Chrome refuses its params. The
           // type is outside `insertText`'s on purpose, so the cast is the probe.
           failing: { text: 5 as unknown as string, message: INSERT_TEXT_REFUSED },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("DragInput contract: the page driver's drag input over the CdpClient adapter", () => {
+    run(
+      defineDragInputContract(async () => {
+        const { client, close } = await openPage();
+        const driver = createPageDriver({
+          session: createCdpClientSession(client),
+          page: createCdpPageInfo(client, systemClock),
+          clock: systemClock,
+        });
+        return {
+          drag: driver.drag,
+          // Params of the wrong type: Chrome refuses them. The types are
+          // outside the port's on purpose, so the casts are the probes.
+          failing: {
+            event: { type: 'drop', x: 'far', y: 20, data: {} } as unknown as DragEventParams,
+            message: DRAG_PARAMS_REFUSED,
+          },
+          failingIntercept: { enabled: 'yes' as unknown as boolean, message: DRAG_PARAMS_REFUSED },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("CdpEvents contract: the page driver's event wait over the CdpClient adapter", () => {
+    run(
+      defineCdpEventsContract(async () => {
+        const { client, close } = await openPage();
+        await client.send('Runtime.enable');
+        const session = countingSession(createCdpClientSession(client));
+        const driver = createPageDriver({
+          session,
+          page: createCdpPageInfo(client, systemClock),
+          clock: systemClock,
+        });
+        return {
+          events: driver.events,
+          listening: () => session.listening(),
+          method: 'Runtime.consoleAPICalled',
+          emit: async () => {
+            await client.send('Runtime.evaluate', { expression: 'console.log("contract")' });
+          },
+          elapse: sleep,
           dispose: close,
         };
       }),

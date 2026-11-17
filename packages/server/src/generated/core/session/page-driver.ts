@@ -11,7 +11,9 @@
  * `evaluateInTab`, `evaluateObserverJs`, `takeObserverMark`,
  * `settleWithChanges`, `installObserver`, `handleObserverMessage`,
  * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`),
- * slice 11 the keyboard's `insertText` (the `Input.insertText` of `performType`).
+ * slice 11 the keyboard's `insertText` (the `Input.insertText` of `performType`),
+ * slice 14 the drag input and the CDP event wait (`background.ts`
+ * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`).
  * What differs per transport stays outside: the install warning text, the
  * bridge events the extension reports for a top-document message, whether
  * `Runtime.enable` is sent here, and whether dialogs are watched
@@ -27,7 +29,7 @@ import {
 } from '../inpage/observer.js';
 import type { CdpSession } from '../ports/cdp-session.js';
 import type { Clock } from '../ports/clock.js';
-import type { Keyboard, PageDriver, Pointer } from '../ports/page-driver.js';
+import type { CdpEvents, DragInput, Keyboard, PageDriver, Pointer } from '../ports/page-driver.js';
 import type { PageInfo } from '../ports/page-info.js';
 import type {
   MouseEventParams,
@@ -324,6 +326,35 @@ export function createPageDriver({
     },
   };
 
+  const drag: DragInput = {
+    interceptDrags: async (enabled) => {
+      await session.send('Input.setInterceptDrags', { enabled });
+    },
+    dragEvent: async (event) => {
+      await session.send('Input.dispatchDragEvent', event);
+    },
+  };
+
+  const events: CdpEvents = {
+    waitFor: (method, timeoutMs) =>
+      new Promise<unknown>((resolve) => {
+        let settled = false;
+        const unsubscribe = session.onEvent((name, params) => {
+          if (settled || name !== method) return;
+          settled = true;
+          cancelTimer();
+          unsubscribe();
+          resolve(params ?? null);
+        });
+        const cancelTimer = clock.after(timeoutMs, () => {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          resolve(null);
+        });
+      }),
+  };
+
   return {
     observer,
     page,
@@ -334,6 +365,8 @@ export function createPageDriver({
         await session.send('Input.dispatchMouseEvent', event);
       },
     },
+    drag,
+    events,
     evaluator: { evaluate },
     settler: {
       async mark(settle: SettleParams | null): Promise<ObserverMarkResult> {

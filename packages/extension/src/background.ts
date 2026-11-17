@@ -13,7 +13,6 @@ import {
   buildSnapshotJs,
   withValuesHiddenNote,
   buildStateJs,
-  buildDragProbeJs,
   buildElementRectJs,
   type SnapshotOffset,
   DEFAULT_IDLE_TTL_MINUTES,
@@ -31,6 +30,7 @@ import {
   createPageDriver,
   dispatchTool,
   performClick,
+  performDrag,
   performFind,
   performPress,
   performWaitFor,
@@ -47,9 +47,6 @@ import {
   type ElementRectOutcome,
   type ScreenshotMode,
   runFlow,
-  type ActionOutcome,
-  type DragStepParams,
-  type DragStepResult,
   type FlowDeps,
   type FlowResult,
   type FlowStep,
@@ -304,10 +301,6 @@ interface StatusResult {
 interface CdpNetworkGetResponseBody {
   body: string;
   base64Encoded: boolean;
-}
-
-interface CdpInputDragIntercepted {
-  data: unknown;
 }
 
 // Runtime messages between popup.ts and this script.
@@ -761,16 +754,20 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'keyboard',
   'pointer',
   'settler',
+  'drag',
+  'cdp-events',
   'capture-buffers',
 ]);
 
 /** What the core actions and the registry handlers use on one tab. */
 function actionDeps(tabId: number, session?: TabSession): ToolDeps {
-  const { evaluator, keyboard, pointer, settler, dialogs } = pageDriver(tabId);
+  const { evaluator, keyboard, pointer, drag, events, settler, dialogs } = pageDriver(tabId);
   return {
     evaluator,
     keyboard,
     pointer,
+    drag,
+    'cdp-events': events,
     settler,
     clock: systemClock,
     dialogs,
@@ -854,62 +851,15 @@ async function applyContentSetting(
   await setter.set({ primaryPattern, setting });
 }
 
-/**
- * Defensive caps applied to every duration that ends up in a setTimeout
- * driven by tool params. The MCP request payload is technically untrusted
- * input, so CodeQL flags unbounded user-controlled timer durations as a
- * resource-exhaustion risk. We clamp at the boundary (drag handler) AND
- * inside `sleep` so the property is enforced even if a future call site
- * forgets to validate.
- */
-const MAX_DRAG_DURATION_MS = 60_000;
-const MAX_DRAG_HOLD_MS = 10_000;
-
+/** Wait `ms` on a timer. The literal range check is CodeQL's range-branch
+ * sanitizer for js/resource-exhaustion: out of range it waits 0 ms. */
 function sleep(ms: number): Promise<void> {
-  // Range-branch sanitizer for CodeQL's js/resource-exhaustion: the
-  // setTimeout call is INSIDE a literal-bounded range check. Caller-side
-  // clamping in the drag handler is the first line of defence; this is
-  // the second.
   return new Promise((resolve) => {
     if (typeof ms === 'number' && ms > 0 && ms < 60_000) {
       setTimeout(resolve, ms);
     } else {
       setTimeout(resolve, 0);
     }
-  });
-}
-
-/**
- * Wait for ONE CDP event of a given method on a given tab. Adds a temporary
- * chrome.debugger.onEvent listener for the duration of the wait. Resolves
- * with the event params, or null on timeout. Always cleans up its listener.
- *
- * Used by the drag tool to capture Input.dragIntercepted while
- * Input.setInterceptDrags is enabled.
- */
-function waitForCdpEvent<T = unknown>(
-  tabId: number,
-  method: string,
-  timeoutMs: number,
-): Promise<T | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const handler = (source: chrome.debugger.Debuggee, m: string, params?: object): void => {
-      if (settled) return;
-      if (source.tabId !== tabId) return;
-      if (m !== method) return;
-      settled = true;
-      clearTimeout(timer);
-      chrome.debugger.onEvent.removeListener(handler);
-      resolve((params ?? null) as T | null);
-    };
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      chrome.debugger.onEvent.removeListener(handler);
-      resolve(null);
-    }, timeoutMs);
-    chrome.debugger.onEvent.addListener(handler);
   });
 }
 
@@ -1055,307 +1005,10 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 }
 
 /**
- * `performDrag` — the extracted body of the standalone `drag` case in
- * `handleTool` below. `performFind` and `performClick` (slice 10),
- * `performType` and `performPress` (slice 11) and `performWaitFor`
- * (slice 13) live in core's `actions/` and run through the tool registry.
- *
- * Both the standalone `case` handler AND `browser.flow`'s step executor
- * (`runFlow` in core's `flow/flow-engine.ts`) call this exact function —
- * there is one implementation of each action, never a copy that can drift.
- * It returns an `ActionOutcome<T>` (`{ok:true,result} | {ok:false,error}`)
- * instead of a wire-level `tool.response`, so the two call sites can
- * unwrap it however they need to.
- */
-
-async function performDrag(
-  tabId: number,
-  params: DragStepParams,
-): Promise<ActionOutcome<DragStepResult>> {
-  try {
-    // Same numeric guard the wire boundary used before this body was
-    // extracted out of `handleDrag`: anything non-finite or negative is
-    // treated as absent, so flow drag steps get identical protection.
-    const num = (v: number | undefined): number | undefined =>
-      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
-    const clamp = (v: number, max: number): number => Math.min(v, max);
-    const fromSelector = params.from_selector;
-    const toSelector = params.to_selector;
-    const fromXRaw = num(params.from_x);
-    const fromYRaw = num(params.from_y);
-    const toXRaw = num(params.to_x);
-    const toYRaw = num(params.to_y);
-    // Cap every duration that ends up in a setTimeout to keep CodeQL's
-    // "user-controlled timer duration" check happy and to prevent a
-    // misbehaving agent from parking the bridge for hours on a typo.
-    const durationMs = clamp(num(params.duration_ms) ?? 1500, MAX_DRAG_DURATION_MS);
-    const holdBeforeMoveMs = clamp(num(params.hold_before_move_ms) ?? 0, MAX_DRAG_HOLD_MS);
-    const holdBeforeReleaseMs = clamp(num(params.hold_before_release_ms) ?? 0, MAX_DRAG_HOLD_MS);
-
-    const hasFromCoords = fromXRaw !== undefined && fromYRaw !== undefined;
-    const hasToCoords = toXRaw !== undefined && toYRaw !== undefined;
-    if (!fromSelector && !hasFromCoords) {
-      return { ok: false, error: 'drag: provide from_selector or both from_x and from_y' };
-    }
-    if (!toSelector && !hasToCoords) {
-      return { ok: false, error: 'drag: provide to_selector or both to_x and to_y' };
-    }
-
-    const probeExpr = buildDragProbeJs({
-      from_selector: fromSelector,
-      to_selector: toSelector,
-      from_x: fromXRaw,
-      from_y: fromYRaw,
-      to_x: toXRaw,
-      to_y: toYRaw,
-    });
-    const probe = await pageDriver(tabId).evaluator.evaluate<{
-      err?: string;
-      from?: { x: number; y: number; in_viewport: boolean };
-      to?: { x: number; y: number; in_viewport: boolean };
-      draggable?: boolean;
-    }>(probeExpr);
-    if (probe.err) {
-      return { ok: false, error: `drag: ${probe.err}` };
-    }
-    if (!probe.from || !probe.to) {
-      return { ok: false, error: 'drag: could not resolve coordinates' };
-    }
-    if (!probe.from.in_viewport) {
-      return {
-        ok: false,
-        error: 'drag: source point is offscreen — scroll first or pass viewport coords',
-      };
-    }
-    if (!probe.to.in_viewport) {
-      return {
-        ok: false,
-        error: 'drag: destination point is offscreen — scroll first or pass viewport coords',
-      };
-    }
-
-    const fromX = probe.from.x;
-    const fromY = probe.from.y;
-    const toX = probe.to.x;
-    const toY = probe.to.y;
-    const isDraggable = !!probe.draggable;
-
-    // ~30fps interpolation; minimum 2 steps so the path actually has a midpoint.
-    const steps = durationMs > 0 ? Math.max(2, Math.round(durationMs / 33)) : 1;
-    const stepDelayMs = steps > 0 ? durationMs / steps : 0;
-    const eventsFired: string[] = [];
-    // Every branch below reassigns `dragMode` before the final `return`
-    // reads it. (The old `case`-block extraction needed a
-    // no-useless-assignment disable here; inside this try/catch scope the
-    // linter no longer flags the initializer, so the directive is gone.)
-    let dragMode: 'html5' | 'pointer' = 'pointer';
-    let interceptReceived = false;
-    const dragStart = Date.now();
-    let interceptionEnabled = false;
-
-    const interpolate = (t: number): { x: number; y: number } => ({
-      x: fromX + (toX - fromX) * t,
-      y: fromY + (toY - fromY) * t,
-    });
-
-    // Mouse move WITH the left button held down. Chrome's HTML5 drag
-    // system only treats movement as a drag when the button state is
-    // signalled on every move after mousePressed; omitting it makes
-    // Blink ignore the move for drag-detection purposes.
-    const moveHeld = (x: number, y: number): Promise<unknown> =>
-      cdp(tabId, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        x,
-        y,
-        button: 'left',
-        buttons: 1,
-      });
-
-    // Wiggle distance has to comfortably clear `kDragThreshold` (~5px on
-    // Mac, 4px on Linux/Windows). 5px landed *right* at the boundary and
-    // Chrome did not start the drag — 20px crosses it on every platform.
-    const WIGGLE_PX = 20;
-    // Time to wait for Input.dragIntercepted after the wiggle. 120ms was
-    // enough on local-only synthetic tests but flaky in real Chrome —
-    // 250ms is comfortable without dragging out the overall latency.
-    const INTERCEPT_TIMEOUT_MS = 250;
-
-    try {
-      if (isDraggable) {
-        try {
-          await cdp(tabId, 'Input.setInterceptDrags', { enabled: true });
-          interceptionEnabled = true;
-        } catch {
-          // setInterceptDrags is experimental — fall back to pointer mode silently.
-        }
-      }
-
-      if (interceptionEnabled) {
-        // Arm the listener BEFORE the press+wiggle that may trigger it.
-        const interceptPromise = waitForCdpEvent<CdpInputDragIntercepted>(
-          tabId,
-          'Input.dragIntercepted',
-          INTERCEPT_TIMEOUT_MS,
-        );
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          x: fromX,
-          y: fromY,
-        });
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mousePressed',
-          x: fromX,
-          y: fromY,
-          button: 'left',
-          clickCount: 1,
-        });
-        if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
-        // Wiggle toward the destination so Chrome's native drag system
-        // crosses its activation threshold. Direction matters for libs
-        // that have direction-sensitive activation constraints.
-        const dx = toX - fromX;
-        const dy = toY - fromY;
-        const len = Math.hypot(dx, dy) || 1;
-        const wx = fromX + (dx / len) * WIGGLE_PX;
-        const wy = fromY + (dy / len) * WIGGLE_PX;
-        await moveHeld(wx, wy);
-
-        const intercepted = await interceptPromise;
-        if (intercepted) {
-          dragMode = 'html5';
-          interceptReceived = true;
-          eventsFired.push('Input.dragIntercepted');
-          const dragData = intercepted.data as Record<string, unknown>;
-          for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            const { x, y } = interpolate(t);
-            await moveHeld(x, y);
-            await cdp(tabId, 'Input.dispatchDragEvent', {
-              type: 'dragOver',
-              x,
-              y,
-              data: dragData,
-            });
-            if (i === 1) eventsFired.push('dragOver');
-            if (stepDelayMs > 0) await sleep(stepDelayMs);
-          }
-          await cdp(tabId, 'Input.dispatchDragEvent', {
-            type: 'dragEnter',
-            x: toX,
-            y: toY,
-            data: dragData,
-          });
-          eventsFired.push('dragEnter');
-          await cdp(tabId, 'Input.dispatchDragEvent', {
-            type: 'dragOver',
-            x: toX,
-            y: toY,
-            data: dragData,
-          });
-          if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-          await cdp(tabId, 'Input.dispatchDragEvent', {
-            type: 'drop',
-            x: toX,
-            y: toY,
-            data: dragData,
-          });
-          eventsFired.push('drop');
-          await cdp(tabId, 'Input.dispatchMouseEvent', {
-            type: 'mouseReleased',
-            x: toX,
-            y: toY,
-            button: 'left',
-            clickCount: 1,
-          });
-        } else {
-          // Element was tagged draggable but no native drag fired — the page
-          // either preventDefault'd dragstart or wires its own pointer logic.
-          // Continue with pointer-only events from where we already pressed.
-          dragMode = 'pointer';
-          for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            const { x, y } = interpolate(t);
-            await moveHeld(x, y);
-            if (stepDelayMs > 0) await sleep(stepDelayMs);
-          }
-          if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-          await cdp(tabId, 'Input.dispatchMouseEvent', {
-            type: 'mouseReleased',
-            x: toX,
-            y: toY,
-            button: 'left',
-            clickCount: 1,
-          });
-        }
-      } else {
-        // Pointer-only branch: no native drag involvement at all.
-        dragMode = 'pointer';
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          x: fromX,
-          y: fromY,
-        });
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mousePressed',
-          x: fromX,
-          y: fromY,
-          button: 'left',
-          clickCount: 1,
-        });
-        if (holdBeforeMoveMs > 0) await sleep(holdBeforeMoveMs);
-        for (let i = 1; i <= steps; i++) {
-          const t = i / steps;
-          const { x, y } = interpolate(t);
-          await moveHeld(x, y);
-          if (stepDelayMs > 0) await sleep(stepDelayMs);
-        }
-        if (holdBeforeReleaseMs > 0) await sleep(holdBeforeReleaseMs);
-        await cdp(tabId, 'Input.dispatchMouseEvent', {
-          type: 'mouseReleased',
-          x: toX,
-          y: toY,
-          button: 'left',
-          clickCount: 1,
-        });
-      }
-    } finally {
-      // Critical: leaving interception on would block the human user from
-      // dragging anything in this tab. Best-effort cleanup, swallow errors.
-      if (interceptionEnabled) {
-        try {
-          await cdp(tabId, 'Input.setInterceptDrags', { enabled: false });
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    return {
-      ok: true,
-      result: {
-        from: { x: fromX, y: fromY, selector: fromSelector ?? null },
-        to: { x: toX, y: toY, selector: toSelector ?? null },
-        duration_ms_actual: Date.now() - dragStart,
-        drag_mode: dragMode,
-        interception_attempted: interceptionEnabled,
-        intercept_received: interceptReceived,
-        events_fired: eventsFired,
-      },
-    };
-  } catch (err) {
-    // The pre-extraction `case 'drag'` let thrown errors bubble to
-    // `handleTool`'s outer catch, which produced this exact same
-    // `err.message` string — converting here instead keeps the standalone
-    // wire behavior identical while giving `runFlow` the `ActionOutcome`
-    // shape it expects from every other perform* function.
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/**
  * `handlePing` through `handleSetPermission` — the extracted bodies of the
- * remaining standalone tool cases in `handleTool` below that never got the
- * `perform*` treatment above. Each takes exactly the locals its original
+ * remaining standalone tool cases in `handleTool` below, which do not run
+ * through core's tool registry (the actions moved to core's `actions/` in
+ * slices 10, 11, 13 and 14). Each takes exactly the locals its original
  * `case` block closed over (`tabId`, `state`, `msg`, the raw params `p`,
  * and/or the `str`/`optStr` readers) and returns the same wire-level
  * `tool.response` envelope the case used to build inline — pure code
@@ -1744,7 +1397,7 @@ function buildFlowDeps(
     performType: (params) => performType(actionDeps(tabId), params),
     performPress: (params) => performPress(actionDeps(tabId), params),
     performWaitFor: (params) => performWaitFor(actionDeps(tabId, state), params, shouldCancel),
-    performDrag: (params) => performDrag(tabId, params),
+    performDrag: (params) => performDrag({ ...pageDriver(tabId), clock: systemClock }, params),
     clock: systemClock,
     buildRecoverySnapshot: () =>
       pageDriver(tabId).evaluator.evaluate(
@@ -2028,37 +1681,6 @@ async function flushPendingFlowEvents(tabId: number): Promise<void> {
   }
 }
 
-async function handleDrag(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  optStr: (key: string) => string | undefined,
-): Promise<ExtensionToServer> {
-  // Thin wire wrapper over performDrag — the same pattern the standalone
-  // click/type/press/wait_for cases use over their perform* functions.
-  // Numbers pass through with a plain typeof check; performDrag applies
-  // the full finite/non-negative guard and the duration/hold clamps.
-  const optNum = (key: string): number | undefined => {
-    const v = p[key];
-    return typeof v === 'number' ? v : undefined;
-  };
-  const outcome = await performDrag(tabId, {
-    from_selector: optStr('from_selector'),
-    from_x: optNum('from_x'),
-    from_y: optNum('from_y'),
-    to_selector: optStr('to_selector'),
-    to_x: optNum('to_x'),
-    to_y: optNum('to_y'),
-    duration_ms: optNum('duration_ms'),
-    hold_before_move_ms: optNum('hold_before_move_ms'),
-    hold_before_release_ms: optNum('hold_before_release_ms'),
-  });
-  if (!outcome.ok) {
-    return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
-  }
-  return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
-}
-
 async function handleDialogRespond(
   tabId: number,
   msg: ToolRequestMessage,
@@ -2295,9 +1917,6 @@ async function handleTool(
         // an agent can still read a finished flow's manifest through any
         // connected tab after the flow's own tab has closed.
         return await handleFlowStatus(msg, p);
-
-      case 'drag':
-        return await handleDrag(tabId, msg, p, optStr);
 
       case 'evaluate': {
         const expression = str('expression');

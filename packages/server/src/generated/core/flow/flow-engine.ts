@@ -40,15 +40,14 @@
  * shaping — unit-testable without a real browser tab or CDP session.
  *
  * The individual `click` / `type` / `press` / `find` / `wait_for` /
- * `drag` tool handlers (`background.ts`'s `handleTool` switch in the
- * extension, `callCdpTool`'s switch in `cdp/transport.ts` on the server)
- * and this module's step executor call the exact SAME perform* functions
- * — there is one implementation of each action, never two copies that
- * can drift apart. The one deliberate asymmetry is `drag` over
- * cdp-direct: the tool is out of cdp-direct's v1 scope (see the server's
- * `cdp/support.ts`), so the server wires a `performDrag` that always
- * fails with the same unsupported-transport error the standalone
- * `browser.drag` returns on a `cdp:` tab.
+ * `drag` tools (core's tool registry, `tools/`, which both transports
+ * dispatch through) and this module's step executor call the exact SAME
+ * perform* functions (core's `actions/`) — there is one implementation of
+ * each action, never two copies that can drift apart. The one deliberate
+ * asymmetry is `drag` over cdp-direct: the tool is out of cdp-direct's v1
+ * scope (it does not provide the `drag` requirement), so the server wires
+ * a `performDrag` that always fails with the same unsupported-transport
+ * error the standalone `browser.drag` returns on a `cdp:` tab.
  */
 import type { Clock } from '../ports/clock.js';
 import type { ExpectMet, ExpectParams } from '../support/expect.js';
@@ -56,6 +55,7 @@ import {
   notWalkedSuffix,
   type ActionOutcome,
   type ClickStepResult,
+  type DragStepResult,
   type FindStepResult,
   type PressStepResult,
   type TypeStepResult,
@@ -63,11 +63,13 @@ import {
 } from '../support/action-results.js';
 
 // The action vocabulary lives in `support/action-results.ts` since slice 10
-// (the actions cannot import `flow`; type and press joined in slice 11, wait_for in slice 13);
-// re-exported for the modules that read it from here.
+// (the actions cannot import `flow`; type and press joined in slice 11,
+// wait_for in slice 13, drag in slice 14); re-exported for the modules that
+// read it from here.
 export {
   type ActionOutcome,
   type ClickStepResult,
+  type DragStepResult,
   type FindStepResult,
   type PressStepResult,
   type TypeStepResult,
@@ -165,22 +167,6 @@ export interface DragStepParams {
   duration_ms?: number;
   hold_before_move_ms?: number;
   hold_before_release_ms?: number;
-}
-
-/** Full result of one drag — the same shape the standalone tool returns.
- * A flow step's per-step entry keeps only `drag_mode` of this (see
- * `compactActionResult`): the endpoints and durations echo what the
- * caller asked for, while `drag_mode` is NEW information — whether HTML5
- * native drag (dragstart/drop) or pointer-only events fired, the signal
- * for diagnosing a silently-failing drop. */
-export interface DragStepResult {
-  from: { x: number; y: number; selector: string | null };
-  to: { x: number; y: number; selector: string | null };
-  duration_ms_actual: number;
-  drag_mode: 'html5' | 'pointer';
-  interception_attempted: boolean;
-  intercept_received: boolean;
-  events_fired: string[];
 }
 
 /** Hard cap on one `sleep` step's `ms`. Matches the ceiling a single
