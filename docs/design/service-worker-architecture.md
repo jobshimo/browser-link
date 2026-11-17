@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 10. Revision 1 (`5486e34`) was audited as
+Status: revision 11. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,17 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 11 (2026-11-18)
+
+Arch's decisions on slice 18 (3.3 "As built in slice 18a", 2.5, slice
+table rows 18a and 18b):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `CDP_TOOL_SUPPORT` is pinned by Map equality with the 23 entries of 1.4.23 plus the relative order of the rows the registry derives; this supersedes "in today's order" in 3.3. A comment on `CDP_TOOL_SUPPORT` says its order is not a contract | production only calls `.get` (`isCdpToolSupported`, read by the dispatcher gate in `tools/browser-dispatch.ts`) and nothing iterates the map, so its order is not behavior |
+| 2 | `cdp/support.ts` declares the rows no registry entry derives, each with its reason: `wait_for_tab` (dispatcher-only, in no registry) and, until slice 18b, `flow`, `flow_status` and `flow_cancel` (transport-owned); the snapshot test names them | `browser-dispatch.ts` answers `wait_for_tab` itself; the flow tools join the registry only in 18b |
+| 3 | Slice 18 splits into two PRs: 18a derives `CDP_TOOL_SUPPORT` with its snapshot test; 18b adds `FlowControl` and `FlowCancel`, removes the five transitional tool cases and the three declared flow rows, adds `flows` and `flow-cancel` to `CDP_DIRECT_PROVIDES`, and lands the no-tool-`case` fitness rule | the flow tools need an interface both transports implement, and cdp-direct keeps its own detached-flow model (Q4); deriving the table does not wait for it |
 
 ### Revision 10 (2026-11-17)
 
@@ -467,7 +478,7 @@ packages/server/src/cdp/
   clock.ts          slices 5b-1 to 8 only, byte-identical sibling (5.1)
   (unchanged)       client.ts targets.ts gate.ts grant.ts
                     detached-flows.ts (section 8, Q4)
-  support.ts        re-exports CDP_TOOL_SUPPORT derived from the registry (3.3)
+  support.ts        CDP_DIRECT_PROVIDES and CDP_TOOL_SUPPORT derived from the registry (3.3)
 packages/server/src/messages.ts   re-export of generated/shared (slice 5c)
 packages/server/src/generated/{core,shared}/   mirror, never edited by hand
 ```
@@ -776,13 +787,14 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
 - `cdp/support.ts` `CDP_TOOL_SUPPORT` becomes
   `cdpToolSupport(REGISTRY, CDP_DIRECT_PROVIDES)`; `isCdpToolSupported` and the
   dispatcher gate in `tools/browser-dispatch.ts` are unchanged. A test pins the
-  derived map equal to today's 23 entries, in today's order, with today's
+  derived map equal to today's 23 entries (revision 11: by Map equality; the
+  order is not a contract), with today's
   values (14 `true`, 9 `false`), so the derivation is a refactor. Some of
   today's `false` entries are v1 scope decisions rather than missing
   capabilities (`drag`, `console`, `network`); `CDP_DIRECT_PROVIDES` encodes
   that scope (no `drag`, no `capture-buffers`), and changing it is a
   behavior-change PR (7(e)).
-- `background.ts` has no tool `case` labels after slice 18 (fitness test 3).
+- `background.ts` has no tool `case` labels after slice 18b (fitness test 3).
 - As built in slice 13 (1.4.19): `wait_for` is registered with
   `requires: ['evaluator']` and a call-dependent requirement, `needs(params)`:
   a `network_url` wait needs `capture-buffers` and carries the text the agent
@@ -850,6 +862,20 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   extension provides the three requirements; on a `cdp:` tab the dispatcher
   gate refuses the four tools first, as before, and `dispatchTool` would
   refuse them as `unsupported` with the same text (`cdp/provides.test.ts`).
+- As built in slice 18a (1.4.24): `CDP_TOOL_SUPPORT` is
+  `cdpToolSupport(TOOL_REGISTRY, CDP_DIRECT_PROVIDES)` followed by the rows
+  `cdp/support.ts` declares (`CDP_DECLARED_SUPPORT`): `flow`, `flow_status`
+  and `flow_cancel` (`true`, transport-owned until slice 18b) and
+  `wait_for_tab` (`false`, dispatcher-only, in no registry).
+  `cdpToolSupport` keeps the listed entries (not `download_settle`), each
+  `true` when the provides set holds every requirement it `requires`; a
+  call-dependent `needs` does not count. `CDP_DIRECT_PROVIDES` lives in
+  `cdp/support.ts` (`transport.ts` re-exports it), and core's catalog lists
+  its entries in the table's order. `cdp/support.test.ts` pins the derived map
+  equal to the 23 entries of 1.4.23 (Map equality), names the four declared
+  rows, pins the relative order of the 19 derived rows, and shows that
+  declaring `drag` on cdp-direct changes the map. The map's order is not a
+  contract (revision 11).
 
 ### 3.4 Failure contract
 
@@ -1308,7 +1334,8 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 15 | Page read and capture | `handlePing` ... `handleNetworkBody`, canvas builder; server cases `navigate`, `snapshot`, `state`, `screenshot`, `ping`, `evaluate` | ~300 | e2e from slice 1 | revert |
 | 16 | Dialogs, permission, downloads | `handleDialogRespond`, `handleSetPermission`, `handleDownloadCapture`, `handleDownloadSettle`; `ContentSettings` and `Downloads` adapters | ~220 | e2e `dialog_respond`, `set_permission`, `download` | revert |
 | 17 | `FlowRun`, `FlowRegistry`, `FlowHistory` | aggregates and the two store adapters (lines 3025-3287, `foregroundFlowDeadlines`); `flow-registry.ts` moves to core and `tsconfig.purity.json` is deleted (5.1) | ~330 | unit tests of each invariant with in-memory stores; store contract on fakes and in the worker | revert |
-| 18 | Flow tools | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; `CDP_TOOL_SUPPORT` now derived (3.3) with its snapshot test | revert |
+| 18a | Derived support table (**done**, release 1.4.24) | `CDP_TOOL_SUPPORT` derived from the registry (`cdpToolSupport`) plus four declared rows, `CDP_DIRECT_PROVIDES` moved to `cdp/support.ts` (3.3, revision 11) | ~100 authored | snapshot test against the 1.4.23 table, RED-probed by declaring `drag`; e2e; differential | revert |
+| 18b | Flow tools | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases behind `FlowControl` and `FlowCancel`; the five transitional tool cases and the three declared flow rows removed; `CDP_DIRECT_PROVIDES` gains `flows` and `flow-cancel`; the no-tool-`case` fitness rule (revision 11) | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; the snapshot test unchanged | revert |
 | — | **Checkpoint B** (6.2) | | | | |
 | 19 | Connection lifecycle | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
 | 20 | Recording | `app/recording.ts` (lines 4328-4658) | ~330 | existing `recording.test.ts` plus new unit tests; manual popup check noted in PR | revert |
@@ -1335,14 +1362,14 @@ only needs testability.
   instead of hand-copied. Measured and reported to the owner: lines moved,
   mirror copies deleted, CI minutes per PR against 6.3, number of normalise
   table entries added because of flakiness. Go/no-go for slices 10-18.
-- **Checkpoint B, after slice 18.** Delivered: one body per tool for both
+- **Checkpoint B, after slice 18b.** Delivered: one body per tool for both
   transports, one failure contract, `CDP_TOOL_SUPPORT` derived, aggregates
   with tested invariants. Go/no-go for slices 19-21.
 - **Minimum viable end state:** slices 0-18 plus 22 (22 depends only on 18:
   contract suite green and one body per action). It closes all four findings.
   Slices 19-21 make the extension-only application code unit-testable and
   bring `background.ts` to its final budget; if the program stops at
-  checkpoint B, slice 22 runs next and the budget stays at its slice 18 value.
+  checkpoint B, slice 22 runs next and the budget stays at its slice 18b value.
 
 ### 6.3 CI cost per PR
 

@@ -2,7 +2,8 @@
 /**
  * The registry both transports dispatch through (design 3.3). It grows one
  * handler family per slice (10-18); a wire tool not in it still runs through
- * its transport's own `case`.
+ * its transport's own `case`. Entries are listed in the order of cdp-direct's
+ * support table (`cdpToolSupport`); dispatch reads entries by name only.
  */
 import { dialogRespondTool, setPermissionTool } from './dialog-permission.js';
 import { downloadSettleTool, downloadTool } from './download.js';
@@ -24,22 +25,22 @@ import { createToolRegistry, type ToolRegistry } from './registry.js';
 import { waitForTool } from './wait-for.js';
 
 export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([
-  findTool,
-  clickTool,
-  typeTool,
-  pressTool,
-  waitForTool,
-  dragTool,
   pingTool,
   navigateTool,
   snapshotTool,
+  findTool,
   stateTool,
   screenshotTool,
+  clickTool,
+  typeTool,
+  pressTool,
   evaluateTool,
-  canvasScreenshotTool,
+  waitForTool,
+  dragTool,
   consoleTool,
   networkTool,
   networkBodyTool,
+  canvasScreenshotTool,
   dialogRespondTool,
   setPermissionTool,
   downloadTool,
