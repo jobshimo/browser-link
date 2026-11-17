@@ -12,7 +12,12 @@ import type {
 } from '../ports/page-driver.js';
 import { TOOL_REGISTRY } from './catalog.js';
 import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
-import { createToolRegistry, dispatchTool, type RegisteredTool } from './registry.js';
+import {
+  cdpToolSupport,
+  createToolRegistry,
+  dispatchTool,
+  type RegisteredTool,
+} from './registry.js';
 import type { Requirement, ToolDeps } from './requirement.js';
 
 const ALL: ReadonlySet<Requirement> = new Set<Requirement>([
@@ -114,22 +119,22 @@ describe('dispatchTool', () => {
 
   it('holds the interaction, wait_for, drag, page read, dialog, permission and download tools; only download_settle is unlisted', () => {
     expect([...TOOL_REGISTRY.keys()]).toEqual([
-      'find',
-      'click',
-      'type',
-      'press',
-      'wait_for',
-      'drag',
       'ping',
       'navigate',
       'snapshot',
+      'find',
       'state',
       'screenshot',
+      'click',
+      'type',
+      'press',
       'evaluate',
-      'canvas_screenshot',
+      'wait_for',
+      'drag',
       'console',
       'network',
       'network_body',
+      'canvas_screenshot',
       'dialog_respond',
       'set_permission',
       'download',
@@ -138,6 +143,39 @@ describe('dispatchTool', () => {
     expect(
       [...TOOL_REGISTRY.values()].filter((entry) => !entry.listed).map((entry) => entry.name),
     ).toEqual(['download_settle']);
+  });
+});
+
+describe('cdpToolSupport', () => {
+  const entry = (
+    name: string,
+    requires: readonly Requirement[],
+    extra: Partial<RegisteredTool> = {},
+  ): RegisteredTool => ({ ...echo(name, () => Promise.reject()), requires, ...extra });
+
+  it('a listed tool is supported when every requirement is provided, in registry order', () => {
+    const registry = createToolRegistry([
+      entry('b', ['evaluator', 'pointer']),
+      entry('a', ['evaluator', 'drag']),
+      entry('c', []),
+    ]);
+    expect([...cdpToolSupport(registry, new Set<Requirement>(['evaluator', 'pointer']))]).toEqual([
+      ['b', true],
+      ['a', false],
+      ['c', true],
+    ]);
+  });
+
+  it('leaves unlisted tools out and ignores call-dependent needs', () => {
+    const registry = createToolRegistry([
+      entry('internal', ['evaluator'], { listed: false }),
+      entry('waits', ['evaluator'], {
+        needs: () => [{ requirement: 'capture-buffers', message: 'no buffers' }],
+      }),
+    ]);
+    expect([...cdpToolSupport(registry, new Set<Requirement>(['evaluator']))]).toEqual([
+      ['waits', true],
+    ]);
   });
 });
 

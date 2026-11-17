@@ -1,10 +1,9 @@
 /**
- * Declarative v1 support table for browser-link's cdp-direct transport —
- * the SINGLE source of truth `tools/browser-dispatch.ts`'s routing layer
- * reads to decide whether a tool may address a `cdp:` tab, instead of
- * scattered per-tool `if` checks. Kept in its own zero-dependency module so
- * the dispatcher can import just the table without pulling in the whole
- * transport (CDP client, WebSocket connections, in-page builders, …).
+ * What browser-link's cdp-direct transport supports — the SINGLE source of
+ * truth `tools/browser-dispatch.ts`'s routing layer reads to decide whether a
+ * tool may address a `cdp:` tab, instead of scattered per-tool `if` checks.
+ * Kept apart from the transport so the dispatcher can import the table
+ * without pulling in the CDP client and its WebSocket connections.
  *
  * Keyed by the WIRE-LEVEL tool name (what `callBrowserTool`/`callCdpTool`
  * receive — `'click'`, not `'browser.click'`).
@@ -19,40 +18,61 @@
  * `dialog_respond`, `set_permission`, `wait_for_tab`, and `download`
  * (`browser.download`'s selector mode).
  */
-// A real Map (not a plain object/Record) so a tool name absent from the
-// table types as genuinely `undefined` at `.get()` — the same reason
-// keymap.ts's NAMED_KEYS_LOWER is a Map, not a Record: this tsconfig leaves
-// `noUncheckedIndexedAccess` off, so a `Record<string, boolean>`'s index
-// access would type as always-`boolean` (never `undefined`), which is
-// wrong for an unknown tool name and fights the linter either way you try
-// to guard it.
-export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
-  ['ping', true],
-  ['navigate', true],
-  ['snapshot', true],
-  ['find', true],
-  ['state', true],
-  ['screenshot', true],
-  ['click', true],
-  ['type', true],
-  ['press', true],
-  ['evaluate', true],
-  ['wait_for', true],
+import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
+import { cdpToolSupport } from '../generated/core/tools/registry.js';
+import type { Requirement } from '../generated/core/tools/requirement.js';
+
+/** What cdp-direct provides to the tool registry (design 3.3). It does not
+ * provide `capture-buffers`: it never enables the Network domain or keeps
+ * console messages, so a `network_url` wait, `browser.console` and
+ * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
+ * nor `canvas`, so `browser.canvas_screenshot` is refused; nor
+ * `response-bodies`, so `browser.network_body` is refused; nor `dialog-input`,
+ * `downloads` or `content-settings`, so `browser.dialog_respond`,
+ * `browser.set_permission` and `browser.download` are refused (all v1 scope;
+ * changing any is a behavior change). */
+export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
+  'evaluator',
+  'keyboard',
+  'pointer',
+  'settler',
+  'cdp-events',
+  'page',
+  'navigator',
+  'screen-capture',
+]);
+
+/** The rows no registry entry derives, each declared with its reason. */
+export const CDP_DECLARED_SUPPORT: ReadonlyMap<string, boolean> = new Map([
+  // Transport-owned until the flow tools join the registry (design slice
+  // 18b): `callCdpTool` runs them through its own cases, on cdp-direct's own
+  // detached-flow model (`detached-flows.ts`). Full parity: the runner is
+  // in-process, so status and cancel are if anything simpler here than over
+  // the extension bridge.
   ['flow', true],
   ['flow_status', true],
   ['flow_cancel', true],
-  ['drag', false],
-  ['console', false],
-  ['network', false],
-  ['network_body', false],
-  ['canvas_screenshot', false],
-  ['dialog_respond', false],
-  ['set_permission', false],
+  // Dispatcher-only, in no registry: `browser-dispatch.ts` answers it itself
+  // and refuses a `cdp:` opener, since only the extension reports new tabs.
   ['wait_for_tab', false],
-  // `browser.download`'s selector mode: capturing a click-started download
-  // needs the extension's `chrome.downloads` hook. Its url mode never sends
-  // this wire tool — it rides `evaluate` — so it works on cdp-direct too.
-  ['download', false],
+]);
+
+/**
+ * Derived (design 3.3): each listed registry entry is supported when
+ * `CDP_DIRECT_PROVIDES` holds every requirement it `requires`; the declared
+ * rows follow. Its order is not a contract: callers only `.get` a tool.
+ *
+ * A real Map (not a plain object/Record) so a tool name absent from the
+ * table types as genuinely `undefined` at `.get()`: this tsconfig leaves
+ * `noUncheckedIndexedAccess` off, so a `Record<string, boolean>`'s index
+ * access would type as always-`boolean`. `download` is `browser.download`'s
+ * selector mode: capturing a click-started download needs the extension's
+ * `chrome.downloads` hook; its url mode never sends this wire tool — it rides
+ * `evaluate` — so it works on cdp-direct too.
+ */
+export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
+  ...cdpToolSupport(TOOL_REGISTRY, CDP_DIRECT_PROVIDES),
+  ...CDP_DECLARED_SUPPORT,
 ]);
 
 export function isCdpToolSupported(tool: string): boolean {

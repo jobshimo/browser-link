@@ -27,7 +27,7 @@ import { loadConfig, sanitizeCdpPort } from '../config.js';
 import { checkCdpDirectGate } from './gate.js';
 import { buildTargetWsUrl, cdpTargetIdFromTabId, isDrivablePageTarget } from './targets.js';
 import { CdpClient } from './client.js';
-import { cdpUnsupportedToolError } from './support.js';
+import { CDP_DIRECT_PROVIDES, cdpUnsupportedToolError } from './support.js';
 import { withValuesHiddenNote, buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createCdpClientSession } from './adapters/cdp-client-session.js';
@@ -40,7 +40,7 @@ import { performType } from '../generated/core/actions/perform-type.js';
 import { performWaitFor } from '../generated/core/actions/perform-wait-for.js';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { dispatchTool } from '../generated/core/tools/registry.js';
-import type { Requirement, ToolDeps } from '../generated/core/tools/requirement.js';
+import type { ToolDeps } from '../generated/core/tools/requirement.js';
 import { cdpToolResult } from './tool-outcome.js';
 import {
   cancelDetachedFlow,
@@ -59,11 +59,12 @@ import {
   type FlowStep,
 } from '../generated/core/flow/flow-engine.js';
 
-// The declarative v1 support table lives in `./support.ts` (zero
-// dependencies, importable by `tools/browser-dispatch.ts` without pulling
+// The v1 support table and what cdp-direct provides live in `./support.ts`
+// (importable by `tools/browser-dispatch.ts` without pulling
 // in this whole transport) — re-exported here so existing callers of
 // `cdp/transport.ts` keep working.
 export { CDP_TOOL_SUPPORT, isCdpToolSupported } from './support.js';
+export { CDP_DIRECT_PROVIDES };
 export { cdpUnsupportedToolError };
 
 // === Connection cache =====================================================
@@ -237,26 +238,6 @@ function newPageDriver(client: CdpClient, commandTimeoutMs?: number): PageDriver
 function pageDriver(client: CdpClient): PageDriverHandle {
   return drivers.get(client) ?? newPageDriver(client);
 }
-
-/** What cdp-direct provides to the tool registry (design 3.3). It does not
- * provide `capture-buffers`: it never enables the Network domain or keeps
- * console messages, so a `network_url` wait, `browser.console` and
- * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
- * nor `canvas`, so `browser.canvas_screenshot` is refused; nor
- * `response-bodies`, so `browser.network_body` is refused; nor `dialog-input`,
- * `downloads` or `content-settings`, so `browser.dialog_respond`,
- * `browser.set_permission` and `browser.download` are refused (all v1 scope;
- * changing any is a behavior change). */
-export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
-  'evaluator',
-  'keyboard',
-  'pointer',
-  'settler',
-  'cdp-events',
-  'page',
-  'navigator',
-  'screen-capture',
-]);
 
 /** What the core actions and the registry handlers use on one connection.
  * With `evaluateTimeoutMs`, the evaluator's `Runtime.evaluate` has that

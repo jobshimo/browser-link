@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.24](https://github.com/jobshimo/browser-link/compare/v1.4.23...v1.4.24) (2026-11-18)
+
+### Notes
+
+- Slice 18a of the service worker plan; no behaviour change. cdp-direct's tool-support table (`cdp/support.ts` `CDP_TOOL_SUPPORT`) is now derived from the tool registry: a registered tool is supported on a `cdp:` tab when cdp-direct provides every requirement its entry declares (core `tools/registry.ts` `cdpToolSupport`). Four rows stay declared by hand, each with its reason: `flow`, `flow_status` and `flow_cancel`, which cdp-direct still runs through its own cases until slice 18b, and `wait_for_tab`, which only the dispatcher answers. A test pins the derived table equal to the 1.4.23 table (the same 23 tools with the same values), so every tool is accepted or refused on a `cdp:` tab exactly as before, with the same sentence.
+- `CDP_DIRECT_PROVIDES` moves from `cdp/transport.ts` to `cdp/support.ts`, which the table is derived from (`transport.ts` re-exports it), and core's tool catalog lists its entries in the table's order; neither order is read by any caller.
+- `background.ts` is unchanged (2337 lines, budget unchanged); `cdp/transport.ts` goes from 630 to 611 lines.
+
 ## [1.4.23](https://github.com/jobshimo/browser-link/compare/v1.4.22...v1.4.23) (2026-11-17)
 
 ### Notes

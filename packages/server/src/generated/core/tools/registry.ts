@@ -69,6 +69,28 @@ export function createToolRegistry(entries: readonly RegisteredTool[]): ToolRegi
 }
 
 /**
+ * Which listed tools a transport supports, derived from the registry: a tool
+ * is supported when the transport provides every requirement its entry
+ * `requires`. A call-dependent requirement (`needs`) does not count: the tool
+ * is supported, and only the calls that need more are refused. Unlisted
+ * (internal) tools are left out. Rows follow the registry's order.
+ */
+export function cdpToolSupport(
+  registry: ToolRegistry,
+  provided: ReadonlySet<Requirement>,
+): ReadonlyMap<string, boolean> {
+  const support = new Map<string, boolean>();
+  for (const entry of registry.values()) {
+    if (!entry.listed) continue;
+    support.set(
+      entry.name,
+      entry.requires.every((requirement) => provided.has(requirement)),
+    );
+  }
+  return support;
+}
+
+/**
  * Run `tool` through its entry: `unknown-tool` when it is not registered,
  * `unsupported` when the transport does not provide a requirement (an
  * `action` failure with the entry's own text when only this call's params
