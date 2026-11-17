@@ -1,27 +1,8 @@
 /**
- * Independent copy of `packages/extension/src/inpage/deep-query.ts` — used
- * by the cdp-direct transport (`../transport.ts`) to build the exact same
- * `Runtime.evaluate` expressions the extension's `background.ts` sends,
- * over a raw CDP-over-WS connection instead of `chrome.debugger`.
- *
- * Duplicated rather than imported for the same reason `config.ts` and
- * `messages.ts` keep independent copies of extension-side constants/types:
- * `@jobshimo/browser-link` (this package) publishes to npm standalone and
- * must not carry a workspace dependency on `@browser-link/extension` (a
- * private, unpublished package with `chrome.*` types in its own tsconfig).
- * This file is copied VERBATIM — it has zero `chrome.*` references (it only
- * builds a JS-source string that runs inside the TARGET PAGE, never the
- * extension/server process), so there is nothing to adapt. If the source
- * file changes, re-copy it here — the exported `DEEP_QUERY_JS` body is
- * asserted byte-identical to the sibling at
- * `packages/extension/src/inpage/deep-query.ts` by `cdp/drift.test.ts`,
- * which fails the build if the two ever diverge (a security fix to one copy
- * must reach the other).
- *
- * In-page JS source injected into CDP `Runtime.evaluate` expressions. This
- * is the "deep search" layer that lets `snapshot`, `find`, `click` and
- * `type` see past two boundaries plain `document.querySelector` /
- * `document.querySelectorAll` cannot cross:
+ * In-page JS source injected into CDP `Runtime.evaluate` expressions built
+ * by the extension and cdp-direct. This is the "deep search" layer that lets `snapshot`,
+ * `find`, `click` and `type` see past two boundaries plain
+ * `document.querySelector` / `document.querySelectorAll` cannot cross:
  *
  *   - OPEN Shadow DOM roots (`element.attachShadow({ mode: 'open' })`),
  *     walked recursively (shadow roots nested inside shadow roots).
@@ -29,10 +10,12 @@
  *     inside iframes, shadow roots nested inside iframes and vice versa).
  *
  * Exported as a raw string, not real TypeScript — it runs inside the
- * TARGET PAGE's JS context via CDP `Runtime.evaluate`, not inside this
- * process. Keep the syntax plain (`var`/`function`, no optional chaining
- * assumptions) since it must run unmodified in whatever JS engine the
- * connected tab uses.
+ * TARGET PAGE's JS context via CDP `Runtime.evaluate`, not inside the
+ * extension's own service worker. Keep the syntax plain (`var`/`function`,
+ * no optional chaining assumptions) since it must run unmodified in
+ * whatever JS engine the connected tab uses, and keep it dependency-free so
+ * it can be unit-tested by evaluating this exact string in a DOM
+ * environment (see `deep-query.test.ts`).
  *
  * Known limitations (also documented on the MCP tool descriptions):
  *   - CLOSED shadow roots (`{ mode: 'closed' }`) are unreachable from page

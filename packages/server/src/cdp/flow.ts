@@ -1,7 +1,7 @@
 /**
- * Independent copy of `packages/extension/src/flow.ts` — see
- * `inpage/deep-query.ts`'s header comment for why this package duplicates
- * rather than imports extension-side modules. Byte-identical logic, so
+ * Independent copy of `packages/extension/src/flow.ts` — this
+ * package publishes standalone and cannot import extension-side modules.
+ * Byte-identical logic, so
  * `browser.flow` behaves identically whether the target tab is reached
  * through the extension or through cdp-direct. Kept transport-agnostic ON
  * PURPOSE — it knows nothing about the cdp-direct gate. What it exposes

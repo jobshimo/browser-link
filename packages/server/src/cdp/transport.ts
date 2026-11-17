@@ -8,8 +8,8 @@
  * Mirrors `packages/extension/src/background.ts`'s `handleTool` switch and
  * its extracted `performFind` / `performClick` / `performType` /
  * `performPress` / `performWaitFor` helpers function-for-function, using
- * the SAME in-page builder strings (`./inpage/builders.ts`, a verbatim copy
- * — see its header comment) and the SAME `browser.flow` step engine
+ * the SAME in-page builder strings (`../generated/core/inpage/builders.ts`,
+ * the generated mirror of the core module) and the SAME `browser.flow` step engine
  * (`./flow.ts`, also a verbatim copy). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
@@ -57,14 +57,14 @@ import {
   type FindKey,
   type SnapshotOpts,
   type WaitForSelectorCondition,
-} from './inpage/builders.js';
+} from '../generated/core/inpage/builders.js';
 import {
   OBSERVER_BINDING,
   buildObserverChangesJs,
   buildObserverInstallJs,
   buildObserverMarkJs,
   buildObserverTeardownJs,
-} from './inpage/observer.js';
+} from '../generated/core/inpage/observer.js';
 import {
   TOP_DOCUMENT_PROBE_JS,
   applyObserverMessage,

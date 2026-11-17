@@ -33,6 +33,9 @@ importers:
         specifier: workspace:*
         version: link:../shared
     devDependencies:
+      jsdom:
+        specifier: ^30.1.3
+        version: 30.1.3
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

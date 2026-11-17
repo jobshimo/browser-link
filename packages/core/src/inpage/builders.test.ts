@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   FIND_CUT_HINT,

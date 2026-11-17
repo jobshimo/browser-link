@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 /*
  * DRIFT GUARD for the verbatim copies under `packages/server/src/cdp/`.
  *
- * `cdp/inpage/{deep-query,dom-helpers,builders}.ts`, `cdp/settle.ts`,
- * `cdp/keymap.ts`, `cdp/flow.ts` and `cdp/inpage/observer.ts` are independent copies of their
+ * `cdp/settle.ts`, `cdp/expect.ts`, `cdp/keymap.ts`, `cdp/screenshot.ts`,
+ * `cdp/flow.ts`, `cdp/clock.ts` and `cdp/observer-host.ts` are independent copies of their
  * `packages/extension/src/` originals (the server publishes to npm
  * standalone and cannot depend on the private `@browser-link/extension`
  * package — see each copy's header comment). That duplication is exactly
@@ -17,10 +17,11 @@ import { fileURLToPath } from 'node:url';
  *
  * This test fails the build the moment the security-relevant DOM logic
  * drifts, so the two copies can never diverge unnoticed:
- *   - The injected `DEEP_QUERY_JS` / `DOM_HELPERS_JS` bodies (visibility,
- *     selector generation, deep traversal, occlusion hit-testing — the
- *     actual JS that runs in the page) must be byte-identical.
- *   - `settle.ts`, `keymap.ts` and `flow.ts` are compared FULL-BODY (every
+ *   - The in-page code (`DEEP_QUERY_JS`, `DOM_HELPERS_JS`, the builders and the
+ *     page observer) is no longer copied: it lives once in `packages/core`
+ *     and the server compiles the generated mirror (`scripts/sync-core.mjs`,
+ *     checked by `sync-core --check`), so it has no section here.
+ *   - `settle.ts`, `expect.ts`, `keymap.ts`, `screenshot.ts`, `flow.ts` and `clock.ts` are compared FULL-BODY (every
  *     line below the leading file-header doc comment, not just the
  *     numeric constants) — the header itself is allowed to differ since it
  *     names the sibling path, which is necessarily file-specific.
@@ -32,30 +33,14 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // here = packages/server/src/cdp
-const EXT_INPAGE = join(here, '..', '..', '..', 'extension', 'src', 'inpage');
 const EXT_ROOT = join(here, '..', '..', '..', 'extension', 'src');
 // The detached-flow ceiling lives in core since slice 5b-2 (flow-registry.ts re-exports it).
 const CORE_ROOT = join(here, '..', '..', '..', 'core', 'src');
-const SRV_INPAGE = join(here, 'inpage');
 const SRV_ROOT = here;
 const SRV_TOOLS = join(here, '..', 'tools');
 
 function read(file: string): string {
   return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-}
-
-/** Extract the raw body of an `export const NAME = \`...\`;` template
- * literal. deep-query/dom-helpers bodies contain no nested backticks (their
- * only backticks live in the doc-comment header ABOVE the export), so the
- * first backtick after the marker opens the template and the next one
- * closes it. */
-function templateBody(text: string, name: string): string {
-  const marker = `export const ${name} = `;
-  const start = text.indexOf(marker);
-  if (start < 0) throw new Error(`could not find ${name}`);
-  const open = text.indexOf('`', start + marker.length);
-  const close = text.indexOf('`', open + 1);
-  return text.slice(open + 1, close);
 }
 
 /** Strip the leading `/** ... *\/` file-header doc comment and return
@@ -70,36 +55,16 @@ function stripHeader(text: string): string {
   return text.slice(end + 2);
 }
 
-describe('cdp verbatim-copy drift guard: injected DOM logic', () => {
-  test('DEEP_QUERY_JS body is byte-identical to the extension original', () => {
-    const ext = templateBody(read(join(EXT_INPAGE, 'deep-query.ts')), 'DEEP_QUERY_JS');
-    const srv = templateBody(read(join(SRV_INPAGE, 'deep-query.ts')), 'DEEP_QUERY_JS');
-    expect(srv).toBe(ext);
-    // Sanity: the body is the real DOM logic, not an empty match.
-    expect(srv).toContain('function deepQueryFirst');
-    expect(srv).toContain('function checkOcclusion');
-  });
-
-  test('DOM_HELPERS_JS body is byte-identical to the extension original', () => {
-    const ext = templateBody(read(join(EXT_INPAGE, 'dom-helpers.ts')), 'DOM_HELPERS_JS');
-    const srv = templateBody(read(join(SRV_INPAGE, 'dom-helpers.ts')), 'DOM_HELPERS_JS');
-    expect(srv).toBe(ext);
-    expect(srv).toContain('function isVisible');
-    expect(srv).toContain('function genSelectorInfo');
-  });
-});
-
-describe('cdp verbatim-copy drift guard: page observer (full body)', () => {
-  test('inpage/observer.ts body is byte-identical to the extension original', () => {
-    const ext = stripHeader(read(join(EXT_INPAGE, 'observer.ts')));
-    const srv = stripHeader(read(join(SRV_INPAGE, 'observer.ts')));
-    expect(srv).toBe(ext);
-    // Sanity: the stripped body is the real observer, not an empty match.
-    expect(srv).toContain('export const OBSERVER_VERSION');
-    expect(srv).toContain('export function buildObserverInstallJs');
-    expect(srv).toContain('setTimeout(onTimer, 16)');
-  });
-});
+/** Where the extension and the server each import the in-page builders from:
+ * the extension from `@browser-link/core`, the server from its generated
+ * mirror of core (it publishes standalone). The one line allowed to differ
+ * in an otherwise byte-identical copy, so it is normalised before comparing. */
+function normaliseCoreImport(text: string): string {
+  return text.replace(
+    /from '(?:@browser-link\/core|\.\.\/generated\/core\/inpage\/(?:builders|observer)\.js)';/g,
+    "from '<core in-page module>';",
+  );
+}
 
 /** Everything from the first line containing `marker` to the end of the
  * file. Used for `observer-host.ts`, whose import block cannot be identical:
@@ -130,11 +95,12 @@ describe('cdp verbatim-copy drift guard: observer host (body below the imports)'
     const extText = read(join(EXT_ROOT, 'observer-host.ts'));
     const srvText = read(join(SRV_ROOT, 'observer-host.ts'));
     expect(bodyFrom(srvText, HOST_BODY_MARKER)).toBe(bodyFrom(extText, HOST_BODY_MARKER));
-    // Both copies read the observer global from their own (byte-identical)
-    // in-page observer copy.
-    const observerImport = "import { OBSERVER_GLOBAL } from './inpage/observer.js';";
-    expect(extText).toContain(observerImport);
-    expect(srvText).toContain(observerImport);
+    // Both copies read the observer global from the one core module (the
+    // server through its generated mirror).
+    expect(extText).toContain("import { OBSERVER_GLOBAL } from '@browser-link/core';");
+    expect(srvText).toContain(
+      "import { OBSERVER_GLOBAL } from '../generated/core/inpage/observer.js';",
+    );
     // Sanity: the body is the real module, not an empty match.
     const body = bodyFrom(srvText, HOST_BODY_MARKER);
     expect(body).toContain('export function mergeSettleChanges');
@@ -161,8 +127,8 @@ describe('cdp verbatim-copy drift guard: observer host (body below the imports)'
 
 describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => {
   test('settle.ts body is byte-identical to the extension original', () => {
-    const ext = stripHeader(read(join(EXT_ROOT, 'settle.ts')));
-    const srv = stripHeader(read(join(SRV_ROOT, 'settle.ts')));
+    const ext = normaliseCoreImport(stripHeader(read(join(EXT_ROOT, 'settle.ts'))));
+    const srv = normaliseCoreImport(stripHeader(read(join(SRV_ROOT, 'settle.ts'))));
     expect(srv).toBe(ext);
     // Sanity: the stripped body is the real module, not an empty match.
     expect(srv).toContain('export const MAX_SETTLE_MS');
@@ -170,8 +136,8 @@ describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => 
   });
 
   test('expect.ts body is byte-identical to the extension original', () => {
-    const ext = stripHeader(read(join(EXT_ROOT, 'expect.ts')));
-    const srv = stripHeader(read(join(SRV_ROOT, 'expect.ts')));
+    const ext = normaliseCoreImport(stripHeader(read(join(EXT_ROOT, 'expect.ts'))));
+    const srv = normaliseCoreImport(stripHeader(read(join(SRV_ROOT, 'expect.ts'))));
     expect(srv).toBe(ext);
     expect(srv).toContain('export const MAX_EXPECT_TIMEOUT_MS');
     expect(srv).toContain('export async function verifyExpect');

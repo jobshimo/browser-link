@@ -17,7 +17,7 @@
  * without a live connection.
  */
 import type { Clock } from './clock.js';
-import { buildExpectProbeJs } from './inpage/builders.js';
+import { buildExpectProbeJs } from '@browser-link/core';
 import type { EvaluateFn } from './settle.js';
 
 /** Default and hard ceiling of the expectation window. The ceiling keeps

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, test } from 'vitest';
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';

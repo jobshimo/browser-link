@@ -1,7 +1,6 @@
 /**
- * Independent copy of `packages/extension/src/observer-host.ts` — see
- * `inpage/deep-query.ts`'s header comment for why this package duplicates
- * rather than imports these modules. The extension original imports the
+ * Independent copy of `packages/extension/src/observer-host.ts` — this
+ * package publishes standalone and cannot import these modules. The extension original imports the
  * observer message types from `@browser-link/shared`, which this standalone
  * package cannot resolve, so they are declared below, copied from that
  * package; `cdp/drift.test.ts` asserts both the declarations and everything
@@ -9,12 +8,12 @@
  * byte-identical to the originals.
  *
  * Host side of the page observer (spec v4 §5.4–§5.5): the per-connection
- * mirror of what the in-page observer (`inpage/observer.ts`) has pushed
+ * mirror of what the in-page observer (`generated/core/inpage/observer.ts`) has pushed
  * through its binding, and the rule that folds an action's "changes since
  * mark" into the settle result. Free of CDP calls; `cdp/transport.ts` owns
  * every evaluation.
  */
-import { OBSERVER_GLOBAL } from './inpage/observer.js';
+import { OBSERVER_GLOBAL } from '../generated/core/inpage/observer.js';
 
 /** Per-kind MutationRecord counts reported by the page observer. */
 interface PageObserverKinds {

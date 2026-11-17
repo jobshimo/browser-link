@@ -16,10 +16,9 @@
  *     roots), with `Element.prototype.attachShadow` patched to catch every
  *     root created later, open or closed.
  *
- * Verbatim sibling: `packages/server/src/cdp/inpage/observer.ts` (the server
- * publishes standalone and cannot import this package). Everything below this
- * header must stay byte-identical — `cdp/drift.test.ts` enforces it and
- * `cdp/builders-parity.test.ts` checks the built output.
+ * One copy, in core: the server publishes standalone and cannot import this
+ * package, so it compiles a generated mirror of this file
+ * (`scripts/sync-core.mjs`, checked by `sync-core --check`).
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */

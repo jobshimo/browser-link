@@ -1,14 +1,25 @@
+// GENERATED from packages/core/src/inpage/observer.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/inpage/observer.ts` — see
- * `./deep-query.ts`'s header comment for why this is a verbatim duplicate
- * rather than a cross-package import.
- *
  * The page observer: a persistent, coalescing MutationObserver that runs in
- * the page's MAIN world (spec v4 §5.1–§5.3). cdp-direct installs it with the
- * same `Runtime.addBinding` + `Page.addScriptToEvaluateOnNewDocument` pair as
- * the extension. Everything below this header must stay byte-identical to the
- * extension original — `cdp/drift.test.ts` enforces it and
- * `cdp/builders-parity.test.ts` checks the built output.
+ * the page's MAIN world (spec v4 §5.1–§5.3). The host installs it once per
+ * tab with `Runtime.addBinding` + `Page.addScriptToEvaluateOnNewDocument`
+ * (`runImmediately: true`), so Chrome re-runs it in every new document and
+ * in every same-process frame before page scripts. It pushes one summary
+ * per flush through the binding and keeps a bounded ring of summaries so an
+ * action window (mark → changes) can be read back exactly.
+ *
+ * Lab findings this source honours (`packages/plan/lab/2026-11-06-live-page-model/`):
+ *   - flushes are scheduled with `setTimeout`, never `requestAnimationFrame`
+ *     (rAF never fires in a hidden tab);
+ *   - the instance is versioned: an older instance is torn down and replaced,
+ *     an equal or newer one is left alone — never "if present, return";
+ *   - one observer per root (an observer on `document` alone misses shadow
+ *     roots), with `Element.prototype.attachShadow` patched to catch every
+ *     root created later, open or closed.
+ *
+ * One copy, in core: the server publishes standalone and cannot import this
+ * package, so it compiles a generated mirror of this file
+ * (`scripts/sync-core.mjs`, checked by `sync-core --check`).
  */
 
 /** Bump whenever the in-page protocol (global shape, messages, methods) changes. */

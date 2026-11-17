@@ -44,14 +44,20 @@ import {
   type FindKey,
   type SnapshotOffset,
   type WaitForSelectorCondition,
-} from './inpage/builders.js';
-import {
   OBSERVER_BINDING,
   buildObserverChangesJs,
   buildObserverInstallJs,
   buildObserverMarkJs,
   buildObserverTeardownJs,
-} from './inpage/observer.js';
+  DEFAULT_IDLE_TTL_MINUTES,
+  activityAfterFlowEnded,
+  clampIdleTtlMinutes,
+  idleHoldUntil,
+  shouldScheduleIdleSweep,
+  tabsToDisconnectForIdle,
+  type IdleCallInProgress,
+  type IdleFlowHold,
+} from '@browser-link/core';
 import {
   TOP_DOCUMENT_PROBE_JS,
   applyObserverMessage,
@@ -123,16 +129,6 @@ import {
   type FlowStatusPayload,
   type RunningFlowView,
 } from './flow-registry.js';
-import {
-  DEFAULT_IDLE_TTL_MINUTES,
-  activityAfterFlowEnded,
-  clampIdleTtlMinutes,
-  idleHoldUntil,
-  shouldScheduleIdleSweep,
-  tabsToDisconnectForIdle,
-  type IdleCallInProgress,
-  type IdleFlowHold,
-} from '@browser-link/core';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
   effectiveIdleTtlMinutes,
