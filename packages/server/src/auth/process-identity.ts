@@ -3,7 +3,8 @@ import { platform } from 'node:os';
 import { win32 } from 'node:path';
 import { promisify } from 'node:util';
 import {
-  buildKernelOwnerScript,
+  KERNEL_OWNER_SCRIPT,
+  kernelOwnerEnv,
   parseKernelOwnerReply,
   type KernelTcpRow,
 } from './windows-tcp-owner.js';
@@ -153,7 +154,7 @@ export interface PeerLookupDeps {
   execFile?: (
     file: string,
     args: readonly string[],
-    options: { timeout: number; maxBuffer: number },
+    options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ stdout: string }>;
   platform?: NodeJS.Platform;
   /** This server's POSIX uid. Default `process.getuid()`. */
@@ -268,8 +269,14 @@ const defaultLog = (line: string): void => {
   console.error(line);
 };
 
-function run(exec: ExecFile, file: string, args: readonly string[]): Promise<{ stdout: string }> {
-  return exec(file, args, { timeout: LOOKUP_TIMEOUT_MS, maxBuffer: LOOKUP_MAX_OUTPUT_BYTES });
+function run(
+  exec: ExecFile,
+  file: string,
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<{ stdout: string }> {
+  const bounds = { timeout: LOOKUP_TIMEOUT_MS, maxBuffer: LOOKUP_MAX_OUTPUT_BYTES };
+  return exec(file, args, env === undefined ? bounds : { ...bounds, env });
 }
 
 /**
@@ -510,7 +517,7 @@ async function lookupWindows(
 /** Where the kernel-table source stopped without a verdict. */
 export type KernelLookupStage =
   | 'powershell'
-  | 'add-type'
+  | 'interop'
   | 'tcp-table'
   | 'native'
   | 'reply'
@@ -561,12 +568,12 @@ async function kernelTableLookup(
   });
   let stdout: string;
   try {
-    ({ stdout } = await run(exec, 'powershell', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildKernelOwnerScript(port, process.pid),
-    ]));
+    ({ stdout } = await run(
+      exec,
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', KERNEL_OWNER_SCRIPT],
+      kernelOwnerEnv(port, process.pid),
+    ));
   } catch (err) {
     // The total budget is spent: nothing else may run.
     if (err instanceof LookupFailure) throw err;

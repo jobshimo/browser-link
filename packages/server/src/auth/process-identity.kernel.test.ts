@@ -7,7 +7,8 @@ import {
   type PeerLookupDeps,
 } from './process-identity.js';
 import {
-  buildKernelOwnerScript,
+  KERNEL_OWNER_SCRIPT,
+  kernelOwnerEnv,
   KERNEL_MAX_PROCESSES,
   parseKernelOwnerReply,
 } from './windows-tcp-owner.js';
@@ -100,6 +101,7 @@ interface Call {
   file: string;
   args: readonly string[];
   timeout: number;
+  env?: NodeJS.ProcessEnv;
 }
 const isKernel = (file: string, args: readonly string[]) =>
   file === 'powershell' && args.some((a) => a.includes('BrowserLinkPeer'));
@@ -118,7 +120,7 @@ function win(
     log: (line) => logs.push(line),
     execFile: (file, args, options) => {
       const name = isKernel(file, args) ? 'kernel' : file;
-      calls.push({ file: name, args, timeout: options.timeout });
+      calls.push({ file: name, args, timeout: options.timeout, env: options.env });
       const answer = (answers as Record<string, Answer | undefined>)[name];
       if (answer === undefined) return Promise.reject(new Error(`unexpected command ${name}`));
       return answer instanceof Error ? Promise.reject(answer) : Promise.resolve({ stdout: answer });
@@ -142,12 +144,29 @@ describe('Windows peer lookup: the kernel TCP table source', () => {
     expect(logs).toEqual([]);
   });
 
-  test('it runs as a bounded, non-interactive PowerShell with the validated port and server pid', async () => {
+  test('it runs as a bounded, non-interactive PowerShell; the port and server pid travel in its environment', async () => {
     const calls: Call[] = [];
     await lookup(win({ kernel: reply() }, calls));
     expect(calls[0]?.timeout).toBe(LOOKUP_TIMEOUT_MS);
-    expect(calls[0]?.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
-    expect(calls[0]?.args[3]).toBe(buildKernelOwnerScript(PEER_PORT, SELF));
+    expect(calls[0]?.args).toEqual([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      KERNEL_OWNER_SCRIPT,
+    ]);
+    expect(calls[0]?.env?.BROWSER_LINK_PEER_PORT).toBe(String(PEER_PORT));
+    expect(calls[0]?.env?.BROWSER_LINK_SERVER_PID).toBe(String(SELF));
+    // The rest of the environment is kept: PowerShell needs PATH and SystemRoot.
+    expect(calls[0]?.env).toMatchObject({ ...process.env });
+  });
+
+  test('the script text is the same for every check (antimalware scans each new text once)', async () => {
+    const calls: Call[] = [];
+    await lookup(win({ kernel: reply() }, calls));
+    await lookupPeerProcessDetailed('127.0.0.1', 60000, win({ kernel: reply() }, calls), {});
+    expect(calls[1]?.env?.BROWSER_LINK_PEER_PORT).toBe('60000');
+    expect(calls[0]?.args[3]).toBe(calls[1]?.args[3]);
+    expect(KERNEL_OWNER_SCRIPT).not.toContain(String(PEER_PORT));
   });
 
   test('the executable path is the one the kernel reports, when asked for', async () => {
@@ -265,12 +284,12 @@ describe('Windows peer lookup: falling back to netstat + CIM, with one log line'
   };
   const accepted = { ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } };
 
-  test('Add-Type blocked (Constrained Language Mode, AppLocker): fallback used and logged', async () => {
-    const { res, calls, logs } = await fallbackCase('{"v":1,"stage":"add-type"}\r\n');
+  test('interop stubs refused (Constrained Language Mode, AppLocker): fallback used and logged', async () => {
+    const { res, calls, logs } = await fallbackCase('{"v":1,"stage":"interop"}\r\n');
     expect(res).toEqual(accepted);
     expect(calls).toEqual(['kernel', 'netstat', 'powershell']);
     expect(logs).toEqual([
-      '[browser-link] Windows peer lookup: the kernel TCP table source failed at stage add-type (cause: command-failed:add-type); checking with netstat + CIM instead.',
+      '[browser-link] Windows peer lookup: the kernel TCP table source failed at stage interop (cause: command-failed:interop); checking with netstat + CIM instead.',
     ]);
   });
 
@@ -372,7 +391,7 @@ describe('Windows peer lookup: falling back to netstat + CIM, with one log line'
     const calls: Call[] = [];
     const res = await lookup(
       win(
-        { kernel: '{"v":1,"stage":"add-type"}', netstat: NETSTAT, powershell: cim('other') },
+        { kernel: '{"v":1,"stage":"interop"}', netstat: NETSTAT, powershell: cim('other') },
         calls,
       ),
     );
@@ -408,36 +427,52 @@ describe('Windows peer lookup: falling back to netstat + CIM, with one log line'
   });
 });
 
-describe('buildKernelOwnerScript / parseKernelOwnerReply', () => {
-  test('the script refuses a port or pid that is not a safe positive integer', () => {
-    expect(() => buildKernelOwnerScript(0, SELF)).toThrow();
-    expect(() => buildKernelOwnerScript(70000, SELF)).toThrow();
-    expect(() => buildKernelOwnerScript(PEER_PORT, 1.5)).toThrow();
-    expect(() => buildKernelOwnerScript(PEER_PORT, -1)).toThrow();
+describe('the kernel script, its environment and its reply', () => {
+  test('the environment refuses a port or pid that is not a safe positive integer', () => {
+    expect(() => kernelOwnerEnv(0, SELF)).toThrow();
+    expect(() => kernelOwnerEnv(70000, SELF)).toThrow();
+    expect(() => kernelOwnerEnv(PEER_PORT, 1.5)).toThrow();
+    expect(() => kernelOwnerEnv(PEER_PORT, -1)).toThrow();
+  });
+
+  test('the script reads both inputs as integers and refuses one out of range', () => {
+    expect(KERNEL_OWNER_SCRIPT).toContain('$port = [int]$env:BROWSER_LINK_PEER_PORT');
+    expect(KERNEL_OWNER_SCRIPT).toContain('$serverPid = [int]$env:BROWSER_LINK_SERVER_PID');
+    expect(KERNEL_OWNER_SCRIPT).toContain(
+      "if ($port -lt 1 -or $port -gt 65535 -or $serverPid -lt 1) { throw 'bad input' }",
+    );
   });
 
   test('the script reads every state of both address families and caps the processes it opens', () => {
-    const s = buildKernelOwnerScript(PEER_PORT, SELF);
+    const s = KERNEL_OWNER_SCRIPT;
     expect(s).toContain('GetExtendedTcpTable');
-    expect(s).toContain('Table(2, port');
-    expect(s).toContain('Table(23, port');
+    expect(s).toContain('foreach ($af in @(2, 23))');
+    // TCP_TABLE_OWNER_PID_ALL: every state, with the owning pid.
+    expect(s).toContain('$sizePtr, $false, $af, 5, 0)');
     expect(s).toContain('QueryFullProcessImageNameW');
     expect(s).toContain('OpenProcessToken');
-    expect(s).toContain(`pids.Count > ${String(KERNEL_MAX_PROCESSES)}`);
-    expect(s).toContain(`Run(${String(PEER_PORT)}, ${String(SELF)})`);
+    expect(s).toContain(`$pids.Count -gt ${String(KERNEL_MAX_PROCESSES)}`);
+    expect(s).not.toContain('__');
+  });
+
+  test('nothing is compiled: no Add-Type, the stubs are emitted in memory', () => {
+    const s = KERNEL_OWNER_SCRIPT;
+    expect(s).not.toContain('Add-Type');
+    expect(s).toContain('DefinePInvokeMethod');
+    expect(s).toContain('AssemblyBuilderAccess]::Run)');
   });
 
   test('the reply parser accepts the two shapes and nothing else', () => {
-    expect(parseKernelOwnerReply('{"v":1,"stage":"add-type"}\r\n')).toEqual({
+    expect(parseKernelOwnerReply('{"v":1,"stage":"interop"}\r\n')).toEqual({
       kind: 'stage',
-      stage: 'add-type',
+      stage: 'interop',
     });
     expect(parseKernelOwnerReply(reply())).toMatchObject({ kind: 'table' });
     for (const bad of [
       '',
       'null',
       '[]',
-      '{"v":2,"stage":"add-type"}',
+      '{"v":2,"stage":"interop"}',
       '{"v":1,"stage":"other"}',
       '{"v":1,"rows":[],"procs":[]}',
       '{"v":1,"rows":[{"state":5}],"rowsAfter":[],"procs":[]}',

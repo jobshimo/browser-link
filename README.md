@@ -2749,9 +2749,11 @@ refused too.
   (`QueryFullProcessImageName`), and the server's own user the same way; the
   two users (SIDs) must be equal. It reads the table again before it lets go
   of the process, so a process that exited and whose id was reused in between
-  is never taken for the owner. A cold check takes about 0.4 s. When this
-  check cannot run (PowerShell missing, `Add-Type` blocked by Constrained
-  Language Mode or AppLocker, a timeout, a reply it cannot read, a token it
+  is never taken for the owner. It declares those Windows calls in memory
+  (`System.Reflection.Emit`): nothing is compiled and nothing is written to
+  disk. A cold check takes about 0.4 s. When this check cannot run
+  (PowerShell missing, those declarations refused by Constrained Language
+  Mode or AppLocker, a timeout, a reply it cannot read, a token it
   may not open), the server logs one line naming the step that failed and
   falls back to the earlier check: `netstat -ano` locates the owning PID,
   one PowerShell CIM call (`Win32_Process` + `GetOwner`) reads the image

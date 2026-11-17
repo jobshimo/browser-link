@@ -222,6 +222,7 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
 
     const trace: TraceEntry[] = [];
     const logs: string[] = [];
+    const t0 = performance.now();
     const res = await lookupPeerProcessDetailed(
       '127.0.0.1',
       ready.localPort,
@@ -231,8 +232,11 @@ describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows co
         serverEndpoint: { host: '127.0.0.1', port },
       },
     );
-    console.log(
-      `windows path lookup: ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}`,
+    const lookupMs = performance.now() - t0;
+    // Written straight to the process's stderr, so the CI log shows the
+    // kernel check's time on every run, passing or not.
+    process.stderr.write(
+      `windows kernel check: ${String(Math.round(lookupMs))} ms in total; ${trace.map((t) => `${t.file} ${String(t.ms)} ms (${t.outcome})`).join(', ')}\n`,
     );
     const context = `${failureContext(port, ready, trace)}\nlog: ${JSON.stringify(logs)}`;
     expect(res, context).toEqual({

@@ -406,8 +406,8 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   type Call = { file: string; args: readonly string[]; timeout?: number };
   type Answer = string | Error | ((args: readonly string[]) => string | Error);
   /** What the kernel-table PowerShell answers unless a test says otherwise:
-   * Add-Type refused, so the netstat + CIM lookup these tests cover runs. */
-  const KERNEL_BLOCKED = '{"v":1,"stage":"add-type"}\r\n';
+   * the interop stubs refused, so the netstat + CIM lookup these tests cover runs. */
+  const KERNEL_BLOCKED = '{"v":1,"stage":"interop"}\r\n';
   /** Fake execFile: answers by the program name, recording every call. The
    * kernel-table PowerShell is recorded and answered as `powershell:kernel`. */
   function fakeExecFile(answers: Record<string, Answer>, calls: Call[] = []): ExecFile {
