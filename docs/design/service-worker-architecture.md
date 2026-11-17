@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 4. Revision 1 (`5486e34`) was audited as
+Status: revision 5. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,20 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 5 (2026-11-17)
+
+Decisions taken while building slice 5, where the plan was wrong against the
+code at 1.4.1 or left the scope open (slice 5 row and 5.4 updated):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `BACKGROUND_LINE_BUDGET` starts at **5039** | `background.ts` grew from 4922 lines (`5ce3055`) to 5039 with the 1.3.6 fix; the budget starts at the current count (5.4) |
+| 2 | The "no tool `case` in `background.ts`" rule lands with slice 18 | `handleTool` keeps its `case` labels until slice 18 (3.3), so the rule cannot be green earlier |
+| 3 | The slice 5 mirror holds `core/src` production files only (the ports and the contract suite); `sync-core.mjs` `MIRRORED_ROOTS` adds `shared` in slice 5c | 2.3 lists both packages, but 5c is the slice that populates `generated/shared/` |
+| 4 | Slice 5 ports: `clock`, `values`, `cdp-session`, `page-info`, `settings`, `content-settings` and `index` | the store, downloads and events-out ports speak types that still live in the extension (`flow-registry.ts`, `download-capture.ts`); they land when those types move |
+| 5 | Slice 5 contracts: `CdpSession` and `PageInfo`, each with its in-memory fake | the outcome-mapping contract needs `ToolOutcome` (slice 10), the store contracts need the store ports (slice 17) |
+| 6 | The runtime-import proof is `packages/extension/src/core-link.check.ts`, which `tsc --noEmit` checks and no bundle entry reaches; `fitness-core-link.test.ts` bundles it with esbuild in memory | ports are types only, so `background.ts` has no core value to import before slice 9; it stays untouched |
 
 ### Revision 4 (2026-11-17)
 
@@ -918,7 +932,8 @@ to `support/flow-limits.ts`.
 
 ### 5.4 The `background.ts` budget, re-measured
 
-`BACKGROUND_LINE_BUDGET` starts at **4922** in slice 5 and every slice that
+`BACKGROUND_LINE_BUDGET` starts at **5039** in slice 5 (revision 5: 4922 was
+the count at `5ce3055`) and every slice that
 moves code out lowers it to the new count; it is never raised without arch
 sign-off. With adapters for `windows`, `alarms`, `runtime`, tab events and the
 socket, the composition root holds: imports (~45 lines), construction of 14
@@ -952,7 +967,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 3 | Differential harness | `E2E_EXT_DIST`, `E2E_SERVER_CLI`, `E2E_SERVER_EXTENSION_ID` overrides in `lib.mjs`; `E2E_RECORD=<file>`; per-run `HOME`; `scripts/e2e-diff.mjs` (7(b)); CI job `e2e-diff` | ~350 authored | self-diff of two runs of the same build is empty; a one-token change in a result string and in an error string are both reported | revert |
 | 3b | e2e: error paths (**done**, release 1.3.9) | four cases in `packages/e2e/src/run.mjs`: `error.action` (click on a missing selector), `error.thrown` (evaluate throws), `error.timeout` (`wait_for` expiry, asserted as an ordinary result `{ matched: false, reason: "timeout" }` with no `isError`, not a failure), `error.sensitive` (type on a password field fails; the exact error text is asserted and the activity trail row stores `[sensitive field]`; the MCP result carries no `sensitive_field`); `unknown-tool` is asserted through the contract suite only (no MCP path sends one); the exact error text is asserted | ~250 authored | `E2E_EXPECT_FAIL` RED probe per case; the differential records them | revert |
 | 4 | Bundler alone | `packages/extension/build.mjs` (esbuild `0.28.2` exact, entries `background`, `popup`, `activity`, `admin`, `format: 'esm'`, `target: 'chrome118'`, `bundle: true`, no minify, `sourcemap: 'linked'`); `build` becomes `tsc --noEmit && node build.mjs && node copy-assets.mjs`; `smoke-tarball.mjs` assertions (7(c)). No source file changes. | ~120 authored | 7(c) | revert restores tsc output |
-| 5 | Core skeleton | `packages/core` (private, `0.0.0`, 2.4) with `ports/` (types only, the bottom layer, including `clock.ts` and `values.ts`, 5.2), `fitness/` with layers and cycle test and their RED fixtures, extension `fitness.test.ts` with its zones and wake-listener rules and their RED fixtures (5.3 item 3), contract functions with in-memory fakes, `scripts/sync-core.mjs` with `--check`, the specifier rewrite (2.3) and its test, server `vitest.config.ts` exclusion, explicit `build`/`test` scripts, empty mirror, budget = 4922; the extension's `tsc --noEmit` proven with one runtime import from core (2.2) | ~450 authored | fitness and mirror checks green and RED-probed | revert |
+| 5 | Core skeleton | `packages/core` (private, `0.0.0`, 2.4) with `ports/` (types only, the bottom layer: `clock`, `values`, `cdp-session`, `page-info`, `settings`, `content-settings`, `index`, 5.2; revision 5), `fitness/` with layers and cycle test and their RED fixtures, extension `fitness.test.ts` with its zones, logic-free adapter, budget and wake-listener rules and their RED fixtures (5.3 item 3; the no-tool-`case` rule waits for slice 18), the `CdpSession` and `PageInfo` contract functions with in-memory fakes, `scripts/sync-core.mjs` with `--check`, the specifier rewrite (2.3) and its test, server `vitest.config.ts` exclusion, explicit `build`/`test` scripts, mirror of `core/src` only (`shared` joins in 5c), budget = 5039; the extension's `tsc --noEmit` proven with one runtime import from core in `core-link.check.ts`, which no bundle entry reaches, and esbuild's resolution of it by `fitness-core-link.test.ts` (2.2) | ~450 authored | fitness and mirror checks green and RED-probed | revert |
 | 5b-1 | Core purity: `Clock` | 5.1 rows `flow.ts` and `expect.ts`, in both copies and their callers in one PR (N4): sibling `clock.ts` on each side with a `drift.test.ts` section, `systemClock` adapters on each side, `FlowDeps.clock`, required `verifyExpect` `clock`, `withProbeTimeout` on `clock.after`; extension `buildFlowDeps`, server `buildCdpFlowDeps`, the three `perform*` call sites on each side; `flow-deadline.test.ts` and `expect.test.ts` on both sides moved to a fake `Clock` | ~260 authored (about 110 per side plus ~40 tests of the new files) | `drift.test.ts` and `transport-parity.test.ts` green (both copies changed identically); the timer-driven tests green on a fake `Clock`; e2e; differential equal | revert |
 | 5b-2 | Core purity: the rest | 5.1 rows `flow-registry.ts` and `idle-policy.ts`: `flow-labels.ts`; `utf8.ts`, `flow-limits.ts`, `idle-rules.ts` created in core; `idle-settings.ts`; `tsconfig.purity.json` in CI | ~280 authored / moved | `tsc -p packages/core/tsconfig.purity.json` RED at the start (recorded) then GREEN; unit tests of moved functions unchanged and green; e2e; differential equal | revert |
 | 5c | Server `messages.ts` from the mirror | `generated/shared/` populated; `server/src/messages.ts` becomes a re-export of `./generated/shared/index.js`; the "wire protocol drift guard" block of `config.drift.test.ts` deleted (the mirror check covers it) | ~20 authored, copy deleted ~400 | server `tsc` green; a test lists the names `messages.ts` exported before and asserts each is still exported; e2e; differential | revert |
