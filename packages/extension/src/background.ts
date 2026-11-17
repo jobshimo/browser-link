@@ -62,6 +62,7 @@ import {
   readObserverMark,
   type ObserverMirror,
 } from './observer-host.js';
+import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import {
   buildKeyEventSequence,
@@ -1407,20 +1408,10 @@ async function handleObserverMessage(state: TabState, payload: string): Promise<
   const outcome = applyObserverMessage(mirror, message);
   if (outcome.kind === 'doc_info') {
     // The page's build fingerprint and view signature: the server keys what
-    // the map learns on them (knowledge-loop S1).
-    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId) {
-      send(state.ws, {
-        kind: 'bridge.event',
-        eventKind: 'tab-doc-info',
-        tabId: state.serverTabId,
-        data: {
-          url: outcome.url,
-          build: outcome.build,
-          view_sig: outcome.view_sig,
-          title: outcome.title,
-        },
-      });
-    }
+    // the map learns on them (knowledge-loop S1). Before registration the
+    // mirror keeps it and the `tab.registered` handler delivers it.
+    if (state.ws && state.ws.readyState === WebSocket.OPEN && state.serverTabId)
+      send(state.ws, docInfoEvent(state.serverTabId, outcome));
     return;
   }
   if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
@@ -4153,6 +4144,9 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // tab was disconnected, including everything the worker was
             // killed under.
             void flushPendingFlowEvents(tabId);
+            // A fingerprint the observer pushed before this registration.
+            const docInfo = pendingDocInfoEvent(state.observer, msg.payload.tabId);
+            if (docInfo) send(ws, docInfo);
             settle({ ok: true, serverTabId: msg.payload.tabId });
             return;
           }

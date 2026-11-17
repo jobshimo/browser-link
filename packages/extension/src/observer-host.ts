@@ -22,6 +22,17 @@ export interface ObserverMirror {
   coverage?: 'full' | 'partial';
   last_seq: number;
   recent: PageObserverSummary[];
+  /** Latest page identity the top document reported (`doc_info`), kept so a
+   * report that arrives before the tab's socket is registered is not lost. */
+  doc_info?: ObserverDocInfo;
+}
+
+/** The page identity a `doc_info` carries. */
+export interface ObserverDocInfo {
+  url: string;
+  build: string;
+  view_sig: string;
+  title: string;
 }
 
 export type ObserverMessageOutcome =
@@ -138,7 +149,7 @@ export function parseObserverMessage(payload: string): PageObserverMessage | nul
  * ignored. A `nav` that does not change the URL (e.g. a state-only
  * `replaceState`) is ignored so it does not emit a navigation event. A
  * `doc_info` (top document confirmed by the caller, like `doc_start`)
- * leaves the mirror untouched and reports the page identity it carries.
+ * is kept as the mirror's latest page identity and reported.
  */
 export function applyObserverMessage(
   mirror: ObserverMirror,
@@ -159,13 +170,13 @@ export function applyObserverMessage(
       mirror.url = message.url;
       return { kind: 'nav', url: message.url };
     case 'doc_info':
-      return {
-        kind: 'doc_info',
+      mirror.doc_info = {
         url: message.url,
         build: message.build,
         view_sig: message.view_sig,
         title: message.title,
       };
+      return { kind: 'doc_info', ...mirror.doc_info };
     case 'summary':
       if (message.roots.frame) return { kind: 'ignored' };
       if (mirror.doc_id !== undefined && message.doc_id !== mirror.doc_id)
