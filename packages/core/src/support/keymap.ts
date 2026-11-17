@@ -1,11 +1,13 @@
 /**
  * Keyboard key definitions for CDP `Input.dispatchKeyEvent`, driving
- * `browser.press` (trusted keyboard input — see `background.ts`'s
- * `case 'press'`).
+ * `browser.press` (trusted keyboard input) on both transports: the
+ * extension's `background.ts` and the server's `cdp/transport.ts`, which
+ * compiles this file from its generated mirror of core.
  *
- * Deliberately NOT an `inpage/*.ts` module: this runs in the extension's
- * own service-worker context and only produces CDP command parameters —
- * no page JS execution involved, nothing to inject via `Runtime.evaluate`.
+ * Deliberately NOT an `inpage/*.ts` module: this runs in the caller's
+ * context (the service worker, or the server) and only produces CDP command
+ * parameters — no page JS execution involved, nothing to inject via
+ * `Runtime.evaluate`.
  *
  * Modeled after Puppeteer's `USKeyboardLayout` (US keyboard — the only
  * layout CDP's `Input.dispatchKeyEvent` needs; Chrome maps

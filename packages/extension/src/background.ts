@@ -57,8 +57,6 @@ import {
   tabsToDisconnectForIdle,
   type IdleCallInProgress,
   type IdleFlowHold,
-} from '@browser-link/core';
-import {
   TOP_DOCUMENT_PROBE_JS,
   applyObserverMessage,
   createObserverMirror,
@@ -67,18 +65,22 @@ import {
   parseObserverMessage,
   readObserverMark,
   type ObserverMirror,
-} from './observer-host.js';
-import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
-import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
-import {
+  runScreenshot,
+  type ElementRectOutcome,
+  type ScreenshotMode,
   buildKeyEventSequence,
   resolveKey,
   modifiersToBitmask,
   MODIFIER_BITS,
   type KeyDefinition,
-} from './keymap.js';
-import { resolveSettleParams, settleSafely } from './settle.js';
-import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
+  resolveSettleParams,
+  settleSafely,
+  beginExpect,
+  resolveExpectParams,
+  verifyExpect,
+  type ExpectParams,
+} from '@browser-link/core';
+import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
 import {
   captureAround,
@@ -2818,7 +2820,7 @@ async function handleCanvasScreenshot(
  * already-attached debugger. `Page.captureScreenshot` with
  * `captureBeyondViewport` and a `clip` renders past the viewport, so no
  * scrolling or stitching is needed. Planning and the byte cap live in
- * `screenshot.ts` (unit-tested; shared verbatim with cdp-direct).
+ * core's `support/screenshot.ts` (unit-tested; shared with cdp-direct).
  */
 async function handleScreenshot(
   tabId: number,

@@ -3,7 +3,7 @@ import {
   applyObserverMessage,
   createObserverMirror,
   parseObserverMessage,
-} from './observer-host.js';
+} from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 
 function apply(mirror: ReturnType<typeof createObserverMirror>, payload: string): void {

@@ -74,12 +74,27 @@ import {
   parseObserverMessage,
   readObserverMark,
   type ObserverMirror,
-} from './observer-host.js';
-import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
-import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
-import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
+} from '../generated/core/support/observer-host.js';
+import {
+  runScreenshot,
+  type ElementRectOutcome,
+  type ScreenshotMode,
+} from '../generated/core/support/screenshot.js';
+import { resolveSettleParams, settleSafely } from '../generated/core/support/settle.js';
+import type { SettleParams } from '../generated/core/ports/values.js';
+import {
+  beginExpect,
+  resolveExpectParams,
+  verifyExpect,
+  type ExpectParams,
+} from '../generated/core/support/expect.js';
 import { systemClock } from './adapters/system-clock.js';
-import { buildKeyEventSequence, MODIFIER_BITS, modifiersToBitmask, resolveKey } from './keymap.js';
+import {
+  buildKeyEventSequence,
+  MODIFIER_BITS,
+  modifiersToBitmask,
+  resolveKey,
+} from '../generated/core/support/keymap.js';
 import {
   cancelDetachedFlow,
   detachedFlowForTab,
@@ -124,7 +139,7 @@ interface CdpConnection {
   lastUsedAt: number;
 }
 
-/** Page-observer state of one connection (see `observer-host.ts`): the host
+/** Page-observer state of one connection (see core's `support/observer-host.ts`): the host
  * mirror, and the `Page.addScriptToEvaluateOnNewDocument` identifier to
  * remove on close. Keyed by client so the perform* helpers, which only get
  * the client, can reach it. */

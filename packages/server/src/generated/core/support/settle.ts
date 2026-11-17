@@ -1,20 +1,16 @@
+// GENERATED from packages/core/src/support/settle.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/settle.ts`, adapted only to
- * import `buildSettleJs` from the generated core mirror
- * (`../generated/core/inpage/builders.js`) instead of the extension's — this
- * package publishes standalone and cannot import these modules. Logic is otherwise byte-identical; `cdp/drift.test.ts` asserts
- * the numeric settle invariants stay in lockstep with the sibling at
- * `packages/extension/src/settle.ts`.
- *
  * Shared `settle_ms` / `settle_timeout_ms` handling for the click / type /
  * press actions (`background.ts` in the extension, `cdp/transport.ts` on
  * the server). Lives outside `inpage/` — this is caller-context logic, not
  * injected page JS — and takes the evaluate function as a parameter so the
  * failure handling is unit-testable without a live connection: the caller
  * passes a closure over its own evaluate primitive (`evaluateInTab` in the
- * extension, the CDP client on the server).
+ * extension, the CDP client on the server). Lives in core since slice 7;
+ * the server compiles it from its generated mirror.
  */
-import { buildSettleJs } from '../generated/core/inpage/builders.js';
+import { buildSettleJs } from '../inpage/builders.js';
+import type { EvaluateFn, SettleParams } from '../ports/values.js';
 
 /** Defaults and hard ceilings — same clamp-at-the-boundary philosophy as
  * the drag durations in the extension's `background.ts`. Mirrored by the
@@ -23,11 +19,6 @@ export const DEFAULT_SETTLE_MS = 150;
 export const MAX_SETTLE_MS = 2000;
 export const DEFAULT_SETTLE_TIMEOUT_MS = 2000;
 export const MAX_SETTLE_TIMEOUT_MS = 10_000;
-
-export interface SettleParams {
-  settleMs: number;
-  settleTimeoutMs: number;
-}
 
 /**
  * Resolve the settle params for an action call. Returns `null` when settle
@@ -51,12 +42,6 @@ export function resolveSettleParams(p: Record<string, unknown>): SettleParams | 
       : DEFAULT_SETTLE_TIMEOUT_MS;
   return { settleMs, settleTimeoutMs };
 }
-
-/** Evaluate-in-page function shape settleSafely needs — the caller passes
- * a closure over its own evaluate primitive: `(expr) =>
- * evaluateInTab(tabId, expr)` in the extension, `(expr) =>
- * evaluateInTab(client, expr)` on the server. */
-export type EvaluateFn = (expression: string) => Promise<unknown>;
 
 /**
  * Run the settle wait, GUARANTEED not to throw. Returns the in-page settle

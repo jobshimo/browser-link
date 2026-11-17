@@ -159,8 +159,8 @@ export default tseslint.config(
     },
   },
 
-  // Extension package tests and core's in-page tests (slice 6) run under
-  // vitest's `jsdom` environment, so the
+  // Extension package tests, core's in-page tests (slice 6) and core's
+  // observer-host test (slice 7) run under vitest's `jsdom` environment, so the
   // shipped in-page JS constants and their tests reference real DOM
   // globals (document, Element, HTMLIFrameElement, DOMRect, ...). The
   // general test block above only declares Node globals — add the browser
@@ -168,7 +168,11 @@ export default tseslint.config(
   // Node-only test elsewhere doesn't accidentally start resolving against
   // an unrelated browser global (e.g. `name`, `status`, `open`).
   {
-    files: ['packages/extension/src/**/*.test.{ts,tsx}', 'packages/core/src/inpage/**/*.test.ts'],
+    files: [
+      'packages/extension/src/**/*.test.{ts,tsx}',
+      'packages/core/src/inpage/**/*.test.ts',
+      'packages/core/src/support/observer-host.test.ts',
+    ],
     languageOptions: {
       globals: { ...globals.browser },
     },

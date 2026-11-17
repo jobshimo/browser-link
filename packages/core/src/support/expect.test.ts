@@ -1,4 +1,4 @@
-import { createManualClock, type ManualClock } from '@browser-link/core';
+import { createManualClock, type ManualClock } from '../ports/contract/index.js';
 import { describe, expect, test, vi } from 'vitest';
 import {
   DEFAULT_EXPECT_TIMEOUT_MS,

@@ -1,18 +1,23 @@
 /**
- * Independent copy of `packages/extension/src/expect.ts` — this
- * package publishes standalone and cannot import these modules. It imports
- * `buildExpectProbeJs` from the generated core mirror
- * (`../generated/core/inpage/builders.js`) and `EvaluateFn` from its
- * own `./settle.js`; everything below this header is byte-identical, which
- * `cdp/drift.test.ts` asserts.
+ * Shared `expect` handling for the click / type / press actions
+ * (`background.ts` in the extension, `cdp/transport.ts` on the server,
+ * which compiles this file from its generated mirror of core).
  *
- * Shared `expect` handling for the click / type / press actions: see the
- * extension original for the full rationale (settle proves QUIET, not
- * EFFECT).
+ * WHY THIS EXISTS: `settle` proves the page went QUIET, not that the
+ * action had an EFFECT. A click on an element whose handler never fired
+ * returns `{ ok: true, settle: { mutation_count: 0, settled: true } }` —
+ * indistinguishable from success until a later step fails. `expect` lets
+ * the caller state the effect it is counting on (the URL changed, a
+ * selector appeared/disappeared, some text showed up) and turns a missing
+ * effect into an explicit failure at the step that caused it.
+ *
+ * Like settle.ts this lives outside `inpage/` (caller-context logic) and
+ * takes the evaluate function as a parameter so it is unit-testable
+ * without a live connection.
  */
-import type { Clock } from './clock.js';
-import { buildExpectProbeJs } from '../generated/core/inpage/builders.js';
-import type { EvaluateFn } from './settle.js';
+import { buildExpectProbeJs } from '../inpage/builders.js';
+import type { Clock } from '../ports/clock.js';
+import type { EvaluateFn } from '../ports/values.js';
 
 /** Default and hard ceiling of the expectation window. The ceiling keeps
  * the worst-case budget of an action (settle + expect) inside the bridge

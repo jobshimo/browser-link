@@ -5,9 +5,11 @@
  * injected page JS — and takes the evaluate function as a parameter so the
  * failure handling is unit-testable without a live connection: the caller
  * passes a closure over its own evaluate primitive (`evaluateInTab` in the
- * extension, the CDP client on the server).
+ * extension, the CDP client on the server). Lives in core since slice 7;
+ * the server compiles it from its generated mirror.
  */
-import { buildSettleJs } from '@browser-link/core';
+import { buildSettleJs } from '../inpage/builders.js';
+import type { EvaluateFn, SettleParams } from '../ports/values.js';
 
 /** Defaults and hard ceilings — same clamp-at-the-boundary philosophy as
  * the drag durations in the extension's `background.ts`. Mirrored by the
@@ -16,11 +18,6 @@ export const DEFAULT_SETTLE_MS = 150;
 export const MAX_SETTLE_MS = 2000;
 export const DEFAULT_SETTLE_TIMEOUT_MS = 2000;
 export const MAX_SETTLE_TIMEOUT_MS = 10_000;
-
-export interface SettleParams {
-  settleMs: number;
-  settleTimeoutMs: number;
-}
 
 /**
  * Resolve the settle params for an action call. Returns `null` when settle
@@ -44,12 +41,6 @@ export function resolveSettleParams(p: Record<string, unknown>): SettleParams | 
       : DEFAULT_SETTLE_TIMEOUT_MS;
   return { settleMs, settleTimeoutMs };
 }
-
-/** Evaluate-in-page function shape settleSafely needs — the caller passes
- * a closure over its own evaluate primitive: `(expr) =>
- * evaluateInTab(tabId, expr)` in the extension, `(expr) =>
- * evaluateInTab(client, expr)` on the server. */
-export type EvaluateFn = (expression: string) => Promise<unknown>;
 
 /**
  * Run the settle wait, GUARANTEED not to throw. Returns the in-page settle

@@ -1,12 +1,14 @@
+// GENERATED from packages/core/src/support/keymap.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/keymap.ts` — this
- * package publishes standalone and cannot import extension-side modules.
- * Byte-identical logic;
- * `cdp/drift.test.ts` asserts the `MODIFIER_BITS` mapping stays in lockstep
- * with the sibling at `packages/extension/src/keymap.ts`.
- *
  * Keyboard key definitions for CDP `Input.dispatchKeyEvent`, driving
- * `browser.press` over the cdp-direct transport (`./transport.ts`).
+ * `browser.press` (trusted keyboard input) on both transports: the
+ * extension's `background.ts` and the server's `cdp/transport.ts`, which
+ * compiles this file from its generated mirror of core.
+ *
+ * Deliberately NOT an `inpage/*.ts` module: this runs in the caller's
+ * context (the service worker, or the server) and only produces CDP command
+ * parameters — no page JS execution involved, nothing to inject via
+ * `Runtime.evaluate`.
  *
  * Modeled after Puppeteer's `USKeyboardLayout` (US keyboard — the only
  * layout CDP's `Input.dispatchKeyEvent` needs; Chrome maps

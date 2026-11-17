@@ -1,9 +1,13 @@
+// GENERATED from packages/core/src/support/screenshot.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/screenshot.ts` (this package
- * publishes to npm standalone and cannot import the extension). Everything
- * below this header is byte-identical to the original; `cdp/drift.test.ts`
- * fails the build if the two diverge. Used by the cdp-direct transport
- * (`./transport.ts`) over a raw CDP connection.
+ * `browser.screenshot` planning and capture, shared by the extension
+ * (`chrome.debugger`) and — through the server's generated mirror of
+ * core — the cdp-direct transport. Both speak raw CDP, so the logic is one;
+ * it only needs a `send(method, params)` primitive and an element-rect
+ * resolver, which makes it unit-testable without Chrome.
+ *
+ * Coordinates: `Page.captureScreenshot`'s `clip` is in CSS pixels of the
+ * page (document) space; `scale` multiplies it into output pixels.
  */
 
 export type ScreenshotMode = 'viewport' | 'full_page' | 'element';

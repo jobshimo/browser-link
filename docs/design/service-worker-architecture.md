@@ -183,7 +183,10 @@ Consequences, measured:
   copies `BRIDGE_PORT` because plain `tsc` cannot resolve a runtime import of
   a workspace package in Chrome. (Measured at `5ce3055`. Slice 6, 1.4.9,
   replaced `cdp/inpage/*` with the mirror and deleted `cdp/builders-parity.test.ts`
-  and the in-page sections of `cdp/drift.test.ts`.)
+  and the in-page sections of `cdp/drift.test.ts`. Slice 7, 1.4.10, did the
+  same for `cdp/{settle,expect,keymap,screenshot,observer-host}.ts`, which
+  now compile from `generated/core/support/`, and their `drift.test.ts`
+  sections.)
 - **No bundler.** The extension builds with `tsc && node copy-assets.mjs`
   (`packages/extension/package.json`, script `build`), which emits one
   `.js`, `.js.map` and `.d.ts` per module into `dist/` (99 files in the

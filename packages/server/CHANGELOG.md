@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.10](https://github.com/jobshimo/browser-link/compare/v1.4.9...v1.4.10) (2026-11-17)
+
+### Notes
+
+- Slice 7 of the service worker plan; no behaviour change. The support modules (`settle`, `expect`, `keymap`, `screenshot`, `observer-host`) and their tests moved from `packages/extension/src/` to `packages/core/src/support/`; the extension imports them from `@browser-link/core` and the server compiles them from the checked mirror in `packages/server/src/generated/core/support`. `SettleParams`, `EvaluateFn` and `ObserverMark` are now declared once, in core's `ports/values.ts`.
+- The server's hand-kept copies under `cdp/` are deleted, with their `settle`, `expect` and `keymap` tests (core keeps the same assertions) and the matching sections of `cdp/drift.test.ts`. The server's `observer-host` copy no longer declares the observer message types itself: core imports them from `@browser-link/shared`, which the mirror rewrites to `generated/shared`. Every CDP command and in-page string either transport sends is byte-identical to the one before.
+- `background.ts` loses no code in this slice; folding its five imports into the one `@browser-link/core` import adds two lines, and its line budget goes from 5033 to 5035.
+
 ## [1.4.9](https://github.com/jobshimo/browser-link/compare/v1.4.8...v1.4.9) (2026-11-17)
 
 ### Notes

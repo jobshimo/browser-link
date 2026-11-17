@@ -1,8 +1,7 @@
 /**
  * `browser.screenshot` planning and capture, shared by the extension
- * (`chrome.debugger`) and — as a verbatim copy at
- * `packages/server/src/cdp/screenshot.ts`, guarded by `cdp/drift.test.ts` —
- * the cdp-direct transport. Both speak raw CDP, so the logic is identical;
+ * (`chrome.debugger`) and — through the server's generated mirror of
+ * core — the cdp-direct transport. Both speak raw CDP, so the logic is one;
  * it only needs a `send(method, params)` primitive and an element-rect
  * resolver, which makes it unit-testable without Chrome.
  *
