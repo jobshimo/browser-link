@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2](https://github.com/jobshimo/browser-link/compare/v1.3.1...v1.3.2) (2026-11-17)
+
+### Bug Fixes
+
+- **tests:** a settle test compared a mutation scheduled with a Node timer against the product's `Date.now()` clock and failed on Windows when the timer fired one tick early (49 ms against 50), which blocked the 1.3.1 publish until the job was re-run; the assertions now allow 2 ms for that clock difference. The product is unchanged.
+
 ## [1.3.1](https://github.com/jobshimo/browser-link/compare/v1.3.0...v1.3.1) (2026-11-17)
 
 ### Bug Fixes
