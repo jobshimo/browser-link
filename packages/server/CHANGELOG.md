@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.9](https://github.com/jobshimo/browser-link/compare/v1.3.8...v1.3.9) (2026-11-17)
+
+### Bug Fixes
+
+- **tests:** the real-Chrome e2e suite now covers error paths with their exact texts: a click on a missing selector, an `evaluate` that throws, a `wait_for` that times out (an ordinary result with `matched: false` and `reason: "timeout"`, not a tool error), and a `type` failure on a password field whose trail row hides the typed text.
+- **tests:** the e2e accepts either `const` or `var` for the bridge-port line it patches in the extension's `background.js`, so it keeps working when the bundler emits `var`.
+
+The product is unchanged.
+
 ## [1.3.8](https://github.com/jobshimo/browser-link/compare/v1.3.7...v1.3.8) (2026-11-17)
 
 ### Bug Fixes
