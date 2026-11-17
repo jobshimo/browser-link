@@ -8,7 +8,7 @@
  * evaluation; this module only parses and decides.
  */
 import type { PageObserverMessage, PageObserverSummary, SettleChanges } from '@browser-link/shared';
-import { OBSERVER_GLOBAL } from './inpage/observer.js';
+import { OBSERVER_GLOBAL } from '@browser-link/core';
 
 /** Summaries kept in the host mirror (the page keeps its own, larger ring). */
 export const OBSERVER_RECENT_CAP = 32;

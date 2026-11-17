@@ -73,8 +73,7 @@
  * the companion teardown expression background.ts evaluates on
  * stop/disconnect/navigation-away.
  */
-import { DEEP_QUERY_JS } from './deep-query.js';
-import { DOM_HELPERS_JS } from './dom-helpers.js';
+import { DEEP_QUERY_JS, DOM_HELPERS_JS } from '@browser-link/core';
 
 /** Options interpolated into the injected source at build time. All four
  * come from `generateRecordingSession()` in `recording.ts` — fresh per

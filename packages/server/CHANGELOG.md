@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.9](https://github.com/jobshimo/browser-link/compare/v1.4.8...v1.4.9) (2026-11-17)
+
+### Notes
+
+- Slice 6 of the service worker plan; no behaviour change. The in-page code (`builders`, `observer`, `deep-query`, `dom-helpers`) and its tests moved from `packages/extension/src/inpage/` to `packages/core/src/inpage/`; the extension imports it from `@browser-link/core` and the server compiles it from the checked mirror in `packages/server/src/generated/core/inpage`. The extension's `inpage/recorder.ts` stays where it was.
+- The server's hand-kept copies under `cdp/inpage/` are deleted, and so are `cdp/builders-parity.test.ts` and the in-page sections of `cdp/drift.test.ts`: there is one copy now, and `scripts/sync-core.mjs --check` covers the mirror. The in-page JS strings the extension and cdp-direct send are byte-identical to the ones before.
+- `background.ts` shrinks by six lines and its line budget goes from 5039 to 5033.
+
 ## [1.4.8](https://github.com/jobshimo/browser-link/compare/v1.4.7...v1.4.8) (2026-11-17)
 
 ### Notes

@@ -1,24 +1,12 @@
+// GENERATED from packages/core/src/inpage/builders.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/inpage/builders.ts` — see
- * `./deep-query.ts`'s header comment for why this is a verbatim duplicate
- * rather than a cross-package import.
- *
- * DELIBERATELY A SUBSET: only the builders `cdp/transport.ts` needs for
- * cdp-direct's v1 supported tool set (snapshot, find, click, type, press,
- * state, wait_for, plus the shared settle wait) are copied. `buildDragProbeJs` /
- * `DragProbeOpts` are NOT copied — `browser.drag` is explicitly out of
- * v1 scope for cdp-direct (see the README's cdp-direct tool-support table
- * and `cdp/transport.ts`'s `CDP_TOOL_SUPPORT`). If drag is ever added to
- * cdp-direct, copy `buildDragProbeJs` here at that time.
- *
  * Builders that assemble the CDP `Runtime.evaluate` expression strings for
  * `snapshot`, `find`, `click`, `type`, `press` and the shared post-action
- * `settle` wait. The exact same string the extension sends over CDP. Because
- * this file is a SUBSET it is not byte-compared wholesale; instead the two
- * security-critical pieces it interpolates — `DEEP_QUERY_JS` and
- * `DOM_HELPERS_JS` — are asserted byte-identical to their extension siblings
- * by `cdp/drift.test.ts`, and `cdp/inpage/builders.test.ts` proves this copy
- * embeds exactly those shared helpers.
+ * `settle` wait. Lives in core so the produced JS source can be unit-tested
+ * by evaluating it directly in a DOM environment (see the `*.test.ts` files
+ * next to this module) — the exact same string the extension and cdp-direct
+ * send over CDP. The server compiles a generated mirror of this file
+ * (`scripts/sync-core.mjs`), so there is one copy.
  */
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';
@@ -947,7 +935,7 @@ export function buildFindJs(opts: FindOpts): string {
  * deep search scope, scrolls the element (and every ancestor iframe) into
  * view, computes the TOP-LEVEL viewport click point, and — unless `force`
  * is set — hit-tests that point before returning it, so a covering overlay
- * is caught before dispatching CDP mouse events. Returns:
+ * is caught before background.ts dispatches CDP mouse events. Returns:
  *   { ok: true, x, y, tag, hit_element?, reresolved? }
  *   { ok: true, no_box: true, tag, reresolved? }   (force, no visible box)
  *   { ok: false, reason: 'no-box' }                (no force, no visible box)
@@ -1540,10 +1528,10 @@ export function buildProgrammaticClickJs(opts: TargetOpts): string {
 /**
  * Build the type-resolution expression: resolves the selector across the
  * deep search scope, focuses it, optionally clears its value, and reports
- * success so the caller can follow up with CDP `Input.insertText` (which
- * types into whatever currently has focus at the browser level — works the
- * same whether that focus target lives in the top document, a shadow root,
- * or a same-origin iframe). Returns:
+ * success so background.ts can follow up with CDP `Input.insertText`
+ * (which types into whatever currently has focus at the browser level —
+ * works the same whether that focus target lives in the top document, a
+ * shadow root, or a same-origin iframe). Returns:
  *   { ok: true, reresolved? }
  *   { ok: false, reason: 'invalid-selector', error }
  *   { ok: false, reason: 'not-found' }
@@ -1581,11 +1569,11 @@ export function buildTypeResolveJs(opts: TypeResolveOpts): string {
 /**
  * Build the focus-resolution expression for `browser.press`'s optional
  * `selector`: resolves the selector across the deep search scope and
- * focuses it, reporting success so the caller can follow up with the CDP
- * key event sequence (which — like `Input.insertText` — targets whatever
- * currently has focus at the browser level). Intentionally separate from
- * `buildTypeResolveJs`: press never clears a value, and naming it
- * distinctly keeps the press code path readable on its own.
+ * focuses it, reporting success so background.ts can follow up with the
+ * CDP key event sequence (which — like `Input.insertText` — targets
+ * whatever currently has focus at the browser level). Intentionally
+ * separate from `buildTypeResolveJs`: press never clears a value, and
+ * naming it distinctly keeps the press code path readable on its own.
  *
  * The return shape depends on the target. With `selector` it stays a
  * boolean (`true` focused, `false` not found — a malformed selector is
@@ -1991,6 +1979,126 @@ export function buildElementRectJs(opts: ElementRectOpts): string {
   if (target.reresolved) result.reresolved = true;
   return result;
 })()`;
+}
+
+/**
+ * Build the drag endpoint-resolution probe for `browser.drag`. Resolves
+ * `from_selector`/`to_selector` across the SAME deep search scope
+ * `snapshot`/`find`/`click`/`type` use (`deepQueryFirst` — open Shadow DOM
+ * roots and same-origin iframes, nested arbitrarily), so an endpoint that
+ * lives inside a web component or an iframe no longer fails with
+ * `not_found` the way a plain `document.querySelector` did before v0.20.0.
+ *
+ * Coordinates for a selector-based endpoint use `viewportCenterOf` — the
+ * exact same first-client-rect + accumulated-iframe-offset mapping
+ * `buildClickResolveJs` uses — so a drag endpoint inside a styled iframe
+ * lands on the correct TOP-LEVEL point CDP `Input.dispatchMouseEvent`
+ * expects, not the endpoint's own local-document coordinates.
+ *
+ * `in_viewport` is derived from the same mapped center point plus the
+ * element's own (unscaled) width/height from `clickRectOf`, reproducing
+ * the pre-v0.20.0 "does any part of the rect intersect the viewport"
+ * check — now evaluated in top-level space so it stays correct for
+ * iframe-hosted endpoints too.
+ *
+ * A coordinate-based endpoint (`from_x`/`from_y` or `to_x`/`to_y`) is
+ * untouched by any of this — those are already top-level viewport
+ * coordinates supplied by the caller, exactly as before.
+ *
+ * Deliberately scoped to ENDPOINT RESOLUTION only. The interpolated drag
+ * gesture itself (wiggle distance, HTML5 intercept handshake, per-step
+ * timing) lives entirely in background.ts, downstream of this probe's
+ * `{ from, to, draggable }` result, and is untouched here.
+ */
+export interface DragProbeOpts {
+  from_selector?: string;
+  to_selector?: string;
+  from_x?: number;
+  from_y?: number;
+  to_x?: number;
+  to_y?: number;
+}
+
+export function buildDragProbeJs(opts: DragProbeOpts): string {
+  const optsJson = JSON.stringify({
+    from_selector: opts.from_selector,
+    to_selector: opts.to_selector,
+    from_x: opts.from_x,
+    from_y: opts.from_y,
+    to_x: opts.to_x,
+    to_y: opts.to_y,
+  });
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const P = ${optsJson};
+  function scrollAndProbe(sel) {
+    const el = deepQueryFirst(sel);
+    if (!el) return { err: 'not_found' };
+    // Owner decision D4: an endpoint with no visible box would be dragged
+    // at (0,0) plus its frame offsets; refuse it, nothing scrolled.
+    if (!hasVisibleBox(el)) return { err: 'no_box' };
+    const chain = frameElementChain(el);
+    for (let i = 0; i < chain.length; i++) {
+      if (chain[i].scrollIntoView) {
+        chain[i].scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      }
+    }
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    // The click resolver's last guard, checked after the scroll: an empty rect
+    // whose point is exactly the top viewport origin is no real box either.
+    if (isEmptyRectAtOrigin(el, viewportCenterOf(el))) return { err: 'no_box' };
+    return {
+      draggable:
+        el.tagName === 'IMG' ||
+        (el.tagName === 'A' && !!el.href) ||
+        el.draggable === true,
+    };
+  }
+  function readCenter(sel) {
+    const el = deepQueryFirst(sel);
+    if (!el) return null;
+    const center = viewportCenterOf(el);
+    const rect = clickRectOf(el);
+    const halfW = rect.width / 2;
+    const halfH = rect.height / 2;
+    const top = center.y - halfH;
+    const left = center.x - halfW;
+    const bottom = center.y + halfH;
+    const right = center.x + halfW;
+    return {
+      x: center.x,
+      y: center.y,
+      in_viewport: bottom > 0 && right > 0 && top < innerHeight && left < innerWidth,
+    };
+  }
+  function endpointError(name, sel, err, direction) {
+    if (err === 'no_box') {
+      return name + ' ' + sel + ' has no visible box (not rendered or visibility-hidden), ' +
+        'so there is no point to drag ' + direction + ': make it visible first';
+    }
+    return name + ' not found: ' + sel;
+  }
+  let fromHint = null;
+  if (P.from_selector) {
+    fromHint = scrollAndProbe(P.from_selector);
+    if (fromHint.err) return { err: endpointError('from_selector', P.from_selector, fromHint.err, 'from') };
+  }
+  if (P.to_selector) {
+    const t = scrollAndProbe(P.to_selector);
+    if (t.err) return { err: endpointError('to_selector', P.to_selector, t.err, 'to') };
+  }
+  const from = P.from_selector
+    ? readCenter(P.from_selector)
+    : { x: P.from_x, y: P.from_y, in_viewport: true };
+  const to = P.to_selector
+    ? readCenter(P.to_selector)
+    : { x: P.to_x, y: P.to_y, in_viewport: true };
+  if (!from) return { err: 'from element disappeared between probes' };
+  if (!to) return { err: 'to element disappeared between probes' };
+  return { from: from, to: to, draggable: fromHint ? fromHint.draggable : false };
+})()
+`;
 }
 
 /**

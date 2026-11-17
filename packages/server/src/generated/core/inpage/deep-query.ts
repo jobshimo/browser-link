@@ -1,6 +1,7 @@
+// GENERATED from packages/core/src/inpage/deep-query.ts. Do not edit.
 /**
  * In-page JS source injected into CDP `Runtime.evaluate` expressions built
- * by background.ts. This is the "deep search" layer that lets `snapshot`,
+ * by the extension and cdp-direct. This is the "deep search" layer that lets `snapshot`,
  * `find`, `click` and `type` see past two boundaries plain
  * `document.querySelector` / `document.querySelectorAll` cannot cross:
  *

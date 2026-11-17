@@ -1,10 +1,11 @@
 /**
  * Builders that assemble the CDP `Runtime.evaluate` expression strings for
  * `snapshot`, `find`, `click`, `type`, `press` and the shared post-action
- * `settle` wait. Extracted out of background.ts so the produced JS source
- * can be unit-tested by evaluating it directly in a DOM environment (see
- * the `*.test.ts` files next to this module) — the exact same string
- * background.ts sends over CDP.
+ * `settle` wait. Lives in core so the produced JS source can be unit-tested
+ * by evaluating it directly in a DOM environment (see the `*.test.ts` files
+ * next to this module) — the exact same string the extension and cdp-direct
+ * send over CDP. The server compiles a generated mirror of this file
+ * (`scripts/sync-core.mjs`), so there is one copy.
  */
 import { DEEP_QUERY_JS } from './deep-query.js';
 import { DOM_HELPERS_JS } from './dom-helpers.js';

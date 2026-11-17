@@ -1,8 +1,8 @@
 /**
- * Independent copy of `packages/extension/src/expect.ts` — see
- * `inpage/deep-query.ts`'s header comment for why this package duplicates
- * rather than imports these modules. It imports `buildExpectProbeJs` from
- * this package's own `./inpage/builders.js` copy and `EvaluateFn` from its
+ * Independent copy of `packages/extension/src/expect.ts` — this
+ * package publishes standalone and cannot import these modules. It imports
+ * `buildExpectProbeJs` from the generated core mirror
+ * (`../generated/core/inpage/builders.js`) and `EvaluateFn` from its
  * own `./settle.js`; everything below this header is byte-identical, which
  * `cdp/drift.test.ts` asserts.
  *
@@ -11,7 +11,7 @@
  * EFFECT).
  */
 import type { Clock } from './clock.js';
-import { buildExpectProbeJs } from './inpage/builders.js';
+import { buildExpectProbeJs } from '../generated/core/inpage/builders.js';
 import type { EvaluateFn } from './settle.js';
 
 /** Default and hard ceiling of the expectation window. The ceiling keeps

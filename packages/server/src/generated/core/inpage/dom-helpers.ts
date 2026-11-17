@@ -1,9 +1,5 @@
+// GENERATED from packages/core/src/inpage/dom-helpers.ts. Do not edit.
 /**
- * Independent copy of `packages/extension/src/inpage/dom-helpers.ts` — see
- * `./deep-query.ts`'s header comment for why this is a verbatim duplicate
- * rather than a cross-package import. The exported `DOM_HELPERS_JS` body is
- * asserted byte-identical to that sibling by `cdp/drift.test.ts`.
- *
  * Shared in-page DOM helpers, injected verbatim into any JS template that
  * needs them (`buildSnapshotJs`, `buildFindJs`). Defining them once here
  * keeps the heuristics (visibility, selector generation, accessible text)

@@ -181,7 +181,9 @@ Consequences, measured:
   print (`cdp/transport-parity.test.ts`) and marker extraction
   (`config.drift.test.ts`, "wire protocol drift guard"). The extension itself
   copies `BRIDGE_PORT` because plain `tsc` cannot resolve a runtime import of
-  a workspace package in Chrome.
+  a workspace package in Chrome. (Measured at `5ce3055`. Slice 6, 1.4.9,
+  replaced `cdp/inpage/*` with the mirror and deleted `cdp/builders-parity.test.ts`
+  and the in-page sections of `cdp/drift.test.ts`.)
 - **No bundler.** The extension builds with `tsc && node copy-assets.mjs`
   (`packages/extension/package.json`, script `build`), which emits one
   `.js`, `.js.map` and `.d.ts` per module into `dist/` (99 files in the

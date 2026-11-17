@@ -1,9 +1,8 @@
 /**
  * Independent copy of `packages/extension/src/settle.ts`, adapted only to
- * import `buildSettleJs` from this package's own `./inpage/builders.js`
- * copy instead of the extension's — see `inpage/deep-query.ts`'s header
- * comment for why this package duplicates rather than imports these
- * modules. Logic is otherwise byte-identical; `cdp/drift.test.ts` asserts
+ * import `buildSettleJs` from the generated core mirror
+ * (`../generated/core/inpage/builders.js`) instead of the extension's — this
+ * package publishes standalone and cannot import these modules. Logic is otherwise byte-identical; `cdp/drift.test.ts` asserts
  * the numeric settle invariants stay in lockstep with the sibling at
  * `packages/extension/src/settle.ts`.
  *
@@ -15,7 +14,7 @@
  * passes a closure over its own evaluate primitive (`evaluateInTab` in the
  * extension, the CDP client on the server).
  */
-import { buildSettleJs } from './inpage/builders.js';
+import { buildSettleJs } from '../generated/core/inpage/builders.js';
 
 /** Defaults and hard ceilings — same clamp-at-the-boundary philosophy as
  * the drag durations in the extension's `background.ts`. Mirrored by the

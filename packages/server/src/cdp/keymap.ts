@@ -1,7 +1,7 @@
 /**
- * Independent copy of `packages/extension/src/keymap.ts` — see
- * `inpage/deep-query.ts`'s header comment for why this package duplicates
- * rather than imports extension-side modules. Byte-identical logic;
+ * Independent copy of `packages/extension/src/keymap.ts` — this
+ * package publishes standalone and cannot import extension-side modules.
+ * Byte-identical logic;
  * `cdp/drift.test.ts` asserts the `MODIFIER_BITS` mapping stays in lockstep
  * with the sibling at `packages/extension/src/keymap.ts`.
  *

@@ -7,7 +7,7 @@
  * passes a closure over its own evaluate primitive (`evaluateInTab` in the
  * extension, the CDP client on the server).
  */
-import { buildSettleJs } from './inpage/builders.js';
+import { buildSettleJs } from '@browser-link/core';
 
 /** Defaults and hard ceilings — same clamp-at-the-boundary philosophy as
  * the drag durations in the extension's `background.ts`. Mirrored by the

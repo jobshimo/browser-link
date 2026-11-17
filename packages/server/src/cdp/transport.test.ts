@@ -23,7 +23,7 @@ import {
   OBSERVER_GLOBAL,
   buildObserverChangesJs,
   buildObserverMarkJs,
-} from './inpage/observer.js';
+} from '../generated/core/inpage/observer.js';
 import {
   PASSWORD_VALUES_HIDDEN_NOTE,
   UNOBSERVED_FRAMES_HINT,
@@ -34,7 +34,7 @@ import {
   buildFocusedFieldJs,
   buildProgrammaticClickJs,
   buildSettleJs,
-} from './inpage/builders.js';
+} from '../generated/core/inpage/builders.js';
 import { PROGRAMMATIC_CLICK_NOTE, noBoxClickMessage, notFocusedMessage } from './flow.js';
 import { TOP_DOCUMENT_PROBE_JS } from './observer-host.js';
 import { closeActivityDb } from '../activity/db.js';
