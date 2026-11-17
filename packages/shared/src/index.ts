@@ -6,8 +6,10 @@ export { NOTICE, type NoticeText } from './notice.js';
  * `config.drift.test.ts` fails when a copy drifts. */
 export const BRIDGE_PORT = 17529;
 
-// <wire-protocol> verbatim in packages/server/src/messages.ts — guarded by
-// packages/server/src/config.drift.test.ts. Edit here, then copy the section.
+// Wire protocol. The server consumes this file through the checked mirror
+// packages/server/src/generated/shared (kept by scripts/sync-core.mjs, whose
+// --check fails on any drift); packages/server/src/messages.ts re-exports its
+// types. Edit here, then run `node scripts/sync-core.mjs`.
 export type TabId = string;
 
 export interface TabRegisterPayload {
@@ -411,7 +413,6 @@ export type ServerToExtension =
   | BridgeRepairResultMessage
   | AdminStateMessage
   | AdminActionResultMessage;
-// </wire-protocol>
 
 export interface PingResult {
   title: string;
