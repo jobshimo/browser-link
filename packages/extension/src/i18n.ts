@@ -90,8 +90,10 @@ const EN = {
       ? 'Until then the Admin window only previews changes, and a download held for the server expires and Chrome saves it as well (a second copy).'
       : `Until then what the extension changed after ${server} may not work.`),
   popupMinutes: (minutes: number): string => `${String(minutes)} min`,
-  popupMinutesCustom: (minutes: number): string => `${String(minutes)} min (custom)`,
   popupNever: 'Never',
+  popupIdleTtlConsole: (command: string): string => `Set from the console: ${command}`,
+  popupIdleTtlLegacy: (choice: string, command: string): string =>
+    `Your earlier choice in this popup (${choice}) is no longer used: idle disconnect is set from the console now. To keep it, run: ${command}`,
   popupDialogEmpty: '(empty)',
   popupRecord: 'Record',
   popupStop: 'Stop',
@@ -274,9 +276,10 @@ const EN = {
   adminChanged: 'Changed',
   adminOn: 'on',
   adminOff: 'off',
-  adminConsoleOnlyName: 'Why this setting cannot be changed here',
-  adminConsoleOnlyInfo:
-    'This setting is changed from the console, not from here: it changes what agents can see or do.',
+  adminCopy: 'Copy',
+  adminCopied: 'Copied',
+  adminCopyFailed: 'Copy failed: select the command and copy it',
+  adminCopyCommand: 'Copy the command',
 };
 
 /** The shape every language must provide, key for key. */
@@ -341,8 +344,10 @@ const ES: Messages = {
       ? 'Mientras tanto la ventana Admin solo muestra la vista previa de los cambios, y una descarga retenida para el servidor vence y Chrome también la guarda (una segunda copia).'
       : `Mientras tanto lo que la extensión cambió después de ${server} puede no funcionar.`),
   popupMinutes: (minutes: number): string => `${String(minutes)} min`,
-  popupMinutesCustom: (minutes: number): string => `${String(minutes)} min (personalizado)`,
   popupNever: 'Nunca',
+  popupIdleTtlConsole: (command: string): string => `Se cambia desde la consola: ${command}`,
+  popupIdleTtlLegacy: (choice: string, command: string): string =>
+    `Lo que eligió antes en este popup (${choice}) ya no se usa: la desconexión por inactividad se cambia ahora desde la consola. Para conservarlo, ejecute: ${command}`,
   popupDialogEmpty: '(vacío)',
   popupRecord: 'Grabar',
   popupStop: 'Detener',
@@ -529,9 +534,10 @@ const ES: Messages = {
   adminChanged: 'Cambio aplicado',
   adminOn: 'activado',
   adminOff: 'desactivado',
-  adminConsoleOnlyName: 'Por qué este ajuste no se puede cambiar aquí',
-  adminConsoleOnlyInfo:
-    'Este ajuste se cambia desde la consola, no desde aquí: modifica lo que los agentes pueden ver o hacer.',
+  adminCopy: 'Copiar',
+  adminCopied: 'Copiado',
+  adminCopyFailed: 'No se pudo copiar: seleccione el comando y cópielo',
+  adminCopyCommand: 'Copiar el comando',
 };
 
 const DICTIONARIES: Readonly<Record<Language, Messages>> = { en: EN, es: ES };

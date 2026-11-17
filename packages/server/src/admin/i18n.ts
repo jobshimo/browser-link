@@ -9,7 +9,10 @@ import type { AdminUiStrings } from '../messages.js';
  */
 export interface AdminI18n {
   ui: Omit<AdminUiStrings, 'language'>;
-  sections: { status: string; setup: string; diagnose: string; reference: string };
+  sections: { status: string; setup: string; console: string; diagnose: string; reference: string };
+  /** S4: shown once at the top of the console section, says why its settings
+   * are not changed from the Admin window. */
+  consoleNotice: string;
   on: string;
   off: string;
   unknown: string;
@@ -71,7 +74,10 @@ export interface AdminI18n {
   executablesAllowed: string;
   executablesRefused: string;
   idleTtl: string;
-  idleTtlHint: string;
+  idleTtlNever: string;
+  /** S3: how long a claim between agents lasts without activity. */
+  claimTtl: string;
+  claimTtlNever: string;
   flowRecording: string;
   flowRecordingHint: string;
   popupDefault: string;
@@ -120,7 +126,15 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
       restartRequired: 'Restart your MCP client for this change to take effect.',
       changed: 'Saved.',
     },
-    sections: { status: 'Status', setup: 'Setup', diagnose: 'Diagnose', reference: 'Reference' },
+    sections: {
+      status: 'Status',
+      setup: 'Setup',
+      console: 'Console settings',
+      diagnose: 'Diagnose',
+      reference: 'Reference',
+    },
+    consoleNotice:
+      'These settings change only from the console, in a terminal. Each one widens what an agent may do or see, so anything that can reach the bridge, an agent included, could grant it if it could be changed here. Copy the command next to a setting and run it in a terminal; this window shows the new value once it applies.',
     on: 'on',
     off: 'off',
     unknown: 'unknown',
@@ -191,8 +205,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     executablesAllowed: 'allowed',
     executablesRefused: 'refused',
     idleTtl: 'Idle disconnect',
-    idleTtlHint:
-      "Change it in the popup's Idle disconnect control or with browser-link config set idle-ttl",
+    idleTtlNever: 'never (stays connected)',
+    claimTtl: 'Claim expiry between agents',
+    claimTtlNever: 'never (until its agent releases it or disconnects)',
     flowRecording: 'Flow recording',
     flowRecordingHint:
       "Change it in the popup's flow recording control or with browser-link config set flow-recording",
@@ -240,9 +255,12 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     sections: {
       status: 'Estado',
       setup: 'Configuración',
+      console: 'Ajustes de la consola',
       diagnose: 'Diagnóstico',
       reference: 'Referencia',
     },
+    consoleNotice:
+      'Estos ajustes solo se cambian desde la consola, en una terminal. Cada uno amplía lo que un agente puede hacer o ver, así que cualquier cosa que llegue al puente, un agente incluido, podría concederlo si se pudiera cambiar aquí. Copie el comando junto al ajuste y ejecútelo en una terminal; esta ventana muestra el valor nuevo cuando se aplica.',
     on: 'activado',
     off: 'desactivado',
     unknown: 'desconocido',
@@ -316,8 +334,9 @@ export const ADMIN_I18N: Record<Language, AdminI18n> = {
     executablesAllowed: 'permitidas',
     executablesRefused: 'rechazadas',
     idleTtl: 'Desconexión por inactividad',
-    idleTtlHint:
-      'Se cambia desde el popup (Desconexión por inactividad) o con browser-link config set idle-ttl',
+    idleTtlNever: 'nunca (sigue conectada)',
+    claimTtl: 'Vencimiento de la reserva entre agentes',
+    claimTtlNever: 'nunca (hasta que su agente la libere o se desconecte)',
     flowRecording: 'Grabación de flows',
     flowRecordingHint:
       'Se cambia desde el popup (grabación de flows) o con browser-link config set flow-recording',

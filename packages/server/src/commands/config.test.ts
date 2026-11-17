@@ -42,8 +42,9 @@ afterEach(() => {
 });
 
 describe('getIdleTtlLine / listConfig', () => {
-  test('reports "not set via CLI" for a fresh install', () => {
-    expect(getIdleTtlLine()).toMatch(/not set via CLI/);
+  test('a fresh install shows the value in effect: 30 min, the default (S2: one value, owned by the console)', () => {
+    expect(getIdleTtlLine()).toBe('  idle-ttl   30 min (default)');
+    expect(getIdleTtlLine('es')).toBe('  idle-ttl   30 min (por defecto)');
     expect(listConfig()).toContain('browser-link config');
   });
 
@@ -453,6 +454,50 @@ describe('config get/set map-learning', () => {
   test('speaks Spanish too', async () => {
     expect(await runConfigCommand(['get', 'map-learning'], 'es')).toMatch(
       /map-learning\s+activado \(por defecto\)/,
+    );
+  });
+});
+
+describe('config get/set claim-ttl (S3)', () => {
+  test('defaults to 10 minutes, listed by "config get", nothing written', async () => {
+    expect(await runConfigCommand(['get', 'claim-ttl'])).toBe('  claim-ttl   10 min (default)');
+    expect(listConfig()).toContain('  claim-ttl   10 min (default)');
+    expect(loadConfig().claimTtlMinutes).toBeUndefined();
+  });
+
+  test('"set <minutes>" persists the minutes; "set never" persists 0', async () => {
+    expect(await runConfigCommand(['set', 'claim-ttl', '25'])).toBe(
+      'claim-ttl set to 25 min. A claim between agents now expires after 25 min without activity; applies to the next check, no restart needed.',
+    );
+    expect(loadConfig().claimTtlMinutes).toBe(25);
+    expect(await runConfigCommand(['get', 'claim-ttl'])).toBe('  claim-ttl   25 min');
+    expect(await runConfigCommand(['set', 'claim-ttl', 'never'])).toBe(
+      'claim-ttl set to never (a claim lasts until its agent releases it or disconnects). Applies to the next check, no restart needed.',
+    );
+    expect(loadConfig().claimTtlMinutes).toBe(0);
+    expect(await runConfigCommand(['get', 'claim-ttl'])).toBe(
+      '  claim-ttl   never (a claim lasts until its agent releases it or disconnects)',
+    );
+  });
+
+  test('"set default" removes the key; an out-of-range number is clamped with a note', async () => {
+    await runConfigCommand(['set', 'claim-ttl', '5000']);
+    expect(loadConfig().claimTtlMinutes).toBe(1440);
+    await runConfigCommand(['set', 'claim-ttl', 'default']);
+    expect(loadConfig().claimTtlMinutes).toBeUndefined();
+  });
+
+  test('rejects anything but minutes, never or default; a missing value is a usage error', async () => {
+    await expect(runConfigCommand(['set', 'claim-ttl', 'soon'])).rejects.toThrow(
+      'Invalid claim-ttl value: "soon". Use a whole number of minutes (1-1440), "never" or "default".',
+    );
+    await expect(runConfigCommand(['set', 'claim-ttl'])).rejects.toThrow(/Usage/);
+    expect(loadConfig().claimTtlMinutes).toBeUndefined();
+  });
+
+  test('speaks Spanish too', async () => {
+    expect(await runConfigCommand(['get', 'claim-ttl'], 'es')).toBe(
+      '  claim-ttl   10 min (por defecto)',
     );
   });
 });

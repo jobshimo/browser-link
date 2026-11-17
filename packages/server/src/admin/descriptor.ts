@@ -3,7 +3,9 @@ import {
   DEFAULT_GRANT_TTL_MINUTES,
   activityHidesSensitive,
   allowsExecutableDownloads,
+  claimTtlMinutesInEffect,
   hidesPasswordValues,
+  idleTtlMinutesInEffect,
   type BrowserLinkConfig,
 } from '../config.js';
 import type { ClientInstructionsStatus } from '../manual/status.js';
@@ -25,9 +27,12 @@ import { ADMIN_I18N, type AdminI18n } from './i18n.js';
  * are readouts carrying the console command instead. So are the settings
  * that widen what an agent may do (the tool set, cdp-direct and its grant
  * lifetime, MCP client registration, what is hidden from an agent:
- * password values, sensitive trail rows, and whether downloads may be
- * executable types): anything that can reach the bridge
- * could otherwise grant them, so only the console changes them.
+ * password values, sensitive trail rows, where downloads land and whether
+ * they may be executable types, how long a tab stays connected while idle
+ * and how long a claim between agents lasts): anything that can reach the
+ * bridge could otherwise grant them, so only the console changes them.
+ * They all live in their own `console` section (S4, 1.3.0), under one
+ * notice that says so, each with its value and exact command.
  */
 
 export const REPO_URL = 'https://github.com/jobshimo/browser-link';
@@ -95,15 +100,23 @@ function readout(
   return { id, kind: 'readout', label, value, writesDisk: false, ...extra };
 }
 
-/** A readout of a setting only the console changes: the window shows it with
- * an info icon saying so (`consoleOnly`). */
+/** A readout of a setting only the console changes, carrying its exact
+ * console `command` (the Admin window shows it with a Copy button). `hint`
+ * is the prose an Admin window older than 1.3.0 shows instead; it defaults
+ * to the command. */
 function consoleReadout(
   id: string,
   label: string,
   value: AdminItem['value'],
-  extra: Partial<AdminItem> = {},
+  command: string,
+  hint: string = command,
 ): AdminItem {
-  return readout(id, label, value, { ...extra, consoleOnly: true });
+  return readout(id, label, value, { consoleOnly: true, hint, command });
+}
+
+/** `<minutes>`, or `never` for 0: the value a `<minutes|never>` key takes. */
+function minutesArg(minutes: number): string {
+  return minutes === 0 ? 'never' : String(minutes);
 }
 
 function toggle(id: string, label: string, value: boolean, requiresRestart = false): AdminItem {
@@ -230,9 +243,6 @@ function statusSection(input: AdminInput, t: AdminI18n): AdminSection {
 
 function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
   const { config } = input;
-  const disabled = new Set(config.disabledTools ?? []);
-  const grantTtl = config.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES;
-  const cdpDirectEnabled = config.cdpDirectEnabled === true;
   const items: AdminItem[] = [
     {
       id: 'language',
@@ -245,12 +255,6 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       ],
       writesDisk: true,
     },
-    ...input.toolNames.map((name) => {
-      const enabled = !disabled.has(name);
-      return consoleReadout(`tools.${name}`, t.tool(name), enabled ? t.on : t.off, {
-        hint: toolCommand(name, enabled),
-      });
-    }),
     toggle('multiAgent', t.multiAgent, config.multiAgent !== false, true),
     toggle('autoReelect', t.autoReelect, config.autoReelect === true, true),
     toggle(
@@ -258,29 +262,6 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       t.instructionsAutoRefresh,
       config.instructionsAutoRefresh !== false,
       true,
-    ),
-    consoleReadout('cdpDirectEnabled', t.cdpDirectEnabled, cdpDirectEnabled ? t.on : t.off, {
-      hint: cdpDirectEnabledCommand(cdpDirectEnabled),
-    }),
-    consoleReadout(
-      'cdpDirectPort',
-      t.cdpDirectPort,
-      config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT,
-      {
-        hint: t.cdpDirectPortHint(
-          `browser-link config set cdp-direct.port ${String(config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT)}`,
-        ),
-      },
-    ),
-    consoleReadout(
-      'cdpDirectGrantTtlMinutes',
-      t.cdpDirectGrantTtl,
-      grantTtl === 0 ? t.never : t.minutes(grantTtl),
-      {
-        hint: t.cdpDirectGrantTtlHint(
-          `browser-link config set cdp-direct.grant-ttl ${grantTtl === 0 ? 'never' : String(grantTtl)}`,
-        ),
-      },
     ),
     // Read once when the primary wires the trail, so a change needs a restart.
     toggle('activityEnabled', t.activityEnabled, config.activityEnabled !== false, true),
@@ -290,42 +271,8 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
       config.activityRecordPayloads !== false,
       true,
     ),
-    // Owner decisions D12, D13 (revised 2026-11-16): these two widen what an
-    // agent may see, so like cdp-direct they are only shown here.
-    consoleReadout(
-      'activityHideSensitive',
-      t.activityHideSensitive,
-      activityHidesSensitive(config) ? t.activitySensitiveHidden : t.activitySensitiveStored,
-      { hint: onOffCommand('activity.hide-sensitive', activityHidesSensitive(config)) },
-    ),
-    consoleReadout(
-      'hidePasswordValues',
-      t.hidePasswordValues,
-      hidesPasswordValues(config) ? t.passwordValuesHidden : t.passwordValuesShown,
-      { hint: onOffCommand('hide-password-values', hidesPasswordValues(config)) },
-    ),
-    readout('downloadsDir', t.downloadsDir, input.downloadsDir, {
-      hint: 'browser-link config set downloads.dir <absolute-path|default>',
-    }),
-    // Saving executable types widens what an agent may do: console only.
-    consoleReadout(
-      'allowExecutableDownloads',
-      t.allowExecutableDownloads,
-      allowsExecutableDownloads(config) ? t.executablesAllowed : t.executablesRefused,
-      { hint: onOffCommand('downloads.allow-executables', allowsExecutableDownloads(config)) },
-    ),
-    // These two keep their timestamped `settings.update` path (popup and
-    // `config set`), so the admin panel only shows them.
-    readout(
-      'idleTtl',
-      t.idleTtl,
-      config.idleTtlMinutes === undefined
-        ? t.popupDefault
-        : config.idleTtlMinutes === 0
-          ? t.never
-          : t.minutes(config.idleTtlMinutes),
-      { hint: t.idleTtlHint },
-    ),
+    // Flow recording keeps its timestamped `settings.update` path (popup and
+    // `config set`), so the admin panel only shows it.
     readout(
       'flowRecording',
       t.flowRecording,
@@ -338,6 +285,109 @@ function setupSection(input: AdminInput, t: AdminI18n): AdminSection {
     ),
   ];
   return { id: 'setup', title: t.sections.setup, items };
+}
+
+/**
+ * S4: every setting only the console changes, in one section under one
+ * notice that says why, each a readout with its value and exact command.
+ * None of these ids has a branch in admin/actions.ts.
+ */
+function consoleSection(input: AdminInput, t: AdminI18n): AdminSection {
+  const { config } = input;
+  const disabled = new Set(config.disabledTools ?? []);
+  const port = config.cdpDirectPort ?? DEFAULT_CDP_DIRECT_PORT;
+  const grantTtl = config.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES;
+  const cdpDirectEnabled = config.cdpDirectEnabled === true;
+  const idleTtl = idleTtlMinutesInEffect(config);
+  const claimTtl = claimTtlMinutesInEffect(config);
+  const portCommand = `browser-link config set cdp-direct.port ${String(port)}`;
+  const grantTtlCommand = `browser-link config set cdp-direct.grant-ttl ${minutesArg(grantTtl)}`;
+  const items: AdminItem[] = [
+    ...input.toolNames.map((name) => {
+      const enabled = !disabled.has(name);
+      return consoleReadout(
+        `tools.${name}`,
+        t.tool(name),
+        enabled ? t.on : t.off,
+        toolCommand(name, enabled),
+      );
+    }),
+    consoleReadout(
+      'cdpDirectEnabled',
+      t.cdpDirectEnabled,
+      cdpDirectEnabled ? t.on : t.off,
+      cdpDirectEnabledCommand(cdpDirectEnabled),
+    ),
+    consoleReadout(
+      'cdpDirectPort',
+      t.cdpDirectPort,
+      port,
+      portCommand,
+      t.cdpDirectPortHint(portCommand),
+    ),
+    consoleReadout(
+      'cdpDirectGrantTtlMinutes',
+      t.cdpDirectGrantTtl,
+      grantTtl === 0 ? t.never : t.minutes(grantTtl),
+      grantTtlCommand,
+      t.cdpDirectGrantTtlHint(grantTtlCommand),
+    ),
+    // Owner decisions D12, D13 (revised 2026-11-16): what an agent may see.
+    consoleReadout(
+      'activityHideSensitive',
+      t.activityHideSensitive,
+      activityHidesSensitive(config) ? t.activitySensitiveHidden : t.activitySensitiveStored,
+      onOffCommand('activity.hide-sensitive', activityHidesSensitive(config)),
+    ),
+    consoleReadout(
+      'hidePasswordValues',
+      t.hidePasswordValues,
+      hidesPasswordValues(config) ? t.passwordValuesHidden : t.passwordValuesShown,
+      onOffCommand('hide-password-values', hidesPasswordValues(config)),
+    ),
+    // The agent names a file, never where it lands.
+    consoleReadout(
+      'downloadsDir',
+      t.downloadsDir,
+      input.downloadsDir,
+      'browser-link config set downloads.dir <absolute-path|default>',
+    ),
+    consoleReadout(
+      'allowExecutableDownloads',
+      t.allowExecutableDownloads,
+      allowsExecutableDownloads(config) ? t.executablesAllowed : t.executablesRefused,
+      onOffCommand('downloads.allow-executables', allowsExecutableDownloads(config)),
+    ),
+    // S2: the one idle value, pushed to the extension, shown the same here.
+    consoleReadout(
+      'idleTtl',
+      t.idleTtl,
+      idleTtl === 0 ? t.idleTtlNever : t.minutes(idleTtl),
+      `browser-link config set idle-ttl ${minutesArg(idleTtl)}`,
+    ),
+    // S3: how long one agent may keep a tab from the others.
+    consoleReadout(
+      'claimTtl',
+      t.claimTtl,
+      claimTtl === 0 ? t.claimTtlNever : t.minutes(claimTtl),
+      `browser-link config set claim-ttl ${minutesArg(claimTtl)}`,
+    ),
+    ...input.clients
+      .filter((c) => c.installed)
+      .map((c) => {
+        const command = c.registered
+          ? `browser-link uninstall --client ${c.id}`
+          : `browser-link install --client ${c.id}`;
+        return consoleReadout(
+          `client.register.${c.id}`,
+          t.registration(c.displayName),
+          c.registered ? t.registered : t.notRegistered,
+          command,
+          registrationHint(c.id, c.registered, t),
+        );
+      }),
+  ];
+  return { id: 'console', title: t.sections.console, notice: t.consoleNotice, items };
 }
 
 function button(id: string, label: string, writesDisk: boolean): AdminItem {
@@ -359,17 +409,6 @@ function diagnoseSection(input: AdminInput, t: AdminI18n): AdminSection {
         button(`instructions.uninstall.${s.id}`, t.instructionsUninstall(s.displayName), true),
       );
     }
-  }
-  for (const c of input.clients) {
-    if (!c.installed) continue;
-    items.push(
-      consoleReadout(
-        `client.register.${c.id}`,
-        t.registration(c.displayName),
-        c.registered ? t.registered : t.notRegistered,
-        { hint: registrationHint(c.id, c.registered, t) },
-      ),
-    );
   }
   items.push(readout('stop', t.stop, STOP_COMMAND, { description: t.stopDescription }));
   items.push(
@@ -406,6 +445,7 @@ export function buildAdminState(
     sections: [
       statusSection(input, t),
       setupSection(input, t),
+      consoleSection(input, t),
       diagnoseSection(input, t),
       referenceSection(input, t),
     ],

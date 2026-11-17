@@ -1201,6 +1201,10 @@ const I18N = {
     cdpDirectEnabled: 'cdp-direct enabled',
     hidePasswordValues: 'Hide password values from agents',
     activityHideSensitive: 'Hide sensitive values in the activity trail',
+    idleTtl: 'Idle disconnect',
+    claimTtl: 'Claim expiry between agents',
+    consoleSection: 'Console settings',
+    copy: 'Copy',
   },
   es: {
     footer: 'manual · por pestaña · solo loopback',
@@ -1210,6 +1214,10 @@ const I18N = {
     cdpDirectEnabled: 'cdp-direct activado',
     hidePasswordValues: 'Ocultar a los agentes el valor de las contraseñas',
     activityHideSensitive: 'Ocultar los valores sensibles en el registro de actividad',
+    idleTtl: 'Desconexión por inactividad',
+    claimTtl: 'Vencimiento de la reserva entre agentes',
+    consoleSection: 'Ajustes de la consola',
+    copy: 'Copiar',
   },
 };
 
@@ -1326,11 +1334,17 @@ async function languageChecks(cdp, extId) {
     );
   });
 
-  // Console-only settings: the server's readout, the command under it, no control.
+  // Console-only settings (S4, 1.3.0): their own section under one visible
+  // notice; each row the server's value and no control, then the exact
+  // command with a Copy button; no hover info control anywhere.
   await check('admin.console-only', async (name) => {
-    // cdp-direct and the two hide settings (changed only from the console):
-    // the server's readout, the command under it, no control, and an info
-    // control (a button with an accessible name, pointing at a text) beside the label.
+    const section = await cdp.evaluate(
+      `(() => { const title = [...document.querySelectorAll('.admin-section-title')].find((t) => t.textContent === ${jsLiteral(I18N[to].consoleSection)}); const notice = title?.nextElementSibling; return { title: !!title, notice: notice?.classList.contains('admin-section-notice') ? notice.textContent : null, info: document.querySelectorAll('.admin-info, .admin-info-text').length }; })()`,
+      admin.sessionId,
+    );
+    if (!section.title || !section.notice?.trim() || section.info !== 0) {
+      throw new StepFailure(name, `console section ${JSON.stringify(section)}`);
+    }
     const rows = [
       [
         'cdpDirectEnabled',
@@ -1344,11 +1358,13 @@ async function languageChecks(cdp, extId) {
         'activityHideSensitive',
         ['on', 'off'].map((v) => `browser-link config set activity.hide-sensitive ${v}`),
       ],
+      ['idleTtl', ['browser-link config set idle-ttl 30']],
+      ['claimTtl', ['browser-link config set claim-ttl 10']],
     ];
     for (const [key, commands] of rows) {
       const label = jsLiteral(I18N[to][key]);
       const seen = await cdp.evaluate(
-        `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const note = row.nextElementSibling; const info = row.querySelector('button.admin-info'); const text = info ? document.getElementById(info.getAttribute('aria-describedby') ?? '') : null; return { controls: row.querySelectorAll('input, select, button:not(.admin-info)').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: note?.classList.contains('admin-note') ? note.textContent : null, infoName: info?.getAttribute('aria-label') ?? null, infoText: text?.textContent ?? null }; })()`,
+        `(() => { const row = [...document.querySelectorAll('.admin-row')].find((r) => r.querySelector('.admin-row-label')?.textContent === ${label}); if (!row) return null; const line = row.nextElementSibling; const copy = line?.querySelector('button.admin-copy'); return { controls: row.querySelectorAll('input, select, button').length, value: row.querySelector('.admin-row-value')?.textContent ?? null, command: line?.classList.contains('admin-command') ? (line.querySelector('code')?.textContent ?? null) : null, copy: copy?.textContent ?? null, copyName: copy?.getAttribute('aria-label') ?? null }; })()`,
         admin.sessionId,
       );
       if (
@@ -1356,19 +1372,11 @@ async function languageChecks(cdp, extId) {
         seen.controls !== 0 ||
         !seen.value ||
         !commands.includes(seen.command) ||
-        !seen.infoName?.trim() ||
-        !seen.infoText?.trim()
+        seen.copy !== I18N[to].copy ||
+        !seen.copyName?.trim()
       ) {
         throw new StepFailure(name, `${key} row ${JSON.stringify(seen)}`);
       }
-    }
-    // Every console-only row has the info control, not only these three.
-    const withoutInfo = await cdp.evaluate(
-      `[...document.querySelectorAll('.admin-row')].filter((r) => r.querySelector('button.admin-info') && !r.querySelector('button.admin-info').getAttribute('aria-label')?.trim()).length`,
-      admin.sessionId,
-    );
-    if (withoutInfo !== 0) {
-      throw new StepFailure(name, `${withoutInfo} info control(s) without an accessible name`);
     }
   });
 

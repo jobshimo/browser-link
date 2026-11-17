@@ -225,7 +225,8 @@ describe('defaultSettings is derived from the loader, not hand-copied (S6.4)', (
     expect(d.disabledTools).toEqual([]);
     expect(d.allowedExtensionIds).toEqual([]);
     expect(d.peerExecutablePaths).toBeUndefined();
-    expect(d.idleTtlMinutes).toBeUndefined();
+    expect(d.idleTtlMinutes).toBe(30);
+    expect(d.claimTtlMinutes).toBe(10);
     expect(d.language).toBe('en');
   });
 
@@ -239,6 +240,7 @@ describe('defaultSettings is derived from the loader, not hand-copied (S6.4)', (
         'allowExecutableDownloads',
         'autoReelect',
         'cdpDirectEnabled',
+        'claimTtlMinutes',
         'cdpDirectGrantTtlMinutes',
         'cdpDirectPort',
         'disabledTools',

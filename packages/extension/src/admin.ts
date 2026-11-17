@@ -26,7 +26,7 @@ import {
   adminUi,
   fallbackAdminUi,
   buildAdminRows,
-  createConsoleInfo,
+  createCommandLine,
   describeAdminError,
   initialConfirmState,
   reduceConfirm,
@@ -133,6 +133,14 @@ function renderAdminRows(rows: AdminRow[]): void {
       title.className = 'flows-title admin-section-title';
       title.textContent = row.sectionTitle;
       body.appendChild(title);
+      // Said once, at the top of the section (the console section: why its
+      // settings are not changed here).
+      if (row.sectionNotice !== undefined) {
+        const notice = document.createElement('div');
+        notice.className = 'admin-section-notice';
+        notice.textContent = row.sectionNotice;
+        body.appendChild(notice);
+      }
     }
     const line = document.createElement('div');
     line.className = 'admin-row';
@@ -143,9 +151,6 @@ function renderAdminRows(rows: AdminRow[]): void {
       label.textContent = row.label;
       line.appendChild(label);
     }
-    // A setting only the console changes says so, next to its label.
-    const info = row.consoleOnly === true ? createConsoleInfo(document, lang.t, row.itemId) : null;
-    if (info) line.appendChild(info.button);
     line.appendChild(adminControlFor(row));
     body.appendChild(line);
     // Description, console hint and restart flag stay visible under the row
@@ -161,7 +166,14 @@ function renderAdminRows(rows: AdminRow[]): void {
       el.textContent = note;
       body.appendChild(el);
     }
-    if (info) body.appendChild(info.panel);
+    // A console-only setting: its exact command, with a Copy button.
+    if (row.command !== undefined) {
+      body.appendChild(
+        createCommandLine(document, lang.t, row.command, (text) =>
+          navigator.clipboard.writeText(text),
+        ),
+      );
+    }
   }
 }
 

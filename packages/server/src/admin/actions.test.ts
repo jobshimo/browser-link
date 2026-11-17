@@ -99,6 +99,20 @@ describe('applyAdminAction — allowlist', () => {
     }
   });
 
+  test('the idle disconnect and the claim expiry are read-only: no admin action changes them (1.0.0 rule)', async () => {
+    for (const id of ['idleTtl', 'claimTtl']) {
+      for (const value of [undefined, 0, 5, 'never', true]) {
+        const preview = await applyAdminAction({ id, value }, deps());
+        expect(preview).toEqual({ ok: false, error: `${id} is read-only` });
+        const write = await applyAdminAction({ id, value, code: 'x' }, deps());
+        expect(write).toEqual({ ok: false, error: `${id} is read-only` });
+      }
+    }
+    const cfg = loadConfig();
+    expect(cfg.idleTtlMinutes).toBeUndefined();
+    expect(cfg.claimTtlMinutes).toBeUndefined();
+  });
+
   test('the error is localised from config.language', async () => {
     const save = DEFAULT_ADMIN_HELPERS.saveConfig;
     save({ language: 'es' });

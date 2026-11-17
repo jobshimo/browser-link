@@ -5,9 +5,9 @@
  * every label already localised (`AdminState`). This module turns that data
  * into flat view rows the popup can render without knowing what any item
  * means, and owns the confirm flow for disk-writing actions as a tiny state
- * machine. No chrome.* and no page: the one DOM piece (the info control of a
- * console-only row) takes its document as an argument — so it is tested,
- * unlike popup.ts.
+ * machine. No chrome.* and no page: the one DOM piece (the command line of a
+ * console-only row, with its Copy button) takes its document and clipboard as
+ * arguments — so it is tested, unlike popup.ts.
  */
 import type {
   AdminActionResult,
@@ -41,6 +41,9 @@ export type AdminControl = 'none' | 'toggle' | 'select' | 'button' | 'link';
 export interface AdminRow {
   sectionId: AdminSection['id'];
   sectionTitle: string;
+  /** The section's notice (the console section says once why its settings
+   * are not changed here); the window shows it under the title. */
+  sectionNotice?: string;
   itemId: string;
   kind: AdminItemKind;
   label: string;
@@ -58,8 +61,11 @@ export interface AdminRow {
   disabled?: boolean;
   hint?: string;
   requiresRestart?: boolean;
-  /** A setting only the console changes: the row gets an info control. */
+  /** A setting only the console changes. */
   consoleOnly?: boolean;
+  /** The exact console command (servers from 1.3.0): shown with a Copy
+   * button, in place of the hint. */
+  command?: string;
 }
 
 /** What an admin request carries, minus the wire envelope. */
@@ -99,6 +105,9 @@ function rowFor(section: AdminSection, item: AdminItem, t: Messages): AdminRow {
     valueText: stringifyValue(item.value, t),
     control: 'none',
   };
+  if (typeof section.notice === 'string' && section.notice !== '') {
+    row.sectionNotice = section.notice;
+  }
   if (item.description !== undefined) row.description = item.description;
 
   switch (item.kind) {
@@ -141,7 +150,14 @@ function rowFor(section: AdminSection, item: AdminItem, t: Messages): AdminRow {
       break;
   }
 
-  if (item.hint !== undefined) row.hint = item.hint;
+  // The command replaces the hint: an older window shows the hint, this one
+  // the exact command with its Copy button. A command that is not text (it
+  // comes off a socket) is dropped, and the hint stays.
+  if (typeof item.command === 'string' && item.command !== '') {
+    row.command = item.command;
+  } else if (item.hint !== undefined) {
+    row.hint = item.hint;
+  }
   if (item.requiresRestart === true) row.requiresRestart = true;
   if (item.consoleOnly === true) row.consoleOnly = true;
   return row;
@@ -167,56 +183,40 @@ export function buildAdminRows(state: AdminState | null | undefined, t: Messages
 }
 
 /**
- * The info control of a console-only row: a real button (focusable, named)
- * and the text it points to. Hover and keyboard focus show the text, a click
- * pins it open (a second click unpins), Escape or blur closes it; the text is
- * in the page, so it is readable without any of them. Events are wired here,
- * never inline, for the extension pages' Content Security Policy.
+ * The command line of a console-only row (S4): the exact command, as text
+ * anyone can select, and a Copy button that puts it on the clipboard and says
+ * whether that worked. Nothing behind a hover. `writeText` is the clipboard
+ * (`navigator.clipboard.writeText` in the window), injected for tests.
+ * Events are wired here, never inline, for the extension pages' Content
+ * Security Policy.
  */
-export function createConsoleInfo(
+export function createCommandLine(
   doc: Document,
   t: Messages,
-  itemId: string,
-): { button: HTMLButtonElement; panel: HTMLElement } {
-  const panel = doc.createElement('div');
-  panel.id = `admin-info-${itemId}`;
-  panel.className = 'admin-note admin-info-text';
-  panel.textContent = t.adminConsoleOnlyInfo;
-  panel.hidden = true;
-
+  command: string,
+  writeText: (text: string) => Promise<void>,
+): HTMLElement {
+  const line = doc.createElement('div');
+  line.className = 'admin-command';
+  const code = doc.createElement('code');
+  code.textContent = command;
   const button = doc.createElement('button');
   button.type = 'button';
-  button.className = 'admin-info';
-  button.textContent = 'ⓘ';
-  button.setAttribute('aria-label', t.adminConsoleOnlyName);
-  button.setAttribute('aria-describedby', panel.id);
-  button.setAttribute('aria-expanded', 'false');
-
-  let pinned = false;
-  const show = (): void => {
-    panel.hidden = false;
-    button.setAttribute('aria-expanded', 'true');
-  };
-  const hide = (): void => {
-    pinned = false;
-    panel.hidden = true;
-    button.setAttribute('aria-expanded', 'false');
-  };
-  button.addEventListener('mouseenter', show);
-  button.addEventListener('mouseleave', () => {
-    if (!pinned) hide();
-  });
-  button.addEventListener('focus', show);
-  button.addEventListener('blur', hide);
+  button.className = 'admin-copy';
+  button.textContent = t.adminCopy;
+  button.setAttribute('aria-label', t.adminCopyCommand);
   button.addEventListener('click', () => {
-    pinned = !pinned;
-    if (pinned) show();
-    else hide();
+    writeText(command).then(
+      () => {
+        button.textContent = t.adminCopied;
+      },
+      () => {
+        button.textContent = t.adminCopyFailed;
+      },
+    );
   });
-  button.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') hide();
-  });
-  return { button, panel };
+  line.append(code, button);
+  return line;
 }
 
 /** The server's UI strings, or the fallback in the interface language. */

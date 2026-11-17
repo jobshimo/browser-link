@@ -88,9 +88,15 @@ function fakeSession(tabId: string, readyState: number): FakeWs {
 }
 
 describe('buildRegisterSettingsUpdate', () => {
-  test('returns null when the CLI never set idleTtlMinutes (popup-only user)', () => {
-    expect(buildRegisterSettingsUpdate({})).toBeNull();
-    expect(buildRegisterSettingsUpdate({ idleTtlUpdatedAt: 123 })).toBeNull();
+  test('S2: the console owns the one idle value, so a fresh config still pushes it (30 min, the default)', () => {
+    expect(buildRegisterSettingsUpdate({})).toEqual({
+      kind: 'settings.update',
+      settings: { idleTtlMinutes: 30, updatedAt: 0 },
+    });
+    expect(buildRegisterSettingsUpdate({ idleTtlUpdatedAt: 123 })).toEqual({
+      kind: 'settings.update',
+      settings: { idleTtlMinutes: 30, updatedAt: 123 },
+    });
   });
 
   test('builds the message when the CLI set a value, carrying its updatedAt', () => {
@@ -102,7 +108,7 @@ describe('buildRegisterSettingsUpdate', () => {
     });
   });
 
-  test('0 ("never") is a real value and DOES push — only undefined suppresses', () => {
+  test('0 ("never") is a real value and pushes as 0', () => {
     expect(buildRegisterSettingsUpdate({ idleTtlMinutes: 0, idleTtlUpdatedAt: 5 })).toEqual({
       kind: 'settings.update',
       settings: { idleTtlMinutes: 0, updatedAt: 5 },
@@ -116,11 +122,14 @@ describe('buildRegisterSettingsUpdate', () => {
     });
   });
 
-  test('returns null when the CLI never set flowRecordingEnabled either', () => {
-    expect(buildRegisterSettingsUpdate({ flowRecordingUpdatedAt: 123 })).toBeNull();
+  test('flow recording is left out when the CLI never set it', () => {
+    expect(buildRegisterSettingsUpdate({ flowRecordingUpdatedAt: 123 })).toEqual({
+      kind: 'settings.update',
+      settings: { idleTtlMinutes: 30, updatedAt: 0 },
+    });
   });
 
-  test('builds the message for flow-recording alone, independent of idle-ttl', () => {
+  test('builds the flow-recording pair independently of the idle-ttl pair', () => {
     expect(
       buildRegisterSettingsUpdate({
         flowRecordingEnabled: true,
@@ -128,7 +137,12 @@ describe('buildRegisterSettingsUpdate', () => {
       }),
     ).toEqual({
       kind: 'settings.update',
-      settings: { flowRecordingEnabled: true, flowRecordingUpdatedAt: 1_700_000_000_000 },
+      settings: {
+        idleTtlMinutes: 30,
+        updatedAt: 0,
+        flowRecordingEnabled: true,
+        flowRecordingUpdatedAt: 1_700_000_000_000,
+      },
     });
   });
 
@@ -137,14 +151,24 @@ describe('buildRegisterSettingsUpdate', () => {
       buildRegisterSettingsUpdate({ flowRecordingEnabled: false, flowRecordingUpdatedAt: 5 }),
     ).toEqual({
       kind: 'settings.update',
-      settings: { flowRecordingEnabled: false, flowRecordingUpdatedAt: 5 },
+      settings: {
+        idleTtlMinutes: 30,
+        updatedAt: 0,
+        flowRecordingEnabled: false,
+        flowRecordingUpdatedAt: 5,
+      },
     });
   });
 
   test('a missing flowRecordingUpdatedAt degrades to 0 (always loses precedence)', () => {
     expect(buildRegisterSettingsUpdate({ flowRecordingEnabled: true })).toEqual({
       kind: 'settings.update',
-      settings: { flowRecordingEnabled: true, flowRecordingUpdatedAt: 0 },
+      settings: {
+        idleTtlMinutes: 30,
+        updatedAt: 0,
+        flowRecordingEnabled: true,
+        flowRecordingUpdatedAt: 0,
+      },
     });
   });
 

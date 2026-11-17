@@ -63,26 +63,35 @@ export interface BrowserLinkConfig {
    */
   instructionsAutoRefresh?: boolean;
   /**
-   * CLI-side mirror of the extension's idle-disconnect TTL (see
-   * `packages/extension/src/idle-policy.ts`), in minutes. `0` means
-   * "never". Set via `browser-link config set idle-ttl <minutes|never>`.
-   *
-   * Deliberately left `undefined` — NOT defaulted to 30 here — when the
-   * CLI has never touched it: the WS bridge only pushes a `settings.update`
-   * to the extension when this field is explicitly set, so a popup-only
-   * user (who never ran the CLI command) never sees a spurious overwrite
-   * of their own choice with a server-side "default". See `idleTtlUpdatedAt`
-   * for the precedence rule when both sides have set a value.
+   * The idle-disconnect TTL of the extension's tabs, in minutes; `0` means
+   * "never". The ONE value of this setting (1.3.0): only the console changes
+   * it (`browser-link config set idle-ttl <minutes|never>`), the server
+   * pushes it to every tab on connect and on change, and the extension and
+   * the console show the same value. Absent means the default,
+   * `DEFAULT_IDLE_TTL_MINUTES` (see `idleTtlMinutesInEffect`). The popup
+   * no longer has a control for it: an old popup choice is ignored.
    */
   idleTtlMinutes?: number;
   /**
    * Epoch-ms timestamp of the last `idleTtlMinutes` write from the CLI.
-   * Sent alongside `idleTtlMinutes` in every `settings.update` push so the
-   * extension can apply a last-write-wins precedence rule against its own
-   * locally-stored timestamp (popup edits stamp their own `Date.now()`).
-   * Always set together with `idleTtlMinutes` — never one without the other.
+   * Still sent as `updatedAt` with the pushed value so an extension older
+   * than 1.3.0 (which compares it with its popup's own timestamp) keeps
+   * parsing the push. The 1.3.0 extension ignores it: the console wins.
    */
   idleTtlUpdatedAt?: number;
+  /**
+   * How long a claim between agents (`browser.claim_tab`, or the auto-claim
+   * of an action tool) lasts without activity, in minutes; `0` means
+   * "never": the claim lasts until its agent releases it or disconnects.
+   * Absent means the default, `DEFAULT_CLAIM_TTL_MINUTES` (10). It widens
+   * what an agent may do (hold a tab away from the others), so only the
+   * console changes it (`browser-link config set claim-ttl
+   * <minutes|never|default>`); the Admin window shows it read-only. Read on
+   * every check (see `claimTtlMinutesInEffect`), no restart needed. A
+   * `ttl_minutes` an agent passes to `browser.claim_tab` still applies to
+   * that claim.
+   */
+  claimTtlMinutes?: number;
   /**
    * CLI-side mirror of the extension's opt-in flow-recording toggle (see
    * `packages/extension/src/flow-recording-policy.ts`). Set via
@@ -246,6 +255,33 @@ export interface BrowserLinkConfig {
 export const MIN_IDLE_TTL_MINUTES = 1;
 export const MAX_IDLE_TTL_MINUTES = 1440;
 export const DEFAULT_IDLE_TTL_MINUTES = 30;
+
+/** Claim expiry between agents (`claim-ttl`): same bounds and same
+ * "0 is never, anything malformed is the default" rule as idle-ttl. */
+export const MIN_CLAIM_TTL_MINUTES = 1;
+export const MAX_CLAIM_TTL_MINUTES = 1440;
+export const DEFAULT_CLAIM_TTL_MINUTES = 10;
+
+/** Read-side sanitizer for `claimTtlMinutes` (config.json is untrusted):
+ * `0` ("never") and a whole number of minutes in [1, 1440] pass; anything
+ * else, absent included, is the 10-minute default. */
+export function clampClaimTtlMinutes(raw: unknown): number {
+  if (raw === 0) return 0;
+  if (
+    typeof raw === 'number' &&
+    Number.isInteger(raw) &&
+    raw >= MIN_CLAIM_TTL_MINUTES &&
+    raw <= MAX_CLAIM_TTL_MINUTES
+  ) {
+    return raw;
+  }
+  return DEFAULT_CLAIM_TTL_MINUTES;
+}
+
+/** The claim expiry in effect, in minutes (`0` = never). */
+export function claimTtlMinutesInEffect(cfg: BrowserLinkConfig): number {
+  return clampClaimTtlMinutes(cfg.claimTtlMinutes);
+}
 
 /** cdp-direct bounds — same clamp-at-the-boundary philosophy as the
  * idle-TTL constants above, independent copies since the two settings are
@@ -425,6 +461,15 @@ export function clampIdleTtlMinutes(value: number): number {
   return value;
 }
 
+/** The idle-disconnect TTL in effect, in minutes (`0` = never): the console's
+ * value, or the 30-minute default when it was never set. What the server
+ * pushes to the extension and what the console and the Admin window show. */
+export function idleTtlMinutesInEffect(cfg: BrowserLinkConfig): number {
+  return cfg.idleTtlMinutes === undefined
+    ? DEFAULT_IDLE_TTL_MINUTES
+    : clampIdleTtlMinutes(cfg.idleTtlMinutes);
+}
+
 /** Defaults applied at load time so consumers can read `cfg.multiAgent`
  * directly. Persisted form (see `normaliseForWrite`) only carries the field
  * when the user overrides the default, keeping the on-disk config minimal. */
@@ -465,13 +510,16 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   const cdpDirectGrantTtlMinutes = clampGrantTtlMinutes(
     cfg.cdpDirectGrantTtlMinutes ?? DEFAULT_GRANT_TTL_MINUTES,
   );
-  // idleTtlMinutes keeps its "never touched by the CLI" undefined sentinel
-  // (see the field doc above) — only clamp when a value is actually present,
-  // so a popup-only user's absence of a value still reads as "not set" and
-  // not as a coerced default. When present, clampIdleTtlMinutes neutralizes
-  // a corrupted config.json the same way sanitizeCdpPort does for the port.
+  // idleTtlMinutes stays undefined when never set, so config.json keeps only
+  // what the user chose (`idleTtlMinutesInEffect` reads it as 30). When
+  // present, clampIdleTtlMinutes neutralizes a corrupted config.json the same
+  // way sanitizeCdpPort does for the port.
   const idleTtlMinutes =
     cfg.idleTtlMinutes === undefined ? undefined : clampIdleTtlMinutes(cfg.idleTtlMinutes);
+  // claimTtlMinutes: same rule as idleTtlMinutes, absent stays absent and a
+  // present value is always a valid one (an invalid one reads as 10).
+  const claimTtlMinutes =
+    cfg.claimTtlMinutes === undefined ? undefined : clampClaimTtlMinutes(cfg.claimTtlMinutes);
   // Present only when strict mode is on, so `undefined` keeps meaning off.
   const peerExecutablePaths = sanitizePeerExecutablePaths(cfg.peerExecutablePaths);
   // Present only when at least one well-formed id is left.
@@ -487,6 +535,7 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
     cdpDirectPort,
     cdpDirectGrantTtlMinutes,
     idleTtlMinutes,
+    claimTtlMinutes,
     instructionsAutoRefresh,
     noticeAcknowledged,
   };
@@ -801,8 +850,8 @@ export function hidesPasswordValues(cfg: BrowserLinkConfig): boolean {
  * code reads it: `withDefaults` applied to an empty config, then each
  * key's sanitizer or "only an explicit false turns it off" rule. A
  * `Record` over every key, so a new config field does not compile until it
- * is listed here. `undefined` means "not set" (the extension's own choice,
- * strict mode off, the default downloads folder).
+ * is listed here. `undefined` means "not set" (the extension's own choice of
+ * flow recording, strict mode off, the default downloads folder).
  */
 export function defaultSettings(): Readonly<Record<keyof BrowserLinkConfig, unknown>> {
   const d = withDefaults({});
@@ -815,8 +864,9 @@ export function defaultSettings(): Readonly<Record<keyof BrowserLinkConfig, unkn
     cdpDirectEnabled: d.cdpDirectEnabled,
     cdpDirectPort: d.cdpDirectPort,
     cdpDirectGrantTtlMinutes: d.cdpDirectGrantTtlMinutes,
-    idleTtlMinutes: d.idleTtlMinutes,
+    idleTtlMinutes: idleTtlMinutesInEffect(d),
     idleTtlUpdatedAt: d.idleTtlUpdatedAt,
+    claimTtlMinutes: claimTtlMinutesInEffect(d),
     language: d.language ?? DEFAULT_LANGUAGE,
     flowRecordingEnabled: d.flowRecordingEnabled,
     flowRecordingUpdatedAt: d.flowRecordingUpdatedAt,

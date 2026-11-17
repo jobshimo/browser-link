@@ -175,6 +175,28 @@ describe('loadConfig neutralizes corrupted numeric fields at the read boundary',
     });
   });
 
+  describe('claimTtlMinutes (S3)', () => {
+    test.each([['soon'], [-5], [1.5], [1e9], [null], [true]])(
+      '%j falls back to the 10-minute default',
+      (raw) => {
+        writeRawConfig({ claimTtlMinutes: raw });
+        expect(loadConfig().claimTtlMinutes).toBe(10);
+      },
+    );
+
+    test('0 ("never") and an in-range value survive', () => {
+      writeRawConfig({ claimTtlMinutes: 0 });
+      expect(loadConfig().claimTtlMinutes).toBe(0);
+      writeRawConfig({ claimTtlMinutes: 1440 });
+      expect(loadConfig().claimTtlMinutes).toBe(1440);
+    });
+
+    test('a value never set stays undefined', () => {
+      writeRawConfig({});
+      expect(loadConfig().claimTtlMinutes).toBeUndefined();
+    });
+  });
+
   describe('cdpDirectGrantTtlMinutes', () => {
     test('a string value falls back to the default', () => {
       writeRawConfig({ cdpDirectGrantTtlMinutes: 'abc' });

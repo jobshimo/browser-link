@@ -1,31 +1,31 @@
 /**
- * Pure decision logic for the WS-idle sweep's user-configurable timeout.
+ * Pure decision logic for the WS-idle sweep's timeout.
+ *
+ * The timeout has ONE value, owned by the console (1.3.0, S2):
+ * `browser-link config set idle-ttl <minutes|never>`. The server pushes it on
+ * every tab registration and on change; background.ts stores it under
+ * `CONSOLE_IDLE_TTL_STORAGE_KEY` and the popup shows it read-only with the
+ * console command. A value the popup stored before 1.3.0 is never applied:
+ * the popup reports it while it differs, with the command that keeps it.
  *
  * Deliberately kept free of chrome.* — background.ts owns the
  * `chrome.storage` I/O and the `setInterval` loop that drives the actual
- * sweep, popup.ts owns the settings control that writes the value; both
- * import the constants and pure functions here so the disconnect decision
- * itself is unit-tested without mocking timers or storage. Same separation
- * `settle.ts` already established for the click/type/press settle wait.
+ * sweep; both it and popup.ts import the constants and pure functions here
+ * so the decisions are unit-tested without mocking timers or storage. Same
+ * separation `settle.ts` already established for the settle wait.
  */
 
 import { MAX_DETACHED_FLOW_MS } from './flow-registry.js';
 
-/** chrome.storage key the setting is persisted under, in `chrome.storage.local`
- * (a per-device preference, not something that should sync across machines
- * the way a bookmark would — mirrors the local-only intent of the existing
- * `prevTabId:*` session keys, just in a persistent area instead of
- * `chrome.storage.session`). */
-export const IDLE_TTL_STORAGE_KEY = 'idleTtlMinutes';
+/** `chrome.storage.local` key of the value the console set, as the server
+ * last pushed it. The only idle value the sweep applies. */
+export const CONSOLE_IDLE_TTL_STORAGE_KEY = 'consoleIdleTtlMinutes';
 
-/**
- * chrome.storage key for the epoch-ms timestamp of the last LOCAL write to
- * `IDLE_TTL_STORAGE_KEY` — i.e. from the popup's own control, not from an
- * incoming `settings.update` (see `shouldAcceptIncomingSettings`). Mirrors
- * the server-side `idleTtlUpdatedAt` config field (`packages/server/src/
- * config.ts`) by name, since both sides compare one against the other.
- */
-export const IDLE_TTL_UPDATED_AT_STORAGE_KEY = 'idleTtlUpdatedAt';
+/** `chrome.storage.local` keys where the popup kept its own idle choice
+ * before 1.3.0. Read only to report that choice (`legacyIdleChoice`); never
+ * applied, never written. */
+export const LEGACY_IDLE_TTL_STORAGE_KEY = 'idleTtlMinutes';
+export const LEGACY_IDLE_TTL_UPDATED_AT_STORAGE_KEY = 'idleTtlUpdatedAt';
 
 /** Sentinel value for "auto-disconnect disabled" — surfaced in the popup as
  * "Never". Stored and compared as a plain number so the setting round-trips
@@ -36,6 +36,13 @@ export const IDLE_TTL_NEVER = 0;
  * fixed 30-minute constant this feature replaces, so existing users see no
  * behavior change until they open the popup and pick something else. */
 export const DEFAULT_IDLE_TTL_MINUTES = 30;
+
+/** How long a single tool call in progress holds its tab's idle clock. Longer
+ * than any one call may last (a download waits at most 2 minutes, a
+ * screenshot 90 s); past it a call that never answered stops holding and
+ * counts as activity at that bound, so a stuck call cannot keep a tab
+ * connected for ever. Flows have their own, longer, bound. */
+export const MAX_CALL_HOLD_MS = 10 * 60_000;
 
 /** Safety-rail bounds for any non-"never" value — see `clampIdleTtlMinutes`. */
 export const MIN_IDLE_TTL_MINUTES = 1;
@@ -124,17 +131,30 @@ export function activityAfterFlowEnded(lastActivityAt: number, endedAt: number):
   return Math.max(lastActivityAt, endedAt);
 }
 
+/** A tool call the tab is still answering, as the idle sweep sees it. */
+export interface IdleCallInProgress {
+  tabId: number;
+  /** When its `tool.request` arrived. */
+  startedAt: number;
+}
+
 /** The tabs one sweep tick disconnects, from `[tabId, lastActivityAt]`
- * pairs and the flows running now. */
+ * pairs, the flows running now and the calls in progress (BL-EXT-098: a
+ * call longer than the TTL is not parked in the middle of its run; it holds
+ * its tab like a flow, up to `MAX_CALL_HOLD_MS`). */
 export function tabsToDisconnectForIdle(
   tabs: Iterable<readonly [number, number]>,
   holds: readonly IdleFlowHold[],
   now: number,
   idleTtlMinutes: number,
+  calls: readonly IdleCallInProgress[] = [],
 ): number[] {
   const idle: number[] = [];
   for (const [tabId, lastActivityAt] of tabs) {
-    const tabHolds = holds.filter((h) => h.tabId === tabId).map((h) => h.holdUntil);
+    const tabHolds = [
+      ...holds.filter((h) => h.tabId === tabId).map((h) => h.holdUntil),
+      ...calls.filter((c) => c.tabId === tabId).map((c) => c.startedAt + MAX_CALL_HOLD_MS),
+    ];
     if (shouldDisconnectForIdle(lastActivityAt, now, idleTtlMinutes, tabHolds)) idle.push(tabId);
   }
   return idle;
@@ -150,12 +170,38 @@ export function shouldScheduleIdleSweep(idleTtlMinutes: number): boolean {
   return idleTtlMinutes !== IDLE_TTL_NEVER;
 }
 
+/** The idle TTL in effect, from `chrome.storage.local`: the console's value
+ * as last pushed, 30 minutes until a server pushed one. A legacy popup
+ * value is ignored whatever its timestamp. */
+export function effectiveIdleTtlMinutes(stored: Readonly<Record<string, unknown>>): number {
+  const pushed = stored[CONSOLE_IDLE_TTL_STORAGE_KEY];
+  return pushed === undefined ? DEFAULT_IDLE_TTL_MINUTES : clampIdleTtlMinutes(pushed);
+}
+
+/** The console command that sets `minutes` (`0` = never). */
+export function idleTtlCommand(minutes: number): string {
+  return `browser-link config set idle-ttl ${minutes === IDLE_TTL_NEVER ? 'never' : String(minutes)}`;
+}
+
+/** A choice the popup stored before 1.3.0, reported only while it differs
+ * from the value in effect, with the command that would keep it. */
+export function legacyIdleChoice(
+  stored: Readonly<Record<string, unknown>>,
+): { minutes: number; command: string } | null {
+  const raw = stored[LEGACY_IDLE_TTL_STORAGE_KEY];
+  if (raw === undefined) return null;
+  const minutes = clampIdleTtlMinutes(raw);
+  if (minutes === effectiveIdleTtlMinutes(stored)) return null;
+  return { minutes, command: idleTtlCommand(minutes) };
+}
+
 /**
  * Precedence rule for an incoming `settings.update` WS message (see
  * `@browser-link/shared`'s `SettingsUpdatePayload`) against the value
  * already stored locally (edited from the popup, or a previous
  * `settings.update`): NEWEST WRITE WINS, decided purely by comparing
- * epoch-ms timestamps.
+ * epoch-ms timestamps. Used by the flow-recording toggle; the idle TTL
+ * (1.3.0) applies the console's value unconditionally.
  *
  * `localUpdatedAt` is `undefined` exactly once per install — before the
  * popup has ever been used to change the setting. In that case there is no

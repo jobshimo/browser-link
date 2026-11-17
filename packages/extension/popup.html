@@ -577,9 +577,8 @@
         margin-top: 0;
       }
 
-      /* Idle-disconnect TTL setting — a small, always-visible control
-       * (not tied to card state) that lets the user override the fixed
-       * 30-minute auto-disconnect. Sits below the primary action, in its
+      /* Settings rows (idle disconnect, flow recording) — always visible,
+       * not tied to card state. Sit below the primary action, in their
        * own thin row echoing .explanation's divider treatment. */
       .settings-row {
         margin-top: 12px;
@@ -591,6 +590,22 @@
         gap: 8px;
         font-size: 11.5px;
         color: var(--text-muted);
+      }
+
+      .settings-value {
+        font-weight: 500;
+        color: var(--text);
+      }
+
+      .settings-note {
+        padding-top: 4px;
+        font-size: 11px;
+        color: var(--text-faint);
+        overflow-wrap: anywhere;
+      }
+
+      .settings-note[hidden] {
+        display: none;
       }
 
       .settings-row select {
@@ -874,17 +889,17 @@
         </div>
       </div>
 
-      <!-- Idle-disconnect TTL. Not tied to card/connection state — visible
-           and editable whether or not a tab is currently connected.
-           Changes apply immediately, no extension reload needed (popup.ts
-           writes straight to chrome.storage.local; background.ts's sweep
-           reads the live value via chrome.storage.onChanged). -->
+      <!-- Idle-disconnect TTL, read-only (1.3.0): the console owns the one
+           value and the server pushes it. popup.ts shows the value in
+           effect, the console command that changes it, and, while it
+           differs, the choice this popup stored before 1.3.0 (never
+           applied) with the command that would keep it. -->
       <div class="settings-row">
-        <label for="idle-ttl-select" data-i18n="popupIdleTtl">Auto-disconnect idle tabs</label>
-        <!-- Options are rendered by popup.ts (IDLE_TTL_PRESETS) in the
-             interface language. -->
-        <select id="idle-ttl-select"></select>
+        <span data-i18n="popupIdleTtl">Auto-disconnect idle tabs</span>
+        <span id="idle-ttl-value" class="settings-value"></span>
       </div>
+      <div id="idle-ttl-console" class="settings-note"></div>
+      <div id="idle-ttl-legacy" class="settings-note" hidden></div>
 
       <!-- Flow-recording opt-in. Off by default — recording UI (Record /
            Stop / step review) only renders when this is checked AND the
