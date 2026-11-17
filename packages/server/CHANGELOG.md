@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.13](https://github.com/jobshimo/browser-link/compare/v1.4.12...v1.4.13) (2026-11-17)
+
+### Bug Fixes
+
+- **core:** the page driver no longer marks the observer installed when `Page.addScriptToEvaluateOnNewDocument` returns no identifier (no result, no `identifier`, or one that is not a non-empty string). `install` now reports `{ ok: false }`, the observer counts as not installed so actions report `observer-unavailable`, and a later install retries. Both transports warn with the existing `page observer not installed` text. The binding already added is left in place, as the cdp-direct path did before slice 9.
+
 ## [1.4.12](https://github.com/jobshimo/browser-link/compare/v1.4.11...v1.4.12) (2026-11-17)
 
 ### Notes

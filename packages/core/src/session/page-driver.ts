@@ -272,7 +272,11 @@ export function createPageDriver({ session, page, clock }: PageDriverDeps): Page
           'Page.addScriptToEvaluateOnNewDocument',
           { source: buildObserverInstallJs(), runImmediately: true },
         );
-        if (typeof added?.identifier === 'string') scriptId = added.identifier;
+        // No identifier means the script was not registered: the observer is not installed.
+        if (typeof added?.identifier !== 'string' || added.identifier === '') {
+          throw new Error('Page.addScriptToEvaluateOnNewDocument returned no identifier');
+        }
+        scriptId = added.identifier;
         observer.installed = true;
         return { ok: true };
       } catch (err) {

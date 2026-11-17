@@ -156,6 +156,52 @@ describe('observer install and teardown', () => {
     expect(driver.observer.installed).toBe(false);
   });
 
+  test.each([
+    ['no result', undefined],
+    ['an empty result', {}],
+    ['a non-string identifier', { identifier: 7 }],
+    ['an empty identifier', { identifier: '' }],
+  ])(
+    '%s from the new-document script leaves the observer off, and a retry installs',
+    async (_n, answer) => {
+      let reply: unknown = answer;
+      const { session, sent } = recordingSession(() => value(null), {
+        'Page.addScriptToEvaluateOnNewDocument': () => reply,
+      });
+      const driver = driverOn(session);
+      expect(await driver.install({ enableRuntime: false })).toEqual({
+        ok: false,
+        error: 'Page.addScriptToEvaluateOnNewDocument returned no identifier',
+      });
+      expect(driver.observer.installed).toBe(false);
+      // Like the old cdp-direct path, the binding already added is left in place.
+      expect(sent.map((s) => s.method)).toEqual([
+        'Runtime.addBinding',
+        'Page.addScriptToEvaluateOnNewDocument',
+      ]);
+      await driver.uninstall(() => true);
+      expect(sent.map((s) => s.method)).not.toContain('Page.removeScriptToEvaluateOnNewDocument');
+
+      reply = { identifier: 'script-2' };
+      expect(await driver.install({ enableRuntime: false })).toEqual({ ok: true });
+      expect(driver.observer.installed).toBe(true);
+      await driver.uninstall(() => false);
+      const removal = sent.find((s) => s.method === 'Page.removeScriptToEvaluateOnNewDocument');
+      expect(removal?.params).toEqual({ identifier: 'script-2' });
+    },
+  );
+
+  test('an identifier from the new-document script is kept for the removal', async () => {
+    const { session, sent } = recordingSession(() => value(null));
+    const driver = driverOn(session);
+    expect(await driver.install({ enableRuntime: false })).toEqual({ ok: true });
+    expect(driver.observer.installed).toBe(true);
+    await driver.uninstall(() => false);
+    expect(
+      sent.find((s) => s.method === 'Page.removeScriptToEvaluateOnNewDocument')?.params,
+    ).toEqual({ identifier: 'script-1' });
+  });
+
   test('uninstall removes the script, then tears the page down when asked', async () => {
     const { session, sent } = recordingSession(() => value(null));
     const driver = driverOn(session);
