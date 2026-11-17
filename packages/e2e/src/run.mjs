@@ -357,7 +357,7 @@ async function main() {
   }
 
   // 3. Open the page as a tab and read its chrome tab id from the worker.
-  const { targetId: pageTarget } = await cdp.send('Target.createTarget', { url: page });
+  await cdp.send('Target.createTarget', { url: page });
   const { sessionId: swSession } = await cdp.send('Target.attachToTarget', {
     targetId: sw.targetId,
     flatten: true,
@@ -419,28 +419,19 @@ async function main() {
 
   // 5. The calls.
   const tl = now();
-  // Ready means listed WITH its page fingerprint (`build`, `view_sig`). They
-  // arrive with the observer's doc_info, which the observer pushes as soon
-  // as it is installed on this already-loaded page: before the tab's bridge
-  // socket is registered, so the worker drops it on some runs and keeps it
-  // on others, and the tab stays without a fingerprint until the next
-  // navigation. Once the tab is listed (registered), a same-URL
-  // history.replaceState through the harness's own CDP session (not a tool
-  // call, so not recorded) is such a navigation for the observer: it pushes
-  // doc_info again, now delivered. All list_tabs polls stay consecutive, so
-  // only the last, ready one is kept (normalise.mjs collapsePolls).
+  // Ready means listed WITH its page fingerprint (`build`, `view_sig`). The
+  // observer pushes them as soon as it is installed on this already-loaded
+  // page, before the tab's bridge socket is registered; the extension keeps
+  // that report and delivers it on registration, so no navigation is needed.
+  // All list_tabs polls stay consecutive, so only the last, ready one is kept
+  // (normalise.mjs collapsePolls).
   const ready = (t) =>
     t.url === page && typeof t.build === 'string' && typeof t.view_sig === 'string';
   let tab;
-  let nudged = false;
   while (!tab) {
     const r = await call('browser.list_tabs', {}, undefined, { print: false, poll: true });
     const tabs = json(r);
     tab = Array.isArray(tabs) ? tabs.find(ready) : undefined;
-    if (!tab && !nudged && Array.isArray(tabs) && tabs.some((t) => t.url === page)) {
-      await renavigateInPlace(cdp, pageTarget);
-      nudged = true;
-    }
     if (!tab && now() - tl > CALL_TIMEOUT_MS) {
       throw new StepFailure(
         'list_tabs',
@@ -1133,29 +1124,18 @@ async function recorded(step) {
   }
 }
 
-/** A same-URL history.replaceState in the page, through a short CDP session
- * of the harness's own: the page observer sees an SPA navigation and pushes
- * its doc_info again. The URL, the history length and the DOM are unchanged. */
-async function renavigateInPlace(cdp, targetId) {
-  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-  try {
-    await cdp.evaluate("history.replaceState(history.state, '', location.href)", sessionId);
-  } finally {
-    await cdp.send('Target.detachFromTarget', { sessionId });
-  }
-}
-
 /** Scroll to the bottom once the page is quiet. An add click hides #done for
  * 300 ms (index.html); scrolled meanwhile, the page is one line shorter, and
- * the scroll offset the call records differs from run to run. */
+ * the scroll offset the call records differs from run to run. The wait is
+ * inside ONE evaluate: the server counts every successful evaluate as
+ * pending_wrap_up, so a polled wait would make that count vary. */
 async function scrollToBottom(T) {
-  await pollUntil(
-    'browser.evaluate',
-    { tab_id: T, expression: "document.getElementById('done').hidden" },
-    (b) => (b && typeof b === 'object' && 'value' in b ? b.value : b) === false,
-    'scroll-settled',
+  const quiet =
+    "new Promise((r) => { const f = () => (document.getElementById('done').hidden ? setTimeout(f, 20) : r()); f(); })";
+  return pageValue(
+    T,
+    `${quiet}.then(() => (window.scrollTo(0, document.body.scrollHeight), window.scrollY))`,
   );
-  return pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
 }
 
 async function pageValue(T, expression, { poll = false } = {}) {

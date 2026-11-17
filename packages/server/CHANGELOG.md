@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.5](https://github.com/jobshimo/browser-link/compare/v1.4.4...v1.4.5) (2026-11-17)
+
+### Bug Fixes
+
+- **tests:** the e2e waits for the page inside one `evaluate` before scrolling, so the pending-work count it records is fixed; it made the differential's self-diff flaky.
+- **tests:** the e2e no longer re-navigates the tab to get its page fingerprint, since 1.4.4 delivers it on the first `list_tabs`.
+
+### Notes
+
+- The build fingerprint is documented, in the code and in the agent manual (`confidence`): it hashes the external script and stylesheet URLs, a page without them reports `811c9dc5`, builds are compared only within one app, and inline content is not hashed because server-rendered pages inline per-request data. A redeploy that changes only inline code or unversioned asset URLs keeps items `fresh`.
+
+The behaviour is unchanged.
+
 ## [1.4.4](https://github.com/jobshimo/browser-link/compare/v1.4.3...v1.4.4) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the fix below is in the extension.

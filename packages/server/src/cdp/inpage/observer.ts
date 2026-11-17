@@ -446,6 +446,14 @@ export function buildObserverInstallJs(opts: ObserverInstallOpts = {}): string {
     return String(url || '').split('#')[0].split('?')[0];
   }
 
+  // The build hashes the page's external script and stylesheet URLs (query
+  // and hash dropped, sorted). A page without them always reports 811c9dc5,
+  // the FNV-1a of empty input. Builds are only compared within one app
+  // (origin), so knowledge never crosses pages through a shared build. A
+  // redeploy that changes only inline code or unversioned asset URLs is
+  // invisible to confidence: rows stay fresh. Inline content is deliberately
+  // not hashed, because server-rendered pages inline per-request data and
+  // every load would then be a new build.
   function buildFingerprint() {
     const urls = [];
     for (const el of document.querySelectorAll('script[src]')) {
