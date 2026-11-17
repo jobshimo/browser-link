@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.4](https://github.com/jobshimo/browser-link/compare/v1.4.3...v1.4.4) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: the fix below is in the extension.
+
+### Bug Fixes
+
+- **list_tabs:** a tab connected while its page was already loaded had no page fingerprint (`build`, `view_sig`) until the page navigated: the in-page observer sent it before the tab's connection was registered and the worker dropped it. The extension now keeps the latest fingerprint and sends it right after registration. This applies to extension tabs; cdp-direct tabs never reported a fingerprint.
+
 ## [1.4.3](https://github.com/jobshimo/browser-link/compare/v1.4.2...v1.4.3) (2026-11-17)
 
 ### Bug Fixes
