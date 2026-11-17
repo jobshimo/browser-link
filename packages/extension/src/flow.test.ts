@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { systemClock } from './adapters/system-clock.js';
 import { HIT_CHECK_FRAME_NOTE } from './inpage/builders.js';
 import {
   PROGRAMMATIC_CLICK_NOTE,
@@ -52,6 +53,7 @@ function makeDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
       result: okDragResult(),
     })) as FlowDeps['performDrag'],
     buildRecoverySnapshot: vi.fn(async () => ({ title: 'recovered', interactive: [] })),
+    clock: systemClock,
     ...overrides,
   };
 }

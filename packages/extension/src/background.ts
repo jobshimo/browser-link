@@ -73,6 +73,7 @@ import {
 } from './keymap.js';
 import { resolveSettleParams, settleSafely } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
+import { systemClock } from './adapters/system-clock.js';
 import {
   captureAround,
   createDownloadCapture,
@@ -2035,7 +2036,7 @@ async function performClick(
       };
     }
     const mark = await takeObserverMark(tabId, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     let hitCheckNote: string | undefined;
     let dialogOpened = false;
     if ('no_box' in resolved) {
@@ -2090,7 +2091,7 @@ async function performClick(
     const settleResult = dialogOpened ? undefined : await settleWithChanges(tabId, settle, mark);
     const verdict = dialogOpened
       ? { ok: true as const, expect: undefined }
-      : await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+      : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult & ClickHitCheckFields = {
       clicked: ref ?? selector ?? '',
@@ -2167,10 +2168,10 @@ async function performType(
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await cdp(tabId, 'Input.insertText', { text });
     const settleResult = await settleWithChanges(tabId, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
@@ -2238,10 +2239,10 @@ async function performPress(
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(tabId, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await dispatchKeyEvent(tabId, def, modifiers);
     const settleResult = await settleWithChanges(tabId, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: PressStepResult = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
@@ -3109,6 +3110,7 @@ function buildFlowDeps(
     performPress: (params) => performPress(tabId, params),
     performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
     performDrag: (params) => performDrag(tabId, params),
+    clock: systemClock,
     buildRecoverySnapshot: () =>
       evaluateInTab(
         tabId,

@@ -10,6 +10,7 @@
  * extension original for the full rationale (settle proves QUIET, not
  * EFFECT).
  */
+import type { Clock } from './clock.js';
 import { buildExpectProbeJs } from './inpage/builders.js';
 import type { EvaluateFn } from './settle.js';
 
@@ -55,21 +56,6 @@ export interface ExpectMet {
 }
 
 export type ExpectVerdict = { ok: true; expect?: ExpectMet } | { ok: false; error: string };
-
-export interface ExpectClock {
-  now: () => number;
-  sleep: (ms: number) => Promise<void>;
-}
-
-const realClock: ExpectClock = {
-  now: () => Date.now(),
-  sleep: (ms) =>
-    new Promise((resolve) => {
-      // Literal-bounded like the other timers here: EXPECT_POLL_MS is the
-      // only caller-independent value that ever reaches setTimeout.
-      setTimeout(resolve, ms > 0 && ms <= EXPECT_POLL_MS ? ms : EXPECT_POLL_MS);
-    }),
-};
 
 /**
  * Normalize an `expect` param. Returns `null` when nothing is being
@@ -174,16 +160,16 @@ function probeExpression(spec: ExpectSpec): string {
 
 /** Reject if `promise` has not settled within `ms`, so a hung probe (a
  * frozen tab, a wedged debugger) cannot stall the verification loop. */
-function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withProbeTimeout<T>(promise: Promise<T>, ms: number, clock: Clock): Promise<T> {
   const bound = ms > 0 && ms <= MAX_EXPECT_TIMEOUT_MS ? ms : EXPECT_POLL_MS;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
+    cancel = clock.after(bound, () => {
       reject(new Error(`probe timed out after ${bound}ms`));
-    }, bound);
+    });
   });
   return Promise.race([promise, timeout]).finally(() => {
-    clearTimeout(timer);
+    cancel?.();
   });
 }
 
@@ -196,9 +182,10 @@ function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export async function beginExpect(
   evaluate: EvaluateFn,
   spec: ExpectSpec | null,
+  clock: Clock,
 ): Promise<ExpectBaseline | undefined> {
   if (!spec) return undefined;
-  const raw = await withProbeTimeout(evaluate(probeExpression(spec)), spec.timeoutMs);
+  const raw = await withProbeTimeout(evaluate(probeExpression(spec)), spec.timeoutMs, clock);
   if (typeof raw !== 'object' || raw === null) return {};
   const observed = raw as ExpectObservation;
   return { url: observed.url, observed };
@@ -225,7 +212,7 @@ export async function verifyExpect(
   spec: ExpectSpec | null,
   baseline: ExpectBaseline | undefined,
   settle: Record<string, unknown> | undefined,
-  clock: ExpectClock = realClock,
+  clock: Clock,
 ): Promise<ExpectVerdict> {
   if (!spec) return { ok: true };
   const settleNote = settle ? `; settle: ${JSON.stringify(settle)}` : '';
@@ -243,7 +230,11 @@ export async function verifyExpect(
     let observed: ExpectObservation | undefined;
     try {
       const remaining = spec.timeoutMs - (clock.now() - startedAt);
-      const raw = await withProbeTimeout(evaluate(expression), Math.max(remaining, EXPECT_POLL_MS));
+      const raw = await withProbeTimeout(
+        evaluate(expression),
+        Math.max(remaining, EXPECT_POLL_MS),
+        clock,
+      );
       if (typeof raw === 'object' && raw !== null) observed = raw;
       probeSuccesses++;
     } catch (err) {

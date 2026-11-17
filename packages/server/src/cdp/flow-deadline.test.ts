@@ -1,26 +1,28 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createManualClock } from '../generated/core/index.js';
 import { runFlow, type FlowDeps } from './flow.js';
 
 /** Deadline behaviour of the cdp-direct copy of the runner — must match
  * the extension's (`packages/extension/src/flow-deadline.test.ts`). */
 
 function makeDeps(overrides: Partial<FlowDeps> = {}): { deps: FlowDeps } {
-  let t = 0;
+  // Core's fake `Clock`: each fake action advances it.
+  const clock = createManualClock(0);
   const deps: FlowDeps = {
     performFind: vi.fn() as unknown as FlowDeps['performFind'],
     performClick: vi.fn(async () => {
-      t += 40;
+      await clock.advance(40);
       return { ok: true as const, result: { clicked: '#a', tag: 'button' } };
     }) as FlowDeps['performClick'],
     performType: vi.fn() as unknown as FlowDeps['performType'],
     performPress: vi.fn(async () => {
-      t += 60;
+      await clock.advance(60);
       return { ok: true as const, result: { key: 'a', modifiers: [] } };
     }) as FlowDeps['performPress'],
     performWaitFor: vi.fn() as unknown as FlowDeps['performWaitFor'],
     performDrag: vi.fn() as unknown as FlowDeps['performDrag'],
     buildRecoverySnapshot: vi.fn(async () => ({})),
-    now: () => t,
+    clock,
     ...overrides,
   };
   return { deps };

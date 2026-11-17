@@ -1,3 +1,4 @@
+import { createManualClock, type ManualClock } from '../generated/core/index.js';
 import { describe, expect, test, vi } from 'vitest';
 import {
   DEFAULT_EXPECT_TIMEOUT_MS,
@@ -133,10 +134,29 @@ describe('alreadyHeldExpectations (transition semantics)', () => {
   });
 });
 
+/** Run `run` on core's fake `Clock`, moving time 10 ms at a time (after
+ * letting pending work reach its next timer) until it settles. */
+async function onFakeClock<T>(
+  run: (clock: ManualClock) => Promise<T>,
+): Promise<{ value: T; clock: ManualClock }> {
+  const clock = createManualClock(0);
+  let settled = false;
+  const pending = run(clock).finally(() => {
+    settled = true;
+  });
+  for (let i = 0; i < 1_000 && !settled; i++) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    if (!settled) await clock.advance(10);
+  }
+  return { value: await pending, clock };
+}
+
 describe('beginExpect', () => {
   test('does not touch the page when nothing is expected', async () => {
     const evaluate = vi.fn();
-    expect(await beginExpect(evaluate, null)).toBeUndefined();
+    expect(await beginExpect(evaluate, null, createManualClock())).toBeUndefined();
     expect(evaluate).not.toHaveBeenCalled();
   });
 
@@ -144,17 +164,20 @@ describe('beginExpect', () => {
     const sample = { url: 'https://x/1', text_appears: false };
     const evaluate = vi.fn(async () => sample);
     const spec = resolveExpectParams({ text_appears: 'x' });
-    expect(await beginExpect(evaluate, spec)).toEqual({ url: 'https://x/1', observed: sample });
+    expect(await beginExpect(evaluate, spec, createManualClock())).toEqual({
+      url: 'https://x/1',
+      observed: sample,
+    });
     expect(evaluate).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('verifyExpect', () => {
-  const fastSleep = (): Promise<void> => Promise.resolve();
-
   test('with no spec it is a no-op success without evaluating', async () => {
     const evaluate = vi.fn();
-    expect(await verifyExpect(evaluate, null, undefined, undefined)).toEqual({ ok: true });
+    expect(await verifyExpect(evaluate, null, undefined, undefined, createManualClock())).toEqual({
+      ok: true,
+    });
     expect(evaluate).not.toHaveBeenCalled();
   });
 
@@ -168,12 +191,11 @@ describe('verifyExpect', () => {
       .fn()
       .mockResolvedValueOnce({ url: 'u', selector_appears: false })
       .mockResolvedValueOnce({ url: 'u', selector_appears: true });
-    let t = 0;
-    const out = await verifyExpect(evaluate, spec, baseline, undefined, {
-      now: () => (t += 40),
-      sleep: fastSleep,
-    });
-    expect(out).toEqual({ ok: true, expect: { met: true, elapsed_ms: expect.any(Number) } });
+    const { value: out } = await onFakeClock((clock) =>
+      verifyExpect(evaluate, spec, baseline, undefined, clock),
+    );
+    // One unmet probe, one 100 ms poll, then the met probe.
+    expect(out).toEqual({ ok: true, expect: { met: true, elapsed_ms: 100 } });
     expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
@@ -189,7 +211,7 @@ describe('verifyExpect', () => {
       spec,
       baseline,
       { settled: true, mutation_count: 0 },
-      { now: () => 0, sleep: fastSleep },
+      createManualClock(),
     );
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
@@ -203,17 +225,18 @@ describe('verifyExpect', () => {
   test('fails with "expectation not met: <which> after <ms>ms" and carries the settle info', async () => {
     const spec = resolveExpectParams({ url_changed: true, timeout_ms: 300 })!;
     const evaluate = vi.fn(async () => ({ url: 'https://x/1' }));
-    let t = 0;
-    const out = await verifyExpect(
-      evaluate,
-      spec,
-      { url: 'https://x/1' },
-      { settled: true, mutation_count: 0 },
-      { now: () => (t += 100), sleep: fastSleep },
+    const { value: out } = await onFakeClock((clock) =>
+      verifyExpect(
+        evaluate,
+        spec,
+        { url: 'https://x/1' },
+        { settled: true, mutation_count: 0 },
+        clock,
+      ),
     );
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
-    expect(out.error).toMatch(/^expectation not met: url_changed after \d+ms/);
+    expect(out.error).toMatch(/^expectation not met: url_changed after 300ms/);
     expect(out.error).toContain('"mutation_count":0');
   });
 
@@ -223,21 +246,18 @@ describe('verifyExpect', () => {
       .fn()
       .mockRejectedValueOnce(new Error('Execution context was destroyed'))
       .mockResolvedValueOnce({ url: 'https://x/2' });
-    const out = await verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined, {
-      now: () => 0,
-      sleep: fastSleep,
-    });
+    const { value: out } = await onFakeClock((clock) =>
+      verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined, clock),
+    );
     expect(out.ok).toBe(true);
   });
 
   test('a probe that fails on every attempt says so in the error', async () => {
     const spec = resolveExpectParams({ url_changed: true, timeout_ms: 300 })!;
     const evaluate = vi.fn().mockRejectedValue(new Error('Cannot access a chrome:// URL'));
-    let t = 0;
-    const out = await verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined, {
-      now: () => (t += 100),
-      sleep: fastSleep,
-    });
+    const { value: out } = await onFakeClock((clock) =>
+      verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined, clock),
+    );
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
     expect(out.error).toMatch(/probe failed \d+ times/);
@@ -247,12 +267,14 @@ describe('verifyExpect', () => {
   test('a probe that never answers cannot overrun the window by more than one poll', async () => {
     const spec = resolveExpectParams({ url_changed: true, timeout_ms: 150 })!;
     const evaluate = vi.fn(() => new Promise<unknown>(() => undefined));
-    const startedAt = Date.now();
-    const out = await verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined);
+    const { value: out, clock } = await onFakeClock((c) =>
+      verifyExpect(evaluate, spec, { url: 'https://x/1' }, undefined, c),
+    );
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
     expect(out.error).toMatch(/probe failed \d+ times/);
-    expect(Date.now() - startedAt).toBeLessThan(1500);
+    // The 150 ms window plus at most one 100 ms poll.
+    expect(clock.now()).toBeLessThanOrEqual(250);
   });
 
   test('an invalid selector fails immediately instead of waiting out the window', async () => {
@@ -263,7 +285,7 @@ describe('verifyExpect', () => {
       spec,
       { url: 'u', observed: { url: 'u', selector_disappears: false } },
       undefined,
-      { now: () => 0, sleep: fastSleep },
+      createManualClock(),
     );
     expect(out.ok).toBe(false);
     expect(evaluate).toHaveBeenCalledTimes(1);
