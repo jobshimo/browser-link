@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.4](https://github.com/jobshimo/browser-link/compare/v1.3.3...v1.3.4) (2026-11-17)
+
+After updating the server, reload the extension in `chrome://extensions` from the installed version: both fixes below also change the extension.
+
+### Bug Fixes
+
+- **console:** `browser.console` stored Chrome's level names (`warning`, `verbose`), so `level: 'warn'` never matched a warning. Lines are now stored as the documented `warn` and `debug`.
+- **navigate:** the wait for the page load started only after `Page.navigate` returned, so a fast page could finish first and the call waited out its 20 s timeout ("navigation timed out"). The wait is now armed before navigating, on extension tabs and on cdp-direct tabs. No timeout changed.
+
+### Notes
+
+- Both bugs were found by new real-Chrome e2e cases.
+
 ## [1.3.3](https://github.com/jobshimo/browser-link/compare/v1.3.2...v1.3.3) (2026-11-17)
 
 ### Bug Fixes

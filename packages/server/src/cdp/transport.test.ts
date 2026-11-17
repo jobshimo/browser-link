@@ -319,6 +319,23 @@ describe('callCdpTool — tool dispatch', () => {
     expect(result).toEqual({ title: 'Loaded', url: 'https://example.com/next' });
   });
 
+  test('navigate resolves when the load event arrives before Page.navigate answers', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Page.navigate': () => {
+        pushEvent('Page.loadEventFired', {});
+        return {};
+      },
+      'Target.getTargetInfo': () => ({
+        targetInfo: { type: 'page', title: 'Fast', url: 'https://example.com/fast' },
+      }),
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'navigate', {
+      url: 'https://example.com/fast',
+    });
+    expect(result).toEqual({ title: 'Fast', url: 'https://example.com/fast' });
+  }, 5_000);
+
   test('navigate with wait_for_load:false skips the load wait', async () => {
     const { port, targetId } = await startFakeTarget({
       'Target.getTargetInfo': () => ({

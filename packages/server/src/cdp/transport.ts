@@ -480,23 +480,45 @@ async function evaluateObserverJs(client: CdpClient, expression: string): Promis
   return res.result.value;
 }
 
-function waitForLoad(client: CdpClient, timeoutMs = 20_000): Promise<void> {
-  return new Promise((resolve, reject) => {
+/**
+ * Start listening for the load event BEFORE the navigation is sent: a fast
+ * page can fire `Page.loadEventFired` before `Page.navigate` resolves, and a
+ * listener added afterwards never sees it. `cancel` releases the listener
+ * and timer when the navigation itself fails.
+ */
+function armLoadWait(
+  client: CdpClient,
+  timeoutMs = 20_000,
+): { done: Promise<void>; cancel: () => void } {
+  let release: () => void = () => {};
+  const done = new Promise<void>((resolve, reject) => {
     let settled = false;
     const off = client.on('Page.loadEventFired', () => {
       if (settled) return;
       settled = true;
-      off();
-      clearTimeout(timer);
+      release();
       resolve();
     });
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      off();
+      release();
       reject(new Error('navigation timed out'));
     }, timeoutMs);
+    release = () => {
+      off();
+      clearTimeout(timer);
+    };
   });
+  // `done` is awaited only after Page.navigate answers; keep an early timeout
+  // from surfacing as an unhandled rejection in between.
+  done.catch(() => {});
+  return {
+    done,
+    cancel: () => {
+      release();
+    },
+  };
 }
 
 function runSettle(
@@ -1324,8 +1346,14 @@ export async function callCdpTool(
     case 'navigate': {
       const url = typeof p.url === 'string' ? p.url : '';
       const waitForLoadFlag = p.wait_for_load !== false;
-      await client.send('Page.navigate', { url });
-      if (waitForLoadFlag) await waitForLoad(client);
+      const loadWait = waitForLoadFlag ? armLoadWait(client) : undefined;
+      try {
+        await client.send('Page.navigate', { url });
+      } catch (err) {
+        loadWait?.cancel();
+        throw err;
+      }
+      if (loadWait) await loadWait.done;
       return getTargetInfo(client);
     }
 

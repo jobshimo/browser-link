@@ -570,7 +570,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.console',
     description:
-      'Return recent console messages (log, info, warn, error) from the connected tab since it was attached. Rolling buffer (last 200).',
+      'Return recent console messages (log, info, warn, error) from the connected tab since it was attached. Rolling buffer (last 200). Each entry reports its level in this same vocabulary (the "warning" Chrome reports is stored as "warn", "verbose" as "debug"), so `level` filters exactly what the entries show.',
     inputSchema: {
       type: 'object',
       properties: {
