@@ -3075,7 +3075,9 @@ Every tool in the server's catalogue (`TOOL_CATALOGUE` in
 `packages/e2e/src/run.mjs`, or an exemption with its reason, in
 `packages/e2e/src/tool-cases.mjs`. `pnpm run test` fails when a new tool has
 neither, or when the table names a case `run.mjs` no longer has: add the case
-(or the exemption) in the same PR as the tool.
+(or the exemption) in the same PR as the tool. The e2e run itself fails when a
+mapped tool was not called under its case name, so a case that is only a
+literal in `run.mjs` does not count.
 
 The `e2e-diff` job compares the PR's build with its merge-base's build and
 fails on any difference (see [Chrome version](#chrome-version)). The
@@ -3088,8 +3090,11 @@ A PR whose purpose is to change behavior follows the behavior-change flow:
 1. Keep it apart from refactors: one PR for the behavior change alone.
 2. Add the `behavior-change` label. The job re-runs when the label is added
    or removed.
-3. Name the expected difference in the PR description: the tool, the field and
-   the old and new values.
+3. Name the expected difference in the PR description, on a line that starts
+   with `Expected difference:` followed by the tool, the field and the old and
+   new values. The job fails a labelled PR without that line, and a labelled
+   PR whose title starts with `refactor:` or `refactor(core)`: a refactor never
+   carries the label.
 4. The job still runs and writes the first difference to the job log and the
    step summary, then passes. Reviewers compare it with the description. A
    harness failure, a setup error, or a self-diff difference (two runs of the

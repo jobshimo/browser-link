@@ -39,6 +39,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   CAPTURE_FILE,
+  CHROME_STDERR_MAX,
   Cdp,
   DEFAULT_PORTS,
   E2E_DIR,
@@ -67,6 +68,7 @@ import {
   resultRecord,
   writeResult,
 } from './lib.mjs';
+import { uncalledCases } from './tool-cases.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
 const TOTAL_TIMEOUT_MS = 300_000;
@@ -159,12 +161,16 @@ let serverStderr = '';
 /** E2E_RECORD: every tool call in order, with what the run needs to
  * normalise it (normalise.mjs); written at the end whatever the outcome. */
 const RECORD_FILE = process.env.E2E_RECORD ? resolve(process.env.E2E_RECORD) : undefined;
+/** Every call's tool and label, kept whether or not E2E_RECORD is set: the
+ * tool-to-case table is checked against it when the run ends. */
+const calledCases = [];
 const record = { calls: [], context: { home: undefined, temps, ports: [] } };
 
 /** The one place a tool is called: records request and result (or the
  * thrown error) when E2E_RECORD is set. A `poll` call repeats until ready,
  * so how many there are varies; normalise.mjs keeps the last of a run. */
 async function callTool(tool, args, { label, poll = false } = {}) {
+  calledCases.push({ tool, label });
   const entry = RECORD_FILE ? { tool, label, args, ...(poll ? { poll } : {}) } : undefined;
   if (entry) record.calls.push(entry);
   try {
@@ -539,7 +545,7 @@ async function main() {
   }
   // The download steps start scrolled to the bottom, away from #dl: the
   // selector capture must scroll its target into view and still land on it.
-  await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
+  await scrollToBottom(T);
 
   await downloadChecks({
     T,
@@ -640,7 +646,7 @@ async function clickAfterScroll(T) {
   const count = "document.querySelector('#items').children.length";
   const misses = [];
   for (let i = 1; i <= 5; i++) {
-    await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
+    await scrollToBottom(T);
     const before = await pageValue(T, count);
     const r = await attempt('browser.click', { tab_id: T, selector: '#add', settle_ms: 0 }, label);
     const after = await pageValue(T, count);
@@ -682,7 +688,7 @@ async function downloadStressAfterScroll(T, downloadsDir) {
     // What the download step follows: a click that opened an alert, closed.
     await attempt('browser.click', { tab_id: T, selector: '#alert-btn', settle_ms: 0 }, label);
     await attempt('browser.dialog_respond', { tab_id: T, accept: true }, label);
-    await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
+    await scrollToBottom(T);
     const c = now();
     const r = await attempt(
       'browser.download',
@@ -1137,6 +1143,19 @@ async function renavigateInPlace(cdp, targetId) {
   } finally {
     await cdp.send('Target.detachFromTarget', { sessionId });
   }
+}
+
+/** Scroll to the bottom once the page is quiet. An add click hides #done for
+ * 300 ms (index.html); scrolled meanwhile, the page is one line shorter, and
+ * the scroll offset the call records differs from run to run. */
+async function scrollToBottom(T) {
+  await pollUntil(
+    'browser.evaluate',
+    { tab_id: T, expression: "document.getElementById('done').hidden" },
+    (b) => (b && typeof b === 'object' && 'value' in b ? b.value : b) === false,
+    'scroll-settled',
+  );
+  return pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
 }
 
 async function pageValue(T, expression, { poll = false } = {}) {
@@ -2080,12 +2099,25 @@ try {
     }),
   ]);
   if (deferredFailures.length) exitCode = 1;
+  else {
+    // A run that passed must have called every mapped tool under its case.
+    const missing = uncalledCases(calledCases);
+    if (missing.length) {
+      exitCode = 1;
+      console.log('e2e: FAIL tool-to-case table: ' + missing.join('; '));
+    }
+  }
 } catch (e) {
   exitCode = 1;
   const why = e instanceof StepFailure ? e.message : `setup: ${String(e?.stack ?? e)}`;
   console.log(`e2e: FAIL ${why}`);
   const tail = serverStderr.split('\n').filter(Boolean).slice(-15);
   if (tail.length) console.error(`server stderr (tail):\n${tail.join('\n')}`);
+  // A setup failure (a Chrome that never came up, among them) shows Chrome's own words.
+  const chromeErr = state.chrome?.stderr.toString().trim();
+  if (!(e instanceof StepFailure) && chromeErr) {
+    console.error(`chrome stderr (last ${String(CHROME_STDERR_MAX / 1024)} KB):\n${chromeErr}`);
+  }
 } finally {
   clearTimeout(timer);
   await teardown();

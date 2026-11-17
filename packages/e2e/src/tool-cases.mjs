@@ -137,3 +137,19 @@ export function committedTableProblems() {
     harness: harnessCases(readFileSync(HARNESS_FILE, 'utf8')),
   });
 }
+
+/** The mapped cases a run did not execute with their tool: `calls` are the
+ * `{ tool, label }` of every tool call the run made (a call without a label
+ * is its own case, named by the tool). A case named for a tool counts only
+ * when that tool was called under that case name, so a literal in run.mjs
+ * that nothing calls does not pass. */
+export function uncalledCases(calls, cases = TOOL_CASES) {
+  const seen = new Set(calls.map((c) => `${c.tool} | ${c.label ?? c.tool}`));
+  const missing = [];
+  for (const [tool, names] of Object.entries(cases)) {
+    for (const name of names) {
+      if (!seen.has(`${tool} | ${name}`)) missing.push(`${tool}: case "${name}" was never called`);
+    }
+  }
+  return missing;
+}

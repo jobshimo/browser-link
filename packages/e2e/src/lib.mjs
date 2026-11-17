@@ -197,10 +197,29 @@ export function launchChrome({ chromePath, port, loadExtensions = [] }) {
   args.push('about:blank');
   // POSIX: own process group, so teardown can kill Chrome's helpers too.
   const proc = spawn(chromePath, args, {
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     detached: process.platform !== 'win32',
   });
-  return { proc, profile, downloadDir };
+  // Kept (bounded) so a Chrome that fails to start can say why.
+  const stderr = boundedBuffer(CHROME_STDERR_MAX);
+  proc.stderr.on('data', (chunk) => stderr.push(chunk));
+  proc.stderr.on('error', () => {});
+  return { proc, profile, downloadDir, stderr };
+}
+
+/** Most of Chrome's stderr kept for a failed start. */
+export const CHROME_STDERR_MAX = 64 * 1024;
+
+/** A text buffer that keeps only its last `max` characters. */
+export function boundedBuffer(max) {
+  let text = '';
+  return {
+    push(chunk) {
+      text += String(chunk);
+      if (text.length > max) text = text.slice(text.length - max);
+    },
+    toString: () => text,
+  };
 }
 
 export async function waitHttp(url, timeoutMs) {
