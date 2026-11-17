@@ -5,7 +5,8 @@
   "description": "Real-Chrome end-to-end net: the built extension in headless Chrome, driven through the built server over MCP stdio.",
   "type": "module",
   "scripts": {
-    "e2e": "node src/run.mjs"
+    "e2e": "node src/run.mjs",
+    "test": "node --test \"src/*.test.mjs\""
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.32.2"

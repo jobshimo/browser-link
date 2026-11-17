@@ -74,14 +74,86 @@ jobs:
   # Real-Chrome end-to-end net: the built extension in headless Chrome,
   # driven through the built server over MCP stdio (packages/e2e). Runs in
   # parallel with the matrix so a failure is attributed to this job alone.
-  # Chrome: the runner's own, /usr/bin/google-chrome (CHROME_BIN in
-  # actions/runner-images images/ubuntu/scripts/build/install-google-chrome.sh;
-  # Ubuntu 24.04 image lists Google Chrome 156). lsof is not listed there;
-  # the harness uses it to prove no process on 17529/17530 was disturbed.
+  # Two legs, as two jobs rather than a matrix, because they gate
+  # differently: `release` needs this one (Chrome 118, the oldest Chrome
+  # the extension supports, pinned so it never moves) and not `e2e-stable`
+  # (the runner's auto-updating Chrome), which reports without blocking;
+  # `needs:` on a matrix job waits on, and fails with, every leg.
+  # Chrome 118: Chrome for Testing, installed by an exact @puppeteer/browsers
+  # and cached on both versions. lsof is not in the runner image; the
+  # harness uses it to prove no process on 17529/17530 was disturbed.
+  # Each leg records the browser it ran on in the step summary and in the
+  # e2e-result-<leg> artifact (packages/e2e/build/e2e-result.json).
   e2e:
-    name: e2e (real Chrome, ubuntu)
+    name: e2e (Chrome 118, ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CFT_CHROME: 118.0.5993.70
+      PUPPETEER_BROWSERS: 3.2.6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Install lsof
+        run: command -v lsof || { sudo apt-get update && sudo apt-get install -y lsof; }
+
+      - name: Cache Chrome for Testing
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/chrome-for-testing
+          key: cft-chrome-${{ env.CFT_CHROME }}-puppeteer-browsers-${{ env.PUPPETEER_BROWSERS }}-${{ runner.os }}
+
+      # Prints the executable path; a cached install is found, not re-downloaded.
+      - name: Install Chrome for Testing ${{ env.CFT_CHROME }}
+        id: cft
+        run: |
+          set -euo pipefail
+          path=$(npx --yes "@puppeteer/browsers@$PUPPETEER_BROWSERS" install "chrome@$CFT_CHROME" \
+            --path "$HOME/.cache/chrome-for-testing" --format '{{path}}' | tail -n 1)
+          test -x "$path"
+          echo "chrome=$path" >> "$GITHUB_OUTPUT"
+
+      - name: End-to-end (one line per tool)
+        env:
+          CHROME_PATH: ${{ steps.cft.outputs.chrome }}
+          E2E_NO_SANDBOX: '1'
+          E2E_LEG: chrome 118
+        run: pnpm test:e2e
+
+      - name: Upload the browser record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-result-chrome-118
+          path: packages/e2e/build/e2e-result.json
+          if-no-files-found: warn
+
+  # The runner's own Chrome, /usr/bin/google-chrome (CHROME_BIN in
+  # actions/runner-images images/ubuntu/scripts/build/install-google-chrome.sh).
+  # It updates under us, so it reports and does not block the publish
+  # (`release` does not need it); on main a failure opens or updates an
+  # issue (e2e-stable-issue below).
+  e2e-stable:
+    name: e2e (stable Chrome, ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      browser: ${{ steps.record.outputs.browser }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -107,7 +179,56 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
           E2E_NO_SANDBOX: '1'
+          E2E_LEG: stable Chrome
         run: pnpm test:e2e
+
+      - name: Read the browser record
+        id: record
+        if: always()
+        run: |
+          browser=$(jq -r '.browser // "unknown"' packages/e2e/build/e2e-result.json 2>/dev/null || echo unknown)
+          echo "browser=$browser" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the browser record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-result-chrome-stable
+          path: packages/e2e/build/e2e-result.json
+          if-no-files-found: warn
+
+  # A stable-leg failure on main opens one tracking issue, or comments on
+  # it while it stays open. Its own job so only it holds issues: write and
+  # none of the code under test runs with that token.
+  e2e-stable-issue:
+    name: Report stable-Chrome e2e failure
+    needs: e2e-stable
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BROWSER: ${{ needs.e2e-stable.outputs.browser }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          title='e2e: stable Chrome leg failing on main'
+          body=$(printf '%s\n\n- Run: %s\n- Chrome: %s\n- Commit: %s\n\n%s\n' \
+            'The e2e leg on the runner image stable Chrome failed on main.' \
+            "$RUN_URL" "${BROWSER:-unknown}" "$SHA" \
+            'This leg does not block the publish; the Chrome 118 leg does.')
+          num=$(gh issue list --state open --limit 200 --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
 
   # Tag + GitHub Release + npm publish, all in one job downstream of the
   # CI matrix. Lives inside ci.yml on purpose — npm Trusted Publishers
@@ -120,7 +241,8 @@ jobs:
   # configured to accept.
   release:
     name: Tag + Release + npm publish
-    # e2e too: a red end-to-end net blocks the publish.
+    # e2e (Chrome 118) too: a red end-to-end net blocks the publish.
+    # e2e-stable is left out on purpose: it reports, it does not gate.
     needs: [ci, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

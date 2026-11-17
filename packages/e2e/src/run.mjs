@@ -14,7 +14,10 @@
 // a keyless copy of the same build (another id) is refused (bridge.refused).
 //
 // Env: CHROME_PATH (Chrome/Chromium >= 118), E2E_NO_SANDBOX=1 (Linux CI),
-// E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe).
+// E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe),
+// E2E_RESULT_FILE=<path> where the browser record goes (default
+// packages/e2e/build/e2e-result.json; also appended to GITHUB_STEP_SUMMARY
+// when set, titled with E2E_LEG).
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
 import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -48,6 +51,8 @@ import {
   waitHttp,
   waitExtensionIds,
   waitServiceWorker,
+  resultRecord,
+  writeResult,
 } from './lib.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
@@ -131,6 +136,8 @@ const temps = [];
 /** Steps that failed without stopping the run (each already printed). */
 const deferredFailures = [];
 const state = { http: undefined, chrome: undefined, cdp: undefined, client: undefined };
+/** The browser this run used, recorded at the end whatever the outcome. */
+const browserSeen = { jsonVersion: undefined, cdpVersion: undefined };
 let serverPid;
 let serverStderr = '';
 
@@ -253,6 +260,12 @@ async function main() {
     pinnedId,
   );
   const { cdp } = state;
+  browserSeen.jsonVersion = version;
+  try {
+    browserSeen.cdpVersion = await cdp.send('Browser.getVersion');
+  } catch {
+    // recorded as null; the extension.id line below still names the browser
+  }
   // The manifest `key` pins the id; the patched temp copy must keep it.
   if (extId !== pinnedId) {
     throw new StepFailure('extension.id', `Chrome assigned ${extId}, the server pins ${pinnedId}`);
@@ -1442,6 +1455,12 @@ if (primaryBefore.length === 0) {
   console.log(`e2e: FAIL primary: pid ${dead.join(', ')} no longer alive`);
 } else {
   console.log(`primary: pid ${primaryBefore.join(', ')} still alive`);
+}
+try {
+  const file = writeResult(resultRecord({ ...browserSeen, ok: exitCode === 0 }));
+  console.log(`e2e: browser record in ${file}`);
+} catch (e) {
+  console.error(`e2e: warning, browser record not written: ${String(e?.message ?? e)}`);
 }
 console.log(`e2e: ${exitCode === 0 ? 'ok' : 'FAIL'} in ${String(Math.round(now() - T0))} ms`);
 process.exit(exitCode);
