@@ -232,6 +232,151 @@ jobs:
             gh issue create --title "$title" --body "$body"
           fi
 
+  # Differential e2e (scripts/e2e-diff.mjs): HEAD's harness drives the
+  # build of merge-base(origin/<PR target>, HEAD) and HEAD's build on Chrome
+  # 118; the normalised call records must be equal. A PR gate for refactor
+  # PRs, so it is not in `release.needs`. A job cannot carry a `paths:`
+  # filter, so the first step lists the PR's files against the merge-base
+  # (NUL-separated, unquoted, so no name can slip past) and decides:
+  # - runs (base vs HEAD) for any non-test, non-docs change under
+  #   packages/server (src, package.json, tsconfig), packages/extension (src,
+  #   manifest, HTML, icons, package.json, tsconfig, build scripts),
+  #   packages/shared (src, package.json), packages/core, and the dependency
+  #   files (root package.json, pnpm-lock.yaml, pnpm-workspace.yaml, .npmrc);
+  # - adds a self-diff (two HEAD runs) when the harness, the normalise table,
+  #   packages/e2e/package.json or the fixtures change;
+  # - skips otherwise: tests (*.test.*, *.spec.*, __tests__, vitest configs)
+  #   and docs (*.md) never trigger it.
+  # On a push to main it runs the self-diff alone; that replaces the nightly
+  # self-diff of the design (the workflow has no schedule trigger). Stacked
+  # PRs do not trigger it: the workflow runs only on PRs to main, although the
+  # script itself compares with merge-base(<target>, HEAD) and supports them.
+  # Script exit codes: 1 difference, 2 harness failure, 3 setup error.
+  # The normalised base record is cached per base sha, harness hash and Chrome.
+  e2e-diff:
+    name: e2e differential (Chrome 118, ubuntu)
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CFT_CHROME: 118.0.5993.70
+      PUPPETEER_BROWSERS: 3.2.6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide what runs
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "mode=self" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          product=0
+          harness=0
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              packages/e2e/src/run.mjs | packages/e2e/src/lib.mjs | packages/e2e/src/normalise.mjs | \
+                packages/e2e/pages/* | packages/e2e/package.json)
+                harness=1 ;;
+              *.md | *.test.* | *.spec.* | */__tests__/* | */vitest.config.*) ;;
+              packages/server/src/* | packages/server/package.json | packages/server/tsconfig*.json | \
+                packages/extension/src/* | packages/extension/*.json | packages/extension/*.html | \
+                packages/extension/*.mjs | packages/extension/icons/* | \
+                packages/shared/src/* | packages/shared/package.json | packages/core/* | \
+                package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .npmrc)
+                product=1 ;;
+            esac
+          done < <(git -c core.quotePath=false diff --name-only -z "$base" HEAD)
+          if [ "$harness" = 1 ]; then
+            mode=diff-self
+          elif [ "$product" = 1 ]; then
+            mode=diff
+          else
+            mode=none
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "e2e-diff: base $base, mode $mode"
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        if: steps.scope.outputs.mode != 'none'
+        with:
+          package_json_file: package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.scope.outputs.mode != 'none'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.scope.outputs.mode != 'none'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        if: steps.scope.outputs.mode != 'none'
+        run: pnpm run build
+
+      - name: Install lsof
+        if: steps.scope.outputs.mode != 'none'
+        run: command -v lsof || { sudo apt-get update && sudo apt-get install -y lsof; }
+
+      - name: Cache Chrome for Testing
+        if: steps.scope.outputs.mode != 'none'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/chrome-for-testing
+          key: cft-chrome-${{ env.CFT_CHROME }}-puppeteer-browsers-${{ env.PUPPETEER_BROWSERS }}-${{ runner.os }}
+
+      - name: Install Chrome for Testing ${{ env.CFT_CHROME }}
+        id: cft
+        if: steps.scope.outputs.mode != 'none'
+        run: |
+          set -euo pipefail
+          path=$(npx --yes "@puppeteer/browsers@$PUPPETEER_BROWSERS" install "chrome@$CFT_CHROME" \
+            --path "$HOME/.cache/chrome-for-testing" --format '{{path}}' | tail -n 1)
+          test -x "$path"
+          echo "chrome=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the base record
+        id: base-record
+        if: steps.scope.outputs.mode == 'diff' || steps.scope.outputs.mode == 'diff-self'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/e2e/build/e2e-base-record.json
+          key: e2e-record-${{ steps.scope.outputs.base }}-${{ hashFiles('packages/e2e/src/run.mjs', 'packages/e2e/src/lib.mjs', 'packages/e2e/src/normalise.mjs', 'packages/e2e/pages/**') }}-${{ env.CFT_CHROME }}
+
+      - name: Differential
+        if: steps.scope.outputs.mode != 'none'
+        env:
+          CHROME_PATH: ${{ steps.cft.outputs.chrome }}
+          E2E_NO_SANDBOX: '1'
+          MODE: ${{ steps.scope.outputs.mode }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_RECORD: packages/e2e/build/e2e-base-record.json
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            self) node scripts/e2e-diff.mjs --self-diff-only ;;
+            diff) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" ;;
+            diff-self) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" --self-diff ;;
+          esac
+
+      - name: Save the base record
+        if: always() && steps.base-record.outcome == 'success' && steps.base-record.outputs.cache-hit != 'true' && hashFiles('packages/e2e/build/e2e-base-record.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/e2e/build/e2e-base-record.json
+          key: ${{ steps.base-record.outputs.cache-primary-key }}
+
   # Tag + GitHub Release + npm publish, all in one job downstream of the
   # CI matrix. Lives inside ci.yml on purpose — npm Trusted Publishers
   # validates the OIDC `workflow_ref` claim, and chained workflows

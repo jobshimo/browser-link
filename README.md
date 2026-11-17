@@ -519,6 +519,17 @@ focus, settle and cut rules (a click whose target first has to be scrolled into
 view included), and download attribution (a click's download captured, another
 tab's left alone), including the cases where Chrome's copy must be kept.
 
+A differential job (`e2e-diff`, Chrome 118) guards refactors: the current
+harness drives the build of the PR's merge-base and the PR's build, records
+every tool call (`E2E_RECORD=<file>`), normalises both records with the
+committed table in `packages/e2e/src/normalise.mjs` (ids, timings, paths,
+ports, image payloads) and requires them to be equal; a difference prints the
+first differing call with both values. It runs on PRs that touch the extension
+source, `packages/core`, the server's CDP or protocol code, or the extension
+build, and adds a self-diff (two runs of the same build) when the harness, the
+table or the fixtures change. Locally: `pnpm build`, then
+`node scripts/e2e-diff.mjs origin/main` (or `--self-diff-only`).
+
 ## How it works
 
 ```
