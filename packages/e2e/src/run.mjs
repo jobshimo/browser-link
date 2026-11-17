@@ -17,13 +17,23 @@
 // E2E_EXPECT_FAIL=<tool> forces that tool's assertion to fail (RED probe),
 // E2E_RESULT_FILE=<path> where the browser record goes (default
 // packages/e2e/build/e2e-result.json; also appended to GITHUB_STEP_SUMMARY
-// when set, titled with E2E_LEG).
+// when set, titled with E2E_LEG), E2E_RECORD=<path> writes every tool call's
+// request and result there (scripts/e2e-diff.mjs compares two of them),
+// E2E_EXT_DIST / E2E_SERVER_CLI / E2E_SERVER_EXTENSION_ID run another build
+// (lib.mjs buildPaths).
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
-import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -146,6 +156,28 @@ const state = { http: undefined, chrome: undefined, cdp: undefined, client: unde
 const browserSeen = { jsonVersion: undefined, cdpVersion: undefined };
 let serverPid;
 let serverStderr = '';
+/** E2E_RECORD: every tool call in order, with what the run needs to
+ * normalise it (normalise.mjs); written at the end whatever the outcome. */
+const RECORD_FILE = process.env.E2E_RECORD ? resolve(process.env.E2E_RECORD) : undefined;
+const record = { calls: [], context: { home: undefined, temps, ports: [] } };
+
+/** The one place a tool is called: records request and result (or the
+ * thrown error) when E2E_RECORD is set. A `poll` call repeats until ready,
+ * so how many there are varies; normalise.mjs keeps the last of a run. */
+async function callTool(tool, args, { label, poll = false } = {}) {
+  const entry = RECORD_FILE ? { tool, label, args, ...(poll ? { poll } : {}) } : undefined;
+  if (entry) record.calls.push(entry);
+  try {
+    const res = await state.client.callTool({ name: tool, arguments: args }, undefined, {
+      timeout: CALL_TIMEOUT_MS,
+    });
+    if (entry) entry.result = res;
+    return res;
+  } catch (e) {
+    if (entry) entry.thrown = String(e?.message ?? e);
+    throw e;
+  }
+}
 
 const text = (res) =>
   (res?.content ?? [])
@@ -164,14 +196,12 @@ function json(res) {
 /** One MCP tool call: must succeed, then `check(body, text, res)` must return true
  * (or a string saying what is wrong). Prints `tool ok ms`, or `label ok ms`
  * when a second check of the same tool needs its own name. */
-async function call(tool, args, check, { print = true, label = tool } = {}) {
+async function call(tool, args, check, { print = true, label = tool, poll = false } = {}) {
   const short = label.replace(/^browser\./, '');
   const t = now();
   let res;
   try {
-    res = await state.client.callTool({ name: tool, arguments: args }, undefined, {
-      timeout: CALL_TIMEOUT_MS,
-    });
+    res = await callTool(tool, args, { label, poll });
   } catch (e) {
     throw new StepFailure(short, e.message);
   }
@@ -189,9 +219,7 @@ async function call(tool, args, check, { print = true, label = tool } = {}) {
 async function attempt(tool, args, label) {
   let res;
   try {
-    res = await state.client.callTool({ name: tool, arguments: args }, undefined, {
-      timeout: CALL_TIMEOUT_MS,
-    });
+    res = await callTool(tool, args, { label });
   } catch (e) {
     throw new StepFailure(label, e.message);
   }
@@ -260,6 +288,8 @@ async function main() {
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ instructionsAutoRefresh: false }));
   const homeDir = mkdtempSync(join(tmpdir(), 'bl-e2e-home-'));
   temps.push(homeDir);
+  record.context.home = homeDir;
+  record.context.ports.push(wsPort, ipcPort, cdpPort, state.http.address().port);
   const extDir = extensionCopy(wsPort);
   temps.push(extDir);
   // The same build without the manifest `key`: another id, which the bridge
@@ -301,6 +331,8 @@ async function main() {
       BROWSER_LINK_DATA_DIR: dataDir,
       HOME: homeDir,
       USERPROFILE: homeDir,
+      XDG_CONFIG_HOME: join(homeDir, '.config'),
+      XDG_DATA_HOME: join(homeDir, '.local/share'),
       COPILOT_HOME: join(homeDir, '.copilot'),
     },
     stderr: 'pipe',
@@ -383,7 +415,7 @@ async function main() {
   const tl = now();
   let tab;
   while (!tab) {
-    const r = await call('browser.list_tabs', {}, undefined, { print: false });
+    const r = await call('browser.list_tabs', {}, undefined, { print: false, poll: true });
     const tabs = json(r);
     tab = Array.isArray(tabs) ? tabs.find((t) => t.url === page) : undefined;
     if (!tab && now() - tl > CALL_TIMEOUT_MS) {
@@ -658,7 +690,7 @@ async function downloadStressAfterScroll(T, downloadsDir) {
 async function pollUntil(tool, args, ready, label, timeoutMs = 5_000) {
   const t0 = now();
   for (;;) {
-    const body = json(await call(tool, args, undefined, { print: false }));
+    const body = json(await call(tool, args, undefined, { print: false, poll: true }));
     if (ready(body)) return body;
     if (now() - t0 > timeoutMs) {
       throw new StepFailure(
@@ -1937,6 +1969,17 @@ try {
   console.log(`e2e: browser record in ${file}`);
 } catch (e) {
   console.error(`e2e: warning, browser record not written: ${String(e?.message ?? e)}`);
+}
+if (RECORD_FILE) {
+  try {
+    record.ok = exitCode === 0;
+    record.chrome = browserSeen.jsonVersion?.Browser ?? null;
+    mkdirSync(dirname(RECORD_FILE), { recursive: true });
+    writeFileSync(RECORD_FILE, `${JSON.stringify(record)}\n`);
+    console.log(`e2e: call record (${String(record.calls.length)} calls) in ${RECORD_FILE}`);
+  } catch (e) {
+    console.error(`e2e: warning, call record not written: ${String(e?.message ?? e)}`);
+  }
 }
 console.log(`e2e: ${exitCode === 0 ? 'ok' : 'FAIL'} in ${String(Math.round(now() - T0))} ms`);
 process.exit(exitCode);

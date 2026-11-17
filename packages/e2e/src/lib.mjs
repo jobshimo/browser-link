@@ -23,9 +23,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const E2E_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO = resolve(E2E_DIR, '../..');
-export const EXT_DIST = join(REPO, 'packages/extension/dist');
-export const SERVER_CLI = join(REPO, 'packages/server/dist/cli.js');
-const SERVER_EXTENSION_ID = join(REPO, 'packages/server/dist/auth/extension-id.js');
+/** The builds under test. The differential (scripts/e2e-diff.mjs) points
+ * HEAD's harness at another build with E2E_EXT_DIST (the extension's dist/),
+ * E2E_SERVER_CLI (the server's dist/cli.js) and E2E_SERVER_EXTENSION_ID (that
+ * build's dist/auth/extension-id.js; defaults to the one next to
+ * E2E_SERVER_CLI, so the pinned id always comes from the server that runs). */
+export function buildPaths(env = process.env, repo = REPO) {
+  const serverCli = env.E2E_SERVER_CLI
+    ? resolve(env.E2E_SERVER_CLI)
+    : join(repo, 'packages/server/dist/cli.js');
+  return {
+    extDist: env.E2E_EXT_DIST ? resolve(env.E2E_EXT_DIST) : join(repo, 'packages/extension/dist'),
+    serverCli,
+    serverExtensionId: env.E2E_SERVER_EXTENSION_ID
+      ? resolve(env.E2E_SERVER_EXTENSION_ID)
+      : join(dirname(serverCli), 'auth/extension-id.js'),
+  };
+}
+const BUILD = buildPaths();
+export const EXT_DIST = BUILD.extDist;
+export const SERVER_CLI = BUILD.serverCli;
+const SERVER_EXTENSION_ID = BUILD.serverExtensionId;
 export const PAGE_FILE = join(E2E_DIR, 'pages/index.html');
 export const CAPTURE_FILE = join(E2E_DIR, 'pages/capture.html');
 /** The ports the owner's own browser-link uses; the harness never binds them. */
