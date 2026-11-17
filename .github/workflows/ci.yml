@@ -261,7 +261,9 @@ jobs:
   # writes it to the job log and the step summary, but exit 1 passes; a
   # harness failure (2) or setup error (3) still fails. Without the label,
   # exit 1 fails. The label is read as a boolean expression into env, never
-  # interpolated into the script.
+  # interpolated into the script. scripts/behavior-change-check.mjs fails a
+  # labelled PR whose description has no `Expected difference:` line, or whose
+  # title starts with `refactor:` or `refactor(core)`.
   # The normalised base record is cached per base sha, harness hash and Chrome.
   e2e-diff:
     name: e2e differential (Chrome 118, ubuntu)
@@ -276,6 +278,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # The label is no free pass: it needs an "Expected difference:" line in
+      # the description and never goes on a refactor. Title and body reach the
+      # script only as environment variables.
+      - name: Check the behavior-change label
+        env:
+          BEHAVIOR_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'behavior-change') }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/behavior-change-check.mjs
 
       - name: Decide what runs
         id: scope
