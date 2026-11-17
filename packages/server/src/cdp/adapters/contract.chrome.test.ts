@@ -13,6 +13,7 @@ import {
   countingSession,
   defineCdpEventsContract,
   defineCdpSessionContract,
+  defineDialogInputContract,
   defineDragInputContract,
   defineKeyboardContract,
   defineNavigatorContract,
@@ -74,6 +75,8 @@ const CAPTURE_REFUSED = 'Invalid image format';
 const NO_RESOURCE = 'No resource with given identifier found';
 /** The document the response-bodies contract loads over HTTP. */
 const SERVED = '<title>served</title><p>body</p>';
+/** What Chrome answers for a dialog response while no dialog is showing. */
+const NO_DIALOG = 'No dialog is showing';
 
 /** A fresh page target on PAGE, loaded, with a connected client. */
 async function openPage(): Promise<{ client: CdpClient; close: () => Promise<void> }> {
@@ -314,6 +317,31 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
           navigator: driverOn(client).navigator,
           url: PAGE,
           failing: { url: 'not a url', message: INVALID_URL },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("DialogInput contract: the page driver's dialog input over the CdpClient adapter", () => {
+    run(
+      defineDialogInputContract(async () => {
+        const { client, close } = await openPage();
+        return {
+          dialog: driverOn(client).dialog,
+          openDialog: async () => {
+            const opened = new Promise<void>((resolve) => {
+              const off = client.on('Page.javascriptDialogOpening', () => {
+                off();
+                resolve();
+              });
+            });
+            await client.send('Runtime.evaluate', {
+              expression: "setTimeout(() => alert('contract'), 0)",
+            });
+            await opened;
+          },
+          noDialogMessage: NO_DIALOG,
           dispose: close,
         };
       }),

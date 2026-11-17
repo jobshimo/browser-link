@@ -12,11 +12,16 @@
  * (`cdp-events`); slice 15 adds the page info (`page`) and `canvas`, the
  * transport's word that it takes canvas screenshots, and the navigator
  * (`navigator`), the screen capture (`screen-capture`) and the response
- * bodies (`response-bodies`).
+ * bodies (`response-bodies`); slice 16 adds the dialog input
+ * (`dialog-input`), the downloads (`downloads`) and the content settings
+ * (`content-settings`).
  */
 import type { Clock } from '../ports/clock.js';
+import type { ContentSettings } from '../ports/content-settings.js';
+import type { Downloads } from '../ports/downloads.js';
 import type {
   CdpEvents,
+  DialogInput,
   DragInput,
   Evaluator,
   Keyboard,
@@ -40,6 +45,9 @@ export interface RequirementDeps {
   navigator: Navigator;
   'screen-capture': ScreenCapture;
   'response-bodies': ResponseBodies;
+  'dialog-input': DialogInput;
+  downloads: Downloads;
+  'content-settings': ContentSettings;
 }
 
 /** A requirement that is a provides-set entry, not a port: `capture-buffers`
@@ -47,6 +55,11 @@ export interface RequirementDeps {
  * the capture watch) and `canvas` (the transport takes canvas screenshots,
  * through the evaluator). */
 export type ScopeRequirement = 'capture-buffers' | 'canvas';
+
+/** A port only some transports have an adapter for (design 3.1: cdp-direct
+ * has none for `Downloads` or `ContentSettings`). A transport that provides
+ * the requirement gives the port; a handler reads it with `providedPort`. */
+export type AdapterRequirement = 'downloads' | 'content-settings';
 
 /** What a tool may require: a port, or a scope entry. */
 export type Requirement = keyof RequirementDeps | ScopeRequirement;
@@ -60,8 +73,18 @@ export interface CommonDeps {
 }
 
 /** Every dependency a transport gives the registry. */
-export interface ToolDeps extends RequirementDeps, CommonDeps {}
+export interface ToolDeps
+  extends
+    Omit<RequirementDeps, AdapterRequirement>,
+    Partial<Pick<RequirementDeps, AdapterRequirement>>,
+    CommonDeps {}
 
 /** The deps of a handler that requires `R`. */
-export type DepsFor<R extends Requirement> = Pick<RequirementDeps, Exclude<R, ScopeRequirement>> &
+export type DepsFor<R extends Requirement> = Pick<ToolDeps, Exclude<R, ScopeRequirement>> &
   CommonDeps;
+
+/** The port a transport gives with a requirement it provides. */
+export function providedPort<T>(port: T | undefined, requirement: AdapterRequirement): T {
+  if (port === undefined) throw new Error(`${requirement} provided without its port`);
+  return port;
+}

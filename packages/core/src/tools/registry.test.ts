@@ -112,7 +112,7 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds the interaction, wait_for, drag and page read tools, all listed', () => {
+  it('holds the interaction, wait_for, drag, page read, dialog, permission and download tools; only download_settle is unlisted', () => {
     expect([...TOOL_REGISTRY.keys()]).toEqual([
       'find',
       'click',
@@ -130,8 +130,14 @@ describe('dispatchTool', () => {
       'console',
       'network',
       'network_body',
+      'dialog_respond',
+      'set_permission',
+      'download',
+      'download_settle',
     ]);
-    expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
+    expect(
+      [...TOOL_REGISTRY.values()].filter((entry) => !entry.listed).map((entry) => entry.name),
+    ).toEqual(['download_settle']);
   });
 });
 

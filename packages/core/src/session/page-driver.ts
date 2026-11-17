@@ -15,8 +15,9 @@
  * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`),
  * slice 15 the navigator, the screen capture and the response bodies (the
  * `Page.navigate`, `Page.getLayoutMetrics`, `Page.captureScreenshot` and
- * `Network.getResponseBody` of `navigate`, `screenshot` and `network_body`).
- * What differs per transport stays outside: the install warning text, the
+ * `Network.getResponseBody` of `navigate`, `screenshot` and `network_body`),
+ * slice 16 the dialog input (the `Page.handleJavaScriptDialog` of
+ * `dialog_respond`). What differs per transport stays outside: the install warning text, the
  * bridge events the extension reports for a top-document message, whether
  * `Runtime.enable` is sent here, and whether dialogs are watched
  * (`PageDriverDeps.dialogs`).
@@ -33,6 +34,7 @@ import type { CdpSession } from '../ports/cdp-session.js';
 import type { Clock } from '../ports/clock.js';
 import type {
   CdpEvents,
+  DialogInput,
   DragInput,
   Keyboard,
   Navigator,
@@ -408,6 +410,14 @@ export function createPageDriver({
     },
   };
 
+  const dialog: DialogInput = {
+    respond: async (accept, promptText) => {
+      const params: Record<string, unknown> = { accept };
+      if (promptText !== undefined) params.promptText = promptText;
+      await session.send('Page.handleJavaScriptDialog', params);
+    },
+  };
+
   const screen: ScreenCapture = {
     layoutMetrics: () => session.send<LayoutMetrics>('Page.getLayoutMetrics'),
     capture: async (params) =>
@@ -436,6 +446,7 @@ export function createPageDriver({
     drag,
     events,
     navigator,
+    dialog,
     screen,
     responses,
     evaluator: { evaluate },

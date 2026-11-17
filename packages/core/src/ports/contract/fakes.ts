@@ -4,8 +4,10 @@
 
 import type { CdpSession } from '../cdp-session.js';
 import type { Clock } from '../clock.js';
+import type { ContentSettings } from '../content-settings.js';
+import type { Downloads } from '../downloads.js';
 import type { PageInfo } from '../page-info.js';
-import type { LoadWait } from '../values.js';
+import type { CaptureOutcome, CapturedDownload, LoadWait } from '../values.js';
 
 export interface ManualClock extends Clock {
   /** Move time forward by `ms`, firing every timer that falls due, in order. */
@@ -154,5 +156,73 @@ export function countingSession(session: CdpSession): CdpSession & { listening()
       };
     },
     listening: () => count,
+  };
+}
+
+export interface MemoryContentSettings extends ContentSettings {
+  /** The value `setting` holds for `primaryPattern`. */
+  read(setting: string, primaryPattern: string): string | undefined;
+}
+
+/** `ContentSettings` over a map; a setting outside `known` is refused with
+ * `refusal(setting)`, as a browser that does not expose it. */
+export function createMemoryContentSettings(
+  known: readonly string[],
+  refusal: (setting: string) => string,
+): MemoryContentSettings {
+  const values = new Map<string, string>();
+  return {
+    set(setting, primaryPattern, value) {
+      if (!known.includes(setting)) return Promise.reject(new Error(refusal(setting)));
+      values.set(`${setting} ${primaryPattern}`, value);
+      return Promise.resolve();
+    },
+    read: (setting, primaryPattern) => values.get(`${setting} ${primaryPattern}`),
+  };
+}
+
+export interface MemoryDownloads extends Downloads {
+  /** Start a download the tab reports, while a capture waits: it is held. */
+  start(download: CapturedDownload): void;
+}
+
+/** `Downloads` on a clock: one capture waits at a time; a held download is
+ * settled once, `removed` when saved, `left_in_chrome` otherwise. */
+export function createMemoryDownloads(clock: Clock): MemoryDownloads {
+  let waiting: ((outcome: CaptureOutcome) => void) | null = null;
+  const held = new Set<number>();
+  return {
+    async captureAround({ timeoutMs }, act) {
+      if (waiting) throw new Error('download: another capture is waiting');
+      let finish: (outcome: CaptureOutcome) => void = () => undefined;
+      const result = new Promise<CaptureOutcome>((resolve) => {
+        finish = resolve;
+      });
+      const cancel = clock.after(timeoutMs, () => {
+        waiting = null;
+        finish({ state: 'timeout' });
+      });
+      waiting = (outcome) => {
+        cancel();
+        waiting = null;
+        finish(outcome);
+      };
+      const acted = await act();
+      if (!acted.ok) {
+        cancel();
+        waiting = null;
+        return acted;
+      }
+      return { ok: true, outcome: await result };
+    },
+    settle(downloadId, saved) {
+      if (!held.delete(downloadId)) return Promise.resolve('not_held');
+      return Promise.resolve(saved ? 'removed' : 'left_in_chrome');
+    },
+    start(download) {
+      if (!waiting) return;
+      held.add(download.download_id);
+      waiting({ state: 'captured', download });
+    },
   };
 }

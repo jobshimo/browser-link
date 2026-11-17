@@ -243,7 +243,9 @@ function pageDriver(client: CdpClient): PageDriverHandle {
  * console messages, so a `network_url` wait, `browser.console` and
  * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
  * nor `canvas`, so `browser.canvas_screenshot` is refused; nor
- * `response-bodies`, so `browser.network_body` is refused (all v1 scope;
+ * `response-bodies`, so `browser.network_body` is refused; nor `dialog-input`,
+ * `downloads` or `content-settings`, so `browser.dialog_respond`,
+ * `browser.set_permission` and `browser.download` are refused (all v1 scope;
  * changing any is a behavior change). */
 export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
@@ -277,6 +279,7 @@ function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
     navigator: driver.navigator,
     'screen-capture': driver.screen,
     'response-bodies': driver.responses,
+    'dialog-input': driver.dialog,
     clock: systemClock,
   };
 }

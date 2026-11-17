@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 9. Revision 1 (`5486e34`) was audited as
+Status: revision 10. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,18 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 10 (2026-11-17)
+
+Decisions while building slice 16 (3.1 and 3.2 code blocks and text, 3.3
+"As built in slice 16"):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `DialogInput` (`respond(accept, promptText?)`) is an input-only capability of the `PageDriver` (`dialog`), the registry requirement `dialog-input`; both page drivers have it, `CDP_DIRECT_PROVIDES` lacks it (v1 scope). The pending dialog stays `TabSession` state behind `DialogWatch` | `dialog_respond` sends `Page.handleJavaScriptDialog`, which no existing port sends; it is the page's reply to the core's own command (revision 9, decision 3). `dialogs` is already the `DialogWatch` key of the handler deps |
+| 2 | `Downloads` is built per tab: `captureAround(wait: { timeoutMs, holdMs }, act)`, `settle(downloadId, saved)`; the adapter binds the tab's download reports, so `TabDownloadSignals` stays an extension type | core has no subscription to a tab's CDP events beyond the one-shot `CdpEvents.waitFor`; passing the signals in would need one. The 3.1 sketch also lacked the wait's timeout |
+| 3 | `downloads` and `content-settings` are optional in `ToolDeps` (`AdapterRequirement`) and read through `providedPort` | cdp-direct has no adapter for either (3.1 table), as it gives no capture watch |
+| 4 | The `ContentSettings` adapter passes `chrome.contentSettings` to `app/content-settings.ts`, which looks the setting up and fails with today's texts; the `Downloads` adapter's event filter is `app/download-signals.ts` | adapters stay free of logic (5.3 item 3) and both texts reach the wire |
 
 ### Revision 9 (2026-11-17)
 
@@ -519,6 +531,13 @@ export interface LayoutMetrics { cssContentSize?: { width: number; height: numbe
 export type CaptureParams = { format: 'png' | 'jpeg'; captureBeyondViewport: boolean;
   clip: { x: number; y: number; width: number; height: number; scale: number }; quality?: number };
 export type ResponseBody = { body: string; base64Encoded: boolean };
+// Slice 16 (revision 10) adds the values of the download capture:
+export interface CapturedDownload { download_id: number; url: string; /* ... */ }
+export type CaptureOutcome = { state: 'captured'; download: CapturedDownload }
+  | { state: 'unattributed' } | { state: 'timeout' };
+export type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
+export type CaptureActOutcome = { ok: true } | { ok: false; error: string };
+export type CaptureAroundResult = { ok: true; outcome: CaptureOutcome } | { ok: false; error: string };
 
 // cdp-session.ts: one debugger session on one page.
 export interface CdpSession {
@@ -559,13 +578,15 @@ export interface EventsOut {
 }
 
 // downloads.ts: returns data; the stateful capture stays behind the adapter.
+// As built in slice 16 (revision 10): one per tab, the tab bound by the adapter.
 export interface Downloads {
   /** Arm a capture for the tab, run `act`, report what Chrome downloaded. */
-  captureAround(tab: TabDownloadSignals, holdMs: number, act: () => Promise<void>): Promise<CaptureOutcome>;
+  captureAround(wait: { timeoutMs: number; holdMs: number },
+    act: () => Promise<CaptureActOutcome>): Promise<CaptureAroundResult>;
   settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome>;
 }
 
-// content-settings.ts
+// content-settings.ts (slice 5; its contract and adapter land in slice 16)
 export interface ContentSettings {
   set(setting: string, primaryPattern: string, value: string): Promise<void>;
 }
@@ -581,10 +602,19 @@ with today's keys, so stored data keeps its format across the refactor
 (item 1 of the high-risk list is not touched); cdp-direct does not use them
 (Q4).
 
-`Downloads` returns `CaptureOutcome` and `ChromeDownloadOutcome`, the types
-`download-capture.ts` already exports; the extension adapter wraps
-`createDownloadCapture(chrome.downloads)` and its `captureAround`. Core never
-holds the `DownloadCapture` object.
+`Downloads` returns `CaptureOutcome` and `ChromeDownloadOutcome`, which with
+`CapturedDownload`, `CaptureActOutcome` and `CaptureAroundResult` live in
+`ports/values.ts` (slice 16; `download-capture.ts` re-exports the first three).
+The extension adapter (`adapters/chrome-downloads.ts`) wraps the worker-wide
+`createDownloadCapture(chrome.downloads)` and its `captureAround`, with the
+tab's `Page.downloadWillBegin` reports on `chrome.debugger.onEvent` filtered
+by `app/download-signals.ts`. Core never holds the `DownloadCapture` object.
+The `ContentSettings` adapter (`adapters/chrome-content-settings.ts`) passes
+`chrome.contentSettings` to `app/content-settings.ts`, which looks the
+setting up by key and fails with a text naming a missing one. Both adapters
+are built per tool call (`background.ts` `actionDeps`): the e2e coverage
+starts after the worker's module code ran, so a factory called only at module
+load would hide an uncalled function from the R6 check.
 
 Extension-only capabilities get adapters too, so "in the worker zone,
 `chrome` only in `adapters/**` and `background.ts`" (5.3 item 3) stays true as
@@ -613,9 +643,10 @@ says why).
 | `Downloads` | `createDownloadCapture(chrome.downloads)` | none |
 | `ContentSettings` | `chrome.contentSettings` | none |
 
-Not ports, on purpose: dialogs (CDP events on `CdpSession` plus
-`Page.handleJavaScriptDialog`; the pending dialog is `TabSession` state) and
-the tab registry (a core class, section 4).
+Not ports, on purpose: dialog observation (CDP events on `CdpSession`; the
+pending dialog is `TabSession` state, read through the `DialogWatch` outside
+`ports/`) and the tab registry (a core class, section 4). Answering a dialog
+is the page driver's input-only `DialogInput` (3.2, revision 10).
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -663,9 +694,14 @@ export interface ScreenCapture {       // the page's answers to the core's own c
 export interface ResponseBodies {      // extension only (slice 15)
   body(requestId: string): Promise<ResponseBody>;     // one Network.getResponseBody
 }
+export interface DialogInput {         // input only (slice 16, revision 10)
+  /** One Page.handleJavaScriptDialog, promptText only when given; rejects
+   * with the page's error when no dialog is showing. */
+  respond(accept: boolean, promptText?: string): Promise<void>;
+}
 export interface PageDriver {
   evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; drag: DragInput;
-  events: CdpEvents; navigator: Navigator; screen: ScreenCapture;
+  events: CdpEvents; navigator: Navigator; dialog: DialogInput; screen: ScreenCapture;
   responses: ResponseBodies; settler: Settler; page: PageInfo;
 }
 ```
@@ -786,6 +822,20 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   (`cdp/tool-name.fitness.test.ts`, extension `fitness.test.ts`); the
   remaining `switch` cases are the transitional dispatch of the tools not
   yet in the registry.
+- As built in slice 16 (1.4.22): `dialog_respond` and `set_permission` are
+  registered in `tools/dialog-permission.ts`, `download` and the unlisted
+  `download_settle` in `tools/download.ts`. `dialog_respond` requires
+  `dialog-input` (the `DialogInput` port; not `dialogs`, which is the
+  `DialogWatch` key of `CommonDeps`) and reads no pending dialog: with none
+  showing, the page's error is the answer. `set_permission` requires
+  `content-settings`; `download` requires `evaluator`, `pointer`, `settler`
+  and `downloads` (its click is `performClick`), and `download_settle`
+  requires `downloads`. `downloads` and `content-settings` are
+  `AdapterRequirement`s: optional in `ToolDeps`, since cdp-direct has no
+  adapter for them, and read by a handler through `providedPort`. Only the
+  extension provides the three requirements; on a `cdp:` tab the dispatcher
+  gate refuses the four tools first, as before, and `dispatchTool` would
+  refuse them as `unsupported` with the same text (`cdp/provides.test.ts`).
 
 ### 3.4 Failure contract
 
