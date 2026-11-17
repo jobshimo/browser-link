@@ -52,14 +52,19 @@ swapped).
 
 ### Revision 9 (2026-11-17)
 
-Arch's decisions on slice 14 (3.2 code block and text, 3.3 "As built in
-slice 14"), and the wording of the revision 8 rule:
+Arch's decisions on slices 14 and 15 (3.2 code block and text, 3.3 "As
+built in slice 14" and "As built in slice 15"), and the wording of the
+revision 8 rule:
 
 | # | Decision | Why |
 |---|---|---|
 | 1 | `DragInput` (`interceptDrags(enabled)`, `dragEvent(event)`) is a separate input-only capability of the `PageDriver`, the registry requirement `drag`; cdp-direct's page driver has it, but `CDP_DIRECT_PROVIDES` lacks `drag`, so `browser.drag` stays refused there | drag sends `Input.setInterceptDrags` and `Input.dispatchDragEvent`, which no existing port sends; folding them into `Pointer` would change the meaning of a mouse-only port (revision 8) |
 | 2 | `CdpEvents.waitFor(method, timeoutMs)` has no `predicate` until a real caller needs one | its only caller (drag's wait for `Input.dragIntercepted`) accepts every event; same rule as `Clock.every` (revision 7): ports describe what is used |
 | 3 | The revision 8 rule reads: a port must not report state the transport observes on its own; a command whose answer is the page's reply to the core's own request is allowed (`Evaluator`, `PageInfo.info()`) | so the rule cannot be misread as forbidding every port method that returns data |
+| 4 | `Navigator` (`navigate(url)`) is a separate input-only capability of the `PageDriver`, the requirement `navigator`; both transports provide it (slice 15) | `navigate` sends `Page.navigate`, which no existing port sends; `PageInfo` stays what the transport knows about the page |
+| 5 | `ScreenCapture` (`layoutMetrics()`, `capture(params)`) is a capability of the `PageDriver`, the requirement `screen-capture`; both transports provide it. `LayoutMetrics` and `CaptureParams` live in `ports/values.ts` with only the fields core uses | its answers are the page's replies to the core's own commands (decision 3); no raw CDP type in a port |
+| 6 | `ResponseBodies` (`body(requestId)`, answering `ResponseBody` from `ports/values.ts`) is a capability of the `PageDriver`, the requirement `response-bodies`, provided by the extension only; cdp-direct refuses `network_body` with its unchanged text | same terms as decision 5; cdp-direct never enables the Network domain (v1 scope) |
+| 7 | cdp-direct sends no raw `Runtime.evaluate` (`cdp/raw-evaluate.fitness.test.ts` allows none). The per-call command timeout is declared on the registry entry (`commandTimeout: 'call-budget'` on `evaluate`) and read by the transport; no transport compares a tool name (`cdp/tool-name.fitness.test.ts`, extension `fitness.test.ts`) | a transport that knew tool names would grow one branch per tool that needs it |
 
 ### Revision 8 (2026-11-17)
 
@@ -230,10 +235,10 @@ Consequences, measured:
   comparison machinery and a guard that no `perform*` is declared on a
   transport again, until slice 22 deletes it; slice 14, 1.4.20, moved the
   extension-only `performDrag` into core `actions/`, so that guard allows
-  none; slice 15, 1.4.21, moved the `ping`, `snapshot`, `state` and
-  `evaluate` cases of both transports and the extension's
-  `canvas_screenshot`, `console` and `network` into core
-  `tools/page-read.ts`.)
+  none; slice 15, 1.4.21, moved the `ping`, `navigate`, `snapshot`,
+  `state`, `screenshot` and `evaluate` cases of both transports and the
+  extension's `canvas_screenshot`, `console`, `network` and `network_body`
+  into core `tools/page-read.ts`.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -508,6 +513,12 @@ export type SettleReport = { settled?: boolean; mutation_count?: number; /* ... 
   changes?: SettleChanges | null; observer?: ObserverFailure };
 export type KeyEvent = { type: 'keyDown' | 'rawKeyDown' | 'char' | 'keyUp'; /* ... */ };
 export interface LoadWait { done: Promise<void>; cancel(): void }
+// Slice 15 (revision 9) adds the values of the screen capture and the
+// response bodies, with only the fields core uses:
+export interface LayoutMetrics { cssContentSize?: { width: number; height: number }; /* ... */ }
+export type CaptureParams = { format: 'png' | 'jpeg'; captureBeyondViewport: boolean;
+  clip: { x: number; y: number; width: number; height: number; scale: number }; quality?: number };
+export type ResponseBody = { body: string; base64Encoded: boolean };
 
 // cdp-session.ts: one debugger session on one page.
 export interface CdpSession {
@@ -641,9 +652,21 @@ export interface CdpEvents {           // the drag's wait for Input.dragIntercep
    * none arrives within `timeoutMs`. Never rejects. No predicate (revision 9). */
   waitFor(method: string, timeoutMs: number): Promise<unknown>;
 }
+export interface Navigator {           // input only (slice 15)
+  /** One Page.navigate; a failed command rejects. The load wait is PageInfo.armLoadWait. */
+  navigate(url: string): Promise<void>;
+}
+export interface ScreenCapture {       // the page's answers to the core's own commands (slice 15)
+  layoutMetrics(): Promise<LayoutMetrics>;            // one Page.getLayoutMetrics
+  capture(params: CaptureParams): Promise<string>;    // one Page.captureScreenshot, base64
+}
+export interface ResponseBodies {      // extension only (slice 15)
+  body(requestId: string): Promise<ResponseBody>;     // one Network.getResponseBody
+}
 export interface PageDriver {
   evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; drag: DragInput;
-  events: CdpEvents; settler: Settler; page: PageInfo;
+  events: CdpEvents; navigator: Navigator; screen: ScreenCapture;
+  responses: ResponseBodies; settler: Settler; page: PageInfo;
 }
 ```
 
@@ -745,15 +768,24 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   `capture-buffers` and read the `CaptureWatch`, which also gives
   `consoleEntries()` and `networkEntries()` over the `TabSession` buffers
   (`ConsoleEntry` and `NetworkEntry` live next to it in
-  `session/page-driver.ts`). cdp-direct gives `browser.evaluate` an evaluator
-  whose session sends with the call's budget as the client's per-command
-  timeout (`cdp/adapters/cdp-client-session.ts` `commandTimeoutMs`), so its
-  timeout text is unchanged and no raw `Runtime.evaluate` is left under
-  `cdp/` (`cdp/raw-evaluate.fitness.test.ts` allows none). `navigate`,
-  `screenshot` and `network_body` still run in each transport's own `case`:
-  they send `Page.navigate`, `Page.getLayoutMetrics` and
-  `Page.captureScreenshot`, and `Network.getResponseBody`, which no page
-  capability sends.
+  `session/page-driver.ts`). `navigate` requires `navigator` and `page`: it
+  arms the load wait, sends the navigation, cancels the wait when it fails,
+  and answers `PageInfo.info()` as each transport gives it. `screenshot`
+  requires `screen-capture` and `evaluator`; core `support/screenshot.ts`
+  `runScreenshot` takes the `ScreenCapture` port instead of a raw `send`.
+  `network_body` requires `response-bodies`, which only the extension
+  provides (v1 scope), so cdp-direct refuses it with its unchanged text.
+  `LayoutMetrics`, `CaptureParams` and `ResponseBody` live in
+  `ports/values.ts` with only the fields core uses. The `evaluate` entry
+  declares `commandTimeout: 'call-budget'`; cdp-direct reads that declaration
+  and gives the entry an evaluator whose session sends with the call's budget
+  as the client's per-command timeout (`cdp/adapters/cdp-client-session.ts`
+  `commandTimeoutMs`), so its timeout text is unchanged and no raw
+  `Runtime.evaluate` is left under `cdp/` (`cdp/raw-evaluate.fitness.test.ts`
+  allows none). Neither transport compares a tool name
+  (`cdp/tool-name.fitness.test.ts`, extension `fitness.test.ts`); the
+  remaining `switch` cases are the transitional dispatch of the tools not
+  yet in the registry.
 
 ### 3.4 Failure contract
 

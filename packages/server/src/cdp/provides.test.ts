@@ -1,8 +1,9 @@
 // What cdp-direct provides to the tool registry (design 3.3). The set is v1
 // scope: it never enables the Network domain or keeps console messages, so
 // it has no capture buffers and a `network_url` wait, `browser.console` and
-// `browser.network` are refused; it does not provide `drag` or `canvas`, so
-// `browser.drag` and `browser.canvas_screenshot` are refused. Declaring a capability outside that scope is a
+// `browser.network` are refused; it does not provide `drag`, `canvas` or `response-bodies`,
+// so `browser.drag`, `browser.canvas_screenshot` and `browser.network_body`
+// are refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
 import { describe, expect, test } from 'vitest';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
@@ -13,13 +14,15 @@ import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports and the CDP event wait, without drag, canvas or capture-buffers', () => {
+  test('is the page ports and the CDP event wait, without drag, canvas, capture-buffers or response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
       'cdp-events',
       'evaluator',
       'keyboard',
+      'navigator',
       'page',
       'pointer',
+      'screen-capture',
       'settler',
     ]);
   });
@@ -28,6 +31,7 @@ describe('CDP_DIRECT_PROVIDES', () => {
     ['console', ['capture-buffers']],
     ['network', ['capture-buffers']],
     ['canvas_screenshot', ['canvas']],
+    ['network_body', ['response-bodies']],
   ])(
     'browser.%s on cdp-direct is refused with the unchanged unsupported text',
     async (tool, missing) => {

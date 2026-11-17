@@ -21,6 +21,12 @@ export interface ParamRequirement {
   message: string;
 }
 
+/** How a call's commands are bounded: `'call-budget'` makes the transport's
+ * per-call budget the per-command timeout of the evaluator it gives (the
+ * entry runs one caller-controlled `Runtime.evaluate`). A transport reads
+ * this declaration; it never decides by the tool's name. */
+export type CommandTimeout = 'call-budget';
+
 export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   /** The wire name: 'click', not 'browser.click'. */
   name: string;
@@ -29,6 +35,8 @@ export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   listed: boolean;
   /** Today's argument coercion of each transport, from the raw params. */
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => P>>;
+  /** Absent: commands keep the transport's own timeouts. */
+  commandTimeout?: CommandTimeout;
   /** What this call needs beyond `requires`, from its coerced params. */
   needs?(params: P): readonly ParamRequirement[];
   handler(deps: DepsFor<R>, params: P): Promise<ToolOutcome>;
@@ -42,6 +50,7 @@ export interface RegisteredTool {
   requires: readonly Requirement[];
   listed: boolean;
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => unknown>>;
+  commandTimeout?: CommandTimeout;
   needs?(params: never): readonly ParamRequirement[];
   handler(deps: ToolDeps, params: never): Promise<ToolOutcome>;
 }

@@ -10,7 +10,9 @@
  * `capture-buffers`, which a transport provides by giving the capture watch;
  * slice 14 adds the drag input (`drag`) and the CDP event wait
  * (`cdp-events`); slice 15 adds the page info (`page`) and `canvas`, the
- * transport's word that it takes canvas screenshots.
+ * transport's word that it takes canvas screenshots, and the navigator
+ * (`navigator`), the screen capture (`screen-capture`) and the response
+ * bodies (`response-bodies`).
  */
 import type { Clock } from '../ports/clock.js';
 import type {
@@ -18,7 +20,10 @@ import type {
   DragInput,
   Evaluator,
   Keyboard,
+  Navigator,
   Pointer,
+  ResponseBodies,
+  ScreenCapture,
   Settler,
 } from '../ports/page-driver.js';
 import type { PageInfo } from '../ports/page-info.js';
@@ -32,6 +37,9 @@ export interface RequirementDeps {
   drag: DragInput;
   'cdp-events': CdpEvents;
   page: PageInfo;
+  navigator: Navigator;
+  'screen-capture': ScreenCapture;
+  'response-bodies': ResponseBodies;
 }
 
 /** A requirement that is a provides-set entry, not a port: `capture-buffers`

@@ -121,12 +121,15 @@ describe('dispatchTool', () => {
       'wait_for',
       'drag',
       'ping',
+      'navigate',
       'snapshot',
       'state',
+      'screenshot',
       'evaluate',
       'canvas_screenshot',
       'console',
       'network',
+      'network_body',
     ]);
     expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
   });

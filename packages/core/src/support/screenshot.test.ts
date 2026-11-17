@@ -9,6 +9,7 @@ import {
   type ElementRectOutcome,
   type LayoutMetrics,
 } from './screenshot.js';
+import type { CaptureParams } from '../ports/values.js';
 
 const METRICS: LayoutMetrics = {
   cssContentSize: { width: 1200, height: 5000 },
@@ -190,7 +191,7 @@ describe('byte cap helpers', () => {
 
 interface Call {
   method: string;
-  params: Record<string, unknown>;
+  params: Record<string, unknown> | CaptureParams;
 }
 
 function fakeDeps(opts: { metrics?: LayoutMetrics; images?: string[]; rect?: ElementRectOutcome }) {
@@ -199,13 +200,15 @@ function fakeDeps(opts: { metrics?: LayoutMetrics; images?: string[]; rect?: Ele
   return {
     calls,
     deps: {
-      send: (method: string, params: Record<string, unknown> = {}) => {
-        calls.push({ method, params });
-        if (method === 'Page.getLayoutMetrics') return Promise.resolve(opts.metrics ?? METRICS);
-        if (method === 'Page.captureScreenshot') {
-          return Promise.resolve({ data: images.length > 1 ? images.shift() : images[0] });
-        }
-        return Promise.reject(new Error(`unexpected ${method}`));
+      screen: {
+        layoutMetrics: () => {
+          calls.push({ method: 'Page.getLayoutMetrics', params: {} });
+          return Promise.resolve(opts.metrics ?? METRICS);
+        },
+        capture: (params: CaptureParams) => {
+          calls.push({ method: 'Page.captureScreenshot', params });
+          return Promise.resolve((images.length > 1 ? images.shift() : images[0]) ?? '');
+        },
       },
       resolveElementRect: () =>
         Promise.resolve(opts.rect ?? { ok: true as const, x: 5, y: 6, width: 100, height: 50 }),

@@ -99,3 +99,34 @@ export interface LoadWait {
   done: Promise<void>;
   cancel(): void;
 }
+
+/** The `Page.getLayoutMetrics` answer, only the fields the screenshot plan
+ * reads (`ScreenCapture.layoutMetrics`, slice 15): content size and visual
+ * viewport in CSS and device pixels, and the layout viewport width in both,
+ * whose ratio is the device pixel ratio. */
+export interface LayoutMetrics {
+  cssContentSize?: { width: number; height: number };
+  contentSize?: { width: number; height: number };
+  cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
+  visualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
+  layoutViewport?: { clientWidth: number };
+  cssLayoutViewport?: { clientWidth: number };
+}
+
+/** One `Page.captureScreenshot` request (`ScreenCapture.capture`, slice 15):
+ * the clip in CSS pixels with its scale, and `quality` for a jpeg only. A
+ * type alias, so it is assignable to the plain params object
+ * `CdpSession.send` takes. */
+export type CaptureParams = {
+  format: 'png' | 'jpeg';
+  captureBeyondViewport: boolean;
+  clip: { x: number; y: number; width: number; height: number; scale: number };
+  quality?: number;
+};
+
+/** The body of one captured response (`ResponseBodies.body`, slice 15), as
+ * the page answers it: base64 when `base64Encoded`. */
+export type ResponseBody = {
+  body: string;
+  base64Encoded: boolean;
+};

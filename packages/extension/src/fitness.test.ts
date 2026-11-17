@@ -31,7 +31,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 /** Lowered by every slice that moves code out; never raised without arch sign-off. */
-const BACKGROUND_LINE_BUDGET = 2926;
+const BACKGROUND_LINE_BUDGET = 2840;
 
 /** Scripts of the three HTML pages, and the module only they import. */
 const UI_ZONE = ['popup.ts', 'activity.ts', 'admin.ts', 'ui-language.ts'];
@@ -576,6 +576,49 @@ describe('fitness: background.ts line budget', () => {
 
   it('RED: one line over the budget', () => {
     expect(budgetViolations('a\nb\nc\n', 2)).toEqual(['background.ts has 3 lines, budget 2']);
+  });
+});
+
+/** Comparisons of a tool name (`tool`, `msg.tool`) with a string literal:
+ * what a registered tool needs it declares on its registry entry, and the
+ * transport reads the entry (design revision 9). The `switch (msg.tool)` of
+ * `handleTool` is the transitional dispatch and is not counted. */
+function toolNameChecks(source: string): string[] {
+  const sf = ts.createSourceFile('background.ts', source, ts.ScriptTarget.Latest, true);
+  const equality = new Set([
+    ts.SyntaxKind.EqualsEqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsEqualsToken,
+    ts.SyntaxKind.EqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsToken,
+  ]);
+  const namedTool = (node: ts.Expression): boolean =>
+    (ts.isIdentifier(node) && node.text === 'tool') ||
+    (ts.isPropertyAccessExpression(node) && node.name.text === 'tool');
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      equality.has(node.operatorToken.kind) &&
+      ((namedTool(node.left) && ts.isStringLiteral(node.right)) ||
+        (namedTool(node.right) && ts.isStringLiteral(node.left)))
+    ) {
+      found.push(node.getText());
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+describe('fitness: background.ts makes no tool-name checks', () => {
+  it('holds for the real background.ts', () => {
+    expect(toolNameChecks(realSources().get('background.ts')!)).toEqual([]);
+  });
+
+  it('RED: a tool-name comparison', () => {
+    expect(toolNameChecks("const t = msg.tool === 'evaluate' ? 1 : 0;\n")).toEqual([
+      "msg.tool === 'evaluate'",
+    ]);
   });
 });
 

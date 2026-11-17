@@ -13,7 +13,10 @@
  * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`),
  * slice 11 the keyboard's `insertText` (the `Input.insertText` of `performType`),
  * slice 14 the drag input and the CDP event wait (`background.ts`
- * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`).
+ * `waitForCdpEvent` and the `Input.*` drag commands of `performDrag`),
+ * slice 15 the navigator, the screen capture and the response bodies (the
+ * `Page.navigate`, `Page.getLayoutMetrics`, `Page.captureScreenshot` and
+ * `Network.getResponseBody` of `navigate`, `screenshot` and `network_body`).
  * What differs per transport stays outside: the install warning text, the
  * bridge events the extension reports for a top-document message, whether
  * `Runtime.enable` is sent here, and whether dialogs are watched
@@ -29,12 +32,23 @@ import {
 } from '../inpage/observer.js';
 import type { CdpSession } from '../ports/cdp-session.js';
 import type { Clock } from '../ports/clock.js';
-import type { CdpEvents, DragInput, Keyboard, PageDriver, Pointer } from '../ports/page-driver.js';
+import type {
+  CdpEvents,
+  DragInput,
+  Keyboard,
+  Navigator,
+  PageDriver,
+  Pointer,
+  ResponseBodies,
+  ScreenCapture,
+} from '../ports/page-driver.js';
 import type { PageInfo } from '../ports/page-info.js';
 import type {
+  LayoutMetrics,
   MouseEventParams,
   ObserverFailure,
   ObserverMarkResult,
+  ResponseBody,
   SettleParams,
   SettleReport,
 } from '../ports/values.js';
@@ -389,6 +403,27 @@ export function createPageDriver({
       }),
   };
 
+  const navigator: Navigator = {
+    navigate: async (url) => {
+      await session.send('Page.navigate', { url });
+    },
+  };
+
+  const screen: ScreenCapture = {
+    layoutMetrics: () => session.send<LayoutMetrics>('Page.getLayoutMetrics'),
+    capture: async (params) =>
+      (await session.send<{ data: string }>('Page.captureScreenshot', params)).data,
+  };
+
+  const responses: ResponseBodies = {
+    body: async (requestId) => {
+      const { body, base64Encoded } = await session.send<ResponseBody>('Network.getResponseBody', {
+        requestId,
+      });
+      return { body, base64Encoded };
+    },
+  };
+
   return {
     observer,
     page,
@@ -401,6 +436,9 @@ export function createPageDriver({
     },
     drag,
     events,
+    navigator,
+    screen,
+    responses,
     evaluator: { evaluate },
     settler: {
       async mark(settle: SettleParams | null): Promise<ObserverMarkResult> {

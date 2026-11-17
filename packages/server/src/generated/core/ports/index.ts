@@ -11,21 +11,27 @@ export type {
   DragInput,
   Evaluator,
   Keyboard,
+  Navigator,
   PageDriver,
   Pointer,
+  ResponseBodies,
+  ScreenCapture,
   Settler,
 } from './page-driver.js';
 export type { PageInfo } from './page-info.js';
 export type { IdleSettings } from './settings.js';
 export type {
+  CaptureParams,
   DragEventParams,
   EvaluateFn,
   KeyEvent,
+  LayoutMetrics,
   LoadWait,
   MouseEventParams,
   ObserverFailure,
   ObserverMark,
   ObserverMarkResult,
+  ResponseBody,
   SettleParams,
   SettleReport,
 } from './values.js';

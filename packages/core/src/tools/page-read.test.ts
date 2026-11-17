@@ -8,7 +8,13 @@ import { createManualClock } from '../ports/contract/index.js';
 import type { PageInfo } from '../ports/page-info.js';
 import type { CaptureWatch, ConsoleEntry, NetworkEntry } from '../session/page-driver.js';
 import { TOOL_REGISTRY } from './catalog.js';
-import { canvasScreenshotTool, evaluateTool, snapshotTool } from './page-read.js';
+import {
+  canvasScreenshotTool,
+  evaluateTool,
+  navigateTool,
+  networkBodyTool,
+  snapshotTool,
+} from './page-read.js';
 import { dispatchTool, type Transport } from './registry.js';
 import type { Requirement, ToolDeps } from './requirement.js';
 
@@ -21,6 +27,9 @@ const EXTENSION: ReadonlySet<Requirement> = new Set<Requirement>([
   'drag',
   'cdp-events',
   'page',
+  'navigator',
+  'screen-capture',
+  'response-bodies',
   'capture-buffers',
   'canvas',
 ]);
@@ -32,6 +41,8 @@ const CDP: ReadonlySet<Requirement> = new Set<Requirement>([
   'settler',
   'cdp-events',
   'page',
+  'navigator',
+  'screen-capture',
 ]);
 
 interface Fake {
@@ -251,5 +262,172 @@ describe('console and network read the capture watch', () => {
       kind: 'thrown',
       message: 'capture-buffers provided without a capture watch',
     });
+  });
+});
+
+/** Deps whose navigator, page load wait, screen capture and response bodies
+ * log what they are asked, in order. */
+function commandFake(options: { refuseNavigate?: Error; loadDone?: Promise<void> } = {}) {
+  const log: string[] = [];
+  const deps = {
+    evaluator: {
+      evaluate: () => Promise.resolve({ ok: true, x: 5, y: 6, width: 10, height: 20 }),
+    },
+    navigator: {
+      navigate: (url: string) => {
+        log.push(`navigate:${url}`);
+        return options.refuseNavigate ? Promise.reject(options.refuseNavigate) : Promise.resolve();
+      },
+    },
+    page: {
+      info: () => {
+        log.push('info');
+        return Promise.resolve({ url: 'https://x.test/next', title: 'Next' });
+      },
+      armLoadWait: (timeoutMs: number) => {
+        log.push(`arm:${timeoutMs}`);
+        return {
+          done: options.loadDone ?? Promise.resolve(),
+          cancel: () => {
+            log.push('cancel');
+          },
+        };
+      },
+    },
+    'screen-capture': {
+      layoutMetrics: () => {
+        log.push('metrics');
+        return Promise.resolve({
+          cssContentSize: { width: 800, height: 600 },
+          cssLayoutViewport: { clientWidth: 800 },
+          layoutViewport: { clientWidth: 800 },
+          cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 800, clientHeight: 600 },
+        });
+      },
+      capture: (params: unknown) => {
+        log.push(`capture:${JSON.stringify(params)}`);
+        return Promise.resolve('QUJD');
+      },
+    },
+    'response-bodies': {
+      body: (requestId: string) => {
+        log.push(`body:${requestId}`);
+        return Promise.resolve({ body: 'hi', base64Encoded: false });
+      },
+    },
+    clock: createManualClock(),
+  } as unknown as ToolDeps;
+  return { deps, log };
+}
+
+const dispatch = (
+  deps: ToolDeps,
+  tool: string,
+  params: unknown,
+  transport: Transport = 'extension',
+) =>
+  dispatchTool(
+    TOOL_REGISTRY,
+    transport === 'extension' ? EXTENSION : CDP,
+    deps,
+    transport,
+    tool,
+    params,
+  );
+
+describe('navigate', () => {
+  it('arms the load wait before the navigation, then answers the page info', async () => {
+    const { deps, log } = commandFake();
+    expect(await dispatch(deps, 'navigate', { url: 'https://x.test/next' })).toEqual({
+      ok: true,
+      result: { url: 'https://x.test/next', title: 'Next' },
+    });
+    expect(log).toEqual(['arm:20000', 'navigate:https://x.test/next', 'info']);
+  });
+
+  it('wait_for_load: false navigates without a load wait', async () => {
+    const { deps, log } = commandFake();
+    await dispatch(deps, 'navigate', { url: 'https://x.test/', wait_for_load: false });
+    expect(log).toEqual(['navigate:https://x.test/', 'info']);
+  });
+
+  it('a refused navigation cancels the load wait and is `thrown`, carrying the error', async () => {
+    const err = new Error('Cannot navigate to invalid URL');
+    const { deps, log } = commandFake({ refuseNavigate: err });
+    expect(await dispatch(deps, 'navigate', { url: 'nope' })).toEqual({
+      ok: false,
+      failure: { kind: 'thrown', message: err.message, cause: err },
+    });
+    expect(log).toEqual(['arm:20000', 'navigate:nope', 'cancel']);
+  });
+
+  it('a load wait that times out is `thrown`', async () => {
+    const err = new Error('load timed out');
+    const { deps } = commandFake({ loadDone: Promise.reject(err) });
+    expect(await dispatch(deps, 'navigate', { url: 'https://x.test/' })).toMatchObject({
+      ok: false,
+      failure: { kind: 'thrown', message: 'load timed out' },
+    });
+  });
+
+  it('a missing url: the extension navigates to "undefined", cdp-direct to ""', () => {
+    expect(navigateTool.coerce.extension({})).toEqual({ url: 'undefined', wait_for_load: true });
+    expect(navigateTool.coerce['cdp-direct']({})).toEqual({ url: '', wait_for_load: true });
+  });
+});
+
+describe('screenshot', () => {
+  it('reads the layout metrics, captures once and answers the result', async () => {
+    const { deps, log } = commandFake();
+    const outcome = await dispatch(
+      deps,
+      'screenshot',
+      { format: 'jpeg', quality: 50 },
+      'cdp-direct',
+    );
+    expect(outcome).toMatchObject({
+      ok: true,
+      result: { ok: true, mode: 'viewport', format: 'jpeg', image_b64: 'QUJD' },
+    });
+    expect(log[0]).toBe('metrics');
+    expect(log.slice(1).map((l) => l.split(':')[0])).toEqual(['capture']);
+    expect(JSON.parse(log[1]!.slice('capture:'.length))).toMatchObject({
+      format: 'jpeg',
+      captureBeyondViewport: false,
+      quality: 50,
+    });
+  });
+});
+
+describe('network_body', () => {
+  it('answers the response body of the request id', async () => {
+    const { deps, log } = commandFake();
+    expect(await dispatch(deps, 'network_body', { request_id: 'R1' })).toEqual({
+      ok: true,
+      result: { body: 'hi', base64Encoded: false },
+    });
+    expect(log).toEqual(['body:R1']);
+  });
+
+  it('reads a missing request id as "undefined", as the extension did', () => {
+    expect(networkBodyTool.coerce.extension({})).toEqual({ request_id: 'undefined' });
+  });
+
+  it('cdp-direct does not provide `response-bodies`: refused before anything runs', async () => {
+    const { deps, log } = commandFake();
+    expect(await dispatch(deps, 'network_body', { request_id: 'R1' }, 'cdp-direct')).toEqual({
+      ok: false,
+      failure: { kind: 'unsupported', tool: 'network_body', missing: ['response-bodies'] },
+    });
+    expect(log).toEqual([]);
+  });
+});
+
+describe('command timeouts are declared on the entry', () => {
+  it('only evaluate makes the call budget its command timeout', () => {
+    expect(evaluateTool.commandTimeout).toBe('call-budget');
+    expect(
+      [...TOOL_REGISTRY.values()].filter((e) => e.commandTimeout !== undefined).map((e) => e.name),
+    ).toEqual(['evaluate']);
   });
 });

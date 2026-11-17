@@ -12,7 +12,6 @@ import type {
 import {
   buildSnapshotJs,
   withValuesHiddenNote,
-  buildElementRectJs,
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
   idleHoldUntil,
@@ -36,13 +35,9 @@ import {
   TOOL_REGISTRY,
   type ToolDeps,
   toolResponse,
-  NAVIGATE_LOAD_TIMEOUT_MS,
   type CdpSession,
   type ObserverMessageOutcome,
   type PageDriverHandle,
-  runScreenshot,
-  type ElementRectOutcome,
-  type ScreenshotMode,
   runFlow,
   type FlowDeps,
   type FlowResult,
@@ -287,17 +282,6 @@ interface StatusResult {
    * pending for this tab — lets the popup show "Reconnecting" instead of
    * a flat "Not connected" that would misrepresent the in-flight retry. */
   reconnecting?: boolean;
-}
-
-// === CDP types — only the fields we actually read ======================
-// The real Chrome DevTools Protocol surface is huge; the chrome.debugger
-// API hands us back `unknown` and leaves the typing to us. These shapes
-// describe just the slices we use, so the rest of the file can drop
-// `Record<string, any>` casts and `unknown` member access entirely.
-
-interface CdpNetworkGetResponseBody {
-  body: string;
-  base64Encoded: boolean;
 }
 
 // Runtime messages between popup.ts and this script.
@@ -754,13 +738,18 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'drag',
   'cdp-events',
   'page',
+  'navigator',
+  'screen-capture',
+  'response-bodies',
   'capture-buffers',
   'canvas',
 ]);
 
 /** What the core actions and the registry handlers use on one tab. */
 function actionDeps(tabId: number, session?: TabSession): ToolDeps {
-  const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = pageDriver(tabId);
+  const driver = pageDriver(tabId);
+  const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = driver;
+  const { navigator, screen, responses } = driver;
   return {
     evaluator,
     keyboard,
@@ -769,6 +758,9 @@ function actionDeps(tabId: number, session?: TabSession): ToolDeps {
     'cdp-events': events,
     settler,
     page,
+    navigator,
+    'screen-capture': screen,
+    'response-bodies': responses,
     clock: systemClock,
     dialogs,
     // The tab's captured console messages and requests.
@@ -891,85 +883,16 @@ async function reportTopDocument(
 }
 
 /**
- * `handleNavigate` through `handleSetPermission` — the extracted bodies of
+ * `handleFlow` through `handleSetPermission` — the extracted bodies of
  * the remaining standalone tool cases in `handleTool` below, which do not
  * run through core's tool registry (the actions moved to core's `actions/`
- * in slices 10, 11, 13 and 14, the page reads to core's `tools/page-read.ts`
- * in slice 15). Each takes exactly the locals its original
+ * in slices 10, 11, 13 and 14, the page reads and captures to core's
+ * `tools/page-read.ts` in slice 15). Each takes exactly the locals its original
  * `case` block closed over (`tabId`, `state`, `msg`, the raw params `p`,
  * and/or the `str`/`optStr` readers) and returns the same wire-level
  * `tool.response` envelope the case used to build inline — pure code
  * motion, not a rewrite of tool behavior.
  */
-
-async function handleNavigate(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  str: (key: string) => string,
-): Promise<ExtensionToServer> {
-  const url = str('url');
-  const waitForLoadFlag = p.wait_for_load !== false;
-  const page = pageDriver(tabId).page;
-  // Armed before the navigation is sent (see core's session/load-wait.ts).
-  const loadWait = waitForLoadFlag ? page.armLoadWait(NAVIGATE_LOAD_TIMEOUT_MS) : undefined;
-  try {
-    await cdp(tabId, 'Page.navigate', { url });
-  } catch (err) {
-    loadWait?.cancel();
-    throw err;
-  }
-  if (loadWait) await loadWait.done;
-  return {
-    kind: 'tool.response',
-    id: msg.id,
-    ok: true,
-    result: await page.info(),
-  };
-}
-
-/**
- * `browser.screenshot`: viewport / full page / one element through the
- * already-attached debugger. `Page.captureScreenshot` with
- * `captureBeyondViewport` and a `clip` renders past the viewport, so no
- * scrolling or stitching is needed. Planning and the byte cap live in
- * core's `support/screenshot.ts` (unit-tested; shared with cdp-direct).
- */
-async function handleScreenshot(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  optStr: (key: string) => string | undefined,
-): Promise<ExtensionToServer> {
-  const mode: ScreenshotMode = p.mode === 'full_page' || p.mode === 'element' ? p.mode : 'viewport';
-  const result = await runScreenshot(
-    {
-      send: (method, params) => cdp(tabId, method, params ?? {}),
-      resolveElementRect: (selector) =>
-        pageDriver(tabId).evaluator.evaluate<ElementRectOutcome>(buildElementRectJs({ selector })),
-    },
-    {
-      mode,
-      selector: optStr('selector'),
-      format: optStr('format') === 'jpeg' ? 'jpeg' : 'png',
-      quality: typeof p.quality === 'number' ? p.quality : undefined,
-      maxDimension: typeof p.max_dimension === 'number' ? p.max_dimension : undefined,
-    },
-  );
-  return { kind: 'tool.response', id: msg.id, ok: true, result };
-}
-
-async function handleNetworkBody(
-  tabId: number,
-  msg: ToolRequestMessage,
-  str: (key: string) => string,
-): Promise<ExtensionToServer> {
-  const requestId = str('request_id');
-  const body = await cdp<CdpNetworkGetResponseBody>(tabId, 'Network.getResponseBody', {
-    requestId,
-  });
-  return { kind: 'tool.response', id: msg.id, ok: true, result: body };
-}
 
 async function handleFlow(
   tabId: number,
@@ -1678,15 +1601,6 @@ async function handleTool(
     typeof p[key] === 'string' ? p[key] : undefined;
   try {
     switch (msg.tool) {
-      case 'navigate':
-        return await handleNavigate(tabId, msg, p, str);
-
-      case 'screenshot':
-        return await handleScreenshot(tabId, msg, p, optStr);
-
-      case 'network_body':
-        return await handleNetworkBody(tabId, msg, str);
-
       case 'flow':
         return await handleFlow(tabId, state.session, msg, p);
 

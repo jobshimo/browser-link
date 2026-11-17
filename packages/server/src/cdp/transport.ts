@@ -11,11 +11,12 @@
  * module) and the SAME `browser.flow` step engine (generated from core's
  * `flow/flow-engine.ts`). `find` and `click` (slice 10), `type` and
  * `press` (slice 11), `wait_for` (slice 13), `drag` (slice 14) and `ping`,
- * `snapshot`, `state`, `evaluate`, `canvas_screenshot`, `console` and
- * `network` (slice 15) run through core's tool registry (`dispatchTool`,
- * outcome mapped by `./tool-outcome.ts`); `drag`, `canvas_screenshot`,
- * `console` and `network` are refused there, since cdp-direct does not
- * provide `drag`, `canvas` or `capture-buffers`. The wire-level contract is
+ * `navigate`, `snapshot`, `state`, `screenshot`, `evaluate`,
+ * `canvas_screenshot`, `console`, `network` and `network_body` (slice 15)
+ * run through core's tool registry (`dispatchTool`, outcome mapped by
+ * `./tool-outcome.ts`); `drag`, `canvas_screenshot`, `console`, `network`
+ * and `network_body` are refused there, since cdp-direct does not provide
+ * `drag`, `canvas`, `capture-buffers` or `response-bodies`. The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -27,21 +28,11 @@ import { checkCdpDirectGate } from './gate.js';
 import { buildTargetWsUrl, cdpTargetIdFromTabId, isDrivablePageTarget } from './targets.js';
 import { CdpClient } from './client.js';
 import { cdpUnsupportedToolError } from './support.js';
-import {
-  buildElementRectJs,
-  withValuesHiddenNote,
-  buildSnapshotJs,
-} from '../generated/core/inpage/builders.js';
-import {
-  runScreenshot,
-  type ElementRectOutcome,
-  type ScreenshotMode,
-} from '../generated/core/support/screenshot.js';
+import { withValuesHiddenNote, buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createCdpClientSession } from './adapters/cdp-client-session.js';
 import { createCdpPageInfo } from './adapters/cdp-page-info.js';
 import { createPageDriver, type PageDriverHandle } from '../generated/core/session/page-driver.js';
-import { NAVIGATE_LOAD_TIMEOUT_MS } from '../generated/core/session/load-wait.js';
 import { performClick } from '../generated/core/actions/perform-click.js';
 import { performFind } from '../generated/core/actions/perform-find.js';
 import { performPress } from '../generated/core/actions/perform-press.js';
@@ -251,7 +242,8 @@ function pageDriver(client: CdpClient): PageDriverHandle {
  * provide `capture-buffers`: it never enables the Network domain or keeps
  * console messages, so a `network_url` wait, `browser.console` and
  * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
- * nor `canvas`, so `browser.canvas_screenshot` is refused (all v1 scope;
+ * nor `canvas`, so `browser.canvas_screenshot` is refused; nor
+ * `response-bodies`, so `browser.network_body` is refused (all v1 scope;
  * changing any is a behavior change). */
 export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
@@ -260,14 +252,17 @@ export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement
   'settler',
   'cdp-events',
   'page',
+  'navigator',
+  'screen-capture',
 ]);
 
 /** What the core actions and the registry handlers use on one connection.
  * With `evaluateTimeoutMs`, the evaluator's `Runtime.evaluate` has that
  * per-command timeout instead of the client's 15s default (see
- * `callCdpTool`: only `browser.evaluate` passes one). */
+ * `callCdpTool`: an entry that declares `commandTimeout: 'call-budget'`). */
 function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
-  const { evaluator, keyboard, pointer, drag, events, settler, page } = pageDriver(client);
+  const driver = pageDriver(client);
+  const { evaluator, keyboard, pointer, drag, events, settler, page } = driver;
   return {
     evaluator:
       evaluateTimeoutMs === undefined
@@ -279,6 +274,9 @@ function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
     'cdp-events': events,
     settler,
     page,
+    navigator: driver.navigator,
+    'screen-capture': driver.screen,
+    'response-bodies': driver.responses,
     clock: systemClock,
   };
 }
@@ -439,8 +437,9 @@ interface TargetInfoResult {
  * on its own bound). The one consumer is `evaluate`, whose single
  * `Runtime.evaluate` command runs caller-supplied JS for a caller-controlled
  * duration — there the budget IS that command's own per-command timeout
- * (replacing the 15s default, still no outer race): the evaluator the
- * registry gets for `evaluate` sends through a session with that timeout,
+ * (replacing the 15s default, still no outer race): its registry entry
+ * declares `commandTimeout: 'call-budget'`, so the evaluator the registry
+ * gets for it sends through a session with that timeout,
  * so `browser.evaluate`'s `timeout_ms` reaches cdp-direct tabs too and its
  * timeout text (`cdp-direct: command "Runtime.evaluate" timed out after
  * Nms`) is the client's own. Kept in the signature for shape-parity with
@@ -461,12 +460,13 @@ export async function callCdpTool(
   const client = await getConnection(targetId);
   // A registered tool (design 3.3) runs through core; its outcome is
   // returned or thrown by `cdpToolResult` (3.4).
-  if (TOOL_REGISTRY.has(tool)) {
+  const entry = TOOL_REGISTRY.get(tool);
+  if (entry) {
     return cdpToolResult(
       await dispatchTool(
         TOOL_REGISTRY,
         CDP_DIRECT_PROVIDES,
-        actionDeps(client, tool === 'evaluate' ? timeoutMs : undefined),
+        actionDeps(client, entry.commandTimeout === 'call-budget' ? timeoutMs : undefined),
         'cdp-direct',
         tool,
         params,
@@ -476,43 +476,6 @@ export async function callCdpTool(
   const p = (params ?? {}) as Record<string, unknown>;
 
   switch (tool) {
-    case 'navigate': {
-      const url = typeof p.url === 'string' ? p.url : '';
-      const waitForLoadFlag = p.wait_for_load !== false;
-      const page = pageDriver(client).page;
-      // Armed before the navigation is sent (see core's session/load-wait.ts).
-      const loadWait = waitForLoadFlag ? page.armLoadWait(NAVIGATE_LOAD_TIMEOUT_MS) : undefined;
-      try {
-        await client.send('Page.navigate', { url });
-      } catch (err) {
-        loadWait?.cancel();
-        throw err;
-      }
-      if (loadWait) await loadWait.done;
-      return page.info();
-    }
-
-    case 'screenshot': {
-      const mode: ScreenshotMode =
-        p.mode === 'full_page' || p.mode === 'element' ? p.mode : 'viewport';
-      return runScreenshot(
-        {
-          send: (method, params) => client.send(method, params),
-          resolveElementRect: (selector) =>
-            pageDriver(client).evaluator.evaluate<ElementRectOutcome>(
-              buildElementRectJs({ selector }),
-            ),
-        },
-        {
-          mode,
-          selector: typeof p.selector === 'string' ? p.selector : undefined,
-          format: p.format === 'jpeg' ? 'jpeg' : 'png',
-          quality: typeof p.quality === 'number' ? p.quality : undefined,
-          maxDimension: typeof p.max_dimension === 'number' ? p.max_dimension : undefined,
-        },
-      );
-    }
-
     case 'flow': {
       const rawSteps = Array.isArray(p.steps)
         ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)

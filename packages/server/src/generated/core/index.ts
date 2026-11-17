@@ -15,7 +15,8 @@
 // extension's per-tab aggregates (`session/tab-session`, `session/tab-registry`);
 // slice 13 the wait_for action and entry, and the capture watch it reads;
 // slice 14 the drag action and entry, and the drag input and CDP event wait;
-// slice 15 the page read and capture entries and the canvas-screenshot builder.
+// slice 15 the page read and capture entries, the canvas-screenshot builder
+// and the navigator, screen capture and response bodies.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
