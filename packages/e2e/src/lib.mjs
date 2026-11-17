@@ -5,6 +5,7 @@
 // Derived from packages/plan/lab/2026-11-09-e2e-net/lib.mjs.
 import { spawn, execFileSync } from 'node:child_process';
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -385,4 +386,49 @@ export async function waitExtensionIds(cdp, count, timeoutMs) {
     }
     await sleep(100);
   }
+}
+
+/** Where the run's browser record goes unless E2E_RESULT_FILE says otherwise:
+ * the package's build/ folder, which the root .gitignore excludes. */
+export const RESULT_FILE = join(E2E_DIR, 'build/e2e-result.json');
+
+/** The browser a run used, from `/json/version` (`Browser`) and the CDP
+ * `Browser.getVersion` result (`product`, `revision`, `protocolVersion`).
+ * A field the run never reached (Chrome did not start) is null. */
+export function resultRecord({ jsonVersion, cdpVersion, ok }) {
+  return {
+    browser: jsonVersion?.Browser ?? null,
+    product: cdpVersion?.product ?? null,
+    revision: cdpVersion?.revision ?? null,
+    protocolVersion: cdpVersion?.protocolVersion ?? jsonVersion?.['Protocol-Version'] ?? null,
+    ok,
+  };
+}
+
+/** The record as a Markdown table for the GitHub step summary. */
+export function summaryMarkdown(record, leg) {
+  const cell = (v) => (v === null || v === undefined ? '(unknown)' : String(v));
+  const verdict = record.ok ? 'ok' : 'FAIL';
+  return [
+    '',
+    `### e2e${leg ? ` (${leg})` : ''}: ${verdict}`,
+    '',
+    '| browser | product | revision | protocol |',
+    '| --- | --- | --- | --- |',
+    `| ${cell(record.browser)} | ${cell(record.product)} | ${cell(record.revision)} | ${cell(record.protocolVersion)} |`,
+    '',
+  ].join('\n');
+}
+
+/** Write the record to E2E_RESULT_FILE (default RESULT_FILE) and, when
+ * GITHUB_STEP_SUMMARY is set, append it there titled with E2E_LEG.
+ * Returns the JSON file path. */
+export function writeResult(record, env = process.env) {
+  const file = resolve(env.E2E_RESULT_FILE || RESULT_FILE);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  if (env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(env.GITHUB_STEP_SUMMARY, summaryMarkdown(record, env.E2E_LEG));
+  }
+  return file;
 }

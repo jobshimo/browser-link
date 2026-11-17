@@ -507,9 +507,13 @@ process checks keep out other users. Neither authenticates the extension itself.
 
 ### Chrome version
 
-The minimum is Chrome 118 (the manifest declares it). On 2026-11-17 the
-end-to-end suite passed on Windows against Chrome for Testing 118.0.5993.70 and
-against stable Chrome 157.0.8103.51 (three consecutive runs). It covers the
+The minimum is Chrome 118 (the manifest declares it). CI runs the end-to-end
+suite on Linux against two Chromes: Chrome for Testing 118.0.5993.70, which
+blocks the npm publish, and the runner's stable Chrome, which reports without
+blocking (a failure on `main` opens an issue). Each run records the browser it
+used (`browser`, `product`, `revision`) in the job's step summary and in the
+`e2e-result-chrome-118` / `e2e-result-chrome-stable` artifacts
+(`packages/e2e/build/e2e-result.json` locally, or `E2E_RESULT_FILE`). It covers the
 pinned Origin being accepted while the server enforces it, the 1.1.0 click,
 focus, settle and cut rules (a click whose target first has to be scrolled into
 view included), and download attribution (a click's download captured, another
