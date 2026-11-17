@@ -186,7 +186,9 @@ Consequences, measured:
   and the in-page sections of `cdp/drift.test.ts`. Slice 7, 1.4.10, did the
   same for `cdp/{settle,expect,keymap,screenshot,observer-host}.ts`, which
   now compile from `generated/core/support/`, and their `drift.test.ts`
-  sections.)
+  sections. Slice 8, 1.4.11, did the same for `cdp/flow.ts`, which now
+  compiles from `generated/core/flow/`, and deleted both sibling `clock.ts`
+  files.)
 - **No bundler.** The extension builds with `tsc && node copy-assets.mjs`
   (`packages/extension/package.json`, script `build`), which emits one
   `.js`, `.js.map` and `.d.ts` per module into `dist/` (99 files in the

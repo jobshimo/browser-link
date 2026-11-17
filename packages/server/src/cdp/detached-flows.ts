@@ -22,7 +22,7 @@
  * installs at startup.
  */
 
-import type { FlowResult } from './flow.js';
+import type { FlowResult } from '../generated/core/flow/flow-engine.js';
 
 /** Mirrors `MAX_DETACHED_FLOW_MS` in the extension's `flow-registry.ts` and
  * `MAX_DETACHED_FLOW_TIMEOUT_MS` in `tools/browser-dispatch.ts`. Kept in

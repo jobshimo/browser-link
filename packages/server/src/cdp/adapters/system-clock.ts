@@ -2,7 +2,7 @@
 // `Date.now`, `setTimeout`, `setInterval`, nothing else. Same name and
 // shape as the extension's `adapters/system-clock.ts`, so the `perform*`
 // handlers that pass it stay textually identical.
-import type { Clock } from '../clock.js';
+import type { Clock } from '../../generated/core/ports/clock.js';
 
 export const systemClock: Clock = {
   now: () => Date.now(),

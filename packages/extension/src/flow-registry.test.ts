@@ -26,7 +26,7 @@ import {
   type FlowHistoryEntry,
   type FlowRegistryEntry,
 } from './flow-registry.js';
-import type { FlowResult } from './flow.js';
+import type { FlowResult } from '@browser-link/core';
 
 /**
  * The in-flight registry and the flow history behind the popup's Flows
@@ -1224,5 +1224,32 @@ describe('flow rows in Spanish', () => {
     ).toBe(
       'desacoplado · 2/4 pasos · 1s · falló en el paso 3 (click) · el proceso de la extensión se cerró; no se reanudó',
     );
+  });
+});
+
+describe('summarizeFlow — timeout', () => {
+  const entry = {
+    flowId: 'flow_1',
+    tabId: 1,
+    steps: 2,
+    detached: false,
+    startedAt: 0,
+    progress: { step: 1, steps: 2 },
+    cancelled: false,
+  } as unknown as FlowRegistryEntry;
+
+  test('a deadline stop is reported as expired, with the steps it completed', () => {
+    const summary = summarizeFlow(entry, {
+      ok: true,
+      stopped_by: 'timeout',
+      steps_completed: 1,
+      results: [{ iterations_completed: 4, stopped_by: 'timeout', iterations: [] }],
+    });
+    expect(summary).toMatchObject({
+      outcome: 'expired',
+      stepsCompleted: 1,
+      iterationsCompleted: 4,
+      stoppedBy: 'expired',
+    });
   });
 });

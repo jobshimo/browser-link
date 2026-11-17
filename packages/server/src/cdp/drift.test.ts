@@ -4,32 +4,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /*
- * DRIFT GUARD for the verbatim copies under `packages/server/src/cdp/`.
+ * DRIFT GUARD for the manually-synced constants the transports share.
  *
- * `cdp/flow.ts` and `cdp/clock.ts` are independent copies of their
- * `packages/extension/src/` originals (the server publishes to npm
- * standalone and cannot depend on the private `@browser-link/extension`
- * package — see each copy's header comment). That duplication is exactly
- * the class of bug the flow-recorder security work just addressed: a
- * security fix landed in ONE copy of shared DOM logic would silently NOT
- * reach the other.
+ * Nothing under `packages/server/src/cdp/` is a verbatim copy of an
+ * extension file any more: the in-page code (slice 6), the support modules
+ * (slice 7) and the flow engine with its `Clock` port (slice 8) live once in
+ * `packages/core`, and the server compiles the generated mirror
+ * (`scripts/sync-core.mjs`, checked by `sync-core --check`), so they have
+ * no section here. What remains are the numeric constants below, which two
+ * implementations declare by hand and this file keeps equal.
  *
- * This test fails the build the moment the security-relevant DOM logic
- * drifts, so the two copies can never diverge unnoticed:
- *   - The in-page code (`DEEP_QUERY_JS`, `DOM_HELPERS_JS`, the builders and the
- *     page observer, slice 6) and the support modules (`settle`, `expect`,
- *     `keymap`, `screenshot`, `observer-host`, slice 7) are no longer copied:
- *     they live once in `packages/core` and the server compiles the
- *     generated mirror (`scripts/sync-core.mjs`, checked by
- *     `sync-core --check`), so they have no section here.
- *   - `flow.ts` and `clock.ts` are compared FULL-BODY (every
- *     line below the leading file-header doc comment, not just the
- *     numeric constants) — the header itself is allowed to differ since it
- *     names the sibling path, which is necessarily file-specific.
- *
- * If you INTENTIONALLY change one copy, apply the identical change to its
- * sibling (adjusting only the header if needed) and this test goes green
- * again — that is the whole point.
+ * If you INTENTIONALLY change one of them, change its sibling too and this
+ * test goes green again — that is the whole point.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,55 +30,10 @@ function read(file: string): string {
   return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 }
 
-/** Strip the leading `/** ... *\/` file-header doc comment and return
- * everything after it. The header is the one place the two copies are
- * INTENTIONALLY allowed to differ (it names the sibling path, which is
- * necessarily file-specific) — everything else must be byte-identical. */
-function stripHeader(text: string): string {
-  const start = text.indexOf('/**');
-  if (start !== 0) throw new Error('expected file to start with a header doc comment');
-  const end = text.indexOf('*/', start);
-  if (end < 0) throw new Error('unterminated header doc comment');
-  return text.slice(end + 2);
-}
-
-/** Where the extension and the server each import core's `expect` types
- * from: the extension from `@browser-link/core`, the server from its
- * generated mirror of core (it publishes standalone). The one line allowed
- * to differ in an otherwise byte-identical `flow.ts`, so it is normalised
- * before comparing. */
-function normaliseCoreImport(text: string): string {
-  return text.replace(
-    /from '(?:@browser-link\/core|\.\.\/generated\/core\/support\/expect\.js)';/g,
-    "from '<core support module>';",
-  );
-}
-
-describe('cdp verbatim-copy drift guard: flow and clock (full body)', () => {
-  test('flow.ts body is byte-identical to the extension original', () => {
-    const ext = normaliseCoreImport(stripHeader(read(join(EXT_ROOT, 'flow.ts'))));
-    const srv = normaliseCoreImport(stripHeader(read(join(SRV_ROOT, 'flow.ts'))));
-    expect(srv).toBe(ext);
-    expect(srv).toContain('export const MAX_FLOW_STEPS = 20;');
-    expect(srv).toContain('export async function runFlow');
-  });
-
-  // Slices 5b-1 to 8 only (design 5.1): both flow.ts copies and both
-  // expect.ts copies import `Clock` from this sibling, so the two must
-  // declare the same port. Deleted with the cdp/flow.ts copy in slice 8.
-  test('clock.ts body is byte-identical to the extension original', () => {
-    const ext = stripHeader(read(join(EXT_ROOT, 'clock.ts')));
-    const srv = stripHeader(read(join(SRV_ROOT, 'clock.ts')));
-    expect(srv).toBe(ext);
-    expect(srv).toContain('export interface Clock');
-    expect(srv).toContain('after(ms: number, fn: () => void): () => void;');
-  });
-});
-
 /*
  * DRIFT GUARD for the manually-synced detached-flow constants.
  *
- * Unlike the modules above these files are NOT copies of each other — the
+ * These files are NOT copies of each other — the
  * three detached-flow implementations are deliberately different shapes
  * (see `detached-flows.ts`'s header). What they do share is a NUMBER that
  * must agree across all three, and a comment in each saying "kept in sync

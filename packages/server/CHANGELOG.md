@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.11](https://github.com/jobshimo/browser-link/compare/v1.4.10...v1.4.11) (2026-11-17)
+
+### Notes
+
+- Slice 8 of the service worker plan; no behaviour change. The flow engine (`runFlow` and its step types) and its tests moved from `packages/extension/src/flow.ts` to `packages/core/src/flow/flow-engine.ts`, importing core's `ports/clock.ts`; the extension imports it from `@browser-link/core` and the server compiles it from the checked mirror in `packages/server/src/generated/core/flow`.
+- The server's hand-kept `cdp/flow.ts` copy and both sibling `clock.ts` files (with the sibling assignability test) are deleted, with their sections of `cdp/drift.test.ts`. The server's flow tests are folded into core's, which holds the same assertions; only the cdp-direct drag wiring test stays in the server. The `summarizeFlow` deadline test moved to the extension's `flow-registry.test.ts`. `flow.ts` and `clock.ts` leave `tsconfig.purity.json`.
+- `background.ts` shrinks by two lines and its line budget goes from 5035 to 5033.
+
 ## [1.4.10](https://github.com/jobshimo/browser-link/compare/v1.4.9...v1.4.10) (2026-11-17)
 
 ### Notes

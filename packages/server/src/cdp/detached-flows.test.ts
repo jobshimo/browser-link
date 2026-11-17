@@ -13,7 +13,7 @@ import {
   setCdpFlowEventSink,
   shouldStopDetachedFlow,
 } from './detached-flows.js';
-import type { FlowResult } from './flow.js';
+import type { FlowResult } from '../generated/core/flow/flow-engine.js';
 
 /**
  * The cdp-direct half of detached execution. The agent-visible contract

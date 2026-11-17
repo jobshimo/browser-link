@@ -1,19 +1,4 @@
 /**
- * Independent copy of `packages/extension/src/flow.ts` — this
- * package publishes standalone and cannot import extension-side modules.
- * Byte-identical logic, so
- * `browser.flow` behaves identically whether the target tab is reached
- * through the extension or through cdp-direct. Kept transport-agnostic ON
- * PURPOSE — it knows nothing about the cdp-direct gate. What it exposes
- * instead is `deps.shouldCancel`, and `cdp/transport.ts` binds that to a
- * per-step re-check of the gate: a mid-flow `browser-link cdp revoke` now
- * STOPS the running flow within one step (it used to be grandfathered
- * until the flow finished), and the flow returns cleanly with
- * `stopped_by: 'cancelled'` plus everything it completed. That is the only
- * kill switch on this transport — there is no extension popup here.
- * `cdp/drift.test.ts` asserts `MAX_FLOW_STEPS` stays in lockstep with the
- * sibling at `packages/extension/src/flow.ts`.
- *
  * browser.flow step sequencing — the logic behind the composite action
  * tool. Runs a short, declarative list of find/click/type/press/wait_for/
  * drag/sleep steps strictly in order, fails fast on the first step that
@@ -25,6 +10,25 @@
  * drag step untouched for a later click/type/press, exactly like it
  * survives a wait_for. A `sleep` step is a fixed pause and stays out of
  * the chain for the same reason: it names no target at all.
+ *
+ * A `repeat` step runs a bounded sub-sequence up to `max_iterations`
+ * times, optionally stopping early while a `while_found` selector still
+ * matches. It does not nest, its inner steps count against the same
+ * 20-step ceiling, and each iteration starts with a FRESH implicit
+ * target — so nothing leaks across an iteration or across the repeat
+ * boundary in either direction.
+ *
+ * Cancellation is cooperative and lives entirely in this loop: the caller
+ * injects `deps.shouldCancel`, and the runner checks it before dispatching
+ * anything — at the top of every top-level step, at the top of every
+ * repeat iteration, and before every inner step of a repeat body. That is
+ * what makes the advertised worst-case latency ONE STEP real rather than
+ * aspirational, and it is why cancelling means "do not dispatch step N+1"
+ * instead of "interrupt whatever is in flight" (an in-flight CDP command
+ * cannot be un-sent). A cancelled flow is a SUCCESS carrying
+ * `stopped_by: 'cancelled'` and every result it collected — the actions
+ * really happened, so reporting them as an error, or dropping them, would
+ * both be lies.
  *
  * Deliberately decoupled from any specific transport: every side effect
  * goes through the `FlowDeps` the caller injects. The concrete wiring —
@@ -45,8 +49,8 @@
  * fails with the same unsupported-transport error the standalone
  * `browser.drag` returns on a `cdp:` tab.
  */
-import type { Clock } from './clock.js';
-import type { ExpectMet, ExpectParams } from '../generated/core/support/expect.js';
+import type { Clock } from '../ports/clock.js';
+import type { ExpectMet, ExpectParams } from '../support/expect.js';
 
 /** Structured success/failure outcome shared by every perform* function
  * (`background.ts` in the extension, `cdp/transport.ts` on the server).

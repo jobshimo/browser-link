@@ -79,15 +79,6 @@ import {
   resolveExpectParams,
   verifyExpect,
   type ExpectParams,
-} from '@browser-link/core';
-import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
-import { systemClock } from './adapters/system-clock.js';
-import {
-  captureAround,
-  createDownloadCapture,
-  type TabDownloadSignals,
-} from './download-capture.js';
-import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
   notClickableMessage,
@@ -107,7 +98,14 @@ import {
   type PressStepResult,
   type TypeStepResult,
   type WaitForStepResult,
-} from './flow.js';
+} from '@browser-link/core';
+import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
+import { systemClock } from './adapters/system-clock.js';
+import {
+  captureAround,
+  createDownloadCapture,
+  type TabDownloadSignals,
+} from './download-capture.js';
 import {
   MAX_DETACHED_FLOW_MS,
   appendFlowHistory,
@@ -390,7 +388,7 @@ interface TabState {
    * ever outstanding — same single-slot pattern the IPC bridge's
    * `settings.push` uses. */
   pendingFlowSave?: (result: { ok: true } | { ok: false; error: string }) => void;
-  /** Host mirror of the page observer (see observer-host.ts). Present from
+  /** Host mirror of the page observer (see core's support/observer-host.ts). Present from
    * `connectTab` on; `installed` stays false when the install commands
    * failed, and actions then report `settle.changes: null`. */
   observer?: ObserverMirror;
@@ -1066,7 +1064,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Run the shared post-action settle wait for a tab. Thin closure binder
- * over `settleSafely` (see settle.ts) — which is guaranteed not to throw,
+ * over `settleSafely` (see core's support/settle.ts) — which is guaranteed not to throw,
  * so an action that navigated the page (destroying the settle expression's
  * execution context) still returns ok:true with a degraded settle object
  * instead of flipping the whole response to ok:false. */
@@ -1483,7 +1481,7 @@ async function uninstallObserver(state: TabState): Promise<void> {
 
 /**
  * Dispatch the CDP `Input.dispatchKeyEvent` sequence for one resolved key.
- * The event shapes come from `buildKeyEventSequence` (keymap.ts) — pure and
+ * The event shapes come from `buildKeyEventSequence` (core's support/keymap.ts) — pure and
  * unit-tested there; this wrapper only feeds them to chrome.debugger. This
  * is the ONLY path in this extension that produces `isTrusted: true`
  * keyboard events — see browser.press's doc block for why that matters
@@ -1862,14 +1860,14 @@ type TypeResolveResult =
   | RefResolveFailure;
 
 /** A `ref` target the page could not resolve — see `resolveTarget` in
- * `inpage/builders.ts`; `refFailureMessage` (flow.ts) turns it into the
+ * `inpage/builders.ts`; `refFailureMessage` (core's flow/flow-engine.ts) turns it into the
  * error string. */
 type RefResolveFailure =
   | { ok: false; reason: 'ref-stale'; ref: string; doc_id?: string }
   | { ok: false; reason: 'observer-unavailable' };
 
 /** The target of a type / press did not take focus — see `FOCUS_REFUSAL_JS`
- * in `inpage/builders.ts`; `notFocusedMessage` (flow.ts) gives the error. */
+ * in `inpage/builders.ts`; `notFocusedMessage` (core's flow/flow-engine.ts) gives the error. */
 type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
 
 /** Result shape of `buildFocusJs` with a `ref` (with a selector it is
@@ -1909,7 +1907,7 @@ function armTabLoadWait(tabId: number): ReturnType<typeof armLoadWait> {
  * cases in `handleTool` below.
  *
  * Both the standalone `case` handlers AND `browser.flow`'s step executor
- * (`runFlow` in `./flow.js`) call these exact functions — there is one
+ * (`runFlow` in core's `flow/flow-engine.ts`) call these exact functions — there is one
  * implementation of each action, never a copy that can drift. Each
  * returns an `ActionOutcome<T>` (`{ok:true,result} | {ok:false,error}`)
  * instead of a wire-level `tool.response`, so the two call sites can

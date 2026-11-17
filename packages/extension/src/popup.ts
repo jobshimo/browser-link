@@ -1,8 +1,7 @@
 // idle-settings.ts IS shared with popup.ts (unlike the runtime-message shapes
 // mirrored below) — both entrypoints compile to sibling files under dist/,
-// so a plain relative import works the same way background.ts already
-// imports settle.js/keymap.js.
-import { IDLE_TTL_NEVER } from '@browser-link/core';
+// so a plain relative import works, exactly as it does for background.ts.
+import { IDLE_TTL_NEVER, type FlowStep } from '@browser-link/core';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
   LEGACY_IDLE_TTL_STORAGE_KEY,
@@ -31,7 +30,6 @@ import {
   noticeShortLineParts,
   shouldShowNoticeBeforeConnect,
 } from './notice-policy.js';
-import type { FlowStep } from './flow.js';
 import type { Messages } from './i18n.js';
 import { startUiLanguage } from './ui-language.js';
 import { renderWorkerText } from './worker-messages.js';

@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
-import { systemClock } from './adapters/system-clock.js';
-import { HIT_CHECK_FRAME_NOTE } from '@browser-link/core';
+import type { Clock } from '../ports/clock.js';
+import { HIT_CHECK_FRAME_NOTE } from '../inpage/builders.js';
 import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
@@ -17,7 +17,30 @@ import {
   type FlowStep,
   type PressStepResult,
   type TypeStepResult,
-} from './flow.js';
+} from './flow-engine.js';
+
+/** The real clock (`Date.now`, `setTimeout`, `setInterval`): the extension
+ * and server `systemClock` adapters live outside core, which may not import
+ * them, and these sequencing tests run on real time. */
+const systemClock: Clock = {
+  now: () => Date.now(),
+  sleep: (ms) =>
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    }),
+  after: (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    return () => {
+      clearTimeout(timer);
+    };
+  },
+  every: (ms, tick) => {
+    const timer = setInterval(tick, ms);
+    return () => {
+      clearInterval(timer);
+    };
+  },
+};
 
 /**
  * Sequencing tests for `runFlow`. Every dependency is a fake — no CDP, no

@@ -1,3 +1,4 @@
+// GENERATED from packages/core/src/flow/flow-engine.ts. Do not edit.
 /**
  * browser.flow step sequencing — the logic behind the composite action
  * tool. Runs a short, declarative list of find/click/type/press/wait_for/
@@ -49,8 +50,8 @@
  * fails with the same unsupported-transport error the standalone
  * `browser.drag` returns on a `cdp:` tab.
  */
-import type { Clock } from './clock.js';
-import type { ExpectMet, ExpectParams } from '@browser-link/core';
+import type { Clock } from '../ports/clock.js';
+import type { ExpectMet, ExpectParams } from '../support/expect.js';
 
 /** Structured success/failure outcome shared by every perform* function
  * (`background.ts` in the extension, `cdp/transport.ts` on the server).

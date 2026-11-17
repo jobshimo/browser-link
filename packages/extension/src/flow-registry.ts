@@ -39,8 +39,7 @@
  * here.
  */
 
-import type { FlowProgress, FlowResult } from './flow.js';
-import { utf8ByteLength } from '@browser-link/core';
+import { utf8ByteLength, type FlowProgress, type FlowResult } from '@browser-link/core';
 
 /** How many completed flows are kept per tab. Small on purpose — this is a
  * "what just happened on this tab" panel in a 320px-wide popup, not a log. */
