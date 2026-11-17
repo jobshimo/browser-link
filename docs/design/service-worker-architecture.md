@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 5. Revision 1 (`5486e34`) was audited as
+Status: revision 6. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,14 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 6 (2026-11-17)
+
+Found while building slice 5b-1 (5.1 `expect.ts` row updated):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `beginExpect` also takes a required `clock: Clock`, passed `systemClock` at the same three `perform*` call sites on each side | it calls `withProbeTimeout` too, which now runs on `clock.after` |
 
 ### Revision 5 (2026-11-17)
 
@@ -749,7 +757,7 @@ in both copies' callers in the same PR (N4):
 | `flow-registry.ts` | `measureJsonBytes` uses `new TextEncoder()` | 5b-2: `utf8ByteLength(s)`, a pure UTF-8 byte count, created directly in core as `support/utf8.ts`; a test asserts it equals `new TextEncoder().encode(s).length` for ASCII, CJK, emoji and lone surrogates (encoded as U+FFFD, 3 bytes) |
 | `idle-policy.ts` | storage keys (`CONSOLE_IDLE_TTL_STORAGE_KEY`, legacy keys), storage parsing (`effectiveIdleTtlMinutes`, `legacyIdleChoice`, `parseIncomingSettings`, `shouldAcceptIncomingSettings`) and CLI copy (`idleTtlCommand`) mixed with the rules; imports `MAX_DETACHED_FLOW_MS` from `flow-registry` | 5b-2: rules (`clampIdleTtlMinutes`, `shouldDisconnectForIdle`, `idleHoldUntil`, `activityAfterFlowEnded`, `tabsToDisconnectForIdle`, `shouldScheduleIdleSweep` and the limits) are created directly in core as `policies/idle-rules.ts`; the rest becomes extension `idle-settings.ts`; `MAX_DETACHED_FLOW_MS` moves to core `support/flow-limits.ts`, which `flow-registry` re-exports |
 | `flow.ts` (and server `cdp/flow.ts`) | `pause` calls `setTimeout`; `haltReason` and `pause` read `deps.now ?? Date.now` | 5b-1: `FlowDeps` takes a required `clock: Clock` instead of `now?`; `pause` uses `clock.sleep`. Callers: extension `buildFlowDeps`, server `transport.ts` `buildCdpFlowDeps` and the `deadlineAt` spread around it |
-| `expect.ts` (and server `cdp/expect.ts`) | `realClock` default (`Date.now`, `setTimeout`); `withProbeTimeout` uses `setTimeout`/`clearTimeout` | 5b-1: `ExpectClock` becomes `Clock`, `verifyExpect`'s `clock` parameter becomes required and `realClock` is deleted; `withProbeTimeout` uses `clock.after`. Callers: `performClick`, `performType`, `performPress` in both `background.ts` and `transport.ts` |
+| `expect.ts` (and server `cdp/expect.ts`) | `realClock` default (`Date.now`, `setTimeout`); `withProbeTimeout` uses `setTimeout`/`clearTimeout` | 5b-1: `ExpectClock` becomes `Clock`, `verifyExpect`'s `clock` parameter becomes required and `realClock` is deleted; `withProbeTimeout` uses `clock.after`, so `beginExpect` takes a required `clock` too (revision 6). Callers: `performClick`, `performType`, `performPress` in both `background.ts` and `transport.ts` |
 
 **How the `Clock` type reaches both copies in 5b-1.** The import lines of
 `flow.ts` and `expect.ts` are inside the full-body comparison, so both copies
