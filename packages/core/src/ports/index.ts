@@ -1,11 +1,12 @@
 // The ports: core's vocabulary, the bottom layer (5.2). Types only. The
-// store and events-out ports land when the types they speak move into core
-// (slice 17).
+// events-out port lands with the slice that moves the event it carries.
 
 export type { Clock } from './clock.js';
 export type { CdpSession } from './cdp-session.js';
 export type { ContentSettings } from './content-settings.js';
+export type { DetachedFlowStore } from './detached-flow-store.js';
 export type { Downloads } from './downloads.js';
+export type { FlowHistoryStore } from './flow-history-store.js';
 export type {
   CdpEvents,
   DialogInput,
@@ -27,9 +28,14 @@ export type {
   CaptureOutcome,
   CaptureParams,
   CapturedDownload,
+  DetachedFlowRecord,
   DownloadSettleOutcome,
   DragEventParams,
   EvaluateFn,
+  FlowHistoryEntry,
+  FlowOutcome,
+  FlowState,
+  FlowStopReason,
   KeyEvent,
   LayoutMetrics,
   LoadWait,

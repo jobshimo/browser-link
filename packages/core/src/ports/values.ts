@@ -188,3 +188,94 @@ export type CaptureActOutcome = { ok: true } | { ok: false; error: string };
 /** A capture's answer: how its wait ended, or the failed action's error. */
 export type CaptureAroundResult =
   { ok: true; outcome: CaptureOutcome } | { ok: false; error: string };
+
+// Slice 17 adds the persisted flow values: what `FlowHistoryStore` and
+// `DetachedFlowStore` hold. Their fields are the stored format in the
+// extension's `chrome.storage.session`; core's `flow/` parses and bounds them.
+
+/** How a finished flow ended. */
+export type FlowOutcome = 'completed' | 'cancelled' | 'failed' | 'expired';
+
+/** Why a flow was told to stop. A fixed vocabulary — it reaches both the
+ * popup (as a history label) and the agent (as `stopped_by`), so it can
+ * never carry free text. */
+export type FlowStopReason = 'cancelled' | 'expired' | 'worker-terminated';
+
+/** Lifecycle state of a flow as `browser.flow_status` reports it.
+ * `'unknown'` is the answer for an id this worker has no record of — a
+ * flow that finished before the last service-worker restart, a synchronous
+ * flow that already returned, or an id that never existed. Deliberately a
+ * state rather than an error, for the same reason cancelling an unknown id
+ * is a no-op: the caller asked "what is this doing?", and "nothing I know
+ * of" is a truthful answer, not a failure. */
+export type FlowState = 'running' | 'completed' | 'cancelled' | 'failed' | 'expired' | 'unknown';
+
+/** A finished flow in a tab's history. Every field is a number, an id or a
+ * fixed enum: UI STRUCTURE AND OUTCOMES ONLY, never page text, a selector,
+ * typed input or a failure message (the privacy contract of
+ * `flow/flow-history.ts`). */
+export interface FlowHistoryEntry {
+  flowId: string;
+  startedAt: number;
+  durationMs: number;
+  outcome: FlowOutcome;
+  /** Top-level steps the flow was asked to run. */
+  steps: number;
+  /** Top-level steps that actually completed. */
+  stepsCompleted: number;
+  /** Total completed repeat iterations across every `repeat` step in the
+   * flow. Omitted when the flow had no `repeat` — "0 iterations" would
+   * read as a failed loop rather than as "there was no loop". */
+  iterationsCompleted?: number;
+  /** 0-based index of the step that failed, for `failed` outcomes. */
+  failedStep?: number;
+  /** Step KIND of the failing step ('click', 'wait_for', …). A fixed
+   * vocabulary, never page-derived text. */
+  failedStepKind?: string;
+  /** The flow ran detached. Worth a badge in the panel: a detached entry is
+   * work the browser did with nobody watching. */
+  detached?: true;
+  /** Why it stopped, when that is not obvious from `outcome` alone — a
+   * `failed` entry reads very differently once you know the service worker
+   * was killed under it rather than a step going wrong. */
+  stoppedBy?: FlowStopReason;
+}
+
+/**
+ * The durable record of one detached flow — what `browser.flow_status`
+ * answers from once the flow is no longer in the live registry, and what
+ * makes MV3 service-worker termination detectable at all.
+ *
+ * Written twice per flow and no more: once at launch (`state: 'running'`)
+ * and once when it ends. There is deliberately NO per-step write — a
+ * 200-iteration flow would otherwise hammer the store hundreds of times to
+ * keep a progress counter warm that the live registry already holds for
+ * free.
+ */
+export interface DetachedFlowRecord {
+  flowId: string;
+  /** Chrome tab id. The server stamps the browser-link `tab_id` onto the
+   * status payload itself — the extension only ever knows this one. */
+  tabId: number;
+  state: Exclude<FlowState, 'unknown'>;
+  startedAt: number;
+  endedAt?: number;
+  /** Top-level step count the flow was launched with. */
+  steps: number;
+  stepsCompleted: number;
+  iterationsCompleted?: number;
+  stoppedBy?: FlowStopReason;
+  /** The flow failure message. Page-derived free text — agent-facing only,
+   * never rendered in the popup. */
+  error?: string;
+  /** The action manifest: `runFlow`'s `results[]`, verbatim. Absent while
+   * the flow is still running (the runner holds them until it returns) and
+   * when `manifestTruncated` is set. */
+  manifest?: unknown[];
+  manifestTruncated?: true;
+  /** The one-per-flow summary `bridge.event` has not reached the server
+   * yet — either the socket was closed when the flow ended, or the record
+   * was only reconciled at worker start, when no tab is connected. Flushed
+   * on that tab's next registration. */
+  eventPending?: true;
+}

@@ -20,8 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // here = packages/server/src/cdp
-const EXT_ROOT = join(here, '..', '..', '..', 'extension', 'src');
-// The detached-flow ceiling lives in core since slice 5b-2 (flow-registry.ts re-exports it).
+// The detached-flow ceiling lives in core since slice 5b-2, the record bounds
+// since slice 17 (`flow/detached-flows.ts`).
 const CORE_ROOT = join(here, '..', '..', '..', 'core', 'src');
 const SRV_ROOT = here;
 const SRV_TOOLS = join(here, '..', 'tools');
@@ -79,26 +79,26 @@ describe('manually-synced constant drift guard: the detached-flow ceiling', () =
   });
 
   test('the manifest byte ceiling is the same on both transports', () => {
-    const extension = numericConstant(
-      read(join(EXT_ROOT, 'flow-registry.ts')),
+    const core = numericConstant(
+      read(join(CORE_ROOT, 'flow', 'detached-flows.ts')),
       'MAX_DETACHED_MANIFEST_BYTES',
     );
     const cdp = numericConstant(
       read(join(SRV_ROOT, 'detached-flows.ts')),
       'MAX_DETACHED_MANIFEST_BYTES',
     );
-    expect(cdp).toBe(extension);
+    expect(cdp).toBe(core);
   });
 
   test('the finished-record cap is the same on both transports', () => {
-    const extension = numericConstant(
-      read(join(EXT_ROOT, 'flow-registry.ts')),
+    const core = numericConstant(
+      read(join(CORE_ROOT, 'flow', 'detached-flows.ts')),
       'MAX_DETACHED_FLOW_RECORDS',
     );
     const cdp = numericConstant(
       read(join(SRV_ROOT, 'detached-flows.ts')),
       'MAX_DETACHED_FLOW_RECORDS',
     );
-    expect(cdp).toBe(extension);
+    expect(cdp).toBe(core);
   });
 });

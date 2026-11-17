@@ -14,9 +14,7 @@ import {
   withValuesHiddenNote,
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
-  idleHoldUntil,
   shouldScheduleIdleSweep,
-  type IdleFlowHold,
   idleTabs,
   sessionCaptureWatch,
   sessionDialogWatch,
@@ -42,6 +40,14 @@ import {
   type FlowDeps,
   type FlowResult,
   type FlowStep,
+  MAX_DETACHED_FLOW_MS,
+  createFlowHistory,
+  createFlowRegistry,
+  toFlowStatus,
+  type DetachedFlowRecord,
+  type FlowHistoryEntry,
+  type FlowStatusPayload,
+  type RunningFlowView,
 } from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
@@ -49,6 +55,8 @@ import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
 import { createChromePageInfo } from './adapters/chrome-page-info.js';
 import { createChromeContentSettings } from './adapters/chrome-content-settings.js';
 import { createChromeDownloads } from './adapters/chrome-downloads.js';
+import { chromeFlowHistoryStore } from './adapters/chrome-flow-history-store.js';
+import { chromeDetachedFlowStore } from './adapters/chrome-detached-flow-store.js';
 import {
   closeTabConnection,
   debuggerIntake,
@@ -61,29 +69,6 @@ import {
   type TabEventListener,
 } from './app/tab-connection.js';
 import { createDownloadCapture } from './download-capture.js';
-import {
-  MAX_DETACHED_FLOW_MS,
-  appendFlowHistory,
-  createFlowRegistry,
-  detachedFlowKey,
-  detachedFlowRecordsToEvict,
-  finishedDetachedFlowRecord,
-  flowHistoryKey,
-  flowIdFromDetachedFlowKey,
-  minimalDetachedFlowRecord,
-  parseDetachedFlowRecord,
-  parseFlowHistory,
-  startedDetachedFlowRecord,
-  terminatedDetachedFlowRecord,
-  terminatedFlowHistoryEntry,
-  toFlowStatus,
-  toHistoryEntry,
-  type DetachedFlowRecord,
-  type FlowHistoryEntry,
-  type FlowRegistryEntry,
-  type FlowStatusPayload,
-  type RunningFlowView,
-} from './flow-registry.js';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
   effectiveIdleTtlMinutes,
@@ -639,32 +624,21 @@ chrome.windows.onRemoved.addListener((closedId) => {
   if (closedId === adminWindowId) adminWindowId = null;
 });
 
-/**
- * Every `browser.flow` currently running in this service worker, across
- * every connected tab. This is the whole basis of the kill switch: the
- * runner polls `cancelled` off an entry here before each step, so stopping
- * a flow means flipping one boolean and letting the loop decline to
- * dispatch step N+1 — never interrupting an in-flight CDP command.
- *
- * Lives in the service worker's memory ON PURPOSE. If Chrome terminates
- * the worker mid-flow the flow dies with it, the entry goes with it, and
- * the popup shows nothing running — which is the truth. A registry that
- * survived the worker would have to describe flows that no longer exist.
- *
- * A DETACHED flow additionally leaves a `detached-flow:<id>` record in
- * `chrome.storage.session` (see `flow-registry.ts`), which is a different
- * thing entirely: not a live registry, but the paper trail that lets
- * `recoverDetachedFlows` below notice a worker termination and report it
- * as `failed` / `worker-terminated` instead of leaving a phantom.
- */
-const flowRegistry = createFlowRegistry();
+/** Every `browser.flow` running in this worker (core `FlowRegistry`): the
+ * kill switch, the foreground deadlines and the popup's running list. */
+const flowRegistry = createFlowRegistry(systemClock);
 
-/** The server's deadline of each running FOREGROUND flow, by flow id: the
- * bound of its hold on the tab's idle clock (owner decision D1, see
- * `idleHoldUntil`). A detached flow's bound is its registry `expiresAt`.
- * In memory with the registry, so it dies with the worker exactly as the
- * flows it describes do. */
-const foregroundFlowDeadlines = new Map<string, number>();
+/** What outlives a flow (core `FlowHistory`): each tab's history and the
+ * detached flows' records in `chrome.storage.session`, written in order. */
+const flowHistory = createFlowHistory({
+  history: chromeFlowHistoryStore,
+  detached: chromeDetachedFlowStore,
+  clock: systemClock,
+  publish: publishFlowFinished,
+  onRecordLost: (flowId) => {
+    console.warn('browser-link: detached-flow terminal record not persisted', flowId);
+  },
+});
 
 /** Fallback id for a `browser.flow` that arrived without one (a server
  * older than this extension). `crypto.randomUUID` is available in the MV3
@@ -681,16 +655,8 @@ async function getFlowsStatus(
   tabId: number,
 ): Promise<{ running: RunningFlowView[]; history: FlowHistoryEntry[] }> {
   const running = flowRegistry.listRunning(Date.now());
-  let history: FlowHistoryEntry[] = [];
-  try {
-    const key = flowHistoryKey(tabId);
-    const data = await chrome.storage.session.get(key);
-    history = parseFlowHistory(data[key]);
-  } catch {
-    // Session storage unavailable — show the running half rather than
-    // failing the whole panel.
-  }
-  return { running, history };
+  // Session storage unavailable: the running half rather than no panel.
+  return { running, history: await flowHistory.entries(tabId) };
 }
 
 /** Per-tab `chrome.tabs.onUpdated` listener installed while that tab is
@@ -925,12 +891,20 @@ async function handleFlow(
     }
   }
 
+  // The server's time budget for a FOREGROUND flow, as a relative
+  // duration (no shared clock). A detached flow has its own ceiling, so
+  // the field is ignored there.
+  const deadlineAt =
+    !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
+      ? Date.now() + Math.max(0, p.deadline_ms)
+      : undefined;
   const entry = flowRegistry.register({
     flowId,
     tabId,
     steps: rawSteps.length,
     detached: detach,
     ...(detach ? { expiresAt: Date.now() + MAX_DETACHED_FLOW_MS } : {}),
+    ...(deadlineAt === undefined ? {} : { foregroundDeadlineAt: deadlineAt }),
   });
   // Best effort and deliberately not awaited: the title is only there so
   // the popup can tell two concurrent flows apart, and no flow should pay
@@ -948,14 +922,6 @@ async function handleFlow(
   // `expired` the first time the deadline has passed, so the outcome
   // distinguishes "ran out of time" from "someone pressed Stop".
   const shouldCancel = (): boolean => flowRegistry.shouldStop(flowId, Date.now());
-  // The server's time budget for a FOREGROUND flow, as a relative
-  // duration (no shared clock). A detached flow has its own ceiling, so
-  // the field is ignored there.
-  const deadlineAt =
-    !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
-      ? Date.now() + Math.max(0, p.deadline_ms)
-      : undefined;
-  if (deadlineAt !== undefined) foregroundFlowDeadlines.set(flowId, deadlineAt);
   // A `wait_for` poll loop only knows this one flag, so it must also
   // trip at the deadline or a 30s wait would sail past the bridge timeout.
   // The runner itself keeps the two causes apart (`shouldCancel` alone is
@@ -979,7 +945,7 @@ async function handleFlow(
     // slice exists to make impossible. A record that will not store is
     // therefore a refusal, not a warning: nothing has run yet, and that is
     // the only moment refusing is still free.
-    if (!(await persistLaunchRecord(entry))) {
+    if (!(await flowHistory.persistLaunch(entry))) {
       flowRegistry.finish(flowId);
       return {
         kind: 'tool.response',
@@ -1058,7 +1024,7 @@ async function handleFlowStatus(
     return { kind: 'tool.response', id: msg.id, ok: false, error: 'flow_status: flow_id required' };
   }
   const entry = flowRegistry.get(flowId);
-  const record = entry ? undefined : await readDetachedFlowRecord(flowId);
+  const record = entry ? undefined : await flowHistory.record(flowId);
   const status: FlowStatusPayload = toFlowStatus(flowId, entry, record);
   return { kind: 'tool.response', id: msg.id, ok: true, result: status };
 }
@@ -1095,94 +1061,16 @@ function buildFlowDeps(
   };
 }
 
-/** Serializes EVERY flow-related `chrome.storage.session` mutation —
- * history appends, detached-record writes, and the history drop when a tab
- * closes. Appending is a read-modify-write over an async store, so two
- * flows on the same tab finishing microseconds apart would otherwise both
- * read the same list and the second `set` would drop the first's entry;
- * and a tab-removal delete OUTSIDE the chain could be overtaken by a
- * still-running flow's late append, resurrecting the key it just dropped.
- * One global chain (rather than one per tab or one per concern) is enough:
- * these writes happen a handful of times per flow, never in a hot path. */
-let flowStorageWrites: Promise<void> = Promise.resolve();
-
-/** Append one unit of work to the serialized chain. Swallows failures so a
- * single storage error cannot poison every later write — the session store
- * dies with the browser anyway, so a lost entry is not worth surfacing. */
-function queueFlowStorageWrite(work: () => Promise<void>): Promise<void> {
-  flowStorageWrites = flowStorageWrites.then(work).catch(() => {
-    // Best effort, and the chain must survive.
-  });
-  return flowStorageWrites;
-}
-
-/** Same chain, but the caller learns whether the write landed. A lost
- * detached-flow record is not a lost entry: the launch record is a flow's
- * only evidence, and a lost terminal write leaves a stale `running` record
- * the next worker start reads as an orphan. The rejection is converted to
- * `false`, never rethrown, so the chain survives as it does above. */
-function queueTrackedFlowStorageWrite(work: () => Promise<void>): Promise<boolean> {
-  const tracked = flowStorageWrites.then(work).then(
-    () => true,
-    () => false,
-  );
-  flowStorageWrites = tracked.then(() => undefined);
-  return tracked;
-}
-
-/** Chrome tab ids whose flow history has been dropped because the tab
- * closed, and WHEN. Chrome reuses tab ids within a session, so the
- * timestamp matters: a flow that started before the removal belongs to the
- * tab that is gone and must not be written back (that is the resurrection
- * the serialized chain alone cannot prevent, since the late write is
- * queued after the delete); a flow that started after it belongs to
- * whatever tab holds the id now. Cleared when a tab connects under the id
- * again, so this never grows past live-plus-recently-closed tabs. */
-const flowHistoryDroppedAt = new Map<number, number>();
-
-/** Retire a finished flow: drop it from the in-flight registry, prepend its
- * outcome to the tab's session-scoped history, and — for a detached flow —
- * finalize its record and emit the one-per-flow audit event. Never throws:
- * a storage failure must not turn a completed flow into a failed tool call,
- * and for a detached flow there is no caller left to fail anyway. */
+/** Retire a finished flow: drop it from the registry, restart its tab's
+ * idle window from its end (owner decision D1), and hand it to the history.
+ * Never throws: a storage failure must not turn a completed flow into a
+ * failed tool call, and a detached flow has no caller left to fail. */
 function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
-  foregroundFlowDeadlines.delete(flowId);
   const entry = flowRegistry.finish(flowId);
   if (!entry) return;
   const endedAt = Date.now();
-  // Owner decision D1: the flow's steps were the tab's activity, so the
-  // idle window restarts from its last step whatever the outcome.
   tabConnections.get(entry.tabId)?.session.flowEnded(endedAt);
-  const droppedAt = flowHistoryDroppedAt.get(entry.tabId);
-  // Skip the append entirely for a tab that has already been removed — see
-  // `flowHistoryDroppedAt`. Ordering on the chain is not enough on its own,
-  // because this write is queued AFTER the delete was.
-  if (droppedAt === undefined || droppedAt <= entry.startedAt) {
-    appendFlowHistoryEntry(entry.tabId, toHistoryEntry(entry, result, endedAt));
-  }
-  if (!entry.detached) return;
-  const record = finishedDetachedFlowRecord(entry, result, endedAt);
-  // Exactly ONE summary event per detached flow, pushed here and nowhere
-  // else — never per iteration. `BridgeEventLog` holds 200 entries, so a
-  // single 200-iteration run emitting per-iteration events would silently
-  // evict every other event in the log, which is the opposite of an audit
-  // trail. If the socket is already gone the event is deferred onto the
-  // record and flushed when the tab next registers.
-  if (!publishFlowFinished(entry.tabId, record)) record.eventPending = true;
-  void persistTerminalRecord(record);
-}
-
-/** Prepend one entry to a tab's session-scoped flow history, on the
- * serialized chain (the append is a read-modify-write, so two flows
- * finishing microseconds apart would otherwise lose one). */
-function appendFlowHistoryEntry(tabId: number, historyEntry: FlowHistoryEntry): void {
-  const key = flowHistoryKey(tabId);
-  void queueFlowStorageWrite(async () => {
-    const data = await chrome.storage.session.get(key);
-    await chrome.storage.session.set({
-      [key]: appendFlowHistory(parseFlowHistory(data[key]), historyEntry),
-    });
-  });
+  flowHistory.recordFinished(entry, result, endedAt);
 }
 
 /** Push the one-per-flow summary `bridge.event`. Returns whether it
@@ -1213,157 +1101,6 @@ function publishFlowFinished(tabId: number, record: DetachedFlowRecord): boolean
     },
   });
   return true;
-}
-
-/** Persist one detached-flow record and enforce the record cap. Runs on the
- * serialized chain so a launch write and the matching terminal write can
- * never land out of order. Reports whether THE RECORD landed; the cap sweep
- * that follows is best effort and must not make a stored record look lost. */
-function writeDetachedFlowRecord(record: DetachedFlowRecord): Promise<boolean> {
-  return queueTrackedFlowStorageWrite(async () => {
-    await chrome.storage.session.set({ [detachedFlowKey(record.flowId)]: record });
-    try {
-      const evict = detachedFlowRecordsToEvict(await readAllDetachedFlowRecords());
-      if (evict.length === 0) return;
-      await chrome.storage.session.remove(evict.map((r) => detachedFlowKey(r.flowId)));
-    } catch {
-      // Over the cap until the next write sweeps again.
-    }
-  });
-}
-
-/** Free session-storage quota by dropping every terminal record not still
- * owing its summary event. Only after a rejected write: at that point old
- * manifests are worth less than the launch record of a flow about to act.
- *
- * The sweep is deliberately GLOBAL, not scoped to the launching tab: it can
- * discard a finished flow's manifest that another tab's agent had not read
- * yet. That is the accepted trade. The alternative is refusing the launch,
- * which leaves a flow about to do irreversible work with no record proving
- * it started — and an unread manifest is recoverable by looking at the
- * page, while a missing launch record makes a killed worker undetectable. */
-function pruneDetachedFlowRecords(): Promise<boolean> {
-  return queueTrackedFlowStorageWrite(async () => {
-    const stale = (await readAllDetachedFlowRecords()).filter(
-      (r) => r.state !== 'running' && r.eventPending !== true,
-    );
-    if (stale.length === 0) return;
-    await chrome.storage.session.remove(stale.map((r) => detachedFlowKey(r.flowId)));
-  });
-}
-
-/** Write the launch record and prove it landed, pruning old manifests and
- * retrying ONCE when storage refuses (the plausible refusal is a quota one:
- * ten records of up to 128 KB against pre-112 Chrome's 1 MB session cap).
- * False means genuinely unstored — the caller must not start the flow. */
-async function persistLaunchRecord(entry: FlowRegistryEntry): Promise<boolean> {
-  const record = startedDetachedFlowRecord(entry);
-  if (await writeDetachedFlowRecord(record)) return true;
-  await pruneDetachedFlowRecords();
-  return writeDetachedFlowRecord(record);
-}
-
-/** Write the terminal record and prove it landed. The retry STRIPS the
- * manifest instead of repeating the same write: a failed terminal write
- * does not lose an outcome, it invents a wrong one, because the stale
- * `running` record left behind is read as `worker-terminated` next start.
- * If the minimal record is refused too there is nothing left to try. */
-async function persistTerminalRecord(record: DetachedFlowRecord): Promise<void> {
-  if (await writeDetachedFlowRecord(record)) return;
-  if (await writeDetachedFlowRecord(minimalDetachedFlowRecord(record))) return;
-  console.warn('browser-link: detached-flow terminal record not persisted', record.flowId);
-}
-
-/** Read one detached-flow record. Drains the write chain first so a status
- * poll landing microseconds after a flow ended never reports the stale
- * `running` record the launch write left behind. */
-async function readDetachedFlowRecord(flowId: string): Promise<DetachedFlowRecord | undefined> {
-  try {
-    await flowStorageWrites;
-    const key = detachedFlowKey(flowId);
-    const data = await chrome.storage.session.get(key);
-    return parseDetachedFlowRecord(data[key]) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Every detached-flow record currently in session storage. One
- * `get(null)` rather than N keyed reads — the same sweep
- * `resumePendingReconnects` does, and the record set is capped at
- * `MAX_DETACHED_FLOW_RECORDS`. */
-async function readAllDetachedFlowRecords(): Promise<DetachedFlowRecord[]> {
-  let stored: Record<string, unknown>;
-  try {
-    stored = await chrome.storage.session.get(null);
-  } catch {
-    return [];
-  }
-  const records: DetachedFlowRecord[] = [];
-  for (const [key, value] of Object.entries(stored)) {
-    if (flowIdFromDetachedFlowKey(key) === null) continue;
-    const record = parseDetachedFlowRecord(value);
-    if (record) records.push(record);
-  }
-  return records;
-}
-
-/**
- * Reconcile detached-flow records left behind by a service worker Chrome
- * terminated. Runs ONCE per worker start, before anything can register a
- * flow, so every `running` record it finds is by definition orphaned: the
- * loop that owned it lived in the dead worker's memory.
- *
- * The settled rule (see `terminatedDetachedFlowRecord`, and `DECISIONS.md`
- * §13): mark it `failed` / `worker-terminated`, write the history entry,
- * and NEVER resume. A detached flow does irreversible bulk work; resuming
- * one whose real progress died with the worker would double-act on some
- * unknowable prefix of it. Failing loudly is the only honest option, and a
- * flow that looks `running` while nothing executes it is worse than either.
- */
-async function recoverDetachedFlows(): Promise<void> {
-  const now = Date.now();
-  for (const record of await readAllDetachedFlowRecords()) {
-    const terminated = terminatedDetachedFlowRecord(record, now);
-    if (!terminated) continue;
-    void writeDetachedFlowRecord(terminated);
-    appendFlowHistoryEntry(terminated.tabId, terminatedFlowHistoryEntry(terminated));
-  }
-}
-
-/** Flows whose summary event is being flushed right now. `eventPending` is
- * only cleared by a write queued AFTER the event goes out, so two fast
- * reconnects of the same tab can both read the same still-pending record
- * and publish its event twice — an audit trail that double-counts a flow is
- * as wrong as one that drops it. Membership holds from the send until the
- * clearing write settles; a write that failed leaves the flag set, and the
- * next flush legitimately retries. */
-const flushingFlowEvents = new Set<string>();
-
-/** Flush the summary events of any detached flow that ended while this
- * tab's socket was down — including every flow the worker was killed
- * under, whose event could not possibly have been sent at the time (no
- * worker, no socket). Called from the `tab.registered` handler, which is
- * the first moment there is somewhere to send them. */
-async function flushPendingFlowEvents(tabId: number): Promise<void> {
-  // Drain the chain first, as `readDetachedFlowRecord` does: a terminal
-  // record still queued reads as stale `running`, with no event to flush.
-  await flowStorageWrites;
-  for (const record of await readAllDetachedFlowRecords()) {
-    if (record.tabId !== tabId || record.eventPending !== true) continue;
-    if (flushingFlowEvents.has(record.flowId)) continue;
-    flushingFlowEvents.add(record.flowId);
-    if (!publishFlowFinished(tabId, record)) {
-      flushingFlowEvents.delete(record.flowId);
-      return;
-    }
-    const { eventPending: _sent, ...flushed } = record;
-    void writeDetachedFlowRecord(flushed).then((stored) => {
-      // A refused clearing write must keep the flag: storage still says
-      // eventPending, so releasing it here would republish a sent event.
-      if (stored) flushingFlowEvents.delete(record.flowId);
-    });
-  }
 }
 
 async function handleTool(
@@ -1587,8 +1324,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 // Same worker-start slot, same rationale: `chrome.storage.session` outlives
 // the service worker but not the browser, which is exactly the lifetime a
-// detached flow's record should have. See `recoverDetachedFlows`.
-void recoverDetachedFlows();
+// detached flow's record should have: a record still `running` here is a
+// flow the dead worker was running (`FlowHistory.recover`).
+void flowHistory.recover();
 
 /** Connect a tab. The `has` check inside `doConnectTab` alone cannot prevent
  * two concurrent connects — the connection lands only after three awaited
@@ -1620,10 +1358,8 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
   }
 
   // Whatever tab holds this Chrome id now, it is not the closed one whose
-  // history was dropped — so its own flows are free to write history
-  // again. Also what keeps `flowHistoryDroppedAt` from growing past
-  // live-plus-recently-closed tabs.
-  flowHistoryDroppedAt.delete(tabId);
+  // history was dropped — so its own flows are free to write history again.
+  flowHistory.tabConnected(tabId);
 
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !tab.title) {
@@ -1743,7 +1479,7 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
             // summary events of any detached flow that ended while this
             // tab was disconnected, including everything the worker was
             // killed under.
-            void flushPendingFlowEvents(tabId);
+            void flowHistory.flushPendingEvents(tabId);
             // A fingerprint the observer pushed before this registration.
             const docInfo = pendingDocInfoEvent(state.session.driver.observer, msg.payload.tabId);
             if (docInfo) send(ws, docInfo);
@@ -2474,16 +2210,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // The Chrome tab is gone — drop any cached browser-link id for it.
   void forgetTabId(tabId);
   // …and its flow history. Chrome reuses tab ids within a session, so a
-  // stale key would eventually show one tab's flows under another's.
-  //
-  // Two guards, because the delete alone is not enough. Routing it through
-  // the SAME serialized chain as the appends keeps it ordered against
-  // every write already queued; the `flowHistoryDroppedAt` stamp handles
-  // the other half — `cleanup` above only ASKS the tab's flows to stop, so
-  // one of them can still finish (and try to append) after this delete has
-  // run, resurrecting the key for a tab that no longer exists.
-  flowHistoryDroppedAt.set(tabId, Date.now());
-  void queueFlowStorageWrite(() => chrome.storage.session.remove(flowHistoryKey(tabId)));
+  // stale key would eventually show one tab's flows under another's;
+  // `cleanup` above only ASKS the tab's flows to stop, so the drop also
+  // keeps them from writing it back (`FlowHistory.dropTab`).
+  flowHistory.dropTab(tabId);
 });
 
 /* Auto-connect tabs spawned by a connected tab.
@@ -2596,15 +2326,7 @@ setInterval(() => {
   // Owner decision D1: a tab with a flow running is not idle. Its steps run
   // here in the worker and never arrive as tool.request, so the registry is
   // what says the tab is busy, up to each flow's own maximum duration.
-  const holds: IdleFlowHold[] = [];
-  for (const view of flowRegistry.listRunning(now)) {
-    const entry = flowRegistry.get(view.flowId);
-    if (!entry) continue;
-    holds.push({
-      tabId: entry.tabId,
-      holdUntil: idleHoldUntil(entry, foregroundFlowDeadlines.get(entry.flowId)),
-    });
-  }
+  const holds = flowRegistry.idleHolds();
   // BL-EXT-098: a call still running holds its tab too (`TabSession.idleCandidate`).
   const sessions = [...tabConnections].map(([tabId, conn]) => [tabId, conn.session] as const);
   for (const tabId of idleTabs(sessions, holds, now, idleTtlMinutesCache)) {

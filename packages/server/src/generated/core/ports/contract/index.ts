@@ -1,7 +1,7 @@
 // GENERATED from packages/core/src/ports/contract/index.ts. Do not edit.
 // The port contract suite (5.3, item 5) and the in-memory fakes it runs
-// against. The store contracts land with slice 17; the outcome-mapping
-// contract speaks `ToolOutcome`, so it lives in `tools/` (slice 10).
+// against. The outcome-mapping contract speaks `ToolOutcome`, so it lives
+// in `tools/` (slice 10).
 
 export {
   check,
@@ -19,6 +19,12 @@ export {
 } from './content-settings.contract.js';
 export { defineDialogInputContract, type DialogInputHarness } from './dialog-input.contract.js';
 export { defineDownloadsContract, type DownloadsHarness } from './downloads.contract.js';
+export {
+  defineDetachedFlowStoreContract,
+  defineFlowHistoryStoreContract,
+  type DetachedFlowStoreHarness,
+  type FlowHistoryStoreHarness,
+} from './flow-stores.contract.js';
 export { defineDragInputContract, type DragInputHarness } from './drag-input.contract.js';
 export { defineKeyboardContract, type KeyboardHarness } from './keyboard.contract.js';
 export { defineNavigatorContract, type NavigatorHarness } from './navigator.contract.js';
@@ -37,11 +43,15 @@ export {
   createManualClock,
   createMemoryCdpSession,
   createMemoryContentSettings,
+  createMemoryDetachedFlowStore,
   createMemoryDownloads,
+  createMemoryFlowHistoryStore,
   createMemoryPageInfo,
   type ManualClock,
   type MemoryCdpSession,
   type MemoryContentSettings,
+  type MemoryDetachedFlowStore,
   type MemoryDownloads,
+  type MemoryFlowHistoryStore,
   type MemoryPageInfo,
 } from './fakes.js';
