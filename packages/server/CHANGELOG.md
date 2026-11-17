@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.5](https://github.com/jobshimo/browser-link/compare/v1.3.4...v1.3.5) (2026-11-17)
+
+### Bug Fixes
+
+- **tests:** the real-Chrome e2e suite now covers `navigate`, `state`, `ping`, `screenshot`, `canvas_screenshot`, `console` (including the `warn` level filter), `network` and `network_body`, on Chrome 118 and on stable.
+- **tests:** a settle unit test kept its scheduled mutation inside the settle window when root discovery is slow (settle's quiet clock starts before the root walk, by design).
+
+The product is unchanged.
+
 ## [1.3.4](https://github.com/jobshimo/browser-link/compare/v1.3.3...v1.3.4) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: both fixes below also change the extension.
