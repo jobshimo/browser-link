@@ -24,10 +24,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * The packages mirrored, in order. `shared` joins in slice 5c, when the
- * server's messages.ts becomes a re-export of generated/shared.
+ * The packages mirrored, in order. The server's messages.ts is a re-export
+ * of generated/shared (slice 5c).
  */
-export const MIRRORED_ROOTS = ['core'];
+export const MIRRORED_ROOTS = ['core', 'shared'];
 
 export const GENERATED_DIR = 'packages/server/src/generated';
 const SHARED_SPECIFIER = '@browser-link/shared';

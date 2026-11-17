@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.8](https://github.com/jobshimo/browser-link/compare/v1.4.7...v1.4.8) (2026-11-17)
+
+### Notes
+
+- Slice 5c of the service worker plan; no behaviour change. The server's `messages.ts` no longer hand-copies the wire protocol: it re-exports the types of `packages/shared` through the checked mirror in `packages/server/src/generated/shared`. `scripts/sync-core.mjs` now mirrors core and shared.
+- A test proves the 36 names `messages.ts` exported are still exported as types and that it exports no runtime value.
+- The old byte-for-byte drift guard of the protocol copy is removed, because the mirror check covers it.
+
 ## [1.4.7](https://github.com/jobshimo/browser-link/compare/v1.4.6...v1.4.7) (2026-11-17)
 
 ### Notes

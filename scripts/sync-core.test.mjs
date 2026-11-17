@@ -12,6 +12,7 @@ import {
   expectedMirror,
   GENERATED_DIR,
   isProduction,
+  MIRRORED_ROOTS,
   rewriteSpecifiers,
   writeMirror,
 } from './sync-core.mjs';
@@ -33,6 +34,10 @@ const CORE = {
   'packages/core/src/fitness/layers.ts': 'export const LAYERS = {};\n',
   'packages/core/src/tools/x.ts':
     "import type { Bridge } from '@browser-link/shared';\nexport type { Bridge } from \"@browser-link/shared\";\nimport '@browser-link/shared';\n",
+  'packages/shared/src/index.ts':
+    "export { NOTICE } from './notice.js';\nexport type Bridge = string;\n",
+  'packages/shared/src/notice.ts': "export const NOTICE = 'n';\n",
+  'packages/shared/src/notice.test.ts': "import { it } from 'vitest';\n",
 };
 
 const check = (repo) => diffMirror(expectedMirror(repo), actualMirror(repo));
@@ -72,16 +77,27 @@ test('the shared specifier becomes the relative path of generated/shared/index.j
   assert.equal(rewriteSpecifiers("import { a } from './a.js';", 'x.ts').rewritten, false);
 });
 
+test('core and shared are mirrored (slice 5c)', () => {
+  assert.deepEqual(MIRRORED_ROOTS, ['core', 'shared']);
+});
+
 test('the written mirror holds headers and rewritten specifiers, and passes --check', () => {
   withRepo(CORE, (repo) => {
-    assert.equal(writeMirror(repo), 4);
+    assert.equal(writeMirror(repo), 6);
     const mirror = actualMirror(repo);
     assert.deepEqual([...mirror.keys()].sort(), [
       'core/index.ts',
       'core/ports/clock.ts',
       'core/ports/index.ts',
       'core/tools/x.ts',
+      'shared/index.ts',
+      'shared/notice.ts',
     ]);
+    // Shared files are copied as written: only core files get specifiers rewritten.
+    assert.equal(
+      mirror.get('shared/index.ts'),
+      "// GENERATED from packages/shared/src/index.ts. Do not edit.\nexport { NOTICE } from './notice.js';\nexport type Bridge = string;\n",
+    );
     assert.equal(
       mirror.get('core/ports/clock.ts'),
       '// GENERATED from packages/core/src/ports/clock.ts. Do not edit.\nexport interface Clock {\n  now(): number;\n}\n',
@@ -119,6 +135,30 @@ test('RED: --check reports a missing file', () => {
     writeMirror(repo);
     rmSync(join(repo, GENERATED_DIR, 'core/index.ts'));
     assert.deepEqual(check(repo), ['missing: core/index.ts']);
+  });
+});
+
+test('RED: --check reports a changed byte in a shared file', () => {
+  withRepo(CORE, (repo) => {
+    writeMirror(repo);
+    writeFileSync(join(repo, GENERATED_DIR, 'shared/index.ts'), 'tampered\n');
+    assert.deepEqual(check(repo), ['different: shared/index.ts']);
+  });
+});
+
+test('RED: --check reports a missing shared file', () => {
+  withRepo(CORE, (repo) => {
+    writeMirror(repo);
+    rmSync(join(repo, GENERATED_DIR, 'shared/notice.ts'));
+    assert.deepEqual(check(repo), ['missing: shared/notice.ts']);
+  });
+});
+
+test('RED: --check reports an extra shared file', () => {
+  withRepo(CORE, (repo) => {
+    writeMirror(repo);
+    writeFileSync(join(repo, GENERATED_DIR, 'shared/stale.ts'), 'export {};\n');
+    assert.deepEqual(check(repo), ['extra: shared/stale.ts']);
   });
 });
 
