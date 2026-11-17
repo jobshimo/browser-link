@@ -51,6 +51,33 @@ async function tick(ms = 30): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Waits until the rendered frame satisfies the condition, polling with a
+ * generous deadline. Fixed sleeps are not enough: under load (the whole
+ * suite running in parallel) the effects and ink's throttled render can
+ * take longer than any fixed delay, so a test must wait on what it asserts. */
+async function until(
+  lastFrame: () => string | undefined,
+  condition: (frame: string) => boolean,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition(flat(lastFrame()))) {
+    if (Date.now() > deadline) throw new Error(`frame never met the condition: ${lastFrame()}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Waits for the offer (the registry check answered), presses u and waits for
+ * the preview's question, so nothing is asserted before the screen got there. */
+async function openPreview(view: {
+  stdin: { write: (s: string) => void };
+  lastFrame: () => string | undefined;
+}): Promise<void> {
+  await until(view.lastFrame, (f) => f.includes('1.1.0'));
+  view.stdin.write('u');
+  await until(view.lastFrame, (f) => /Update now?|¿Actualizar ahora?/.test(f));
+}
+
 type RunUpdate = (
   target: string,
   language: 'en' | 'es',
@@ -112,9 +139,7 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
   test('u shows what the update will do (Windows) and touches nothing', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, readPlan, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     const frame = flat(lastFrame());
     expect(readPlan).toHaveBeenCalledOnce();
     expect(run.runUpdate).not.toHaveBeenCalled();
@@ -140,9 +165,7 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
   test('Spanish: the preview on macOS or Linux says nothing will be stopped', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('es', UNIX_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     const frame = flat(lastFrame());
     expect(run.runUpdate).not.toHaveBeenCalled();
     expect(frame).toContain('¿Actualizar a 1.1.0?');
@@ -162,48 +185,48 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
     unmount();
   });
 
-  test('the preview says in use by how many agent sessions when the count was read (D18)', async () => {
-    const cases: ['en' | 'es', number | undefined, string | null, string | null][] = [
-      ['en', 3, 'in use by 3 agent sessions', 'cannot be read'],
-      ['en', 1, 'in use by 1 agent session.', 'agent sessions'],
-      ['en', 0, 'in use by 0 agent sessions', 'cannot be read'],
-      ['es', 3, 'en uso por 3 sesiones de agentes', 'no se puede leer'],
-      ['es', 1, 'en uso por 1 sesión de agente.', 'sesiones de agentes'],
-      ['es', 0, 'en uso por 0 sesiones de agentes', 'no se puede leer'],
-    ];
-    for (const [language, sessions, present, absent] of cases) {
+  // One test per case: each render waits on real ink/effect scheduling, so a
+  // loop of cases in one test shares a single time budget and starves under load.
+  const sessionCases: ['en' | 'es', number | undefined, string | null, string | null][] = [
+    ['en', 3, 'in use by 3 agent sessions', 'cannot be read'],
+    ['en', 1, 'in use by 1 agent session.', 'agent sessions'],
+    ['en', 0, 'in use by 0 agent sessions', 'cannot be read'],
+    ['es', 3, 'en uso por 3 sesiones de agentes', 'no se puede leer'],
+    ['es', 1, 'en uso por 1 sesión de agente.', 'sesiones de agentes'],
+    ['es', 0, 'en uso por 0 sesiones de agentes', 'no se puede leer'],
+  ];
+  test.each(sessionCases)(
+    'the preview says in use by how many agent sessions when the count was read (D18): %s %s',
+    async (language, sessions, present, absent) => {
       const run = controllableRun();
       const plan: UpdatePlan = {
         ...WINDOWS_PLAN,
         server: { kind: 'running', version: '1.0.2', pid: 4242, sessions },
       };
       const { stdin, lastFrame, unmount } = renderScreen(language, plan, run.runUpdate);
-      await tick();
-      stdin.write('u');
-      await tick();
+      await openPreview({ stdin, lastFrame });
       const frame = flat(lastFrame());
       expect(frame).toContain(present);
       if (absent !== null) expect(frame).not.toContain(absent);
       unmount();
-    }
-  });
+    },
+  );
 
-  test('a primary that sent no count keeps the cannot-be-read line, in both languages', async () => {
-    for (const [language, line] of [
-      ['en', 'How many agent sessions use it cannot be read from this console.'],
-      ['es', 'Desde esta consola no se puede leer cuántas sesiones de agentes lo usan.'],
-    ] as const) {
+  test.each([
+    ['en', 'How many agent sessions use it cannot be read from this console.'],
+    ['es', 'Desde esta consola no se puede leer cuántas sesiones de agentes lo usan.'],
+  ] as const)(
+    'a primary that sent no count keeps the cannot-be-read line (%s)',
+    async (language, line) => {
       const run = controllableRun();
       const { stdin, lastFrame, unmount } = renderScreen(language, WINDOWS_PLAN, run.runUpdate);
-      await tick();
-      stdin.write('u');
-      await tick();
+      await openPreview({ stdin, lastFrame });
       const frame = flat(lastFrame());
       expect(frame).toContain(line);
       expect(frame).not.toMatch(/in use by|en uso por/);
       unmount();
-    }
-  });
+    },
+  );
 
   test('a preview that could not read the server says so, with no number', async () => {
     const run = controllableRun();
@@ -212,9 +235,7 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
       { stopsServer: true, server: { kind: 'unreadable' }, otherProcesses: null },
       run.runUpdate,
     );
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     const frame = flat(lastFrame());
     expect(frame).toContain('Could not read whether a browser-link server is running.');
     expect(frame).toContain('The other browser-link processes could not be listed.');
@@ -228,9 +249,7 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
   test('n answers no: nothing runs and the screen is back to the offer', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     stdin.write('n');
     await tick();
     expect(run.runUpdate).not.toHaveBeenCalled();
@@ -240,10 +259,8 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
 
   test('Esc answers no too, and does not leave the screen', async () => {
     const run = controllableRun();
-    const { stdin, onBack, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, onBack, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     stdin.write('\u001B');
     await tick();
     expect(run.runUpdate).not.toHaveBeenCalled();
@@ -254,9 +271,7 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
   test('y runs the update with the exact version the registry reported', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     expect(run.runUpdate).toHaveBeenCalledOnce();
@@ -275,10 +290,8 @@ describe('UpdatesView — D18: say what will happen and ask first', () => {
 describe('UpdatesView — D18: the install can be cancelled', () => {
   test('c cancels the running install; other keys do nothing', async () => {
     const run = controllableRun();
-    const { stdin, onBack, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, onBack, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     stdin.write('\r');
@@ -296,10 +309,8 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
 
   test('two confirmations in the same tick start one install', async () => {
     const run = controllableRun();
-    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     stdin.write('y');
     await tick();
@@ -309,10 +320,8 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
 
   test('leaving the screen during an install aborts it, once', async () => {
     const run = controllableRun();
-    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     expect(run.signal()?.aborted).toBe(false);
@@ -325,10 +334,8 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
 
   test('leaving the screen aborts nothing when no install is running', async () => {
     const run = controllableRun();
-    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     unmount();
     expect(run.runUpdate).not.toHaveBeenCalled();
     expect(run.signal()).toBeNull();
@@ -336,10 +343,8 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
 
   test('leaving the screen after the install finished aborts nothing', async () => {
     const run = controllableRun();
-    const { stdin, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     run.finish({ ...FAILED, ok: true, outcome: 'installed', message: '✓ Installed.' });
@@ -351,9 +356,7 @@ describe('UpdatesView — D18: the install can be cancelled', () => {
   test('Spanish: the running screen names the cancel key', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('es', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     expect(flat(lastFrame())).toContain('Apretá c para cancelar la instalación.');
@@ -365,9 +368,7 @@ describe('UpdatesView — D18: the result says everything, and u is disabled aft
   test('a failed update shows what was stopped, the real error and what to do next', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     run.finish(FAILED);
@@ -387,9 +388,7 @@ describe('UpdatesView — D18: the result says everything, and u is disabled aft
   test('after a finished update u does nothing and is not offered', async () => {
     const run = controllableRun();
     const { stdin, lastFrame, unmount } = renderScreen('en', WINDOWS_PLAN, run.runUpdate);
-    await tick();
-    stdin.write('u');
-    await tick();
+    await openPreview({ stdin, lastFrame });
     stdin.write('y');
     await tick();
     run.finish({
@@ -422,9 +421,7 @@ describe('UpdatesView — D18: the result says everything, and u is disabled aft
         runUpdate={run.runUpdate}
       />,
     );
-    await tick();
-    view.stdin.write('u');
-    await tick();
+    await openPreview(view);
     view.stdin.write('y');
     await tick();
     run.finish({ ...FAILED, message: '✗ La actualización falló: npm error code E404' });

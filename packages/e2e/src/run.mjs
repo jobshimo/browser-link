@@ -218,12 +218,17 @@ async function main() {
   // Two attachment files for the download steps (answered again on every GET:
   // selector mode re-fetches the URL Chrome reported); everything else is the page.
   const frameHtml = readFileSync(FRAME_FILE);
-  const captureHtml = readFileSync(CAPTURE_FILE);
+  const fixtures = {
+    '/frame.html': frameHtml,
+    '/capture.html': readFileSync(CAPTURE_FILE),
+    '/interact.html': readFileSync(join(E2E_DIR, 'pages/interact.html')),
+    '/opened.html': readFileSync(join(E2E_DIR, 'pages/opened.html')),
+  };
   state.http = createServer((q, r) => {
     const path = (q.url ?? '/').split('?')[0];
-    if (path === '/frame.html' || path === '/capture.html') {
+    if (Object.hasOwn(fixtures, path)) {
       r.writeHead(200, { 'content-type': 'text/html' });
-      r.end(path === '/frame.html' ? frameHtml : captureHtml);
+      r.end(fixtures[path]);
       return;
     }
     if (path === '/data.json') {
@@ -493,6 +498,8 @@ async function main() {
   await recorded(() => downloadStressAfterScroll(T, join(dataDir, 'downloads')));
 
   await pageReadAndCapture(T, page);
+
+  await dragPermissionTabsFlows(T, page, cdp);
 
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
@@ -861,6 +868,186 @@ async function pageReadAndCapture(T, page) {
         `level warn gave ${describe(b)}; the line is stored as ${describe(stored)}`,
       { label: 'browser.console.warn' },
     ),
+  );
+}
+
+/**
+ * Drag, permission, tabs and flow control: the tab navigates to
+ * interact.html (an HTML5 draggable card and its drop zone, a button that
+ * opens a new tab, a counter a flow clicks up) and each tool is asserted on
+ * the effect it promises in the page. Every case fails under
+ * E2E_EXPECT_FAIL=<tool>.
+ */
+async function dragPermissionTabsFlows(T, page, cdp) {
+  const nonce = `?n=${String(Date.now())}`;
+  const target = new URL(`interact.html${nonce}`, page).href;
+  const describe = (b) => JSON.stringify(b)?.slice(0, 300);
+  const quiet = { print: false };
+  await call(
+    'browser.navigate',
+    { tab_id: T, url: target },
+    (b) => b?.url === target || `landed on ${describe(b)}`,
+    quiet,
+  );
+
+  // drag: an HTML5 drag of #card onto #zone; the page's drop handler reads
+  // the text the dragstart put in the dataTransfer.
+  let t = now();
+  await call(
+    'browser.drag',
+    { tab_id: T, from_selector: '#card', to_selector: '#zone', duration_ms: 300 },
+    (b) =>
+      (b?.drag_mode === 'html5' && b.from?.selector === '#card' && b.to?.selector === '#zone') ||
+      `result ${describe(b)}`,
+    quiet,
+  );
+  // A string comes back from evaluate as raw text: JSON-encode it to read it.
+  const dropped = await pageValue(
+    T,
+    "JSON.stringify(document.querySelector('#dropped').textContent)",
+  );
+  if (dropped !== 'dropped: e2e-card') {
+    throw new StepFailure('drag', `the page shows ${JSON.stringify(dropped)}, expected a drop`);
+  }
+  stepDone('browser.drag', t);
+
+  // set_permission: the state the page reads through navigator.permissions
+  // follows each call (granted, denied, then back to prompt), for its origin.
+  t = now();
+  const origin = new URL(page).origin;
+  const geolocation = () =>
+    pageValue(
+      T,
+      "navigator.permissions.query({ name: 'geolocation' }).then((s) => JSON.stringify(s.state))",
+    );
+  const before = await geolocation();
+  const read = [];
+  for (const state_ of ['granted', 'denied', 'prompt']) {
+    await call(
+      'browser.set_permission',
+      { tab_id: T, origin, name: 'geolocation', state: state_ },
+      (b) =>
+        (b?.origin === origin &&
+          b.name === 'geolocation' &&
+          b.state === state_ &&
+          b.applied_as === 'location') ||
+        `result ${describe(b)}`,
+      quiet,
+    );
+    read.push(await geolocation());
+  }
+  if (before !== 'prompt' || read.join() !== 'granted,denied,prompt') {
+    throw new StepFailure(
+      'set_permission',
+      `the page read ${String(before)} then ${read.join(' / ')}, expected prompt then granted / denied / prompt`,
+    );
+  }
+  stepDone('browser.set_permission', t);
+
+  // wait_for_tab: a click that opens a new tab; the tool returns that tab,
+  // claimed and connected (ping answers from the opened page).
+  t = now();
+  const opened = new URL(`opened.html${nonce}`, page).href;
+  const [waited] = await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: T, url_substring: 'opened.html', timeout_ms: 15_000 },
+      (b) =>
+        (b?.matched === true &&
+          typeof b.tab_id === 'string' &&
+          b.tab_id !== T &&
+          b.url === opened &&
+          b.claimed === true) ||
+        `result ${describe(b)}`,
+      quiet,
+    ),
+    pageValue(T, "document.querySelector('#open-tab').click(), true"),
+  ]);
+  const N = json(waited).tab_id;
+  let pinged;
+  for (const t0 = now(); now() - t0 < 5_000; await sleep(100)) {
+    pinged = await attempt('browser.ping', { tab_id: N }, 'wait_for_tab');
+    if (!pinged.isError && pinged.body?.title === 'e2e opened tab') break;
+  }
+  if (pinged.isError || pinged.body?.url !== opened || pinged.body?.title !== 'e2e opened tab') {
+    throw new StepFailure('wait_for_tab', `the new tab ${N} answers ${pinged.text.slice(0, 300)}`);
+  }
+  stepDone('browser.wait_for_tab', t);
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  for (const info of targetInfos.filter((i) => i.type === 'page' && i.url === opened)) {
+    await cdp.send('Target.closeTarget', { targetId: info.targetId });
+  }
+
+  // flow_status / flow_cancel: a detached flow clicks #tick every 200 ms;
+  // its status reads running, it is cancelled, its status reads cancelled
+  // with the manifest of what it did, and the counter stops moving.
+  const ticks = () => pageValue(T, "Number(document.querySelector('#ticks').textContent)");
+  const started = json(
+    await call(
+      'browser.flow',
+      {
+        tab_id: T,
+        detach: true,
+        steps: [
+          {
+            repeat: {
+              max_iterations: 200,
+              delay_ms: 200,
+              steps: [{ click: { selector: '#tick', settle_ms: 0 } }],
+            },
+          },
+        ],
+      },
+      (b) => (b?.detached === true && typeof b.flow_id === 'string') || `detach ${describe(b)}`,
+      quiet,
+    ),
+  );
+  const flowId = started.flow_id;
+  const ids = { tab_id: T, flow_id: flowId };
+  for (const t0 = now(); (await ticks()) < 2; await sleep(100)) {
+    if (now() - t0 > 10_000) throw new StepFailure('flow_status', 'the flow never clicked #tick');
+  }
+  await call(
+    'browser.flow_status',
+    ids,
+    (b) =>
+      (b?.flow_id === flowId &&
+        b.state === 'running' &&
+        b.detached === true &&
+        b.manifest === undefined &&
+        b.iterations_completed >= 1) ||
+      `status ${describe(b)}`,
+  );
+
+  t = now();
+  await call(
+    'browser.flow_cancel',
+    ids,
+    (b) =>
+      (b?.cancel_requested === true &&
+        b.flow_id === flowId &&
+        (b.state === 'cancelled' || (b.state === 'running' && b.cancelling === true))) ||
+      `cancel ${describe(b)}`,
+    quiet,
+  );
+  await pollUntil('browser.flow_status', ids, (b) => b?.state !== 'running', 'flow_cancel');
+  const atStop = await ticks();
+  await sleep(1_000); // five periods of the flow
+  const later = await ticks();
+  if (later !== atStop) {
+    throw new StepFailure('flow_cancel', `#tick went from ${atStop} to ${later} after the stop`);
+  }
+  stepDone('browser.flow_cancel', t);
+  await call(
+    'browser.flow_status',
+    ids,
+    (b) =>
+      (b?.state === 'cancelled' &&
+        b.stopped_by === 'cancelled' &&
+        typeof b.ended_at === 'number' &&
+        Array.isArray(b.manifest)) ||
+      `status after cancel ${describe(b)}`,
+    { label: 'browser.flow_status.cancelled' },
   );
 }
 

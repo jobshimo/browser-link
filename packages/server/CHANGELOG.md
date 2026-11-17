@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.7](https://github.com/jobshimo/browser-link/compare/v1.3.6...v1.3.7) (2026-11-17)
+
+### Bug Fixes
+
+- **tests:** the real-Chrome e2e suite now covers `drag`, `set_permission`, `wait_for_tab`, `flow_status` and `flow_cancel`, on Chrome 118 and on stable.
+- **tests:** the Updates screen interaction tests wait on rendered frames instead of fixed 30 ms ticks and run one test per case, so they no longer fail under CPU load.
+
+The product is unchanged.
+
 ## [1.3.6](https://github.com/jobshimo/browser-link/compare/v1.3.5...v1.3.6) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the fix below also changes the extension.
