@@ -10,8 +10,10 @@
  * (`../generated/core/inpage/builders.ts`, the generated mirror of the core
  * module) and the SAME `browser.flow` step engine (generated from core's
  * `flow/flow-engine.ts`). `find` and `click` (slice 10), `type` and
- * `press` (slice 11) and `wait_for` (slice 13) run through core's tool registry (`dispatchTool`,
- * outcome mapped by `./tool-outcome.ts`). The wire-level contract is
+ * `press` (slice 11), `wait_for` (slice 13) and `drag` (slice 14) run through
+ * core's tool registry (`dispatchTool`, outcome mapped by
+ * `./tool-outcome.ts`); `drag` is refused there, since cdp-direct does not
+ * provide the `drag` requirement. The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -247,18 +249,28 @@ function pageDriver(client: CdpClient): PageDriverHandle {
 
 /** What cdp-direct provides to the tool registry (design 3.3). It does not
  * provide `capture-buffers`: it never enables the Network domain, so a
- * `network_url` wait is refused (v1 scope; changing it is a behavior change). */
+ * `network_url` wait is refused; nor `drag`, so `browser.drag` is refused
+ * (both v1 scope; changing either is a behavior change). */
 export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
   'keyboard',
   'pointer',
   'settler',
+  'cdp-events',
 ]);
 
 /** What the core actions and the registry handlers use on one connection. */
 function actionDeps(client: CdpClient): ToolDeps {
-  const { evaluator, keyboard, pointer, settler } = pageDriver(client);
-  return { evaluator, keyboard, pointer, settler, clock: systemClock };
+  const { evaluator, keyboard, pointer, drag, events, settler } = pageDriver(client);
+  return {
+    evaluator,
+    keyboard,
+    pointer,
+    drag,
+    'cdp-events': events,
+    settler,
+    clock: systemClock,
+  };
 }
 
 /**
@@ -377,7 +389,7 @@ function buildCdpFlowDeps(
     shouldCancel,
     clock: systemClock,
     // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
-    // false), so a flow drag step fails fast at this step with the exact
+    // false, and CDP_DIRECT_PROVIDES lacks `drag`), so a flow drag step fails fast at this step with the exact
     // error the standalone browser.drag returns on a cdp: tab — naming the
     // extension transport as the fallback.
     performDrag: () =>

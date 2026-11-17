@@ -152,8 +152,8 @@ describe('perform* parity guard: extension background.ts vs server cdp/transport
           mirrored.push(node.name.text);
         }
       });
-      // `performDrag` is extension-only (cdp-direct has no drag in v1).
-      expect(mirrored.filter((name) => name !== 'performDrag')).toEqual([]);
+      // Every action lives in core's `actions/` since slice 14.
+      expect(mirrored).toEqual([]);
     }
   });
 

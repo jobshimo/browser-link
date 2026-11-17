@@ -13,7 +13,8 @@
 // contract (`tools/`) and the find and click actions (`actions/`); slice 11
 // the type and press actions and the keyboard contract; slice 12 the
 // extension's per-tab aggregates (`session/tab-session`, `session/tab-registry`);
-// slice 13 the wait_for action and entry, and the capture watch it reads.
+// slice 13 the wait_for action and entry, and the capture watch it reads;
+// slice 14 the drag action and entry, and the drag input and CDP event wait.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -35,11 +36,13 @@ export * from './actions/perform-click.js';
 export * from './actions/perform-type.js';
 export * from './actions/perform-press.js';
 export * from './actions/perform-wait-for.js';
+export * from './actions/perform-drag.js';
 export * from './tools/requirement.js';
 export * from './tools/failure.js';
 export * from './tools/registry.js';
 export * from './tools/interaction.js';
 export * from './tools/wait-for.js';
+export * from './tools/drag.js';
 export * from './tools/catalog.js';
 export * from './tools/outcome-mapping.contract.js';
 export * from './inpage/builders.js';

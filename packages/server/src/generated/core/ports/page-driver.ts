@@ -2,11 +2,12 @@
 // Narrow page capabilities (design 3.2), built once per `CdpSession` by
 // `session/page-driver.ts`. Handlers require them one by one. Ports
 // describe what is used: the pointer joined with click (slice 10),
-// `insertText` with type (slice 11); CDP event waits join with the slice
-// that moves the handler using them (14).
+// `insertText` with type (slice 11), the drag input and the CDP event wait
+// with drag (slice 14).
 
 import type { PageInfo } from './page-info.js';
 import type {
+  DragEventParams,
   KeyEvent,
   MouseEventParams,
   ObserverMarkResult,
@@ -36,6 +37,29 @@ export interface Pointer {
   mouse(event: MouseEventParams): Promise<void>;
 }
 
+export interface DragInput {
+  /** One `Input.setInterceptDrags`; resolves when the page answered it,
+   * rejects when the dispatch fails. */
+  interceptDrags(enabled: boolean): Promise<void>;
+  /** One `Input.dispatchDragEvent`; resolves when the page answered it,
+   * rejects when the dispatch fails. Input only, as `Pointer`. */
+  dragEvent(event: DragEventParams): Promise<void>;
+}
+
+export interface CdpEvents {
+  /** Wait for one event of the session: resolves with the params of the
+   * first event named `method` that `predicate` accepts, among those that
+   * arrive after the call; with null when none arrives within `timeoutMs`
+   * (or when that event carries no params). Never rejects; it stops
+   * listening once it settles. A wait the core asks for, as
+   * `PageInfo.armLoadWait`: no state the transport keeps is read through it. */
+  waitFor(
+    method: string,
+    predicate: (params: unknown) => boolean,
+    timeoutMs: number,
+  ): Promise<unknown>;
+}
+
 export interface Settler {
   /** Take the page observer's action mark before an action dispatches;
    * `none` when `settle` is null (settle off for this call). Never throws. */
@@ -49,6 +73,8 @@ export interface PageDriver {
   evaluator: Evaluator;
   keyboard: Keyboard;
   pointer: Pointer;
+  drag: DragInput;
+  events: CdpEvents;
   settler: Settler;
   page: PageInfo;
 }

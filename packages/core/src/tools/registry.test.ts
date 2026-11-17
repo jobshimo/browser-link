@@ -2,7 +2,14 @@
 // itself, and each interaction entry's per-transport argument coercion.
 import { describe, expect, it } from 'vitest';
 import { createManualClock } from '../ports/contract/index.js';
-import type { Evaluator, Keyboard, Pointer, Settler } from '../ports/page-driver.js';
+import type {
+  CdpEvents,
+  DragInput,
+  Evaluator,
+  Keyboard,
+  Pointer,
+  Settler,
+} from '../ports/page-driver.js';
 import { TOOL_REGISTRY } from './catalog.js';
 import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
 import { createToolRegistry, dispatchTool, type RegisteredTool } from './registry.js';
@@ -22,7 +29,20 @@ function deps(evaluate: Evaluator['evaluate'] = () => Promise.resolve(undefined)
     settle: () => Promise.resolve(undefined),
   };
   const keyboard: Keyboard = { key: () => Promise.resolve(), insertText: () => Promise.resolve() };
-  return { evaluator: { evaluate }, keyboard, pointer, settler, clock: createManualClock() };
+  const drag: DragInput = {
+    interceptDrags: () => Promise.resolve(),
+    dragEvent: () => Promise.resolve(),
+  };
+  const events: CdpEvents = { waitFor: () => Promise.resolve(null) };
+  return {
+    evaluator: { evaluate },
+    keyboard,
+    pointer,
+    settler,
+    drag,
+    'cdp-events': events,
+    clock: createManualClock(),
+  };
 }
 
 const echo = (name: string, handler: RegisteredTool['handler']): RegisteredTool => ({
@@ -88,8 +108,15 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds find, click, type, press and wait_for, all listed', () => {
-    expect([...TOOL_REGISTRY.keys()]).toEqual(['find', 'click', 'type', 'press', 'wait_for']);
+  it('holds find, click, type, press, wait_for and drag, all listed', () => {
+    expect([...TOOL_REGISTRY.keys()]).toEqual([
+      'find',
+      'click',
+      'type',
+      'press',
+      'wait_for',
+      'drag',
+    ]);
     expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
   });
 });

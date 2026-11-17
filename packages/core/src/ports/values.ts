@@ -69,14 +69,26 @@ export type KeyEvent = {
 };
 
 /** One CDP `Input.dispatchMouseEvent` payload (`Pointer.mouse`): the move,
- * press and release of a click (slice 10). A type alias, so it is
+ * press and release of a click (slice 10) and of a drag, whose moves hold
+ * the left button (`buttons: 1`, slice 14). A type alias, so it is
  * assignable to the plain params object `CdpSession.send` takes. */
 export type MouseEventParams = {
   type: 'mouseMoved' | 'mousePressed' | 'mouseReleased';
   x: number;
   y: number;
   button?: 'left';
+  buttons?: number;
   clickCount?: number;
+};
+
+/** One CDP `Input.dispatchDragEvent` payload (`DragInput.dragEvent`, slice
+ * 14). `data` is the `DragData` of the `Input.dragIntercepted` event, passed
+ * through unchanged. */
+export type DragEventParams = {
+  type: 'dragEnter' | 'dragOver' | 'drop';
+  x: number;
+  y: number;
+  data: unknown;
 };
 
 /** A load wait armed before the navigation is sent (`PageInfo.armLoadWait`):

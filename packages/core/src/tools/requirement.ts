@@ -7,10 +7,18 @@
  * captures requests (the extension). Requirements join with the first
  * handler that needs them: slice 10 has the page's evaluator, pointer and
  * settle wait; slice 11 adds the keyboard; slice 13 adds `capture-buffers`,
- * which a transport provides by giving the capture watch.
+ * which a transport provides by giving the capture watch; slice 14 adds the
+ * drag input (`drag`) and the CDP event wait (`cdp-events`).
  */
 import type { Clock } from '../ports/clock.js';
-import type { Evaluator, Keyboard, Pointer, Settler } from '../ports/page-driver.js';
+import type {
+  CdpEvents,
+  DragInput,
+  Evaluator,
+  Keyboard,
+  Pointer,
+  Settler,
+} from '../ports/page-driver.js';
 import type { CaptureWatch, DialogWatch } from '../session/page-driver.js';
 
 export interface RequirementDeps {
@@ -18,6 +26,8 @@ export interface RequirementDeps {
   keyboard: Keyboard;
   pointer: Pointer;
   settler: Settler;
+  drag: DragInput;
+  'cdp-events': CdpEvents;
 }
 
 /** What a tool may require: a port, or `capture-buffers` (the transport

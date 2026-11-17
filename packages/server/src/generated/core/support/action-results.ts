@@ -3,10 +3,11 @@
  * What an action reports, shared by the actions (`actions/perform-*.ts`),
  * the flow engine that sequences them (`flow/flow-engine.ts`) and the tool
  * entries that map them to a `ToolOutcome` (`tools/`): the outcome shape,
- * the error texts both transports report, and the find, click, type and
- * press results. Moved verbatim from `flow/flow-engine.ts` in slices 10
- * (find, click) and 11 (type, press), because `actions` may not import
- * `flow` (design 5.2); the flow engine re-exports them.
+ * the error texts both transports report, and the find, click, type,
+ * press, wait_for and drag results. Moved verbatim from
+ * `flow/flow-engine.ts` in slices 10 (find, click), 11 (type, press), 13
+ * (wait_for) and 14 (drag), because `actions` may not import `flow`
+ * (design 5.2); the flow engine re-exports them.
  */
 import type { ExpectMet } from './expect.js';
 
@@ -220,4 +221,21 @@ export interface WaitForStepResult {
    * element was gone at the last poll: `<ref> not found in document
    * <doc_id>: the element is gone, take a new snapshot`. */
   ref_gone?: string;
+}
+
+/** Full result of one drag — the same shape the standalone tool returns.
+ * A flow step's per-step entry keeps only `drag_mode` of this (see
+ * `compactActionResult`): the endpoints and durations echo what the
+ * caller asked for, while `drag_mode` is NEW information — whether HTML5
+ * native drag (dragstart/drop) or pointer-only events fired, the signal
+ * for diagnosing a silently-failing drop. Moved from `flow/flow-engine.ts`
+ * in slice 14. */
+export interface DragStepResult {
+  from: { x: number; y: number; selector: string | null };
+  to: { x: number; y: number; selector: string | null };
+  duration_ms_actual: number;
+  drag_mode: 'html5' | 'pointer';
+  interception_attempted: boolean;
+  intercept_received: boolean;
+  events_fired: string[];
 }
