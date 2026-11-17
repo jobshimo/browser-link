@@ -5,7 +5,8 @@
  * in slice 10 from `background.ts` and `cdp/transport.ts` (`moveOntoTarget`,
  * `readMoveCheck`, `checkClickLanding`, `pointerPressEvents`,
  * `dispatchPointerPress`); what differed between the two copies (dialogs,
- * the bound on the move dispatch) is the `Pointer` of each transport.
+ * the bound on the move dispatch) is the dialog watch the driver-level
+ * mouse operations get (`session/page-driver.ts`, design revision 8).
  */
 import {
   buildClickHitCheckJs,
@@ -20,15 +21,20 @@ import {
   HIT_CHECK_REPLACED_NOTE,
   HIT_CHECK_TIMEOUT_MS,
 } from '../inpage/builders.js';
-import type { Clock } from '../ports/clock.js';
-import type { Evaluator, Pointer } from '../ports/page-driver.js';
-import type { MouseEventParams } from '../ports/values.js';
 
-/** What the landing checks use: the page, the pointer and the time. */
-export interface LandingDeps {
+import type { Evaluator } from '../ports/page-driver.js';
+import type { MouseEventParams } from '../ports/values.js';
+import {
+  dialogOpen,
+  dispatchMouseEvents,
+  dispatchWatchedMove,
+  type MouseDeps,
+} from '../session/page-driver.js';
+
+/** What the landing checks use: the page, plus the pointer, the time and
+ * the dialog watch (when the transport has one) of the driver-level mouse. */
+export interface LandingDeps extends MouseDeps {
   evaluator: Evaluator;
-  pointer: Pointer;
-  clock: Clock;
 }
 
 /** The press and release of a pointer click at (x, y); the move that
@@ -40,13 +46,13 @@ function pointerPressEvents(x: number, y: number): MouseEventParams[] {
   ];
 }
 
-/** Dispatch the press and release of a pointer click (see `Pointer.mouse`). */
+/** Dispatch the press and release of a pointer click (see `dispatchMouseEvents`). */
 export function dispatchPointerPress(
-  pointer: Pointer,
+  deps: MouseDeps,
   x: number,
   y: number,
 ): Promise<{ dialog: boolean }> {
-  return pointer.mouse(pointerPressEvents(x, y));
+  return dispatchMouseEvents(deps, pointerPressEvents(x, y));
 }
 
 /**
@@ -56,10 +62,11 @@ export function dispatchPointerPress(
  * answered nothing usable.
  */
 async function readMoveCheck(
-  { evaluator, pointer, clock }: LandingDeps,
+  deps: LandingDeps,
   timeoutMs: number,
 ): Promise<ClickMoveCheck | 'dialog' | 'no-answer'> {
-  if (pointer.dialogOpen()) return 'dialog';
+  const { evaluator, clock } = deps;
+  if (dialogOpen(deps)) return 'dialog';
   let cancel: () => void = () => undefined;
   const late = new Promise<undefined>((resolve) => {
     cancel = clock.after(timeoutMs, () => {
@@ -74,7 +81,7 @@ async function readMoveCheck(
   } finally {
     cancel();
   }
-  if (pointer.dialogOpen()) return 'dialog';
+  if (dialogOpen(deps)) return 'dialog';
   return check &&
     typeof check === 'object' &&
     typeof (check as { armed?: unknown }).armed === 'boolean'
@@ -110,9 +117,9 @@ export async function moveOntoTarget(
   y: number,
   watched: boolean,
 ): Promise<{ dialog: boolean; tries: number; miss?: ClickMoveMiss }> {
-  const { pointer, clock } = deps;
+  const { clock } = deps;
   const move: MouseEventParams = { type: 'mouseMoved', x, y };
-  if (!watched) return { ...(await pointer.mouse([move])), tries: 1 };
+  if (!watched) return { ...(await dispatchMouseEvents(deps, [move])), tries: 1 };
   const deadline = clock.now() + HIT_CHECK_TIMEOUT_MS;
   let last: ClickMoveMiss = { why: 'not-seen' };
   let answered = false;
@@ -124,7 +131,7 @@ export async function moveOntoTarget(
     const left = deadline - clock.now();
     if (left <= 0) break;
     tries++;
-    const sent = await pointer.watchedMove(move, left);
+    const sent = await dispatchWatchedMove(deps, move, left);
     if (sent === 'unanswered') return { dialog: false, tries, miss: noAnswer() };
     if (sent.dialog) return { dialog: true, tries };
     const check = await readMoveCheck(deps, Math.max(1, deadline - clock.now()));
@@ -149,11 +156,12 @@ export async function moveOntoTarget(
  * why the landing could not be verified, or nothing when it landed.
  */
 export async function checkClickLanding(
-  { evaluator, pointer, clock }: LandingDeps,
+  deps: LandingDeps,
   frameElement: boolean,
 ): Promise<{ missed?: true; landed_on?: string; note?: string }> {
   if (frameElement) return { note: HIT_CHECK_FRAME_NOTE };
-  if (pointer.dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  const { evaluator, clock } = deps;
+  if (dialogOpen(deps)) return { note: HIT_CHECK_DIALOG_NOTE };
   let cancel: () => void = () => undefined;
   const late = new Promise<'timeout'>((resolve) => {
     cancel = clock.after(HIT_CHECK_TIMEOUT_MS, () => {
@@ -168,7 +176,7 @@ export async function checkClickLanding(
   } finally {
     cancel();
   }
-  if (pointer.dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  if (dialogOpen(deps)) return { note: HIT_CHECK_DIALOG_NOTE };
   if (landing === 'timeout') return { note: HIT_CHECK_NO_ANSWER_NOTE };
   const check = landing as Partial<ClickHitCheck> | undefined;
   if (!check || typeof check !== 'object' || check.armed !== true) {

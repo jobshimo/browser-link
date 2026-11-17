@@ -25,21 +25,10 @@ export interface Keyboard {
 }
 
 export interface Pointer {
-  /** `Input.dispatchMouseEvent` for each event, in order; rejects when one
-   * fails. `dialog: true` when a JavaScript dialog is open after them, or
-   * opened by one: the page is paused, the event that opened it is answered
-   * only once it closes, so nothing after it is sent. */
-  mouse(events: readonly MouseEventParams[]): Promise<{ dialog: boolean }>;
-  /** The move of a click whose landing is watched, within `budgetMs`.
-   * `unanswered` when the transport counts the dispatch as not answered
-   * (cdp-direct: it failed or ran past the budget); otherwise as `mouse`. */
-  watchedMove(
-    event: MouseEventParams,
-    budgetMs: number,
-  ): Promise<{ dialog: boolean } | 'unanswered'>;
-  /** Whether a JavaScript dialog is open now; always false where the
-   * transport does not track dialogs (cdp-direct). */
-  dialogOpen(): boolean;
+  /** One `Input.dispatchMouseEvent`; resolves when the page answered it,
+   * rejects when the dispatch fails. Input only: what a dispatch means for
+   * a JavaScript dialog is the page driver's business (design revision 8). */
+  mouse(event: MouseEventParams): Promise<void>;
 }
 
 export interface Settler {

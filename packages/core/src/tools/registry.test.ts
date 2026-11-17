@@ -11,11 +11,7 @@ import type { Requirement, ToolDeps } from './requirement.js';
 const ALL: ReadonlySet<Requirement> = new Set<Requirement>(['evaluator', 'pointer', 'settler']);
 
 function deps(evaluate: Evaluator['evaluate'] = () => Promise.resolve(undefined)): ToolDeps {
-  const pointer: Pointer = {
-    mouse: () => Promise.resolve({ dialog: false }),
-    watchedMove: () => Promise.resolve({ dialog: false }),
-    dialogOpen: () => false,
-  };
+  const pointer: Pointer = { mouse: () => Promise.resolve() };
   const settler: Settler = {
     mark: () => Promise.resolve({ kind: 'none' }),
     settle: () => Promise.resolve(undefined),

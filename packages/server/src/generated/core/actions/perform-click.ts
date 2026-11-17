@@ -32,6 +32,7 @@ import {
   type ExpectParams,
 } from '../support/expect.js';
 import { resolveSettleParams } from '../support/settle.js';
+import type { DialogWatch } from '../session/page-driver.js';
 import { checkClickLanding, dispatchPointerPress, moveOntoTarget } from './click-landing.js';
 
 /** A `ref` target the page could not resolve — see `resolveTarget` in
@@ -78,19 +79,21 @@ export interface ClickParams {
   expect?: ExpectParams;
 }
 
-/** What a click uses: the page, the pointer, the settle wait and the time. */
+/** What a click uses: the page, the pointer, the settle wait, the time and,
+ * where the transport tracks them (the extension), the dialog watch. */
 export interface ClickDeps {
   evaluator: Evaluator;
   pointer: Pointer;
   settler: Settler;
   clock: Clock;
+  dialogs?: DialogWatch;
 }
 
 export async function performClick(
   deps: ClickDeps,
   params: ClickParams,
 ): Promise<ActionOutcome<ClickStepResult>> {
-  const { evaluator, pointer, settler, clock } = deps;
+  const { evaluator, settler, clock } = deps;
   try {
     const { selector, ref, force = false } = params;
     const settle = resolveSettleParams({
@@ -171,7 +174,7 @@ export async function performClick(
         };
       }
       dialogOpened =
-        moved.dialog || (await dispatchPointerPress(pointer, resolved.x, resolved.y)).dialog;
+        moved.dialog || (await dispatchPointerPress(deps, resolved.x, resolved.y)).dialog;
       if (dialogOpened) {
         hitCheckNote = HIT_CHECK_DIALOG_NOTE;
       } else {

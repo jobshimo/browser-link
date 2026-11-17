@@ -14,6 +14,10 @@ import {
   type ContractCase,
 } from '../../generated/core/ports/contract/index.js';
 import { createPageDriver } from '../../generated/core/session/page-driver.js';
+import type { MouseEventParams } from '../../generated/core/ports/values.js';
+
+/** What Chrome answers for that wheel event. */
+const PROBE_MESSAGE = "'deltaX' and 'deltaY' are expected for mouseWheel event";
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
@@ -149,6 +153,12 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
               returnByValue: true,
             });
             return res.result.value;
+          },
+          // A wheel event without its deltas: Chrome refuses it. The type is
+          // outside `MouseEventParams` on purpose, so the cast is the probe.
+          failing: {
+            event: { type: 'mouseWheel', x: 20, y: 20 } as unknown as MouseEventParams,
+            message: PROBE_MESSAGE,
           },
           dispose: close,
         };

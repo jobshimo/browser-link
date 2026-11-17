@@ -969,8 +969,8 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
 
 /** What the core actions and the registry handlers use on one tab. */
 function actionDeps(tabId: number): ToolDeps {
-  const { evaluator, pointer, settler } = pageDriver(tabId);
-  return { evaluator, pointer, settler, clock: systemClock };
+  const { evaluator, pointer, settler, dialogs } = pageDriver(tabId);
+  return { evaluator, pointer, settler, clock: systemClock, dialogs };
 }
 
 function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {

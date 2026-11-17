@@ -39,20 +39,17 @@ function fake(answers: Record<string, unknown>, pressOpensDialog = false): Fake 
     const answer = answers[expression];
     return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer as T);
   };
-  const mouse = (events: readonly MouseEventParams[]): Promise<{ dialog: boolean }> => {
-    for (const event of events) {
+  // The extension's pointer: a press that opens a dialog is answered only
+  // once the dialog closes, which the dialog watch sees at once.
+  const pointer: Pointer = {
+    mouse: (event: MouseEventParams) => {
       log.push(event.type);
       if (pressOpensDialog && event.type === 'mousePressed') {
         open.dialog = true;
-        return Promise.resolve({ dialog: true });
+        return new Promise<void>(() => undefined);
       }
-    }
-    return Promise.resolve({ dialog: open.dialog });
-  };
-  const pointer: Pointer = {
-    mouse,
-    watchedMove: (event) => mouse([event]),
-    dialogOpen: () => open.dialog,
+      return Promise.resolve();
+    },
   };
   const settler: Settler = {
     mark: () => Promise.resolve({ kind: 'none' }),
@@ -62,7 +59,13 @@ function fake(answers: Record<string, unknown>, pressOpensDialog = false): Fake 
     },
   };
   return {
-    deps: { evaluator: { evaluate }, pointer, settler, clock: createManualClock() },
+    deps: {
+      evaluator: { evaluate },
+      pointer,
+      settler,
+      clock: createManualClock(),
+      dialogs: { isOpen: () => open.dialog },
+    },
     log,
     open,
   };
