@@ -21,7 +21,7 @@
 //     await.
 // The BRIDGE_PORT rule lives in fitness-bridge-port.test.ts. The rule "no
 // tool `case` in background.ts" lands with slice 18.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -76,11 +76,13 @@ const srcDir = dirname(fileURLToPath(import.meta.url));
 /** Production modules of packages/extension/src: path relative to src -> text. */
 function realSources(dir = srcDir): Map<string, string> {
   const files = new Map<string, string>();
-  for (const name of readdirSync(dir)) {
+  // Directory entries carry their type, so no path is stat'ed before it is read.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const { name } = entry;
     const path = join(dir, name);
-    if (statSync(path).isDirectory()) {
+    if (entry.isDirectory()) {
       for (const [k, v] of realSources(path)) files.set(k, v);
-    } else if (name.endsWith('.ts') && !name.endsWith('.test.ts')) {
+    } else if (entry.isFile() && name.endsWith('.ts') && !name.endsWith('.test.ts')) {
       files.set(relative(srcDir, path).replaceAll('\\', '/'), readFileSync(path, 'utf8'));
     }
   }

@@ -8,7 +8,7 @@
 //   - any import cycle (Tarjan over the import graph, type-only included).
 // Each rule has a RED fixture under `fixtures/`, a miniature core tree that
 // the same function must reject with that rule and no other.
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -39,11 +39,16 @@ const SHARED = '@browser-link/shared';
 /** Production files under `root`: `.ts`, not tests, not the fitness folder. */
 function productionFiles(root: string, dir = root): string[] {
   const files: string[] = [];
-  for (const name of readdirSync(dir).sort()) {
+  // Directory entries carry their type, so no path is stat'ed before it is read.
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  for (const entry of entries) {
+    const { name } = entry;
     const path = join(dir, name);
-    if (statSync(path).isDirectory()) {
+    if (entry.isDirectory()) {
       if (relative(root, path) !== 'fitness') files.push(...productionFiles(root, path));
-    } else if (name.endsWith('.ts') && !name.endsWith('.test.ts')) {
+    } else if (entry.isFile() && name.endsWith('.ts') && !name.endsWith('.test.ts')) {
       files.push(path);
     }
   }
@@ -54,10 +59,15 @@ const rel = (root: string, file: string): string => relative(root, file).replace
 const folderOf = (relPath: string): string =>
   relPath.includes('/') ? relPath.slice(0, relPath.indexOf('/')) : ROOT_FOLDER;
 
-function resolveRelative(from: string, specifier: string): string | null {
+/** Resolve against the files already listed, never by probing the file system. */
+function resolveRelative(
+  from: string,
+  specifier: string,
+  known: ReadonlySet<string>,
+): string | null {
   const base = resolve(dirname(from), specifier);
   const candidates = [base.replace(/\.js$/, '.ts'), `${base}.ts`, join(base, 'index.ts')];
-  return candidates.find((c) => existsSync(c) && statSync(c).isFile()) ?? null;
+  return candidates.find((c) => known.has(c)) ?? null;
 }
 
 function layerAllows(fromRel: string, toRel: string): boolean {
@@ -106,6 +116,7 @@ function cycles(graph: Map<string, Set<string>>): string[][] {
 
 function analyzeCore(root: string): { files: number; violations: Violation[] } {
   const files = productionFiles(root);
+  const known = new Set(files);
   const violations: Violation[] = [];
   const graph = new Map<string, Set<string>>();
   for (const file of files) {
@@ -125,7 +136,7 @@ function analyzeCore(root: string): { files: number; violations: Violation[] } {
       if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
         return report('external-import', specifier);
       }
-      const target = resolveRelative(file, specifier);
+      const target = resolveRelative(file, specifier, known);
       if (target === null || relative(root, target).startsWith('..')) {
         return report('unresolved-import', specifier);
       }

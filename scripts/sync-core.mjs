@@ -17,7 +17,7 @@
 // Production means: `*.ts`, not `*.test.ts`, not under `fitness/`, not under
 // `ports/contract/fixtures/`.
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -39,10 +39,14 @@ const lf = (text) => text.replaceAll('\r\n', '\n');
 
 function walk(dir) {
   const files = [];
-  for (const name of readdirSync(dir).sort()) {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) files.push(...walk(path));
-    else files.push(path);
+  // Directory entries carry their type, so no path is stat'ed before it is read.
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...walk(path));
+    else if (entry.isFile()) files.push(path);
   }
   return files;
 }
