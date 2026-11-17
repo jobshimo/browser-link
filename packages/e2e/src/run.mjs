@@ -526,6 +526,18 @@ async function main() {
     { tab_id: T, name: reader },
     (_b, t) => t.includes('Items: 2') || `unexpected: ${t.slice(0, 100)}`,
   );
+  // The press's submit hid #done and reveals it 300 ms later (index.html).
+  // Left pending, that reveal lands either before the flow or inside its
+  // first step's settle window, depending on how long the calls above took,
+  // and the step that counts the mutation varies from run to run. One
+  // wait_for call (not a polled evaluate: pending_wrap_up stays fixed) lets
+  // it land before the flow starts.
+  await call(
+    'browser.wait_for',
+    { tab_id: T, selector: '#done', condition: 'visible', timeout_ms: 5000 },
+    (b) => b?.matched === true || 'not matched',
+    setup,
+  );
   await call(
     'browser.flow',
     {

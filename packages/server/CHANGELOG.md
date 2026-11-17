@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.18](https://github.com/jobshimo/browser-link/compare/v1.4.17...v1.4.18) (2026-11-17)
+
+### Notes
+
+- Slice 12 of the service worker plan; no behaviour change. A connected tab's page state now lives in core's `TabSession` (`packages/core/src/session/tab-session.ts`): the idle clock, the hold a running tool call keeps on it (released on every exit path, a throw included, and never counted past 10 minutes), the console and network buffers (200 entries each, oldest dropped first) and the one pending JavaScript dialog. The click path's dialog watch reads that state. The idle sweep still runs once a minute and disconnects the same tabs at the same times.
+- The tab map and the connect-in-flight guard are core's `TabRegistry` (`session/tab-registry.ts`): a second connect while one is in flight still answers "already in progress" for the whole attempt, and a connect on a connected tab still answers `tab-already-connected`.
+- The extension's per-tab connection, its debugger intake (console, network, dialog events and the recorder's binding calls) and its teardown moved to `packages/extension/src/app/tab-connection.ts`, which never touches `chrome` (a new fitness rule checks every `app/` module). cdp-direct keeps its own connection cache and idle model.
+- `background.ts` shrinks by 430 lines and its line budget goes from 4154 to 3724.
+
 ## [1.4.17](https://github.com/jobshimo/browser-link/compare/v1.4.16...v1.4.17) (2026-11-17)
 
 ### Notes

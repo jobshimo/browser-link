@@ -199,7 +199,11 @@ Consequences, measured:
   worker is reached by nothing else: for example the 1.3.0 running-call idle
   hold, a `try/finally` inside the WebSocket listener, and the sweep that reads
   it. The pure rules it calls (`idle-policy.ts` `idleHoldUntil`,
-  `tabsToDisconnectForIdle`) are tested; the wiring is not.
+  `tabsToDisconnectForIdle`) are tested; the wiring is not. (Slice 12,
+  1.4.18, moved the call hold, the activity clock, the console, network and
+  dialog state and the sweep's per-tab decision into core
+  `session/tab-session.ts` `TabSession`, unit-tested on a fake `Clock`; the
+  WebSocket listener now calls `TabSession.runCall`.)
 - **Two hand-written bodies per action.** `cdp/transport.ts` (1598 lines)
   mirrors `performFind/Click/Type/Press/WaitFor`, nine helpers with the
   same name (`evaluateInTab`, `runSettle`, `settleWithChanges`,
@@ -787,6 +791,37 @@ The extension instantiates it with `TabConnection`, cdp-direct with its
 connection record (`transport.ts` `connections`), so cdp-direct keeps its own
 idle model (Q4) while sharing the create-once rule it already has.
 
+As built in slice 12 (1.4.18), for the extension only:
+
+- `TabSession` holds the tab's page driver, the activity clock, the call
+  hold (`runCall`), the bounded buffers and the pending dialog; the
+  extension's `DialogWatch` is `sessionDialogWatch`, which reads the pending
+  dialog of the tab's live `TabSession`. `touch` sets the activity to the
+  clock's time and the end of a call takes the `max`, as before: invariant 1
+  holds with a clock that does not go backwards. The sweep's per-tab decision
+  is `TabSession.idleCandidate` (core `idleTabs` over every session); the
+  sweep interval stays a `setInterval` in `background.ts` (2.6), so `Clock`
+  has no `every`.
+- `TabRegistry` keeps today's lifetime of the in-flight guard: the
+  reservation is held for the whole connect attempt, until its registration
+  settles, while the session it commits is live from the debugger attach on
+  (the debugger events, the close handler and the reconnect scheduler read
+  it). So `commit(reservation, session)` makes the session live without
+  ending the reservation; `release(reservation)` in the connect's `finally`
+  ends it, and releasing one never committed is its abort. A reservation is
+  committed at most once and never after its release.
+- `TabConnection` (`app/tab-connection.ts`) also holds the tab's debugger
+  intake (`debuggerIntake`: console, network and dialog events into the
+  session, the dialog bridge events, the recorder's binding calls), the
+  fan-out of the permanent `debugger.onEvent` listener (`deliverCdpEvent`)
+  and the teardown (`closeTabConnection`, which `background.ts` `cleanup`
+  calls with the Chrome calls as functions). Its tests use a fake socket
+  object; the `SocketFactory` interface joins with slice 19.
+- cdp-direct does not use `TabRegistry`: its cache is keyed by target id, a
+  concurrent call joins the dial in flight instead of being refused, and a
+  closed entry is replaced, so adopting the registry would change its
+  behavior (Q4).
+
 ### `FlowRun`, `FlowRegistry`, `FlowHistory` (core/flow/)
 
 - **`FlowRun`**: one flow's state machine. Invariants: `shouldStop` turns
@@ -967,6 +1002,10 @@ to `support/flow-limits.ts`.
      grows logic moves it into a pure module, as `admin-view.ts` did; a new
      file joins the UI zone only by being added to the list with a reason, in
      a reviewed PR.
+   - **`app/**` stays chrome-free (5.2, since slice 12).** Every `app/**`
+     module, in the worker zone or not, names no `chrome` identifier and
+     imports neither `background.ts` nor `adapters/**`; a RED fixture
+     breaks each rule.
    - **Adapters stay free of logic (N8).** For every function-like node in
      an `adapters/**` file (function declarations, arrow functions, function
      expressions, methods, and the methods of object literals a factory
