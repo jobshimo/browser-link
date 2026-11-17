@@ -2,7 +2,13 @@
 // same build may differ in is rewritten; everything else is compared as is.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canonical, collapsePolls, imageSummary, normaliseRecord } from './normalise.mjs';
+import {
+  TIME_KEYS,
+  canonical,
+  collapsePolls,
+  imageSummary,
+  normaliseRecord,
+} from './normalise.mjs';
 
 const textResult = (body) => ({ content: [{ type: 'text', text: JSON.stringify(body) }] });
 const record = (calls, context = {}, extra = {}) => ({
@@ -91,25 +97,28 @@ test('a known id inside free text gets its name; refs and snapshot ids keep thei
   assert.equal(r.calls[1].args.ref, '<ref-doc#1>:e3');
 });
 
-test('timing: *_ms keys, the named keys, epoch ms under *_at keys, ISO and HTTP dates', () => {
+test('timing: the listed result keys, ISO and HTTP dates; nothing else', () => {
   const r = normaliseRecord(
     record([
       {
         tool: 'browser.flow',
-        args: { timeout_ms: 5000 },
+        args: { timeout_ms: 5000, settle_ms: 0, duration_ms: 300 },
         result: textResult({
           settle: { duration_ms: 151, mutation_count: 4 },
           duration_ms_actual: 434,
-          elapsedMs: 3,
+          elapsed_ms: 3,
           durationMs: 9,
           started_at: 1794904133234,
           finished_at: 1794904133247,
           timestamp: 1794904113670.873,
           expires_at: 1794905934426,
-          small_at: 12,
+          ended_at: 1794905934000,
+          taken_at_ms: 1794904133240,
+          timeout_ms: 5000,
+          settle_ms: 0,
+          elapsedMs: 3,
+          other_at: 1794904133234,
           format: 1794904133234,
-          limit: 1794904133234,
-          stat_time: 1794904133234,
           note: 'id 1794904133215 kept',
           last_ok_at: '2026-11-17T08:28:37.942Z',
           Date: 'Tue, 17 Nov 2026 08:28:53 GMT',
@@ -118,25 +127,74 @@ test('timing: *_ms keys, the named keys, epoch ms under *_at keys, ISO and HTTP 
       },
     ]),
   );
-  assert.equal(r.calls[0].args.timeout_ms, '<ms>');
+  // Recorded args are never masked: a changed default is a difference.
+  assert.deepEqual(r.calls[0].args, { timeout_ms: 5000, settle_ms: 0, duration_ms: 300 });
   assert.deepEqual(bodyOf(r), {
     settle: { duration_ms: '<ms>', mutation_count: 4 },
     duration_ms_actual: '<ms>',
-    elapsedMs: '<ms>',
+    elapsed_ms: '<ms>',
     durationMs: '<ms>',
     started_at: '<ms>',
     finished_at: '<ms>',
     timestamp: '<ms>',
     expires_at: '<ms>',
-    small_at: 12,
+    ended_at: '<ms>',
+    taken_at_ms: '<ms>',
+    // Not in TIME_KEYS: compared as is.
+    timeout_ms: 5000,
+    settle_ms: 0,
+    elapsedMs: 3,
+    other_at: 1794904133234,
     format: 1794904133234,
-    limit: 1794904133234,
-    stat_time: 1794904133234,
     note: 'id 1794904133215 kept',
     last_ok_at: '<iso>',
     Date: '<http-date>',
     url: 'http://127.0.0.1:<port>/capture.html?n=<ms>',
   });
+});
+
+test('every key in TIME_KEYS is masked in a result, at any depth', () => {
+  assert.ok(TIME_KEYS.length > 0);
+  for (const key of TIME_KEYS) {
+    const run = (v) =>
+      normaliseRecord(
+        record([
+          {
+            tool: 'browser.click',
+            args: {},
+            result: textResult({ [key]: v, deep: [{ [key]: v }] }),
+          },
+        ]),
+      );
+    assert.deepEqual(bodyOf(run(17)), { [key]: '<ms>', deep: [{ [key]: '<ms>' }] }, key);
+    assert.equal(canonical(run(17)), canonical(run(1794904133234)), key);
+  }
+});
+
+test('a changed timeout_ms or settle_ms is a difference, in args and in a result', () => {
+  const run = (args, body) =>
+    normaliseRecord(record([{ tool: 'browser.wait_for', args, result: textResult(body) }]));
+  const base = run({ timeout_ms: 5000, settle_ms: 0 }, { timeout_ms: 5000, settle_ms: 0 });
+  for (const changed of [
+    run({ timeout_ms: 8000, settle_ms: 0 }, { timeout_ms: 5000, settle_ms: 0 }),
+    run({ timeout_ms: 5000, settle_ms: 50 }, { timeout_ms: 5000, settle_ms: 0 }),
+    run({ timeout_ms: 5000, settle_ms: 0 }, { timeout_ms: 8000, settle_ms: 0 }),
+    run({ timeout_ms: 5000, settle_ms: 0 }, { timeout_ms: 5000, settle_ms: 50 }),
+  ]) {
+    assert.notEqual(canonical(changed), canonical(base));
+  }
+  // A listed key nested in args (a flow step's own value) is not masked either.
+  const flow = (ms) =>
+    normaliseRecord(
+      record([
+        {
+          tool: 'browser.flow',
+          args: { steps: [{ drag: { duration_ms: ms } }] },
+          result: textResult({}),
+        },
+      ]),
+    );
+  assert.notEqual(canonical(flow(100)), canonical(flow(200)));
 });
 
 test('paths: backslashes, drive letters, HOME, temp dirs, ports and the Chrome version', () => {
@@ -328,8 +386,18 @@ test('both accepted flow_cancel outcomes normalise equal; any other state does n
     normaliseRecord(record([{ tool: 'browser.flow_cancel', args: {}, result: textResult(body) }]));
   const a = cancel(cancelled);
   assert.equal(canonical(a), canonical(cancel(cancelling)));
-  assert.equal(bodyOf(a).state, '<cancel-accepted>');
-  assert.equal(bodyOf(a).pending_wrap_up, 64);
+  assert.deepEqual(bodyOf(a), {
+    flow_id: '<flow#1>',
+    tab_id: '<tab#1>',
+    detached: true,
+    started_at: '<ms>',
+    steps: 1,
+    cancel_requested: true,
+    pending_wrap_up: 64,
+    state: '<cancel-accepted>',
+    steps_completed: '<count>',
+    iterations_completed: '<count>',
+  });
   for (const other of [
     { ...cancelling, cancelling: false },
     { ...common, state: 'running', iterations_completed: 1 },
@@ -343,5 +411,91 @@ test('both accepted flow_cancel outcomes normalise equal; any other state does n
     record([{ tool: 'browser.flow_status', args: {}, result: textResult(cancelled) }]),
   );
   assert.equal(bodyOf(status).state, 'cancelled');
-  assert.equal(bodyOf(status).iterations_completed, 2);
+  assert.equal(bodyOf(status).stopped_by, 'cancelled');
+});
+
+test('flow_cancel: each shape-only key is dropped, the progress counts are masked, the rest is kept', () => {
+  const cancel = (body) =>
+    bodyOf(
+      normaliseRecord(
+        record([{ tool: 'browser.flow_cancel', args: {}, result: textResult(body) }]),
+      ),
+    );
+  const running = { state: 'running', cancelling: true };
+  const cancelled = { state: 'cancelled' };
+  // Present in only one of the two accepted shapes: dropped.
+  for (const [key, value, shape] of [
+    ['cancelling', true, running],
+    ['expires_at', 1_700_000_900_000, running],
+    ['ended_at', 1_700_000_001_000, cancelled],
+    ['stopped_by', 'cancelled', cancelled],
+    ['manifest', [{ ok: true }], cancelled],
+  ]) {
+    assert.equal(Object.hasOwn(cancel({ ...shape, [key]: value }), key), false, key);
+  }
+  // How far the flow got when the stop landed: kept as present, value masked.
+  for (const key of ['steps_completed', 'iterations_completed']) {
+    assert.equal(cancel({ ...running, [key]: 3 })[key], '<count>', key);
+    assert.equal(Object.hasOwn(cancel(running), key), false, key);
+  }
+  // Anything else is compared: a new or changed field is a difference.
+  assert.equal(cancel({ ...running, error: 'boom' }).error, 'boom');
+  assert.equal(cancel({ ...running, manifest_truncated: true }).manifest_truncated, true);
+  assert.equal(cancel({ ...running, steps: 2 }).steps, 2);
+});
+
+test('flow_status of a running or cancelled flow: progress counts masked, manifest iterations deduplicated', () => {
+  const status = (body) =>
+    bodyOf(
+      normaliseRecord(
+        record([{ tool: 'browser.flow_status', args: {}, result: textResult(body) }]),
+      ),
+    );
+  const cancelledAfter = (n) => ({
+    state: 'cancelled',
+    steps: 1,
+    steps_completed: 1,
+    iterations_completed: n,
+    stopped_by: 'cancelled',
+    manifest: [
+      {
+        iterations: Array.from({ length: n }, () => [{ ok: true }]),
+        iterations_completed: n,
+        stopped_by: 'cancelled',
+      },
+    ],
+  });
+  assert.equal(canonical(status(cancelledAfter(2))), canonical(status(cancelledAfter(3))));
+  assert.deepEqual(status(cancelledAfter(2)), {
+    state: 'cancelled',
+    steps: 1,
+    steps_completed: '<count>',
+    iterations_completed: '<count>',
+    stopped_by: 'cancelled',
+    manifest: [
+      { iterations: [[{ ok: true }]], iterations_completed: '<count>', stopped_by: 'cancelled' },
+    ],
+  });
+  // A different iteration result is still a difference.
+  const failedOne = cancelledAfter(2);
+  failedOne.manifest[0].iterations[1] = [{ ok: false, error: 'boom' }];
+  assert.notEqual(canonical(status(failedOne)), canonical(status(cancelledAfter(2))));
+  // Running: live progress masked, the rest kept.
+  const running = (n) => ({
+    state: 'running',
+    steps: 1,
+    steps_completed: 0,
+    iterations_completed: n,
+  });
+  assert.equal(canonical(status(running(1))), canonical(status(running(2))));
+  assert.equal(status(running(1)).steps, 1);
+  // A flow that ran to its end has deterministic counts: kept as is.
+  const completed = { ...cancelledAfter(3), state: 'completed', stopped_by: 'max_iterations' };
+  assert.deepEqual(status(completed).iterations_completed, 3);
+  assert.equal(status(completed).manifest[0].iterations.length, 3);
+  // Another tool with the same body keeps its counts.
+  const flow = normaliseRecord(
+    record([{ tool: 'browser.flow', args: {}, result: textResult(cancelledAfter(3)) }]),
+  );
+  assert.equal(bodyOf(flow).iterations_completed, 3);
 });

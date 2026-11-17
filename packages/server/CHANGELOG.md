@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.1](https://github.com/jobshimo/browser-link/compare/v1.4.0...v1.4.1) (2026-11-17)
+
+### Bug Fixes
+
+- **ci:** the differential e2e check masks an explicit list of timing keys, in results only, so a changed default such as `timeout_ms` is now reported instead of hidden.
+- **ci:** a tool-to-case table, with a unit test, fails when a catalogue tool has no e2e case or a justified exemption.
+- **ci:** a `behavior-change` pull request label lets the differential report an expected difference without failing. Harness failures and setup errors still fail, and the pull request must name the difference.
+- **ci:** main now requires the Chrome 118 e2e and the differential as merge checks.
+- **tests:** the `error.thrown` e2e case checks the message line, not Chrome's stack frames.
+
+The product is unchanged.
+
 ## [1.4.0](https://github.com/jobshimo/browser-link/compare/v1.3.9...v1.4.0) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension is now built differently, so the installed files changed.

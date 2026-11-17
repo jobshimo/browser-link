@@ -2,7 +2,16 @@
 // are equal, or the first differing call is printed with both values.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EXIT, exitCode, firstDifference, formatDifference, leafPath } from './e2e-diff.mjs';
+import { normaliseRecord } from '../packages/e2e/src/normalise.mjs';
+import {
+  EXIT,
+  exitCode,
+  firstDifference,
+  formatDifference,
+  gateExit,
+  leafPath,
+  summaryMarkdown,
+} from './e2e-diff.mjs';
 
 const call = (label, json) => ({
   label,
@@ -77,4 +86,73 @@ test('exit codes: 0 equal, 1 difference, 2 harness failure, 3 setup error; highe
   assert.equal(exitCode({ setupError: true }), 3);
   assert.equal(exitCode({ setupError: true, harnessFailed: true, differs: true }), 3);
   assert.deepEqual(EXIT, { equal: 0, difference: 1, harness: 2, setup: 3 });
+});
+
+test('a changed timeout_ms or settle_ms is reported, in args and in a result', () => {
+  const raw = (args, body) => ({
+    ok: true,
+    calls: [
+      {
+        tool: 'browser.wait_for',
+        label: 'browser.wait_for',
+        args,
+        result: { content: [{ type: 'text', text: JSON.stringify(body) }] },
+      },
+    ],
+  });
+  const base = normaliseRecord(raw({ timeout_ms: 5000 }, { settle_ms: 0, elapsed_ms: 3 }));
+  const sameTiming = normaliseRecord(raw({ timeout_ms: 5000 }, { settle_ms: 0, elapsed_ms: 9 }));
+  assert.equal(firstDifference(base, sameTiming), null);
+  const args = normaliseRecord(raw({ timeout_ms: 8000 }, { settle_ms: 0, elapsed_ms: 3 }));
+  assert.equal(firstDifference(base, args).path, 'args.timeout_ms');
+  const result = normaliseRecord(raw({ timeout_ms: 5000 }, { settle_ms: 50, elapsed_ms: 3 }));
+  assert.equal(firstDifference(base, result).path, 'result.content[0].json.settle_ms');
+});
+
+test('behavior-change: a base difference passes; self-diff, harness or setup failures still fail', () => {
+  const label = { behaviorChange: true };
+  assert.equal(gateExit(EXIT.equal, label), 0);
+  assert.equal(gateExit(EXIT.difference, label), 0);
+  assert.equal(gateExit(EXIT.harness, label), 2);
+  assert.equal(gateExit(EXIT.setup, label), 3);
+  // Two runs of HEAD differing is the normalise table's fault, not the PR's.
+  assert.equal(gateExit(EXIT.difference, { behaviorChange: true, selfDiffers: true }), 1);
+  // Without the label the script's own code is the gate.
+  for (const code of [0, 1, 2, 3]) {
+    assert.equal(gateExit(code), code);
+    assert.equal(gateExit(code, { behaviorChange: false }), code);
+  }
+});
+
+test('the step summary names the verdict and carries each difference', () => {
+  const diff = formatDifference(
+    firstDifference(rec([call('click', { a: 1 })]), rec([call('click', { a: 2 })])),
+  );
+  const accepted = summaryMarkdown({
+    code: EXIT.difference,
+    behaviorChange: true,
+    reports: [diff],
+  });
+  assert.match(accepted, /^## e2e differential\n/);
+  assert.match(accepted, /difference, accepted: the PR carries the `behavior-change` label/);
+  assert.match(accepted, /The PR description must name this difference/);
+  assert.ok(accepted.includes(`\`\`\`text\n${diff}\n\`\`\``));
+  const failed = summaryMarkdown({ code: EXIT.difference, behaviorChange: false, reports: [diff] });
+  assert.match(failed, /FAIL \(difference\)/);
+  assert.match(failed, /`behavior-change` label/);
+  const equal = summaryMarkdown({ code: EXIT.equal, behaviorChange: true, reports: [] });
+  assert.match(equal, /ok: no difference/);
+  assert.match(equal, /label is set but the builds behave the same/);
+  assert.match(
+    summaryMarkdown({ code: EXIT.harness, behaviorChange: true, reports: [] }),
+    /FAIL \(harness\)/,
+  );
+  const self = summaryMarkdown({
+    code: EXIT.difference,
+    behaviorChange: true,
+    selfDiffers: true,
+    reports: [diff],
+  });
+  assert.match(self, /Two runs of HEAD differ/);
+  assert.match(self, /does not excuse this/);
 });

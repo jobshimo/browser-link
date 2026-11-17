@@ -14,13 +14,29 @@
 //   node scripts/e2e-diff.mjs --self-diff-only   two HEAD runs, no base
 //     --ignore-scripts       pass --ignore-scripts to the base install (local
 //                            Windows without the toolchain for native builds)
+//     --behavior-change      the PR carries the `behavior-change` label: a
+//                            difference is still computed and printed, but
+//                            exits 0; a harness (2) or setup (3) failure
+//                            still fails. The PR description names the
+//                            expected difference.
+//
+// With GITHUB_STEP_SUMMARY set, the verdict and each difference are also
+// written to the step summary.
 //
 // HEAD must already be built (`pnpm build`). The base is checked out with
 // `git worktree add` in a temp dir, installed and built there, and the
 // worktree is removed at the end whatever the outcome. In CI the ref is
 // origin/<PR target branch>, so a stacked PR compares with the PR below it.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -94,6 +110,53 @@ export function exitCode({ setupError = false, harnessFailed = false, differs = 
   return EXIT.equal;
 }
 
+const VERDICTS = ['ok', 'FAIL (difference)', 'FAIL (harness)', 'FAIL (setup)'];
+
+/** The process exit code: the script's own code, except that a base-vs-HEAD
+ * difference passes when the PR carries the `behavior-change` label. A
+ * self-diff difference (two runs of HEAD: the normalise table is incomplete),
+ * a harness failure or a setup error is never excused. */
+export function gateExit(code, { behaviorChange = false, selfDiffers = false } = {}) {
+  return behaviorChange && !selfDiffers && code === EXIT.difference ? EXIT.equal : code;
+}
+
+/** The step summary: the verdict, what the label means for it, and each
+ * difference report as printed in the log. */
+export function summaryMarkdown({ code, behaviorChange, selfDiffers = false, reports }) {
+  const lines = ['## e2e differential', ''];
+  if (code === EXIT.difference && behaviorChange && !selfDiffers) {
+    lines.push(
+      'Verdict: difference, accepted: the PR carries the `behavior-change` label.',
+      'The PR description must name this difference as the expected one.',
+    );
+  } else if (code === EXIT.difference && selfDiffers) {
+    lines.push(
+      `Verdict: ${VERDICTS[code]}. Two runs of HEAD differ: the normalise table`,
+      '(packages/e2e/src/normalise.mjs) is incomplete or the fixture is not',
+      'deterministic. The `behavior-change` label does not excuse this.',
+    );
+  } else if (code === EXIT.difference) {
+    lines.push(
+      `Verdict: ${VERDICTS[code]}. A refactor must not change behavior; an intended`,
+      'behavior change goes in its own PR with the `behavior-change` label, and its',
+      'description names the expected difference.',
+    );
+  } else if (code === EXIT.equal) {
+    lines.push('Verdict: ok: no difference.');
+    if (behaviorChange) {
+      lines.push(
+        '',
+        'The `behavior-change` label is set but the builds behave the same: check',
+        'that the e2e covers the change the PR description names.',
+      );
+    }
+  } else {
+    lines.push(`Verdict: ${VERDICTS[code]}. See the job log.`);
+  }
+  for (const report of reports) lines.push('', '```text', report, '```');
+  return `${lines.join('\n')}\n`;
+}
+
 /** An error of the setup (git, pnpm, arguments), not of the code under test. */
 export class SetupError extends Error {}
 
@@ -106,6 +169,7 @@ function parseArgs(argv) {
     else if (a === '--self-diff') opts.selfDiff = true;
     else if (a === '--self-diff-only') opts.selfDiffOnly = true;
     else if (a === '--ignore-scripts') opts.ignoreScripts = true;
+    else if (a === '--behavior-change') opts.behaviorChange = true;
     else if (!a.startsWith('--') && opts.ref === undefined) opts.ref = a;
     else throw new SetupError(`unknown argument: ${a}`);
   }
@@ -162,20 +226,24 @@ function harnessRun(name, root, scratch) {
   return { record: normalised, passed: r.status === 0 };
 }
 
-/** true when the two records differ (or one is missing). */
-function differ(a, b, names) {
+/** true when the two records differ (or one is missing); a difference's
+ * report is printed and added to `reports` (the step summary). */
+function differ(a, b, names, reports) {
   if (!a || !b) return true;
   const diff = firstDifference(a, b);
   if (!diff) {
     console.log(`e2e-diff: ${names[0]} and ${names[1]} equal (${String(a.calls.length)} calls)`);
     return false;
   }
-  console.log(formatDifference(diff, names));
+  const report = formatDifference(diff, names);
+  console.log(report);
+  reports.push(report);
   return true;
 }
 
 function main() {
-  const state = { setupError: false, harnessFailed: false, differs: false };
+  const state = { setupError: false, harnessFailed: false, differs: false, selfDiffers: false };
+  const reports = [];
   const opts = parseArgs(process.argv.slice(2));
   if (!existsSync(join(REPO, 'packages/server/dist/cli.js'))) {
     throw new SetupError('HEAD is not built; run pnpm build first');
@@ -192,7 +260,10 @@ function main() {
     if (opts.selfDiff || opts.selfDiffOnly) {
       const again = harnessRun('head-2', REPO, scratch);
       if (!again.passed) state.harnessFailed = true;
-      if (differ(head.record, again.record, ['head', 'head-2'])) state.differs = true;
+      if (differ(head.record, again.record, ['head', 'head-2'], reports)) {
+        state.differs = true;
+        state.selfDiffers = true;
+      }
     }
     if (!opts.selfDiffOnly) {
       let base;
@@ -215,7 +286,7 @@ function main() {
           writeFileSync(opts.baseRecord, `${JSON.stringify(base, null, 2)}\n`);
         }
       }
-      if (differ(base, head.record, ['base', 'head'])) state.differs = true;
+      if (differ(base, head.record, ['base', 'head'], reports)) state.differs = true;
     }
   } catch (e) {
     state.setupError = true;
@@ -233,9 +304,18 @@ function main() {
     if (process.env.E2E_DIFF_KEEP !== '1') rmSync(scratch, { recursive: true, force: true });
   }
   const code = exitCode(state);
-  const verdict = ['ok', 'FAIL (difference)', 'FAIL (harness)', 'FAIL (setup)'][code];
-  console.log(`e2e-diff: ${verdict}, exit ${String(code)}`);
-  return code;
+  const gate = { behaviorChange: opts.behaviorChange === true, selfDiffers: state.selfDiffers };
+  const exit = gateExit(code, gate);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryMarkdown({ code, ...gate, reports }));
+  }
+  console.log(`e2e-diff: ${VERDICTS[code]}, exit ${String(code)}`);
+  if (exit !== code) {
+    console.log(
+      'e2e-diff: difference accepted (behavior-change label); the PR description must name it, exit 0',
+    );
+  }
+  return exit;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

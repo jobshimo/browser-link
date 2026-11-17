@@ -216,10 +216,10 @@ async function call(tool, args, check, { print = true, label = tool, poll = fals
 
 /** One MCP tool call whose refusal is the expected outcome: never throws on
  * a tool error, returns `{ isError, body, text }` for the caller to judge. */
-async function attempt(tool, args, label) {
+async function attempt(tool, args, label, { poll = false } = {}) {
   let res;
   try {
-    res = await callTool(tool, args, { label });
+    res = await callTool(tool, args, { label, poll });
   } catch (e) {
     throw new StepFailure(label, e.message);
   }
@@ -351,7 +351,7 @@ async function main() {
   }
 
   // 3. Open the page as a tab and read its chrome tab id from the worker.
-  await cdp.send('Target.createTarget', { url: page });
+  const { targetId: pageTarget } = await cdp.send('Target.createTarget', { url: page });
   const { sessionId: swSession } = await cdp.send('Target.attachToTarget', {
     targetId: sw.targetId,
     flatten: true,
@@ -413,13 +413,33 @@ async function main() {
 
   // 5. The calls.
   const tl = now();
+  // Ready means listed WITH its page fingerprint (`build`, `view_sig`). They
+  // arrive with the observer's doc_info, which the observer pushes as soon
+  // as it is installed on this already-loaded page: before the tab's bridge
+  // socket is registered, so the worker drops it on some runs and keeps it
+  // on others, and the tab stays without a fingerprint until the next
+  // navigation. Once the tab is listed (registered), a same-URL
+  // history.replaceState through the harness's own CDP session (not a tool
+  // call, so not recorded) is such a navigation for the observer: it pushes
+  // doc_info again, now delivered. All list_tabs polls stay consecutive, so
+  // only the last, ready one is kept (normalise.mjs collapsePolls).
+  const ready = (t) =>
+    t.url === page && typeof t.build === 'string' && typeof t.view_sig === 'string';
   let tab;
+  let nudged = false;
   while (!tab) {
     const r = await call('browser.list_tabs', {}, undefined, { print: false, poll: true });
     const tabs = json(r);
-    tab = Array.isArray(tabs) ? tabs.find((t) => t.url === page) : undefined;
+    tab = Array.isArray(tabs) ? tabs.find(ready) : undefined;
+    if (!tab && !nudged && Array.isArray(tabs) && tabs.some((t) => t.url === page)) {
+      await renavigateInPlace(cdp, pageTarget);
+      nudged = true;
+    }
     if (!tab && now() - tl > CALL_TIMEOUT_MS) {
-      throw new StepFailure('list_tabs', 'the connected tab was never listed');
+      throw new StepFailure(
+        'list_tabs',
+        'the connected tab was never listed with its page fingerprint (build, view_sig)',
+      );
     }
     if (!tab) await sleep(100);
   }
@@ -999,7 +1019,8 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   const N = json(waited).tab_id;
   let pinged;
   for (const t0 = now(); now() - t0 < 5_000; await sleep(100)) {
-    pinged = await attempt('browser.ping', { tab_id: N }, 'wait_for_tab');
+    // Polled: how many pings ran before the title landed depends on timing.
+    pinged = await attempt('browser.ping', { tab_id: N }, 'wait_for_tab', { poll: true });
     if (!pinged.isError && pinged.body?.title === 'e2e opened tab') break;
   }
   if (pinged.isError || pinged.body?.url !== opened || pinged.body?.title !== 'e2e opened tab') {
@@ -1014,7 +1035,9 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   // flow_status / flow_cancel: a detached flow clicks #tick every 200 ms;
   // its status reads running, it is cancelled, its status reads cancelled
   // with the manifest of what it did, and the counter stops moving.
-  const ticks = () => pageValue(T, "Number(document.querySelector('#ticks').textContent)");
+  // How far the counter got depends on timing, so the recorded reads answer
+  // the assertion (a boolean), never the raw count.
+  const TICKS = "Number(document.querySelector('#ticks').textContent)";
   const started = json(
     await call(
       'browser.flow',
@@ -1037,8 +1060,10 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   );
   const flowId = started.flow_id;
   const ids = { tab_id: T, flow_id: flowId };
-  for (const t0 = now(); (await ticks()) < 2; await sleep(100)) {
+  // Polled: only the last read (true) is kept in the record.
+  for (const t0 = now(); (await pageValue(T, `${TICKS} >= 2`, { poll: true })) !== true;) {
     if (now() - t0 > 10_000) throw new StepFailure('flow_status', 'the flow never clicked #tick');
+    await sleep(100);
   }
   await call(
     'browser.flow_status',
@@ -1064,11 +1089,17 @@ async function dragPermissionTabsFlows(T, page, cdp) {
     quiet,
   );
   await pollUntil('browser.flow_status', ids, (b) => b?.state !== 'running', 'flow_cancel');
-  const atStop = await ticks();
-  await sleep(1_000); // five periods of the flow
-  const later = await ticks();
-  if (later !== atStop) {
-    throw new StepFailure('flow_cancel', `#tick went from ${atStop} to ${later} after the stop`);
+  // The count at the stop is kept in the page; after five periods of the
+  // flow the read answers whether it is unchanged (and the count, only when
+  // it is not, for the failure message).
+  await pageValue(T, `(window.__e2eTicksAtStop = ${TICKS}) >= 2`);
+  await sleep(1_000);
+  const still = await pageValue(
+    T,
+    `${TICKS} === window.__e2eTicksAtStop || \`\${window.__e2eTicksAtStop} -> \${${TICKS}}\``,
+  );
+  if (still !== true) {
+    throw new StepFailure('flow_cancel', `#tick moved after the stop: ${String(still)}`);
   }
   stepDone('browser.flow_cancel', t);
   await call(
@@ -1096,9 +1127,22 @@ async function recorded(step) {
   }
 }
 
-async function pageValue(T, expression) {
+/** A same-URL history.replaceState in the page, through a short CDP session
+ * of the harness's own: the page observer sees an SPA navigation and pushes
+ * its doc_info again. The URL, the history length and the DOM are unchanged. */
+async function renavigateInPlace(cdp, targetId) {
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  try {
+    await cdp.evaluate("history.replaceState(history.state, '', location.href)", sessionId);
+  } finally {
+    await cdp.send('Target.detachFromTarget', { sessionId });
+  }
+}
+
+async function pageValue(T, expression, { poll = false } = {}) {
   const res = await call('browser.evaluate', { tab_id: T, expression }, undefined, {
     print: false,
+    poll,
   });
   const b = json(res);
   return b && typeof b === 'object' && 'value' in b ? b.value : b;
@@ -1110,14 +1154,21 @@ async function pageValue(T, expression) {
  * not here: no MCP path sends one (contract suite only).
  */
 async function errorPaths(T) {
+  // `want`: the exact error text, or a RegExp when part of it (a stack trace)
+  // is Chrome's own and may change between versions.
   const expectError = async (name, tool, args, want, extra) => {
     const label = `error.${name}`;
     const t = now();
     const r = await attempt(tool, { tab_id: T, ...args }, label);
-    if (!r.isError || r.text !== want) {
+    const matches = want instanceof RegExp ? want.test(r.text) : r.text === want;
+    if (!r.isError || !matches) {
+      const expected =
+        want instanceof RegExp
+          ? `text matching ${String(want)}`
+          : `exactly ${JSON.stringify(want)}`;
       throw new StepFailure(
         label,
-        `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+        `expected isError with ${expected}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
       );
     }
     if (extra) await extra();
@@ -1137,7 +1188,9 @@ async function errorPaths(T) {
     'thrown',
     'browser.evaluate',
     { expression: "(() => { throw new Error('e2e-boom'); })()" },
-    'Error: Error: e2e-boom\n    at <anonymous>:1:16\n    at <anonymous>:1:41',
+    // The message line exactly, then only that a stack follows: the frame
+    // text (`at <anonymous>:1:16`) is Chrome's own and is not pinned.
+    /^Error: Error: e2e-boom\n {4}at \S/,
   );
 
   // timeout: wait_for expires on a selector that never appears.
