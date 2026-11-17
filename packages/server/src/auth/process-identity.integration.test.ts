@@ -10,6 +10,7 @@ import {
   lookupPeerProcessDetailed,
   type PeerLookupDeps,
 } from './process-identity.js';
+import { KERNEL_OWNER_SCRIPT, kernelOwnerEnv } from './windows-tcp-owner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -212,13 +213,31 @@ describe.skipIf(!isUnix)('lookupPeerProcess against a real localhost connection'
 
 describe.skipIf(!isWindows)('lookupPeerProcessDetailed against a real Windows connection', () => {
   // The kernel-table source answers alone: one PowerShell, no netstat, no
-  // CIM (so no WMI start-up to wait for), and no fallback log line. A run
-  // that needs the fallback fails here, which is the point: it would mean
-  // the kernel source does not work on this machine.
+  // CIM, and no fallback log line. A run that needs the fallback fails here,
+  // which is the point: it would mean the kernel source does not work on
+  // this machine.
+  //
+  // A fresh CI VM pays a one-time cost on its first PowerShell runs: on
+  // windows-latest the first CIM call took 8.2 s and over 10 s while WMI
+  // started, and the first kernel-table PowerShell was killed at the 5 s
+  // command bound (2026-11-17), past the bound by design (see
+  // LOOKUP_TIMEOUT_MS). So the kernel script is run once first with a
+  // generous bound, outside the lookup, and the lookup itself must then
+  // answer within its normal bounds.
   test('identifies a same-user child with its image name and executable path, from the kernel table', async () => {
     const { port, connection } = await listen();
     const ready = await connectFromChild(port);
     await connection;
+
+    const w0 = performance.now();
+    await execFileAsync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', KERNEL_OWNER_SCRIPT],
+      { timeout: 60_000, windowsHide: true, env: kernelOwnerEnv(ready.localPort, process.pid) },
+    );
+    process.stderr.write(
+      `windows kernel warm-up: ${String(Math.round(performance.now() - w0))} ms\n`,
+    );
 
     const trace: TraceEntry[] = [];
     const logs: string[] = [];
