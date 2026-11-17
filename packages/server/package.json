@@ -43,13 +43,13 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node ../../scripts/sync-core.mjs && tsc",
     "dev": "tsx watch src/cli.ts",
     "try": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "test": "vitest run",
+    "test": "node ../../scripts/sync-core.mjs --check && vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepack": "pnpm run clean && pnpm run build && node ./scripts/prepare-publish.mjs"

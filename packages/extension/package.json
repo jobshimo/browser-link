@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@browser-link/core": "workspace:*",
     "@browser-link/shared": "workspace:*"
   },
   "devDependencies": {

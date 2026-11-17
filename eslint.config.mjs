@@ -31,6 +31,9 @@ export default tseslint.config(
       'packages/server/scripts/**',
       'packages/extension/scripts/**',
       'packages/extension/copy-assets.mjs',
+      // RED fixtures of core's architecture test: deliberate violations
+      // (chrome, node:fs, zod, cycles), outside every TS project.
+      'packages/core/src/fitness/fixtures/**',
       // ESLint config itself
       'eslint.config.mjs',
       // Agent worktrees. Each one holds a full checkout of this repo,
