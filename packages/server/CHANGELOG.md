@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.3](https://github.com/jobshimo/browser-link/compare/v1.3.2...v1.3.3) (2026-11-17)
+
+### Bug Fixes
+
+- **ci:** the real-Chrome e2e now runs in CI on Chrome for Testing 118.0.5993.70, the oldest supported Chrome, and that leg gates the publish. It also runs on the runner's stable Chrome, which reports without blocking and, on main, opens a tracking issue or comments on the open one when it fails. Each leg records the browser version in the job's step summary and in an `e2e-result` artifact. The product is unchanged.
+
 ## [1.3.2](https://github.com/jobshimo/browser-link/compare/v1.3.1...v1.3.2) (2026-11-17)
 
 ### Bug Fixes
