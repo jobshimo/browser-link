@@ -10,11 +10,13 @@ import {
   UNOBSERVED_SHADOW_HINT,
   buildClickAimJs,
   buildClickHitCheckJs,
+  buildClickMoveCheckJs,
   buildClickResolveJs,
   buildDragProbeJs,
   buildFrameWatchReadJs,
   buildFrameWatchStartJs,
   clickMissedMessage,
+  clickMoveMissedMessage,
   buildElementRectJs,
   buildExpectProbeJs,
   buildFindJs,
@@ -4192,6 +4194,95 @@ describe('buildClickAimJs / buildClickHitCheckJs: a click is reported only where
       buildClickAimJs({ selector: '#gone', force: false }),
     );
     expect(plain).toEqual({ ok: false, reason: 'no-box' });
+  });
+
+  test('a move that reaches the target confirms it; the watch stays armed for the press', async () => {
+    const el = button('go');
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, composed: true }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: true,
+    });
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: true, landed: true });
+  });
+
+  test('no move in the target document: not confirmed, and a later move is', async () => {
+    const el = button('go');
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: false,
+    });
+    el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, composed: true }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: true,
+    });
+  });
+
+  test('a move delivered with the next frame is still seen by the same check', async () => {
+    const el = button('go');
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    const check = evalExpr<Promise<unknown>>(buildClickMoveCheckJs());
+    el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, composed: true }));
+    await expect(check).resolves.toEqual({ armed: true, moved: true });
+  });
+
+  test('a move on another element is not confirmed and names it, once', async () => {
+    button('go');
+    const other = document.createElement('div');
+    other.id = 'cover';
+    document.body.appendChild(other);
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    other.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, composed: true }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: false,
+      moved_on: 'div#cover',
+    });
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: false,
+    });
+  });
+
+  test('force on a covered target (D4): a move on the cover the hit test named is confirmed', async () => {
+    button('go');
+    const cover = document.createElement('div');
+    cover.className = 'modal-backdrop';
+    document.body.appendChild(cover);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => cover;
+    const aim = await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: true }));
+    expect(aim).toMatchObject({ ok: true, hit_element: 'div.modal-backdrop' });
+    cover.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, composed: true }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: true,
+      moved: true,
+    });
+  });
+
+  test('the move check claims nothing without an armed watch, and the hit check stops the move listener', async () => {
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: false,
+    });
+    const el = button('go');
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    evalExpr(buildClickHitCheckJs());
+    el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, composed: true }));
+    await expect(evalExpr<Promise<unknown>>(buildClickMoveCheckJs())).resolves.toEqual({
+      armed: false,
+    });
+  });
+
+  test('clickMoveMissedMessage: says no press was sent, and where the move went when known', () => {
+    expect(clickMoveMissedMessage('#add', { x: 295.27, y: 90.4 }, 10)).toBe(
+      "Click on #add did not reach it: the mouse was moved to (295, 90) 10 times, but it was never seen in the target's document (the browser routed it elsewhere, possibly into another frame drawn there before the page scrolled), so no press was sent and nothing was clicked. Check the page (browser.snapshot or browser.screenshot) before retrying",
+    );
+    expect(clickMoveMissedMessage('#add', { x: 1, y: 2 }, 10, 'div#cover')).toContain(
+      'the mouse was moved to (1, 2) 10 times, but it reached div#cover instead, so no press was sent',
+    );
   });
 
   test('without an armed watch (document replaced) nothing is claimed either way', () => {

@@ -14,10 +14,14 @@ import {
   buildFindJs,
   buildClickAimJs,
   buildClickHitCheckJs,
+  buildClickMoveCheckJs,
   buildClickResolveJs,
   buildFrameWatchReadJs,
   buildFrameWatchStartJs,
   clickMissedMessage,
+  clickMoveMissedMessage,
+  CLICK_MOVE_TRIES,
+  type ClickMoveCheck,
   HIT_CHECK_DIALOG_NOTE,
   HIT_CHECK_FRAME_NOTE,
   HIT_CHECK_NO_ANSWER_NOTE,
@@ -1111,28 +1115,96 @@ async function evaluateObserverJs(tabId: number, expression: string): Promise<un
   return result.result.value;
 }
 
-/** The three mouse events of a pointer click at (x, y). */
-function pointerClickEvents(x: number, y: number): Record<string, unknown>[] {
+/** The press and release of a pointer click at (x, y); the move that
+ * precedes them is sent by `moveOntoTarget`. */
+function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
   return [
-    { type: 'mouseMoved', x, y },
     { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
     { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
   ];
 }
 
+/** Dispatch the press and release of a pointer click (see `dispatchMouseEvents`). */
+function dispatchPointerPress(session: number, x: number, y: number): Promise<{ dialog: boolean }> {
+  return dispatchMouseEvents(session, pointerPressEvents(x, y));
+}
+
 /**
- * Dispatch a pointer click. A JavaScript dialog opened by the click pauses
+ * Read the move half of the click's hit watch (`buildClickMoveCheckJs`),
+ * bounded by `HIT_CHECK_TIMEOUT_MS`. `'dialog'` when a JavaScript dialog is
+ * open (the page is paused); `undefined` when the page did not answer or
+ * answered nothing usable.
+ */
+async function readMoveCheck(session: number): Promise<ClickMoveCheck | 'dialog' | undefined> {
+  const dialogOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
+  if (dialogOpen()) return 'dialog';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(undefined);
+    }, HIT_CHECK_TIMEOUT_MS);
+  });
+  let check: unknown;
+  try {
+    check = await Promise.race([evaluateInTab(session, buildClickMoveCheckJs()), late]);
+  } catch {
+    check = undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (dialogOpen()) return 'dialog';
+  return check && typeof check === 'object' ? (check as ClickMoveCheck) : undefined;
+}
+
+/**
+ * Move the mouse to the click point and, when the target is watched, wait
+ * until the move was seen on it (`buildClickMoveCheckJs`) before the press
+ * is sent. Right after a scroll the browser can still route input by the
+ * frame it drew before, into whatever was under that point then (another
+ * frame, possibly a cross-origin one); the move shows where input goes now,
+ * so it is sent again one animation frame later, up to `CLICK_MOVE_TRIES`
+ * times. `missed` (with `moved_on` when the move reached another element)
+ * means no move ever reached the target: the caller sends no press.
+ *
+ * Not checked, the press then follows as before: a frame element
+ * (`watched: false`), whose events go into the document inside it, where
+ * the move cannot be watched (the click reports `hit_check:
+ * 'not_verifiable'`); and a watch that is gone or a page that does not
+ * answer, where the hit check after the press says it was not verified.
+ */
+async function moveOntoTarget(
+  session: number,
+  x: number,
+  y: number,
+  watched: boolean,
+): Promise<{ dialog: boolean; missed?: true; moved_on?: string }> {
+  const move = [{ type: 'mouseMoved', x, y }];
+  if (!watched) return dispatchMouseEvents(session, move);
+  let movedOn: string | undefined;
+  for (let i = 0; i < CLICK_MOVE_TRIES; i++) {
+    const sent = await dispatchMouseEvents(session, move);
+    if (sent.dialog) return sent;
+    const check = await readMoveCheck(session);
+    if (check === 'dialog') return { dialog: true };
+    if (!check?.armed || check.moved) return { dialog: false };
+    if (typeof check.moved_on === 'string') movedOn = check.moved_on;
+  }
+  return movedOn !== undefined
+    ? { dialog: false, missed: true, moved_on: movedOn }
+    : { dialog: false, missed: true };
+}
+
+/**
+ * Dispatch mouse events in order. A JavaScript dialog opened by one pauses
  * the page, and the event that opened it is answered only once the dialog
  * is closed: `dialog: true` says one opened, and the click answers then
  * instead of waiting for someone to close it.
  */
-async function dispatchPointerClick(
+async function dispatchMouseEvents(
   session: number,
-  x: number,
-  y: number,
+  events: Record<string, unknown>[],
 ): Promise<{ dialog: boolean }> {
   const isOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
-  const events = pointerClickEvents(x, y);
   for (const event of events) {
     const sent = cdp(session, 'Input.dispatchMouseEvent', event);
     // Answered late (after the dialog is closed) or never: nobody waits then.
@@ -1964,9 +2036,29 @@ async function performClick(
         };
       }
     } else {
+      // The press is sent only once the move was seen on the target (a
+      // frame element's cannot be: it is clicked as before, not verified).
       // A JavaScript dialog the click opens pauses the page: the dispatch
       // answers at once, and nothing after it can be checked.
-      dialogOpened = (await dispatchPointerClick(tabId, resolved.x, resolved.y)).dialog;
+      const moved = await moveOntoTarget(
+        tabId,
+        resolved.x,
+        resolved.y,
+        resolved.hit_check !== 'not_verifiable',
+      );
+      if (moved.missed) {
+        return {
+          ok: false,
+          error: clickMoveMissedMessage(
+            ref ?? selector ?? '',
+            resolved,
+            CLICK_MOVE_TRIES,
+            moved.moved_on,
+          ),
+        };
+      }
+      dialogOpened =
+        moved.dialog || (await dispatchPointerPress(tabId, resolved.x, resolved.y)).dialog;
       if (dialogOpened) {
         hitCheckNote = HIT_CHECK_DIALOG_NOTE;
       } else {
