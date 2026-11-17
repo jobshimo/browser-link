@@ -405,11 +405,17 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   type ExecFile = NonNullable<PeerLookupDeps['execFile']>;
   type Call = { file: string; args: readonly string[]; timeout?: number };
   type Answer = string | Error | ((args: readonly string[]) => string | Error);
-  /** Fake execFile: answers by the program name, recording every call. */
+  /** What the kernel-table PowerShell answers unless a test says otherwise:
+   * the interop stubs refused, so the netstat + CIM lookup these tests cover runs. */
+  const KERNEL_BLOCKED = '{"v":1,"stage":"interop"}\r\n';
+  /** Fake execFile: answers by the program name, recording every call. The
+   * kernel-table PowerShell is recorded and answered as `powershell:kernel`. */
   function fakeExecFile(answers: Record<string, Answer>, calls: Call[] = []): ExecFile {
     return (file, args, options) => {
-      calls.push({ file, args, timeout: options.timeout });
-      const entry = answers[file];
+      const kernel = file === 'powershell' && args.some((a) => a.includes('BrowserLinkPeer'));
+      const name = kernel ? 'powershell:kernel' : file;
+      calls.push({ file: name, args, timeout: options.timeout });
+      const entry = kernel ? (answers[name] ?? KERNEL_BLOCKED) : answers[file];
       if (entry === undefined) return Promise.reject(new Error(`unexpected command ${file}`));
       const answer = typeof entry === 'function' ? entry(args) : entry;
       return answer instanceof Error ? Promise.reject(answer) : Promise.resolve({ stdout: answer });
@@ -440,6 +446,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
   ): PeerLookupDeps => ({
     platform: 'win32',
     execFile: fakeExecFile(answers, calls),
+    log: () => {},
     sleep: (ms) => {
       waits.push(ms);
       return Promise.resolve();
@@ -485,6 +492,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       ),
     );
     expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['powershell:kernel', 5000],
       ['netstat', 5000],
       ['powershell', 5000],
       ['tasklist', 5000],
@@ -734,10 +742,10 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       54321,
       win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }, calls),
     );
-    expect(calls.map((c) => c.file)).toEqual(['netstat', 'powershell']);
-    expect(calls[0]?.args).toEqual(['-ano', '-p', 'TCP']);
-    expect(calls[1]?.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
-    expect(calls[1]?.args[3]).toBe(buildCimIdentityScript(PEER, SELF));
+    expect(calls.map((c) => c.file)).toEqual(['powershell:kernel', 'netstat', 'powershell']);
+    expect(calls[1]?.args).toEqual(['-ano', '-p', 'TCP']);
+    expect(calls[2]?.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    expect(calls[2]?.args[3]).toBe(buildCimIdentityScript(PEER, SELF));
   });
 
   test('win32: a pid that is not a safe integer never reaches PowerShell (invalid-pid)', async () => {
@@ -749,7 +757,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       win({ netstat: huge, powershell: cim(row(), selfRow()) }, calls),
     );
     expect(res).toEqual({ ok: false, cause: 'invalid-pid' });
-    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+    expect(calls.map((c) => c.file)).toEqual(['powershell:kernel', 'netstat']);
   });
 
   test('win32: a stale TIME_WAIT 0 row on the peer endpoint does not make it ambiguous', async () => {
@@ -820,7 +828,10 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       cause: 'endpoint-not-listed',
       detail: `${String(NETSTAT_SNAPSHOTS)} netstat snapshots, 0 rows for the local port in the last`,
     });
-    expect(calls.map((c) => c.file)).toEqual(Array(NETSTAT_SNAPSHOTS).fill('netstat'));
+    expect(calls.map((c) => c.file)).toEqual([
+      'powershell:kernel',
+      ...Array<string>(NETSTAT_SNAPSHOTS).fill('netstat'),
+    ]);
     expect(waits).toEqual([...NETSTAT_RETRY_DELAYS_MS]);
   });
 
@@ -834,7 +845,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       win({ netstat: snapshots(twoOwners, NETSTAT) }, calls, waits),
     );
     expect(res).toEqual({ ok: false, cause: 'endpoint-ambiguous' });
-    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+    expect(calls.map((c) => c.file)).toEqual(['powershell:kernel', 'netstat']);
     expect(waits).toEqual([]);
   });
 
@@ -899,7 +910,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       win({ netstat: twoOwners, powershell: cim(row(), selfRow()) }, calls),
     );
     expect(res).toEqual({ ok: false, cause: 'endpoint-ambiguous' });
-    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+    expect(calls.map((c) => c.file)).toEqual(['powershell:kernel', 'netstat']);
   });
 
   test('win32: the server as its own peer is refused before PowerShell (self)', async () => {
@@ -910,7 +921,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       win({ netstat: NETSTAT, powershell: cim(row(), selfRow()) }, calls),
     );
     expect(res).toEqual({ ok: false, cause: 'self' });
-    expect(calls.map((c) => c.file)).toEqual(['netstat']);
+    expect(calls.map((c) => c.file)).toEqual(['powershell:kernel', 'netstat']);
   });
 
   // --- strict mode: the executable path, only when asked for ---
@@ -927,7 +938,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       ok: true,
       peer: { pid: PEER, binaryName: 'chrome.exe', executablePath: CHROME_PATH },
     });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
   });
 
   test('win32: an empty ExecutablePath rejects when asked for (path-unreadable)', async () => {
@@ -1101,6 +1112,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
       { withExecutablePath: true },
     );
     expect(seen.map((s) => s.file)).toEqual([
+      'powershell',
       'netstat',
       'powershell',
       'tasklist',
@@ -1146,8 +1158,10 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
         return Promise.resolve();
       },
       execFile: (file, args, options) => {
-        // A command that times out costs its whole timeout.
-        t += Math.min(costs[file] ?? 0, options.timeout);
+        // A command that times out costs its whole timeout. The kernel-table
+        // PowerShell costs `costs['powershell:kernel']`, nothing by default.
+        const kernel = file === 'powershell' && args.some((a) => a.includes('BrowserLinkPeer'));
+        t += Math.min(costs[kernel ? 'powershell:kernel' : file] ?? 0, options.timeout);
         return inner(file, args, options);
       },
     };
@@ -1172,6 +1186,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     expect(res).toMatchObject({ ok: false, cause: 'deadline' });
     // The CIM call was cut at the deadline: no tasklist fallback runs after it.
     expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['powershell:kernel', 5000],
       ['netstat', 5000],
       ['powershell', 4950],
     ]);
@@ -1187,6 +1202,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     );
     expect(res).toMatchObject({ ok: false, cause: 'deadline' });
     expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['powershell:kernel', 300],
       ['netstat', 300],
       ['netstat', 150],
     ]);
@@ -1210,6 +1226,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
     );
     expect(res).toEqual({ ok: true, peer: { pid: PEER, binaryName: 'chrome.exe' } });
     expect(calls.map((c) => [c.file, c.timeout])).toEqual([
+      ['powershell:kernel', 5000],
       ['netstat', 5000],
       ['powershell', 5000],
       ['tasklist', 4900],
@@ -1232,7 +1249,7 @@ describe('lookupPeerProcessDetailed: same OS user, fail closed', () => {
         calls,
       ),
     );
-    expect(calls.map((c) => c.timeout)).toEqual([5000, 5000, 5000, 5000]);
+    expect(calls.map((c) => c.timeout)).toEqual([5000, 5000, 5000, 5000, 5000]);
   });
 
   // --- S5.5: the tasklist fallback never equates two account names ---

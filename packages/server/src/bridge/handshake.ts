@@ -235,7 +235,8 @@ export async function evaluateHandshake(
 }
 
 /** Diagnostic lookups that may run at once, across all callers. Each one is
- * an OS process lookup (netstat plus PowerShell on Windows, about 0.5 s). */
+ * an OS process lookup (on Windows one PowerShell reading the kernel TCP
+ * table, about 0.4 s; its netstat + CIM fallback about 1.5 s). */
 export const MAX_CONCURRENT_HANDSHAKE_CHECKS = 2;
 
 /** The message of a 500 when the gate itself failed (a bug, never a

@@ -1,5 +1,10 @@
 import { sharedPeerLookupLimiter, type PeerLookupLimiter } from './peer-lookup-limiter.js';
-import type { Endpoint, PeerLookupRequest, PeerLookupResult } from './process-identity.js';
+import {
+  normaliseLoopback,
+  type Endpoint,
+  type PeerLookupRequest,
+  type PeerLookupResult,
+} from './process-identity.js';
 
 /**
  * What the IPC server and the WebSocket gate share when they check who is on
@@ -9,16 +14,9 @@ import type { Endpoint, PeerLookupRequest, PeerLookupResult } from './process-id
  * on WebSocket) stays with the port.
  */
 
-/**
- * Loopback-only addresses can show up as ::ffff:127.0.0.1 (IPv4-mapped IPv6)
- * or ::1 depending on how the kernel exposes the dual stack. Normalise to the
- * IPv4 form lsof / netstat understand.
- */
-export function normaliseLoopback(addr: string): string {
-  if (addr === '::1' || addr === '::ffff:127.0.0.1') return '127.0.0.1';
-  if (addr.startsWith('::ffff:')) return addr.slice('::ffff:'.length);
-  return addr;
-}
+// The loopback normaliser lives with the lookup, which also applies it to
+// the kernel table's IPv6 rows on Windows.
+export { normaliseLoopback };
 
 /** The ends of a connection as `net.Socket` exposes them. */
 export interface ConnectionEnds {

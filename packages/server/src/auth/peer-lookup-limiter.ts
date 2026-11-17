@@ -2,8 +2,9 @@ import { PEER_LOOKUP_DEADLINE_MS, type PeerLookupResult } from './process-identi
 
 /**
  * Lookups that may run at once across both ports (IPC accepts and WebSocket
- * upgrades, `/handshake-check` included). One Windows lookup is a netstat
- * plus a PowerShell CIM call, about 1 s of a cold PowerShell each; four keeps
+ * upgrades, `/handshake-check` included). One Windows lookup is one cold
+ * PowerShell reading the kernel TCP table, about 0.4 s (about 1.5 s when it
+ * falls back to netstat plus a PowerShell CIM call); four keeps
  * a burst of reconnecting tabs and proxies moving without letting a local
  * flood start dozens of them. It stays above the `/handshake-check` cap (2),
  * so diagnostics alone can never take every slot.

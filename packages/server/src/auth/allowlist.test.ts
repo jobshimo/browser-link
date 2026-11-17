@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'vitest';
+import { afterAll, describe, expect, test } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getAllowedBrowsers, isAllowedBrowser, isAllowedExecutablePath } from './allowlist.js';
 
 describe('isAllowedExecutablePath (opt-in strict mode)', () => {
@@ -36,6 +39,51 @@ describe('isAllowedExecutablePath (opt-in strict mode)', () => {
 
   test('an empty list allows nothing', () => {
     expect(isAllowedExecutablePath(CHROME, [], 'win32')).toBe(false);
+  });
+});
+
+describe('isAllowedExecutablePath: a listed path that goes through a junction', () => {
+  // A real directory junction (a symbolic link outside Windows), as nvm for
+  // Windows makes: C:\nvm4w\nodejs -> the active version's folder. The peer
+  // path is what the kernel reports: the real file.
+  const root = mkdtempSync(join(tmpdir(), 'bl-junction-'));
+  const realDir = join(root, 'v24');
+  const otherDir = join(root, 'v22');
+  mkdirSync(realDir);
+  mkdirSync(otherDir);
+  writeFileSync(join(realDir, 'node.exe'), '');
+  writeFileSync(join(otherDir, 'node.exe'), '');
+  symlinkSync(realDir, join(root, 'nodejs'), 'junction');
+  symlinkSync(otherDir, join(root, 'other'), 'junction');
+  const kernelPath = realpathSync.native(join(realDir, 'node.exe'));
+  const os = process.platform;
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('an entry through a junction to the real file matches', () => {
+    expect(isAllowedExecutablePath(kernelPath, [join(root, 'nodejs', 'node.exe')], os)).toBe(true);
+  });
+
+  test('an entry through a junction to a different file does not match', () => {
+    expect(isAllowedExecutablePath(kernelPath, [join(root, 'other', 'node.exe')], os)).toBe(false);
+  });
+
+  test('an entry that does not exist on disk only matches as written', () => {
+    const gone = join(root, 'gone', 'node.exe');
+    expect(isAllowedExecutablePath(kernelPath, [gone], os)).toBe(false);
+    expect(isAllowedExecutablePath(gone, [gone], os)).toBe(true);
+  });
+
+  test('the peer path is never resolved: a peer path through the junction does not match the real entry', () => {
+    expect(isAllowedExecutablePath(join(root, 'nodejs', 'node.exe'), [kernelPath], os)).toBe(false);
+  });
+
+  test('on Windows the resolved entry is compared case-insensitively too', () => {
+    const resolve = (p: string) => (p === 'C:\\link\\node.exe' ? 'C:\\Real\\Node.exe' : null);
+    expect(
+      isAllowedExecutablePath('c:\\real\\node.exe', ['C:\\link\\node.exe'], 'win32', resolve),
+    ).toBe(true);
   });
 });
 
