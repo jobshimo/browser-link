@@ -1147,15 +1147,16 @@ async function renavigateInPlace(cdp, targetId) {
 
 /** Scroll to the bottom once the page is quiet. An add click hides #done for
  * 300 ms (index.html); scrolled meanwhile, the page is one line shorter, and
- * the scroll offset the call records differs from run to run. */
+ * the scroll offset the call records differs from run to run. The wait is
+ * inside ONE evaluate: the server counts every successful evaluate as
+ * pending_wrap_up, so a polled wait would make that count vary. */
 async function scrollToBottom(T) {
-  await pollUntil(
-    'browser.evaluate',
-    { tab_id: T, expression: "document.getElementById('done').hidden" },
-    (b) => (b && typeof b === 'object' && 'value' in b ? b.value : b) === false,
-    'scroll-settled',
+  const quiet =
+    "new Promise((r) => { const f = () => (document.getElementById('done').hidden ? setTimeout(f, 20) : r()); f(); })";
+  return pageValue(
+    T,
+    `${quiet}.then(() => (window.scrollTo(0, document.body.scrollHeight), window.scrollY))`,
   );
-  return pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
 }
 
 async function pageValue(T, expression, { poll = false } = {}) {
