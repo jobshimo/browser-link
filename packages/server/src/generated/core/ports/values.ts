@@ -1,8 +1,9 @@
 // GENERATED from packages/core/src/ports/values.ts. Do not edit.
 // The value types the ports speak, declared here so `ports` imports nothing
-// in core (5.2). Copied as they are from the extension's settle.ts
-// (`SettleParams`, `EvaluateFn`) and observer-host.ts (`ObserverMark`);
-// slice 7 deletes those originals and re-points `support/` at these.
+// in core (5.2). They were copied as they were from the extension's
+// settle.ts (`SettleParams`, `EvaluateFn`) and observer-host.ts
+// (`ObserverMark`); slice 7 deleted those originals and re-pointed
+// `support/` at these.
 
 export interface SettleParams {
   settleMs: number;

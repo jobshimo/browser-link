@@ -123,7 +123,7 @@ import {
   type PressStepResult,
   type TypeStepResult,
   type WaitForStepResult,
-} from './flow.js';
+} from '../generated/core/flow/flow-engine.js';
 
 // The declarative v1 support table lives in `./support.ts` (zero
 // dependencies, importable by `tools/browser-dispatch.ts` without pulling

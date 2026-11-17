@@ -1,7 +1,6 @@
-import { createManualClock, type ManualClock } from '@browser-link/core';
+import { createManualClock, type ManualClock } from '../ports/contract/index.js';
 import { describe, expect, test, vi } from 'vitest';
-import { runFlow, type FlowDeps } from './flow.js';
-import { summarizeFlow, type FlowRegistryEntry } from './flow-registry.js';
+import { runFlow, type FlowDeps } from './flow-engine.js';
 
 /**
  * The runner's own deadline: a foreground flow stops cooperatively at the
@@ -199,32 +198,5 @@ describe('runFlow — deadline', () => {
     expect(deps.performPress).toHaveBeenCalledWith(
       expect.objectContaining({ settle_timeout_ms: 5_000 }),
     );
-  });
-});
-
-describe('summarizeFlow — timeout', () => {
-  const entry = {
-    flowId: 'flow_1',
-    tabId: 1,
-    steps: 2,
-    detached: false,
-    startedAt: 0,
-    progress: { step: 1, steps: 2 },
-    cancelled: false,
-  } as unknown as FlowRegistryEntry;
-
-  test('a deadline stop is reported as expired, with the steps it completed', () => {
-    const summary = summarizeFlow(entry, {
-      ok: true,
-      stopped_by: 'timeout',
-      steps_completed: 1,
-      results: [{ iterations_completed: 4, stopped_by: 'timeout', iterations: [] }],
-    });
-    expect(summary).toMatchObject({
-      outcome: 'expired',
-      stepsCompleted: 1,
-      iterationsCompleted: 4,
-      stoppedBy: 'expired',
-    });
   });
 });

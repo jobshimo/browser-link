@@ -2,7 +2,7 @@
 // `setInterval`, nothing else. The server's cdp-direct transport has the
 // same adapter under the same name (`cdp/adapters/system-clock.ts`), so
 // the `perform*` handlers that pass it stay textually identical.
-import type { Clock } from '../clock.js';
+import type { Clock } from '@browser-link/core';
 
 export const systemClock: Clock = {
   now: () => Date.now(),

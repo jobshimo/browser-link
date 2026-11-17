@@ -13,7 +13,7 @@
  * (`"<TEXT>"`) — there is no code path here, or in `inpage/recorder.ts`,
  * that has access to a field's real value in the first place.
  */
-import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
+import { MAX_FLOW_STEPS, type FlowStep } from '@browser-link/core';
 import type { Messages } from './i18n.js';
 import type { WorkerMessage } from './worker-messages.js';
 

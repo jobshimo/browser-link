@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { messages } from './i18n.js';
 import { englishText } from './worker-messages.js';
-import { MAX_FLOW_STEPS, type FlowStep } from './flow.js';
+import { MAX_FLOW_STEPS, type FlowStep } from '@browser-link/core';
 import {
   DISCARDED_WHILE_SAVING,
   MAX_RECORDED_SELECTOR_LENGTH,
