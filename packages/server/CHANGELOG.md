@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.3](https://github.com/jobshimo/browser-link/compare/v1.4.2...v1.4.3) (2026-11-17)
+
+### Bug Fixes
+
+- **ci:** every e2e case must now actually call the tools the tool-to-case table maps to it, checked from the run's recorded calls.
+- **ci:** a pull request labelled `behavior-change` must have a line `Expected difference: <text>` in its description and cannot be titled `refactor:` or `refactor(core)`.
+- **tests:** the e2e harness prints the last 64 KB of Chrome's stderr when Chrome fails to start.
+- **tests:** the e2e scrolls to the bottom only after the page settles; a 300 ms hidden element made the self-diff flaky.
+
+The product is unchanged.
+
 ## [1.4.2](https://github.com/jobshimo/browser-link/compare/v1.4.1...v1.4.2) (2026-11-17)
 
 ### Notes

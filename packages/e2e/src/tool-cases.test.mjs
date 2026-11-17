@@ -13,6 +13,7 @@ import {
   committedTableProblems,
   harnessCases,
   tableProblems,
+  uncalledCases,
 } from './tool-cases.mjs';
 
 const tools = catalogueTools(readFileSync(CATALOGUE_FILE, 'utf8'));
@@ -91,4 +92,28 @@ test('harnessCases reads labels, tool names and expectError names', () => {
     assert.ok(cases.has(name), name);
   }
   assert.equal(cases.has('error.browser.evaluate'), false);
+});
+
+test('a mapped case counts only when its tool was called under that case name', () => {
+  const cases = {
+    'browser.drag': ['browser.drag'],
+    'browser.ping': ['browser.ping', 'wait_for_tab'],
+  };
+  const calls = [
+    { tool: 'browser.drag' },
+    { tool: 'browser.ping', label: 'browser.ping' },
+    { tool: 'browser.ping', label: 'wait_for_tab' },
+  ];
+  assert.deepEqual(uncalledCases(calls, cases), []);
+  // The literal exists in run.mjs but another tool made the call under it.
+  assert.deepEqual(uncalledCases([{ tool: 'browser.click', label: 'browser.drag' }], cases), [
+    'browser.drag: case "browser.drag" was never called',
+    'browser.ping: case "browser.ping" was never called',
+    'browser.ping: case "wait_for_tab" was never called',
+  ]);
+  // A call with a label is no longer the tool's own case.
+  assert.deepEqual(
+    uncalledCases([{ tool: 'browser.drag', label: 'other' }, ...calls.slice(1)], cases),
+    ['browser.drag: case "browser.drag" was never called'],
+  );
 });
