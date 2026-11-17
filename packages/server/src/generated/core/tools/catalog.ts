@@ -1,13 +1,14 @@
 // GENERATED from packages/core/src/tools/catalog.ts. Do not edit.
 /**
- * The registry both transports dispatch through (design 3.3). It grows one
- * handler family per slice (10-18); a wire tool not in it still runs through
- * its transport's own `case`. Entries are listed in the order of cdp-direct's
+ * The registry both transports dispatch through (design 3.3). It grew one
+ * handler family per slice (10-18b); every wire tool a transport runs is in
+ * it. Entries are listed in the order of cdp-direct's
  * support table (`cdpToolSupport`); dispatch reads entries by name only.
  */
 import { dialogRespondTool, setPermissionTool } from './dialog-permission.js';
 import { downloadSettleTool, downloadTool } from './download.js';
 import { dragTool } from './drag.js';
+import { flowCancelTool, flowStatusTool, flowTool } from './flow.js';
 import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
 import {
   canvasScreenshotTool,
@@ -36,6 +37,9 @@ export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([
   pressTool,
   evaluateTool,
   waitForTool,
+  flowTool,
+  flowStatusTool,
+  flowCancelTool,
   dragTool,
   consoleTool,
   networkTool,

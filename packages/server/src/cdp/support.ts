@@ -22,7 +22,9 @@ import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { cdpToolSupport } from '../generated/core/tools/registry.js';
 import type { Requirement } from '../generated/core/tools/requirement.js';
 
-/** What cdp-direct provides to the tool registry (design 3.3). It does not
+/** What cdp-direct provides to the tool registry (design 3.3): the page
+ * ports, the CDP event wait and its own flow model (`flows`, and
+ * `flow-cancel`, which only cdp-direct provides). It does not
  * provide `capture-buffers`: it never enables the Network domain or keeps
  * console messages, so a `network_url` wait, `browser.console` and
  * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
@@ -40,18 +42,12 @@ export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement
   'page',
   'navigator',
   'screen-capture',
+  'flows',
+  'flow-cancel',
 ]);
 
-/** The rows no registry entry derives, each declared with its reason. */
+/** The row no registry entry derives, declared with its reason. */
 export const CDP_DECLARED_SUPPORT: ReadonlyMap<string, boolean> = new Map([
-  // Transport-owned until the flow tools join the registry (design slice
-  // 18b): `callCdpTool` runs them through its own cases, on cdp-direct's own
-  // detached-flow model (`detached-flows.ts`). Full parity: the runner is
-  // in-process, so status and cancel are if anything simpler here than over
-  // the extension bridge.
-  ['flow', true],
-  ['flow_status', true],
-  ['flow_cancel', true],
   // Dispatcher-only, in no registry: `browser-dispatch.ts` answers it itself
   // and refuses a `cdp:` opener, since only the extension reports new tabs.
   ['wait_for_tab', false],

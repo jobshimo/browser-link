@@ -5,18 +5,13 @@
  * executes each wire-level tool directly over a raw CDP-over-WebSocket
  * connection (`./client.ts`) instead of routing through the extension.
  *
- * Mirrors `packages/extension/src/background.ts`'s `handleTool` switch
- * case-for-case, using the SAME in-page builder strings
- * (`../generated/core/inpage/builders.ts`, the generated mirror of the core
- * module) and the SAME `browser.flow` step engine (generated from core's
- * `flow/flow-engine.ts`). `find` and `click` (slice 10), `type` and
- * `press` (slice 11), `wait_for` (slice 13), `drag` (slice 14) and `ping`,
- * `navigate`, `snapshot`, `state`, `screenshot`, `evaluate`,
- * `canvas_screenshot`, `console`, `network` and `network_body` (slice 15)
- * run through core's tool registry (`dispatchTool`, outcome mapped by
- * `./tool-outcome.ts`); `drag`, `canvas_screenshot`, `console`, `network`
- * and `network_body` are refused there, since cdp-direct does not provide
- * `drag`, `canvas`, `capture-buffers` or `response-bodies`. The wire-level contract is
+ * Every wire tool runs through core's tool registry (`dispatchTool`, the
+ * generated mirror of core's `tools/`, outcome mapped by
+ * `./tool-outcome.ts`), the same bodies the extension runs; the flow tools
+ * run on cdp-direct's own flow model (`./flow-control.ts`). A tool whose
+ * requirements cdp-direct does not provide (`drag`, `canvas`,
+ * `capture-buffers`, `response-bodies`, ...) is refused there with the
+ * unsupported text (`./support.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -28,7 +23,7 @@ import { checkCdpDirectGate } from './gate.js';
 import { buildTargetWsUrl, cdpTargetIdFromTabId, isDrivablePageTarget } from './targets.js';
 import { CdpClient } from './client.js';
 import { CDP_DIRECT_PROVIDES, cdpUnsupportedToolError } from './support.js';
-import { withValuesHiddenNote, buildSnapshotJs } from '../generated/core/inpage/builders.js';
+import { buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createCdpClientSession } from './adapters/cdp-client-session.js';
 import { createCdpPageInfo } from './adapters/cdp-page-info.js';
@@ -42,22 +37,8 @@ import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { dispatchTool } from '../generated/core/tools/registry.js';
 import type { ToolDeps } from '../generated/core/tools/requirement.js';
 import { cdpToolResult } from './tool-outcome.js';
-import {
-  cancelDetachedFlow,
-  detachedFlowForTab,
-  detachedFlowStatus,
-  finishDetachedFlow,
-  MAX_DETACHED_FLOW_MS,
-  registerDetachedFlow,
-  reportDetachedProgress,
-  shouldStopDetachedFlow,
-} from './detached-flows.js';
-import {
-  runFlow,
-  type FlowDeps,
-  type FlowResult,
-  type FlowStep,
-} from '../generated/core/flow/flow-engine.js';
+import { cdpFlowCancel, createCdpFlowControl } from './flow-control.js';
+import type { FlowDeps } from '../generated/core/flow/flow-engine.js';
 
 // The v1 support table and what cdp-direct provides live in `./support.ts`
 // (importable by `tools/browser-dispatch.ts` without pulling
@@ -353,8 +334,8 @@ export function sweepIdleConnectionsForTest(now: number): void {
 
 /** The perform* bindings `runFlow` needs over one CDP connection, in one
  * place so the foreground run, the dry-run projection and the detached run
- * cannot drift apart — the same role `buildFlowDeps` plays in the
- * extension's `background.ts`. */
+ * cannot drift apart — the role the extension's `app/flow-control.ts`
+ * `steps` plays there. */
 function buildCdpFlowDeps(
   client: CdpClient,
   shouldCancel: () => boolean,
@@ -442,170 +423,24 @@ export async function callCdpTool(
   if (!targetId) throw new Error(`cdp-direct: malformed cdp tab id "${tabId}"`);
 
   const client = await getConnection(targetId);
-  // A registered tool (design 3.3) runs through core; its outcome is
-  // returned or thrown by `cdpToolResult` (3.4).
+  // Every wire tool runs through core's registry (design 3.3); its outcome
+  // is returned or thrown by `cdpToolResult` (3.4), and a tool the registry
+  // does not know is refused with the unsupported text.
   const entry = TOOL_REGISTRY.get(tool);
-  if (entry) {
-    return cdpToolResult(
-      await dispatchTool(
-        TOOL_REGISTRY,
-        CDP_DIRECT_PROVIDES,
-        actionDeps(client, entry.commandTimeout === 'call-budget' ? timeoutMs : undefined),
-        'cdp-direct',
-        tool,
-        params,
-      ),
-    );
-  }
-  const p = (params ?? {}) as Record<string, unknown>;
-
-  switch (tool) {
-    case 'flow': {
-      const rawSteps = Array.isArray(p.steps)
-        ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
-        : [];
-      // Strict `=== true` on both flags: any other value runs the flow FOR
-      // REAL and in the foreground. A dry run that silently became a real
-      // run, or a foreground run that silently detached, would each be the
-      // worst possible failure of their flag.
-      const dryRun = p.dry_run === true;
-      const detach = p.dry_run !== true && p.detach === true;
-      const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : '';
-      // Strict `=== true`: the user's hide-password-values setting (D12).
-      const hidePasswordValues = p.hide_password_values === true;
-
-      // THE cdp-direct kill switch. There is no extension here and
-      // therefore no popup Stop button, so the user's only lever is
-      // `browser-link cdp revoke` — and until slice 4, revoking
-      // mid-flow did nothing to the flow already running: it was
-      // grandfathered until it finished. Re-checking the gate per step
-      // turns revoke into a real stop with a worst-case latency of one
-      // step, and the flow returns cleanly with `stopped_by: 'cancelled'`
-      // and everything it completed.
-      //
-      // Cheap enough to run per step: `checkCdpDirectGate` reads two small
-      // local files, and the flow budget caps a run at 60s, which bounds
-      // the number of checks to the low hundreds. Deliberately NOT cached —
-      // the gate's own contract is that a revoked grant is visible to the
-      // very next check, and a cache here would be exactly the staleness
-      // window a kill switch must not have.
-      //
-      // A DETACHED flow additionally answers to `browser.flow_cancel` and
-      // to its own 30-minute ceiling, both of which live in the
-      // detached-flow registry — so on that path both questions are asked.
-      // Revoking the grant still stops a detached flow, which matters: it
-      // is the only lever a human at a terminal has here.
-      const gateAllows = (): boolean => checkCdpDirectGate().ok;
-      if (!detach) {
-        const shouldCancel = (): boolean => !gateAllows();
-        // Same relative-duration deadline the extension path honours. No
-        // bridge timeout applies over cdp-direct, but the MCP client's own
-        // call timeout still does, and a flow that outlives it loses its
-        // partial state exactly as it would there.
-        const deadlineAt =
-          !dryRun && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
-            ? Date.now() + Math.max(0, p.deadline_ms)
-            : undefined;
-        const deps = buildCdpFlowDeps(
-          client,
-          shouldCancel,
-          deadlineAt === undefined ? undefined : () => shouldCancel() || Date.now() >= deadlineAt,
-          hidePasswordValues,
-        );
-        // Owner decision D1: the idle sweep must not cut a running flow. A
-        // dry run only probes and needs no hold. Bounded by the flow's own
-        // deadline; without one (a caller that sent none) by the longest
-        // any flow may run.
-        const release = dryRun
-          ? undefined
-          : holdConnectionForFlow(targetId, deadlineAt ?? Date.now() + MAX_DETACHED_FLOW_MS);
-        let ran: FlowResult;
-        try {
-          ran = await runFlow(
-            rawSteps as FlowStep[],
-            deadlineAt === undefined ? deps : { ...deps, deadlineAt },
-            { dryRun },
-          );
-        } finally {
-          release?.();
-        }
-        return withValuesHiddenNote(ran, hidePasswordValues);
-      }
-
-      // ONE detached flow per tab — same rule, same reason, same error
-      // shape as the extension path (see `handleFlow` in background.ts).
-      const already = detachedFlowForTab(tabId);
-      if (already) {
-        throw new Error(
-          `flow: a detached flow is already running on this tab (${already.flowId}). ` +
-            `Wait for it, or stop it with browser.flow_cancel, before detaching another.`,
-        );
-      }
-      const flow = registerDetachedFlow({ flowId, tabId, steps: rawSteps.length });
-      // Owner decision D1, bounded by the detached ceiling.
-      const release = holdConnectionForFlow(targetId, flow.expiresAt);
-      // The gate branch cancels THROUGH the registry rather than short-
-      // circuiting past it: `stopped_by: 'grant-revoked'` is the only thing
-      // that tells the agent a human pulled the grant, as opposed to
-      // `browser.flow_cancel` or the ceiling. Same reason the ceiling flips
-      // its own reason inside `shouldStopDetachedFlow`.
-      const shouldCancel = (): boolean => {
-        if (shouldStopDetachedFlow(flow.flowId, Date.now())) return true;
-        if (gateAllows()) return false;
-        cancelDetachedFlow(flow.flowId, 'grant-revoked');
-        return true;
-      };
-      // Deliberately floating: this IS detach. The result below goes back
-      // now, the loop keeps running, and the agent's turn is free.
-      void (async () => {
-        let result: FlowResult | null = null;
-        try {
-          result = await runFlow(rawSteps as FlowStep[], {
-            ...buildCdpFlowDeps(client, shouldCancel, shouldCancel, hidePasswordValues),
-            onProgress: (progress) => {
-              reportDetachedProgress(flow.flowId, progress);
-            },
-          });
-        } catch {
-          // A throw (dead CDP socket, closed tab) is a `failed` outcome,
-          // recorded below from a null result. There is no caller left to
-          // rethrow to.
-        } finally {
-          release();
-          finishDetachedFlow(flow.flowId, result);
-        }
-      })();
-      return withValuesHiddenNote(
-        {
-          detached: true,
-          started_at: flow.startedAt,
-          steps: rawSteps.length,
-          expires_at: flow.expiresAt,
-        },
-        hidePasswordValues,
-      );
-    }
-
-    case 'flow_status': {
-      const flowId = typeof p.flow_id === 'string' ? p.flow_id : '';
-      if (flowId.length === 0) throw new Error('flow_status: flow_id required');
-      return detachedFlowStatus(flowId);
-    }
-
-    case 'flow_cancel': {
-      const flowId = typeof p.flow_id === 'string' ? p.flow_id : '';
-      if (flowId.length === 0) throw new Error('flow_cancel: flow_id required');
-      // In-process, so the flag flips synchronously and there is no wire
-      // frame to send — the extension path's one asymmetry. The status
-      // read that follows is the same one `browser.flow_cancel` returns on
-      // either transport, so the two look identical to the agent.
-      cancelDetachedFlow(flowId);
-      return detachedFlowStatus(flowId);
-    }
-
-    default:
-      // Reached only if a caller bypasses CDP_TOOL_SUPPORT's gate — defense
-      // in depth, not a path browser-dispatch.ts's routing exercises.
-      throw cdpUnsupportedToolError(tool);
-  }
+  const gateAllows = (): boolean => checkCdpDirectGate().ok;
+  const deps: ToolDeps = {
+    ...actionDeps(client, entry?.commandTimeout === 'call-budget' ? timeoutMs : undefined),
+    flows: createCdpFlowControl({
+      tabId,
+      clock: systemClock,
+      steps: ({ hidePasswordValues, stopWaiting }) =>
+        buildCdpFlowDeps(client, () => !gateAllows(), stopWaiting, hidePasswordValues),
+      gateAllows,
+      hold: (until) => holdConnectionForFlow(targetId, until),
+    }),
+    'flow-cancel': cdpFlowCancel,
+  };
+  return cdpToolResult(
+    await dispatchTool(TOOL_REGISTRY, CDP_DIRECT_PROVIDES, deps, 'cdp-direct', tool, params),
+  );
 }

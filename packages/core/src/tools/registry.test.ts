@@ -117,7 +117,7 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds the interaction, wait_for, drag, page read, dialog, permission and download tools; only download_settle is unlisted', () => {
+  it('holds every wire tool of both transports; only download_settle is unlisted', () => {
     expect([...TOOL_REGISTRY.keys()]).toEqual([
       'ping',
       'navigate',
@@ -130,6 +130,9 @@ describe('dispatchTool', () => {
       'press',
       'evaluate',
       'wait_for',
+      'flow',
+      'flow_status',
+      'flow_cancel',
       'drag',
       'console',
       'network',

@@ -62,7 +62,9 @@ function extensionErrorText(failure: ToolFailure): string {
     case 'unknown-tool':
       return `Unknown tool: ${failure.tool}`;
     case 'unsupported':
-      // Not reachable: the extension provides every requirement.
+      // Not reachable over the wire: the extension lacks only `flow-cancel`,
+      // and a `flow_cancel` request never reaches it (the server cancels an
+      // extension flow with the `tool.cancel` frame).
       return `Unsupported tool: ${failure.tool} needs ${failure.missing.join(', ')}`;
   }
 }

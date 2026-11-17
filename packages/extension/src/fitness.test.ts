@@ -22,16 +22,17 @@
 //     called only from such statements, and its body in the adapter is the
 //     single addListener call (plus returning the unsubscribe), with no
 //     await.
-// The BRIDGE_PORT rule lives in fitness-bridge-port.test.ts. The rule "no
-// tool `case` in background.ts" lands with slice 18.
+//   - background.ts has no `case` label naming a registered tool (slice 18b).
+// The BRIDGE_PORT rule lives in fitness-bridge-port.test.ts.
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { TOOL_REGISTRY } from '@browser-link/core';
 
 /** Lowered by every slice that moves code out; never raised without arch sign-off. */
-const BACKGROUND_LINE_BUDGET = 2337;
+const BACKGROUND_LINE_BUDGET = 2050;
 
 /** Scripts of the three HTML pages, and the module only they import. */
 const UI_ZONE = ['popup.ts', 'activity.ts', 'admin.ts', 'ui-language.ts'];
@@ -582,7 +583,7 @@ describe('fitness: background.ts line budget', () => {
 /** Comparisons of a tool name (`tool`, `msg.tool`) with a string literal:
  * what a registered tool needs it declares on its registry entry, and the
  * transport reads the entry (design revision 9). The `switch (msg.tool)` of
- * `handleTool` is the transitional dispatch and is not counted. */
+ * `handleTool` was the transitional dispatch until slice 18b. */
 function toolNameChecks(source: string): string[] {
   const sf = ts.createSourceFile('background.ts', source, ts.ScriptTarget.Latest, true);
   const equality = new Set([
@@ -619,6 +620,54 @@ describe('fitness: background.ts makes no tool-name checks', () => {
     expect(toolNameChecks("const t = msg.tool === 'evaluate' ? 1 : 0;\n")).toEqual([
       "msg.tool === 'evaluate'",
     ]);
+  });
+});
+
+/** `case` labels of background.ts that name a registered tool: every wire
+ * tool runs through core's registry, so a tool `case` is tool logic left in
+ * the composition root (design 5.2, 5.3 item 3; since slice 18b). */
+function toolCaseLabels(source: string, tools: ReadonlySet<string>): string[] {
+  const sf = ts.createSourceFile('background.ts', source, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCaseClause(node) &&
+      (ts.isStringLiteral(node.expression) ||
+        ts.isNoSubstitutionTemplateLiteral(node.expression)) &&
+      tools.has(node.expression.text)
+    ) {
+      found.push(`case '${node.expression.text}'`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+const REGISTERED_TOOLS: ReadonlySet<string> = new Set(TOOL_REGISTRY.keys());
+
+describe('fitness: background.ts has no tool case', () => {
+  it('holds for the real background.ts, against every registered tool', () => {
+    expect(REGISTERED_TOOLS.has('flow')).toBe(true);
+    expect(toolCaseLabels(realSources().get('background.ts')!, REGISTERED_TOOLS)).toEqual([]);
+  });
+
+  it('a case for a wire message that is not a tool does not count', () => {
+    expect(
+      toolCaseLabels(
+        "switch (msg.kind) {\n  case 'tool.request':\n    break;\n}\n",
+        REGISTERED_TOOLS,
+      ),
+    ).toEqual([]);
+  });
+
+  it("RED: the transitional `case 'flow'` of handleTool", () => {
+    expect(
+      toolCaseLabels(
+        "switch (msg.tool) {\n  case 'flow':\n    break;\n  case 'flow_status':\n    break;\n}\n",
+        REGISTERED_TOOLS,
+      ),
+    ).toEqual(["case 'flow'", "case 'flow_status'"]);
   });
 });
 

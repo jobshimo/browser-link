@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.25](https://github.com/jobshimo/browser-link/compare/v1.4.24...v1.4.25) (2026-11-18)
+
+### Notes
+
+- Slice 18b of the service worker plan; no behaviour change on the wire. `browser.flow`, `browser.flow_status` and `browser.flow_cancel` now have one body each, in core (`packages/core/src/tools/flow.ts`), run by both transports through the tool registry: the dry run, the one-detached-flow-per-tab refusal, the foreground deadline, the detached launch answer, the hidden-password-values note and every error text are the ones before. Every wire tool now runs through the registry; `background.ts` and `cdp/transport.ts` have no tool `switch` left.
+- Each transport keeps its own flow model behind core's `FlowControl` (`flow/flow-control.ts`: `detachedOnTab`, `steps`, `start`, `status`), the registry requirement `flows`: the extension's (`app/flow-control.ts`) over the flow registry and history, with the tab title read through a new adapter (`adapters/chrome-tab-title.ts`); cdp-direct's (`cdp/flow-control.ts`) over its detached-flow model, its gate (a revoked grant still stops a flow at the next step) and its connection hold. `FlowCancel` (`cancel(flowId)`), the requirement `flow-cancel`, is given by cdp-direct only: the extension cancels a flow through the `tool.cancel` frame and never receives a `flow_cancel` request, so a `flow_cancel` request sent to it straight would now answer `Unsupported tool: flow_cancel needs flow-cancel` instead of `Unknown tool: flow_cancel`. The server never sends one.
+- cdp-direct's support table loses its three declared flow rows (the registry derives them) and keeps the declared `wait_for_tab` row; it still equals the 1.4.23 table.
+- A new fitness rule fails when `background.ts` has a `case` label naming a registered tool.
+- `background.ts` shrinks by 287 lines and its line budget goes from 2337 to 2050; `cdp/transport.ts` goes from 611 to 446 lines.
+
 ## [1.4.24](https://github.com/jobshimo/browser-link/compare/v1.4.23...v1.4.24) (2026-11-18)
 
 ### Notes

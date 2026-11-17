@@ -84,17 +84,15 @@ describe('cdp-direct raw Runtime.evaluate (none since slice 15)', () => {
     ).toEqual(['raw Runtime.evaluate outside the page driver: transport.ts: probe']);
   });
 
-  test("RED: a raw call back in callCdpTool's case fails", () => {
+  test('RED: a raw call back in callCdpTool fails', () => {
     const probe = transportText.replace(
-      "case 'flow': {",
-      "case 'flow': {\n      void client.send('Runtime.evaluate', {});",
+      'const entry = TOOL_REGISTRY.get(tool);',
+      "const entry = TOOL_REGISTRY.get(tool);\n  void client.send('Runtime.evaluate', {});",
     );
     expect(probe).not.toBe(transportText);
     expect(
       rawEvaluateViolations(rawEvaluateSites([{ file: 'transport.ts', text: probe }])),
-    ).toEqual([
-      "raw Runtime.evaluate outside the page driver: transport.ts: callCdpTool case 'flow'",
-    ]);
+    ).toEqual(['raw Runtime.evaluate outside the page driver: transport.ts: callCdpTool']);
   });
 
   test('RED: a raw call in an adapter fails', () => {
