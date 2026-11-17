@@ -190,6 +190,9 @@ Consequences, measured:
   `evaluateObserverJs`, `dispatchKeyEvent`, `waitForLoad`) and a 14-case
   dispatch (`transport.ts` `callCdpTool`). Only the five `perform*` bodies are
   guarded, by an AST comparison (`cdp/transport-parity.test.ts` `HANDLERS`).
+  (Slice 10, 1.4.16, moved `performFind` and `performClick` into core
+  `actions/`, run by both transports through the tool registry; `HANDLERS`
+  now lists the other three.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -368,7 +371,8 @@ packages/core/src/
                     flow-registry.ts flow-history.ts detached-flows.ts
   actions/          perform-find.ts perform-click.ts perform-type.ts
                     perform-press.ts perform-wait-for.ts perform-drag.ts
-                    click-landing.ts frame-watch.ts
+                    click-landing.ts (the frame watch already lives in
+                    session/page-driver.ts, since slice 9)
   tools/            registry.ts (ToolRegistry, cdpToolSupport())
                     failure.ts (ToolFailure, ToolOutcome)
                     interaction.ts wait-for.ts drag.ts page-read.ts
@@ -579,12 +583,23 @@ export interface Settler {            // takeObserverMark, settleWithChanges, ru
   mark(settle: SettleParams | null): Promise<ObserverMarkResult>;
   settle(settle: SettleParams | null, mark: ObserverMarkResult): Promise<SettleReport | undefined>;
 }
-export interface PageDriver {
-  evaluator: Evaluator; keyboard: Keyboard; settler: Settler; page: PageInfo;
+export interface Pointer {             // dispatchMouseEvents, the move of moveOntoTarget (slice 10)
+  mouse(events: readonly MouseEventParams[]): Promise<{ dialog: boolean }>;
+  watchedMove(event: MouseEventParams, budgetMs: number): Promise<{ dialog: boolean } | 'unanswered'>;
+  dialogOpen(): boolean;
 }
-// Join with their first callers: Pointer.mouse (slice 10),
-// Keyboard.insertText (11), CdpEvents.waitFor (14).
+export interface PageDriver {
+  evaluator: Evaluator; keyboard: Keyboard; pointer: Pointer; settler: Settler; page: PageInfo;
+}
+// Join with their first callers: Keyboard.insertText (11), CdpEvents.waitFor (14).
 ```
+
+The pointer is built by the same driver for both transports; what differed
+between their copies before slice 10 is the driver's `dialogs` option: the
+extension passes its tab's pending-dialog state (each mouse event races
+the dialog watch, a failed dispatch fails the click); cdp-direct passes
+none (events awaited in turn, the watched move bounded by the budget left,
+a failed or late one counting as unanswered).
 
 `core/session/page-driver.ts` `createPageDriver({ session, page, clock })`
 returns the driver plus the observer lifecycle its transport drives:
@@ -678,7 +693,12 @@ connection loss; extension socket closed) stay in each transport and are not
 part of `ToolFailure`.
 
 `defineToolOutcomeMappingContract` (5.3, item 5) feeds both mappings one
-outcome per kind and asserts the table above. Error-path e2e cases (slice 3b)
+outcome per kind and asserts the table above. As built in slice 10: the
+contract lives in `core/src/tools/outcome-mapping.contract.ts` (it speaks
+`ToolOutcome`, and `ports` imports nothing in core); the extension's mapping
+is core `tools/failure.ts` `toolResponse` (its wire is the shared protocol),
+cdp-direct's is `cdp/tool-outcome.ts` `cdpToolResult`; `thrown` carries the
+thrown value as `cause`, which cdp-direct rethrows unchanged. Error-path e2e cases (slice 3b)
 pin the real strings in Chrome (and the trail row for `sensitive`) before slice 10 moves the first handler, and
 the differential records `ok: false` results with their `error` text
 unmasked.

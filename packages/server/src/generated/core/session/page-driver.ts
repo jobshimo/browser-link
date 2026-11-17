@@ -10,9 +10,11 @@
  * transports sent before slice 9 (`background.ts` and `cdp/transport.ts`
  * `evaluateInTab`, `evaluateObserverJs`, `takeObserverMark`,
  * `settleWithChanges`, `installObserver`, `handleObserverMessage`,
- * `dispatchKeyEvent`). What differs per transport stays outside: the
- * install warning text, the bridge events the extension reports for a
- * top-document message, and whether `Runtime.enable` is sent here.
+ * `dispatchKeyEvent`); slice 10 added the pointer (`dispatchMouseEvents`).
+ * What differs per transport stays outside: the install warning text, the
+ * bridge events the extension reports for a top-document message, whether
+ * `Runtime.enable` is sent here, and whether dialogs are watched
+ * (`PageDriverDeps.dialogs`).
  */
 import { buildFrameWatchReadJs, buildFrameWatchStartJs } from '../inpage/builders.js';
 import {
@@ -24,9 +26,10 @@ import {
 } from '../inpage/observer.js';
 import type { CdpSession } from '../ports/cdp-session.js';
 import type { Clock } from '../ports/clock.js';
-import type { Keyboard, PageDriver } from '../ports/page-driver.js';
+import type { Keyboard, PageDriver, Pointer } from '../ports/page-driver.js';
 import type { PageInfo } from '../ports/page-info.js';
 import type {
+  MouseEventParams,
   ObserverFailure,
   ObserverMarkResult,
   SettleParams,
@@ -80,11 +83,30 @@ export interface PageDriverHandle extends PageDriver {
   uninstall(tearDownPage: () => boolean): Promise<void>;
 }
 
+/** The transport's view of JavaScript dialogs (the extension tracks
+ * `Page.javascriptDialogOpening` / `Closed` per tab). */
+export interface DialogWatch {
+  isOpen(): boolean;
+}
+
 export interface PageDriverDeps {
   session: CdpSession;
   page: PageInfo;
   clock: Clock;
+  /**
+   * Given by the extension, absent on cdp-direct (which does not track
+   * dialogs). It decides how the pointer dispatches, as each transport did
+   * before slice 10: with it, each mouse event races the dialog watch (a
+   * dialog pauses the page and the event that opened it is answered only
+   * once it closes) and a failed dispatch fails the action; without it,
+   * events are awaited in turn, and a watched move is bounded by the budget
+   * left, a failed or late one counting as unanswered.
+   */
+  dialogs?: DialogWatch;
 }
+
+/** How often a mouse dispatch looks at the dialog watch while it waits. */
+const DIALOG_POLL_MS = 50;
 
 /** The changes-read failure `mergeSettleChanges` turns into `observer: reason`. */
 function failure(reason: ObserverFailure): { ok: false; reason: ObserverFailure } {
@@ -102,7 +124,81 @@ function markFailure(answer: unknown): ObserverFailure {
   return 'changes-error';
 }
 
-export function createPageDriver({ session, page, clock }: PageDriverDeps): PageDriverHandle {
+/**
+ * The pointer over `session` (see `PageDriverDeps.dialogs`). The extension's
+ * dispatch is `background.ts` `dispatchMouseEvents` before slice 10, the
+ * cdp-direct one `cdp/transport.ts` `dispatchMouseEvents` and the move
+ * dispatch of its `moveOntoTarget` (whose per-command timeout was the
+ * budget left).
+ */
+function createPointer(session: CdpSession, clock: Clock, dialogs?: DialogWatch): Pointer {
+  const dispatch = (event: MouseEventParams): Promise<unknown> =>
+    session.send('Input.dispatchMouseEvent', event);
+
+  if (!dialogs) {
+    return {
+      async mouse(events) {
+        for (const event of events) await dispatch(event);
+        return { dialog: false };
+      },
+      async watchedMove(event, budgetMs) {
+        let cancel: () => void = () => undefined;
+        const late = new Promise<'late'>((resolve) => {
+          cancel = clock.after(budgetMs, () => {
+            resolve('late');
+          });
+        });
+        try {
+          const sent = await Promise.race([dispatch(event), late]);
+          return sent === 'late' ? 'unanswered' : { dialog: false };
+        } catch {
+          return 'unanswered';
+        } finally {
+          cancel();
+        }
+      },
+      dialogOpen: () => false,
+    };
+  }
+
+  const isOpen = (): boolean => dialogs.isOpen();
+  const mouse: Pointer['mouse'] = async (events) => {
+    for (const event of events) {
+      const sent = dispatch(event);
+      // Answered late (after the dialog is closed) or never: nobody waits then.
+      sent.catch(() => undefined);
+      const stop = { done: false };
+      const opened = new Promise<'dialog'>((resolve) => {
+        const tick = (): void => {
+          if (stop.done) return;
+          if (isOpen()) resolve('dialog');
+          else clock.after(DIALOG_POLL_MS, tick);
+        };
+        tick();
+      });
+      try {
+        const outcome = await Promise.race([sent.then(() => 'sent' as const), opened]);
+        if (outcome === 'dialog') return { dialog: true };
+      } finally {
+        stop.done = true;
+      }
+    }
+    return { dialog: isOpen() };
+  };
+  return {
+    mouse,
+    // The dialog watch bounds the dispatch; the budget is not applied.
+    watchedMove: (event) => mouse([event]),
+    dialogOpen: isOpen,
+  };
+}
+
+export function createPageDriver({
+  session,
+  page,
+  clock,
+  dialogs,
+}: PageDriverDeps): PageDriverHandle {
   const observer = createObserverMirror();
   let scriptId: string | undefined;
 
@@ -207,6 +303,7 @@ export function createPageDriver({ session, page, clock }: PageDriverDeps): Page
     observer,
     page,
     keyboard,
+    pointer: createPointer(session, clock, dialogs),
     evaluator: { evaluate },
     settler: {
       async mark(settle: SettleParams | null): Promise<ObserverMarkResult> {

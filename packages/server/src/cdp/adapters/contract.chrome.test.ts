@@ -10,8 +10,10 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
   defineCdpSessionContract,
   definePageInfoContract,
+  definePointerContract,
   type ContractCase,
 } from '../../generated/core/ports/contract/index.js';
+import { createPageDriver } from '../../generated/core/session/page-driver.js';
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
@@ -116,6 +118,37 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
               expression: 'console.log("one"); console.log("two");',
             });
             return ['Runtime.consoleAPICalled', 'Runtime.consoleAPICalled'];
+          },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  describe("Pointer contract: the page driver's pointer over the CdpClient adapter", () => {
+    run(
+      definePointerContract(async () => {
+        const { client, close } = await openPage();
+        // Record the mouse events the page receives, as CDP event types.
+        await client.send('Runtime.evaluate', {
+          expression: `window.__seen = [];
+            for (const [dom, cdp] of [['mousemove', 'mouseMoved'], ['mousedown', 'mousePressed'], ['mouseup', 'mouseReleased']])
+              document.addEventListener(dom, () => window.__seen.push(cdp), true);`,
+        });
+        const driver = createPageDriver({
+          session: createCdpClientSession(client),
+          page: createCdpPageInfo(client, systemClock),
+          clock: systemClock,
+        });
+        return {
+          pointer: driver.pointer,
+          at: { x: 20, y: 20 },
+          received: async () => {
+            const res = await client.send<{ result: { value: string[] } }>('Runtime.evaluate', {
+              expression: 'window.__seen',
+              returnByValue: true,
+            });
+            return res.result.value;
           },
           dispose: close,
         };

@@ -6,11 +6,13 @@
  * connection (`./client.ts`) instead of routing through the extension.
  *
  * Mirrors `packages/extension/src/background.ts`'s `handleTool` switch and
- * its extracted `performFind` / `performClick` / `performType` /
- * `performPress` / `performWaitFor` helpers function-for-function, using
- * the SAME in-page builder strings (`../generated/core/inpage/builders.ts`,
- * the generated mirror of the core module) and the SAME `browser.flow` step engine
- * (`./flow.ts`, also a verbatim copy). The wire-level contract is
+ * its extracted `performType` / `performPress` / `performWaitFor` helpers
+ * function-for-function, using the SAME in-page builder strings
+ * (`../generated/core/inpage/builders.ts`, the generated mirror of the core
+ * module) and the SAME `browser.flow` step engine (generated from core's
+ * `flow/flow-engine.ts`). `find` and `click` run through core's tool
+ * registry since slice 10 (`dispatchTool`, outcome mapped by
+ * `./tool-outcome.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -24,35 +26,16 @@ import { CdpClient } from './client.js';
 import { cdpUnsupportedToolError } from './support.js';
 import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import {
-  buildClickAimJs,
-  buildClickHitCheckJs,
-  buildClickMoveCheckJs,
-  buildClickResolveJs,
-  clickMissedMessage,
-  clickMoveMissedMessage,
-  CLICK_MOVE_TRIES,
-  type ClickMoveCheck,
-  type ClickMoveMiss,
-  HIT_CHECK_DIALOG_NOTE,
-  HIT_CHECK_FRAME_NOTE,
-  HIT_CHECK_NO_ANSWER_NOTE,
-  HIT_CHECK_REPLACED_NOTE,
-  HIT_CHECK_TIMEOUT_MS,
-  type ClickHitCheck,
-  type ClickHitCheckFields,
-  buildFindJs,
   buildElementRectJs,
   buildFocusJs,
   buildFocusedFieldJs,
   withValuesHiddenNote,
-  buildProgrammaticClickJs,
   isFocusedField,
   actionFailure,
   buildSnapshotJs,
   buildStateJs,
   buildTypeResolveJs,
   buildWaitForSelectorJs,
-  type FindKey,
   type SnapshotOpts,
   type WaitForSelectorCondition,
 } from '../generated/core/inpage/builders.js';
@@ -77,6 +60,12 @@ import {
   type PageDriverHandle,
 } from '../generated/core/session/page-driver.js';
 import { NAVIGATE_LOAD_TIMEOUT_MS } from '../generated/core/session/load-wait.js';
+import { performClick } from '../generated/core/actions/perform-click.js';
+import { performFind } from '../generated/core/actions/perform-find.js';
+import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
+import { dispatchTool } from '../generated/core/tools/registry.js';
+import type { Requirement, ToolDeps } from '../generated/core/tools/requirement.js';
+import { cdpToolResult } from './tool-outcome.js';
 import { MODIFIER_BITS, modifiersToBitmask, resolveKey } from '../generated/core/support/keymap.js';
 import {
   cancelDetachedFlow,
@@ -89,17 +78,11 @@ import {
   shouldStopDetachedFlow,
 } from './detached-flows.js';
 import {
-  PROGRAMMATIC_CLICK_NOTE,
-  noBoxClickMessage,
-  notClickableMessage,
   notFocusedMessage,
   refFailureMessage,
   notWalkedSuffix,
-  retargetedClickMessage,
   runFlow,
   type ActionOutcome,
-  type ClickStepResult,
-  type FindStepResult,
   type FlowDeps,
   type FlowResult,
   type FlowStep,
@@ -287,6 +270,19 @@ function pageDriver(client: CdpClient): PageDriverHandle {
   return drivers.get(client) ?? newPageDriver(client);
 }
 
+/** What cdp-direct provides to the tool registry (design 3.3). */
+const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
+  'evaluator',
+  'pointer',
+  'settler',
+]);
+
+/** What the core actions and the registry handlers use on one connection. */
+function actionDeps(client: CdpClient): ToolDeps {
+  const { evaluator, pointer, settler } = pageDriver(client);
+  return { evaluator, pointer, settler, clock: systemClock };
+}
+
 /**
  * Best-effort observer removal, then close the socket. Never throws. The
  * in-page teardown is skipped when a newer connection to the same target
@@ -378,207 +374,9 @@ interface CdpEvaluateResult<T> {
   exceptionDetails?: { text?: string; exception?: { description?: string } };
 }
 
-/** The press and release of a pointer click at (x, y); the move that
- * precedes them is sent by `moveOntoTarget`. */
-function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
-  return [
-    { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
-    { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
-  ];
-}
-
-/**
- * Dispatch mouse events in order. The extension also watches for a
- * JavaScript dialog opened by one (`dialog: true`); cdp-direct does not
- * track dialogs (browser.dialog_respond is extension-only): the events are
- * sent in order and awaited.
- */
-async function dispatchMouseEvents(
-  session: CdpClient,
-  events: Record<string, unknown>[],
-): Promise<{ dialog: boolean }> {
-  for (const event of events) {
-    await session.send('Input.dispatchMouseEvent', event);
-  }
-  return { dialog: false };
-}
-
-/** Dispatch the press and release of a pointer click (see `dispatchMouseEvents`). */
-function dispatchPointerPress(
-  session: CdpClient,
-  x: number,
-  y: number,
-): Promise<{ dialog: boolean }> {
-  return dispatchMouseEvents(session, pointerPressEvents(x, y));
-}
-
-/**
- * Read the move half of the click's hit watch (`buildClickMoveCheckJs`),
- * bounded by `timeoutMs`; `'no-answer'` when the check threw, timed out or
- * answered nothing usable (cdp-direct does not track dialogs; a paused page
- * shows as no answer).
- */
-async function readMoveCheck(
-  session: CdpClient,
-  timeoutMs: number,
-): Promise<ClickMoveCheck | 'no-answer'> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => {
-      resolve(undefined);
-    }, timeoutMs);
-  });
-  let check: unknown;
-  try {
-    check = await Promise.race([
-      pageDriver(session).evaluator.evaluate(buildClickMoveCheckJs()),
-      late,
-    ]);
-  } catch {
-    check = undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-  return check &&
-    typeof check === 'object' &&
-    typeof (check as { armed?: unknown }).armed === 'boolean'
-    ? (check as ClickMoveCheck)
-    : 'no-answer';
-}
-
-/**
- * Move the mouse to the click point and, when the target is watched, wait
- * until the move was seen on it (`buildClickMoveCheckJs`) before the press
- * is sent. Right after a scroll the browser can still route input by the
- * frame it drew before, into whatever was under that point then (another
- * frame, possibly a cross-origin one); the move shows where input goes now,
- * so it is sent again one animation frame later, up to `CLICK_MOVE_TRIES`
- * times and within `HIT_CHECK_TIMEOUT_MS` overall (moves and checks
- * together, so a slow page cannot stretch the tries to one timeout each).
- *
- * Fails closed: `miss` (see `ClickMoveMiss`) means the move was not
- * confirmed — never seen on the target, seen elsewhere, the check did not
- * answer, or the watch was gone (the document was replaced, so the aimed
- * point is stale) — and the caller sends no press. `tries` counts the moves
- * sent.
- *
- * Not checked: a frame element (`watched: false`), whose events go into the
- * document inside it, where the move cannot be watched; its press follows
- * the move as before and the click reports `hit_check: 'not_verifiable'`.
- * A JavaScript dialog opened by a move answers `dialog: true`: nothing is
- * pressed and the click reports it, as before.
- */
-async function moveOntoTarget(
-  session: CdpClient,
-  x: number,
-  y: number,
-  watched: boolean,
-): Promise<{ dialog: boolean; tries: number; miss?: ClickMoveMiss }> {
-  const move = [{ type: 'mouseMoved', x, y }];
-  if (!watched) return { ...(await dispatchMouseEvents(session, move)), tries: 1 };
-  const deadline = Date.now() + HIT_CHECK_TIMEOUT_MS;
-  let last: ClickMoveMiss = { why: 'not-seen' };
-  let answered = false;
-  // A check that does not answer after others did ran out of the budget:
-  // report what the answers said; with no answer at all, say so.
-  const noAnswer = (): ClickMoveMiss => (answered ? last : { why: 'no-answer' });
-  let tries = 0;
-  while (tries < CLICK_MOVE_TRIES) {
-    const left = deadline - Date.now();
-    if (left <= 0) break;
-    tries++;
-    // The client's own per-command timeout bounds the dispatch by the
-    // budget left (the extension's dispatch is bounded by its dialog watch).
-    try {
-      await session.send('Input.dispatchMouseEvent', move[0], left);
-    } catch {
-      return { dialog: false, tries, miss: noAnswer() };
-    }
-    const check = await readMoveCheck(session, Math.max(1, deadline - Date.now()));
-    if (check === 'no-answer') return { dialog: false, tries, miss: noAnswer() };
-    if (!check.armed) return { dialog: false, tries, miss: { why: 'replaced' } };
-    if (check.moved) return { dialog: false, tries };
-    answered = true;
-    last =
-      typeof check.moved_on === 'string'
-        ? { why: 'elsewhere', moved_on: check.moved_on }
-        : { why: 'not-seen' };
-  }
-  return { dialog: false, tries, miss: last };
-}
-
-/**
- * Read the hit watch of a pointer click (`buildClickHitCheckJs`), bounded by
- * `HIT_CHECK_TIMEOUT_MS` (a JavaScript dialog pauses the page). Answers
- * `missed` (with `landed_on` when the press reached another element) only
- * when the watch saw the press elsewhere or saw none; otherwise `note` says
- * why the landing could not be verified, or nothing when it landed.
- */
-async function checkClickLanding(
-  session: CdpClient,
-  frameElement: boolean,
-): Promise<{ missed?: true; landed_on?: string; note?: string }> {
-  if (frameElement) return { note: HIT_CHECK_FRAME_NOTE };
-  // cdp-direct does not track dialogs; a paused page shows as no answer.
-  const dialogOpen = (): boolean => false;
-  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      resolve('timeout');
-    }, HIT_CHECK_TIMEOUT_MS);
-  });
-  let landing: unknown;
-  try {
-    landing = await Promise.race([
-      pageDriver(session).evaluator.evaluate(buildClickHitCheckJs()),
-      late,
-    ]);
-  } catch {
-    landing = undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
-  if (landing === 'timeout') return { note: HIT_CHECK_NO_ANSWER_NOTE };
-  const check = landing as Partial<ClickHitCheck> | undefined;
-  if (!check || typeof check !== 'object' || check.armed !== true) {
-    return { note: HIT_CHECK_REPLACED_NOTE };
-  }
-  if ('landed' in check && check.landed === true) return {};
-  const landedOn = (check as { landed_on?: unknown }).landed_on;
-  return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
-}
-
 // === perform* action helpers ==============================================
-// Mirror background.ts's performFind/performClick/performType/performPress/
-// performWaitFor function-for-function — see this module's header comment.
-
-type ClickResolveResult =
-  | {
-      ok: true;
-      x: number;
-      y: number;
-      tag: string;
-      hit_element?: string;
-      reresolved?: boolean;
-      hit_check?: 'not_verifiable';
-    }
-  | { ok: true; no_box: true; tag: string; reresolved?: boolean }
-  | { ok: false; reason: 'no-box' }
-  | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found'; not_walked?: string }
-  | { ok: false; reason: 'occluded'; blocker: string }
-  | { ok: false; reason: 'retargeted'; hit_element: string }
-  | RefResolveFailure;
-
-/** Result shape returned by `buildProgrammaticClickJs` (owner decision D4). */
-type ProgrammaticClickResult =
-  | { ok: true }
-  | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found'; not_walked?: string }
-  | { ok: false; reason: 'not-clickable'; why: string }
-  | RefResolveFailure;
+// Mirror background.ts's performType/performPress/performWaitFor
+// function-for-function — see this module's header comment.
 
 type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
@@ -601,188 +399,6 @@ type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
 /** Result shape of `buildFocusJs` with a `ref` (with a selector it is
  * `true`, `false` when not found, or a `FocusRefusal`). */
 type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
-
-async function performFind(
-  client: CdpClient,
-  params: {
-    text?: string;
-    role?: string;
-    exact?: boolean;
-    ref?: string;
-    key?: FindKey;
-    offset?: { candidates?: number };
-    /** The user's hide-password-values setting (owner decision D12). */
-    hide_password_values?: boolean;
-  },
-): Promise<ActionOutcome<FindStepResult>> {
-  try {
-    const { text, ref } = params;
-    const hide_password_values = params.hide_password_values === true;
-    if (params.key !== undefined) {
-      const value = await pageDriver(client).evaluator.evaluate<FindStepResult>(
-        buildFindJs({ key: params.key, hide_password_values }),
-      );
-      return { ok: true, result: value };
-    }
-    if (ref !== undefined) {
-      const found = await pageDriver(client).evaluator.evaluate<FindStepResult>(
-        buildFindJs({ ref, hide_password_values }),
-      );
-      const refError = found.matched ? null : refFailureMessage(found, ref);
-      if (refError) return { ok: false, error: refError };
-      return { ok: true, result: found };
-    }
-    if (!text) return { ok: false, error: 'find: text required' };
-    const value = await pageDriver(client).evaluator.evaluate<FindStepResult>(
-      buildFindJs({
-        text,
-        role: params.role,
-        exact: params.exact === true,
-        offset: params.offset,
-        hide_password_values,
-      }),
-    );
-    return { ok: true, result: value };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-async function performClick(
-  client: CdpClient,
-  params: {
-    /** Exactly one of `selector` / `ref`. */
-    selector?: string;
-    ref?: string;
-    force?: boolean;
-    settle_ms?: number;
-    settle_timeout_ms?: number;
-    expect?: ExpectParams;
-  },
-): Promise<ActionOutcome<ClickStepResult>> {
-  try {
-    const { selector, ref, force = false } = params;
-    const settle = resolveSettleParams({
-      settle_ms: params.settle_ms,
-      settle_timeout_ms: params.settle_timeout_ms,
-    });
-    const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> =>
-      pageDriver(client).evaluator.evaluate(expression);
-    let resolved = await pageDriver(client).evaluator.evaluate<ClickResolveResult>(
-      buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
-    );
-    if (resolved.ok && !('no_box' in resolved)) {
-      // The resolve scrolled the target into view; aim once the new layout
-      // was painted, and arm the watch that proves where the press lands.
-      resolved = await pageDriver(client).evaluator.evaluate<ClickResolveResult>(
-        buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
-      );
-    }
-    if (!resolved.ok) {
-      const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
-      if (refError) return { ok: false, error: refError };
-      if (resolved.reason === 'occluded') {
-        return {
-          ok: false,
-          error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
-        };
-      }
-      if (resolved.reason === 'retargeted') {
-        return {
-          ok: false,
-          error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
-        };
-      }
-      if (resolved.reason === 'no-box') {
-        return { ok: false, error: noBoxClickMessage(ref ?? selector ?? '') };
-      }
-      if (resolved.reason === 'invalid-selector') {
-        return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
-      }
-      return {
-        ok: false,
-        error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
-      };
-    }
-    const mark = await pageDriver(client).settler.mark(settle);
-    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    let hitCheckNote: string | undefined;
-    let dialogOpened = false;
-    if ('no_box' in resolved) {
-      const clicked = await pageDriver(client).evaluator.evaluate<ProgrammaticClickResult>(
-        buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
-      );
-      if (!clicked.ok) {
-        if (clicked.reason === 'not-clickable') {
-          return { ok: false, error: notClickableMessage(ref ?? selector ?? '', clicked.why) };
-        }
-        const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
-        return {
-          ok: false,
-          error: refError ?? `Element not found: ${ref ?? selector}${notWalkedSuffix(clicked)}`,
-        };
-      }
-    } else {
-      // The press is sent only once the move was seen on the target (a
-      // frame element's cannot be: it is clicked as before, not verified).
-      // A JavaScript dialog the click opens pauses the page: the dispatch
-      // answers at once, and nothing after it can be checked.
-      const moved = await moveOntoTarget(
-        client,
-        resolved.x,
-        resolved.y,
-        resolved.hit_check !== 'not_verifiable',
-      );
-      if (moved.miss) {
-        return {
-          ok: false,
-          error: clickMoveMissedMessage(ref ?? selector ?? '', resolved, moved.tries, moved.miss),
-        };
-      }
-      dialogOpened =
-        moved.dialog || (await dispatchPointerPress(client, resolved.x, resolved.y)).dialog;
-      if (dialogOpened) {
-        hitCheckNote = HIT_CHECK_DIALOG_NOTE;
-      } else {
-        // Report the click only where its press was seen; when that cannot be
-        // known (a frame element, a dialog, a replaced document) say so.
-        const landing = await checkClickLanding(client, resolved.hit_check === 'not_verifiable');
-        if (landing.missed) {
-          return {
-            ok: false,
-            error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
-          };
-        }
-        hitCheckNote = landing.note;
-      }
-    }
-    const settleResult = dialogOpened
-      ? undefined
-      : await pageDriver(client).settler.settle(settle, mark);
-    const verdict = dialogOpened
-      ? { ok: true as const, expect: undefined }
-      : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: ClickStepResult & ClickHitCheckFields = {
-      clicked: ref ?? selector ?? '',
-      tag: resolved.tag,
-    };
-    if (ref !== undefined) result.ref = ref;
-    if (resolved.reresolved === true) result.reresolved = true;
-    if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
-    else if (resolved.hit_element) result.hit_element = resolved.hit_element;
-    if (hitCheckNote !== undefined) {
-      result.hit_check = 'not_verifiable';
-      result.hit_check_note = hitCheckNote;
-    }
-    if (settleResult) result.settle = settleResult;
-    if (verdict.expect) result.expect = verdict.expect;
-    return { ok: true, result };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
 
 async function performType(
   client: CdpClient,
@@ -1122,8 +738,9 @@ function buildCdpFlowDeps(
   hidePasswordValues = false,
 ): Omit<FlowDeps, 'onProgress'> {
   return {
-    performFind: (fp) => performFind(client, { ...fp, hide_password_values: hidePasswordValues }),
-    performClick: (cp) => performClick(client, cp),
+    performFind: (fp) =>
+      performFind(actionDeps(client), { ...fp, hide_password_values: hidePasswordValues }),
+    performClick: (cp) => performClick(actionDeps(client), cp),
     performType: (tp) => performType(client, tp),
     performPress: (pp) => performPress(client, pp),
     performWaitFor: (wp) => performWaitFor(client, wp, shouldStopWaiting),
@@ -1200,6 +817,20 @@ export async function callCdpTool(
   if (!targetId) throw new Error(`cdp-direct: malformed cdp tab id "${tabId}"`);
 
   const client = await getConnection(targetId);
+  // A registered tool (design 3.3) runs through core; its outcome is
+  // returned or thrown by `cdpToolResult` (3.4).
+  if (TOOL_REGISTRY.has(tool)) {
+    return cdpToolResult(
+      await dispatchTool(
+        TOOL_REGISTRY,
+        CDP_DIRECT_PROVIDES,
+        actionDeps(client),
+        'cdp-direct',
+        tool,
+        params,
+      ),
+    );
+  }
   const p = (params ?? {}) as Record<string, unknown>;
 
   switch (tool) {
@@ -1259,35 +890,6 @@ export async function callCdpTool(
           maxDimension: typeof p.max_dimension === 'number' ? p.max_dimension : undefined,
         },
       );
-    }
-
-    case 'find': {
-      const outcome = await performFind(client, {
-        text: typeof p.text === 'string' ? p.text : '',
-        role: typeof p.role === 'string' ? p.role : undefined,
-        exact: p.exact === true,
-        ref: typeof p.ref === 'string' ? p.ref : undefined,
-        key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
-        offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
-        hide_password_values: p.hide_password_values === true,
-      });
-      if (!outcome.ok) throw new Error(outcome.error);
-      return outcome.result;
-    }
-
-    case 'click': {
-      const ref = typeof p.ref === 'string' ? p.ref : undefined;
-      const outcome = await performClick(client, {
-        selector: typeof p.selector === 'string' ? p.selector : ref !== undefined ? undefined : '',
-        ref,
-        force: p.force === true,
-        settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
-        settle_timeout_ms:
-          typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
-        expect: p.expect as ExpectParams | undefined,
-      });
-      if (!outcome.ok) throw new Error(outcome.error);
-      return outcome.result;
     }
 
     case 'type': {

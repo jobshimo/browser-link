@@ -11,24 +11,6 @@ import type {
 } from '@browser-link/shared';
 import {
   buildSnapshotJs,
-  buildFindJs,
-  buildClickAimJs,
-  buildClickHitCheckJs,
-  buildClickMoveCheckJs,
-  buildClickResolveJs,
-  clickMissedMessage,
-  clickMoveMissedMessage,
-  CLICK_MOVE_TRIES,
-  type ClickMoveCheck,
-  type ClickMoveMiss,
-  HIT_CHECK_DIALOG_NOTE,
-  HIT_CHECK_FRAME_NOTE,
-  HIT_CHECK_NO_ANSWER_NOTE,
-  HIT_CHECK_REPLACED_NOTE,
-  HIT_CHECK_TIMEOUT_MS,
-  type ClickHitCheck,
-  type ClickHitCheckFields,
-  buildProgrammaticClickJs,
   buildTypeResolveJs,
   buildFocusJs,
   buildFocusedFieldJs,
@@ -39,7 +21,6 @@ import {
   buildDragProbeJs,
   buildElementRectJs,
   buildWaitForSelectorJs,
-  type FindKey,
   type SnapshotOffset,
   type WaitForSelectorCondition,
   OBSERVER_BINDING,
@@ -52,6 +33,13 @@ import {
   type IdleCallInProgress,
   type IdleFlowHold,
   createPageDriver,
+  dispatchTool,
+  performClick,
+  performFind,
+  type Requirement,
+  TOOL_REGISTRY,
+  type ToolDeps,
+  toolResponse,
   NAVIGATE_LOAD_TIMEOUT_MS,
   pressKey,
   type CdpSession,
@@ -68,19 +56,13 @@ import {
   resolveExpectParams,
   verifyExpect,
   type ExpectParams,
-  PROGRAMMATIC_CLICK_NOTE,
-  noBoxClickMessage,
-  notClickableMessage,
   notFocusedMessage,
   refFailureMessage,
   notWalkedSuffix,
-  retargetedClickMessage,
   runFlow,
   type ActionOutcome,
-  type ClickStepResult,
   type DragStepParams,
   type DragStepResult,
-  type FindStepResult,
   type FlowDeps,
   type FlowResult,
   type FlowStep,
@@ -973,7 +955,22 @@ function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDri
     session: tabSession(tabId, listeners),
     page: createChromePageInfo(tabId, systemClock),
     clock: systemClock,
+    // The tab's pending dialog (`attachDebuggerListener`), read live.
+    dialogs: { isOpen: () => tabStates.get(tabId)?.pendingDialog !== undefined },
   });
+}
+
+/** Every requirement of the tool registry: the extension provides them all. */
+const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
+  'evaluator',
+  'pointer',
+  'settler',
+]);
+
+/** What the core actions and the registry handlers use on one tab. */
+function actionDeps(tabId: number): ToolDeps {
+  const { evaluator, pointer, settler } = pageDriver(tabId);
+  return { evaluator, pointer, settler, clock: systemClock };
 }
 
 function tabSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
@@ -1074,190 +1071,6 @@ function sleep(ms: number): Promise<void> {
       setTimeout(resolve, 0);
     }
   });
-}
-
-/** The press and release of a pointer click at (x, y); the move that
- * precedes them is sent by `moveOntoTarget`. */
-function pointerPressEvents(x: number, y: number): Record<string, unknown>[] {
-  return [
-    { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
-    { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
-  ];
-}
-
-/** Dispatch the press and release of a pointer click (see `dispatchMouseEvents`). */
-function dispatchPointerPress(session: number, x: number, y: number): Promise<{ dialog: boolean }> {
-  return dispatchMouseEvents(session, pointerPressEvents(x, y));
-}
-
-/**
- * Read the move half of the click's hit watch (`buildClickMoveCheckJs`),
- * bounded by `timeoutMs`. `'dialog'` when a JavaScript dialog is open (the
- * page is paused); `'no-answer'` when the check threw, timed out or
- * answered nothing usable.
- */
-async function readMoveCheck(
-  session: number,
-  timeoutMs: number,
-): Promise<ClickMoveCheck | 'dialog' | 'no-answer'> {
-  const dialogOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
-  if (dialogOpen()) return 'dialog';
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => {
-      resolve(undefined);
-    }, timeoutMs);
-  });
-  let check: unknown;
-  try {
-    check = await Promise.race([
-      pageDriver(session).evaluator.evaluate(buildClickMoveCheckJs()),
-      late,
-    ]);
-  } catch {
-    check = undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (dialogOpen()) return 'dialog';
-  return check &&
-    typeof check === 'object' &&
-    typeof (check as { armed?: unknown }).armed === 'boolean'
-    ? (check as ClickMoveCheck)
-    : 'no-answer';
-}
-
-/**
- * Move the mouse to the click point and, when the target is watched, wait
- * until the move was seen on it (`buildClickMoveCheckJs`) before the press
- * is sent. Right after a scroll the browser can still route input by the
- * frame it drew before, into whatever was under that point then (another
- * frame, possibly a cross-origin one); the move shows where input goes now,
- * so it is sent again one animation frame later, up to `CLICK_MOVE_TRIES`
- * times and within `HIT_CHECK_TIMEOUT_MS` overall (moves and checks
- * together, so a slow page cannot stretch the tries to one timeout each).
- *
- * Fails closed: `miss` (see `ClickMoveMiss`) means the move was not
- * confirmed — never seen on the target, seen elsewhere, the check did not
- * answer, or the watch was gone (the document was replaced, so the aimed
- * point is stale) — and the caller sends no press. `tries` counts the moves
- * sent.
- *
- * Not checked: a frame element (`watched: false`), whose events go into the
- * document inside it, where the move cannot be watched; its press follows
- * the move as before and the click reports `hit_check: 'not_verifiable'`.
- * A JavaScript dialog opened by a move answers `dialog: true`: nothing is
- * pressed and the click reports it, as before.
- */
-async function moveOntoTarget(
-  session: number,
-  x: number,
-  y: number,
-  watched: boolean,
-): Promise<{ dialog: boolean; tries: number; miss?: ClickMoveMiss }> {
-  const move = [{ type: 'mouseMoved', x, y }];
-  if (!watched) return { ...(await dispatchMouseEvents(session, move)), tries: 1 };
-  const deadline = Date.now() + HIT_CHECK_TIMEOUT_MS;
-  let last: ClickMoveMiss = { why: 'not-seen' };
-  let answered = false;
-  // A check that does not answer after others did ran out of the budget:
-  // report what the answers said; with no answer at all, say so.
-  const noAnswer = (): ClickMoveMiss => (answered ? last : { why: 'no-answer' });
-  let tries = 0;
-  while (tries < CLICK_MOVE_TRIES) {
-    const left = deadline - Date.now();
-    if (left <= 0) break;
-    tries++;
-    const sent = await dispatchMouseEvents(session, move);
-    if (sent.dialog) return { dialog: true, tries };
-    const check = await readMoveCheck(session, Math.max(1, deadline - Date.now()));
-    if (check === 'dialog') return { dialog: true, tries };
-    if (check === 'no-answer') return { dialog: false, tries, miss: noAnswer() };
-    if (!check.armed) return { dialog: false, tries, miss: { why: 'replaced' } };
-    if (check.moved) return { dialog: false, tries };
-    answered = true;
-    last =
-      typeof check.moved_on === 'string'
-        ? { why: 'elsewhere', moved_on: check.moved_on }
-        : { why: 'not-seen' };
-  }
-  return { dialog: false, tries, miss: last };
-}
-
-/**
- * Dispatch mouse events in order. A JavaScript dialog opened by one pauses
- * the page, and the event that opened it is answered only once the dialog
- * is closed: `dialog: true` says one opened, and the click answers then
- * instead of waiting for someone to close it.
- */
-async function dispatchMouseEvents(
-  session: number,
-  events: Record<string, unknown>[],
-): Promise<{ dialog: boolean }> {
-  const isOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
-  for (const event of events) {
-    const sent = cdp(session, 'Input.dispatchMouseEvent', event);
-    // Answered late (after the dialog is closed) or never: nobody waits then.
-    sent.catch(() => undefined);
-    const stop = { done: false };
-    const opened = new Promise<'dialog'>((resolve) => {
-      const tick = (): void => {
-        if (stop.done) return;
-        if (isOpen()) resolve('dialog');
-        else setTimeout(tick, 50);
-      };
-      tick();
-    });
-    try {
-      const outcome = await Promise.race([sent.then(() => 'sent' as const), opened]);
-      if (outcome === 'dialog') return { dialog: true };
-    } finally {
-      stop.done = true;
-    }
-  }
-  return { dialog: isOpen() };
-}
-
-/**
- * Read the hit watch of a pointer click (`buildClickHitCheckJs`), bounded by
- * `HIT_CHECK_TIMEOUT_MS` (a JavaScript dialog pauses the page). Answers
- * `missed` (with `landed_on` when the press reached another element) only
- * when the watch saw the press elsewhere or saw none; otherwise `note` says
- * why the landing could not be verified, or nothing when it landed.
- */
-async function checkClickLanding(
-  session: number,
-  frameElement: boolean,
-): Promise<{ missed?: true; landed_on?: string; note?: string }> {
-  if (frameElement) return { note: HIT_CHECK_FRAME_NOTE };
-  const dialogOpen = (): boolean => tabStates.get(session)?.pendingDialog !== undefined;
-  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      resolve('timeout');
-    }, HIT_CHECK_TIMEOUT_MS);
-  });
-  let landing: unknown;
-  try {
-    landing = await Promise.race([
-      pageDriver(session).evaluator.evaluate(buildClickHitCheckJs()),
-      late,
-    ]);
-  } catch {
-    landing = undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
-  if (landing === 'timeout') return { note: HIT_CHECK_NO_ANSWER_NOTE };
-  const check = landing as Partial<ClickHitCheck> | undefined;
-  if (!check || typeof check !== 'object' || check.armed !== true) {
-    return { note: HIT_CHECK_REPLACED_NOTE };
-  }
-  if ('landed' in check && check.landed === true) return {};
-  const landedOn = (check as { landed_on?: unknown }).landed_on;
-  return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
 }
 
 /**
@@ -1617,33 +1430,6 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 `;
 }
 
-/** Result shape returned by `buildClickResolveJs` — see `inpage/builders.ts`. */
-type ClickResolveResult =
-  | {
-      ok: true;
-      x: number;
-      y: number;
-      tag: string;
-      hit_element?: string;
-      reresolved?: boolean;
-      hit_check?: 'not_verifiable';
-    }
-  | { ok: true; no_box: true; tag: string; reresolved?: boolean }
-  | { ok: false; reason: 'no-box' }
-  | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found'; not_walked?: string }
-  | { ok: false; reason: 'occluded'; blocker: string }
-  | { ok: false; reason: 'retargeted'; hit_element: string }
-  | RefResolveFailure;
-
-/** Result shape returned by `buildProgrammaticClickJs` (owner decision D4). */
-type ProgrammaticClickResult =
-  | { ok: true }
-  | { ok: false; reason: 'invalid-selector'; error: string }
-  | { ok: false; reason: 'not-found'; not_walked?: string }
-  | { ok: false; reason: 'not-clickable'; why: string }
-  | RefResolveFailure;
-
 /** Result shape returned by `buildTypeResolveJs` — see `inpage/builders.ts`. */
 type TypeResolveResult =
   | { ok: true; reresolved?: boolean }
@@ -1668,10 +1454,10 @@ type FocusRefusal = { ok: false; reason: 'not-focused'; why: string };
 type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefResolveFailure;
 
 /**
- * `performFind` / `performClick` / `performType` / `performPress` /
- * `performWaitFor` / `performDrag` — the extracted bodies of the
- * standalone `find` / `click` / `type` / `press` / `wait_for` / `drag`
- * cases in `handleTool` below.
+ * `performType` / `performPress` / `performWaitFor` / `performDrag` — the
+ * extracted bodies of the standalone `type` / `press` / `wait_for` / `drag`
+ * cases in `handleTool` below. `performFind` and `performClick` live in
+ * core's `actions/` since slice 10 and run through the tool registry.
  *
  * Both the standalone `case` handlers AND `browser.flow`'s step executor
  * (`runFlow` in core's `flow/flow-engine.ts`) call these exact functions — there is one
@@ -1692,188 +1478,6 @@ type FocusRefResult = { ok: true; reresolved?: boolean } | FocusRefusal | RefRes
  * into a freshly-appeared, auto-focused input (e.g. a search box that
  * opened after a preceding click) without a selector for it.
  */
-
-async function performFind(
-  tabId: number,
-  params: {
-    text?: string;
-    role?: string;
-    exact?: boolean;
-    ref?: string;
-    key?: FindKey;
-    offset?: { candidates?: number };
-    /** The user's hide-password-values setting (owner decision D12). */
-    hide_password_values?: boolean;
-  },
-): Promise<ActionOutcome<FindStepResult>> {
-  try {
-    const { text, ref } = params;
-    const hide_password_values = params.hide_password_values === true;
-    if (params.key !== undefined) {
-      const value = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
-        buildFindJs({ key: params.key, hide_password_values }),
-      );
-      return { ok: true, result: value };
-    }
-    if (ref !== undefined) {
-      const found = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
-        buildFindJs({ ref, hide_password_values }),
-      );
-      const refError = found.matched ? null : refFailureMessage(found, ref);
-      if (refError) return { ok: false, error: refError };
-      return { ok: true, result: found };
-    }
-    if (!text) return { ok: false, error: 'find: text required' };
-    const value = await pageDriver(tabId).evaluator.evaluate<FindStepResult>(
-      buildFindJs({
-        text,
-        role: params.role,
-        exact: params.exact === true,
-        offset: params.offset,
-        hide_password_values,
-      }),
-    );
-    return { ok: true, result: value };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-async function performClick(
-  tabId: number,
-  params: {
-    /** Exactly one of `selector` / `ref`. */
-    selector?: string;
-    ref?: string;
-    force?: boolean;
-    settle_ms?: number;
-    settle_timeout_ms?: number;
-    expect?: ExpectParams;
-  },
-): Promise<ActionOutcome<ClickStepResult>> {
-  try {
-    const { selector, ref, force = false } = params;
-    const settle = resolveSettleParams({
-      settle_ms: params.settle_ms,
-      settle_timeout_ms: params.settle_timeout_ms,
-    });
-    const expectSpec = resolveExpectParams(params.expect);
-    const evaluate = (expression: string): Promise<unknown> =>
-      pageDriver(tabId).evaluator.evaluate(expression);
-    let resolved = await pageDriver(tabId).evaluator.evaluate<ClickResolveResult>(
-      buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
-    );
-    if (resolved.ok && !('no_box' in resolved)) {
-      // The resolve scrolled the target into view; aim once the new layout
-      // was painted, and arm the watch that proves where the press lands.
-      resolved = await pageDriver(tabId).evaluator.evaluate<ClickResolveResult>(
-        buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
-      );
-    }
-    if (!resolved.ok) {
-      const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
-      if (refError) return { ok: false, error: refError };
-      if (resolved.reason === 'occluded') {
-        return {
-          ok: false,
-          error: `Element covered by ${resolved.blocker} — click the covering element or dismiss it first`,
-        };
-      }
-      if (resolved.reason === 'retargeted') {
-        return {
-          ok: false,
-          error: retargetedClickMessage(resolved.hit_element, ref ?? selector ?? ''),
-        };
-      }
-      if (resolved.reason === 'no-box') {
-        return { ok: false, error: noBoxClickMessage(ref ?? selector ?? '') };
-      }
-      if (resolved.reason === 'invalid-selector') {
-        return { ok: false, error: `Invalid selector "${selector}": ${resolved.error}` };
-      }
-      return {
-        ok: false,
-        error: `Element not found: ${ref ?? selector}${notWalkedSuffix(resolved)}`,
-      };
-    }
-    const mark = await pageDriver(tabId).settler.mark(settle);
-    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
-    let hitCheckNote: string | undefined;
-    let dialogOpened = false;
-    if ('no_box' in resolved) {
-      const clicked = await pageDriver(tabId).evaluator.evaluate<ProgrammaticClickResult>(
-        buildProgrammaticClickJs(ref !== undefined ? { ref } : { selector }),
-      );
-      if (!clicked.ok) {
-        if (clicked.reason === 'not-clickable') {
-          return { ok: false, error: notClickableMessage(ref ?? selector ?? '', clicked.why) };
-        }
-        const refError = ref !== undefined ? refFailureMessage(clicked, ref) : null;
-        return {
-          ok: false,
-          error: refError ?? `Element not found: ${ref ?? selector}${notWalkedSuffix(clicked)}`,
-        };
-      }
-    } else {
-      // The press is sent only once the move was seen on the target (a
-      // frame element's cannot be: it is clicked as before, not verified).
-      // A JavaScript dialog the click opens pauses the page: the dispatch
-      // answers at once, and nothing after it can be checked.
-      const moved = await moveOntoTarget(
-        tabId,
-        resolved.x,
-        resolved.y,
-        resolved.hit_check !== 'not_verifiable',
-      );
-      if (moved.miss) {
-        return {
-          ok: false,
-          error: clickMoveMissedMessage(ref ?? selector ?? '', resolved, moved.tries, moved.miss),
-        };
-      }
-      dialogOpened =
-        moved.dialog || (await dispatchPointerPress(tabId, resolved.x, resolved.y)).dialog;
-      if (dialogOpened) {
-        hitCheckNote = HIT_CHECK_DIALOG_NOTE;
-      } else {
-        // Report the click only where its press was seen; when that cannot be
-        // known (a frame element, a dialog, a replaced document) say so.
-        const landing = await checkClickLanding(tabId, resolved.hit_check === 'not_verifiable');
-        if (landing.missed) {
-          return {
-            ok: false,
-            error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
-          };
-        }
-        hitCheckNote = landing.note;
-      }
-    }
-    const settleResult = dialogOpened
-      ? undefined
-      : await pageDriver(tabId).settler.settle(settle, mark);
-    const verdict = dialogOpened
-      ? { ok: true as const, expect: undefined }
-      : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
-    if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: ClickStepResult & ClickHitCheckFields = {
-      clicked: ref ?? selector ?? '',
-      tag: resolved.tag,
-    };
-    if (ref !== undefined) result.ref = ref;
-    if (resolved.reresolved === true) result.reresolved = true;
-    if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
-    else if (resolved.hit_element) result.hit_element = resolved.hit_element;
-    if (hitCheckNote !== undefined) {
-      result.hit_check = 'not_verifiable';
-      result.hit_check_note = hitCheckNote;
-    }
-    if (settleResult) result.settle = settleResult;
-    if (verdict.expect) result.expect = verdict.expect;
-    return { ok: true, result };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
 
 async function performType(
   tabId: number,
@@ -2869,8 +2473,8 @@ function buildFlowDeps(
 ): Omit<FlowDeps, 'shouldCancel' | 'onProgress'> {
   return {
     performFind: (params) =>
-      performFind(tabId, { ...params, hide_password_values: hidePasswordValues }),
-    performClick: (params) => performClick(tabId, params),
+      performFind(actionDeps(tabId), { ...params, hide_password_values: hidePasswordValues }),
+    performClick: (params) => performClick(actionDeps(tabId), params),
     performType: (params) => performType(tabId, params),
     performPress: (params) => performPress(tabId, params),
     performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
@@ -3265,7 +2869,7 @@ async function handleDownloadCapture(
     downloadCapture,
     { timeoutMs, holdMs: timeoutMs + DOWNLOAD_HOLD_SLACK_MS, tab: tabDownloadSignals(tabId) },
     // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
-    () => performClick(tabId, { selector, settle_ms: 0 }),
+    () => performClick(actionDeps(tabId), { selector, settle_ms: 0 }),
   );
   if (!outcome.ok) {
     // The click itself failed (not found, covered, or its press did not
@@ -3362,6 +2966,19 @@ async function handleSetPermission(
 
 async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<ExtensionToServer> {
   const tabId = state.tabId;
+  // A registered tool (design 3.3) runs through core and maps its outcome
+  // to the wire once (3.4).
+  if (TOOL_REGISTRY.has(msg.tool)) {
+    const outcome = await dispatchTool(
+      TOOL_REGISTRY,
+      EXTENSION_PROVIDES,
+      actionDeps(tabId),
+      'extension',
+      msg.tool,
+      msg.params,
+    );
+    return toolResponse(msg.id, outcome);
+  }
   // Params come over the wire as JSON: each field is unknown until we
   // narrow it. The local helpers below give one-line, type-safe reads
   // for the shapes we accept.
@@ -3385,22 +3002,6 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
       }
 
-      case 'find': {
-        const outcome = await performFind(tabId, {
-          text: optStr('ref') !== undefined || p.key !== undefined ? optStr('text') : str('text'),
-          role: optStr('role'),
-          exact: p.exact === true,
-          ref: optStr('ref'),
-          key: typeof p.key === 'object' && p.key !== null ? (p.key as FindKey) : undefined,
-          offset: typeof p.offset === 'object' && p.offset !== null ? p.offset : undefined,
-          hide_password_values: p.hide_password_values === true,
-        });
-        if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
-        }
-        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
-      }
-
       case 'canvas_screenshot':
         return await handleCanvasScreenshot(tabId, msg, p, optStr);
 
@@ -3415,22 +3016,6 @@ async function handleTool(state: TabState, msg: ToolRequestMessage): Promise<Ext
 
       case 'network_body':
         return await handleNetworkBody(tabId, msg, str);
-
-      case 'click': {
-        const outcome = await performClick(tabId, {
-          selector: optStr('ref') !== undefined ? optStr('selector') : str('selector'),
-          ref: optStr('ref'),
-          force: p.force === true,
-          settle_ms: typeof p.settle_ms === 'number' ? p.settle_ms : undefined,
-          settle_timeout_ms:
-            typeof p.settle_timeout_ms === 'number' ? p.settle_timeout_ms : undefined,
-          expect: p.expect as ExpectParams | undefined,
-        });
-        if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
-        }
-        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
-      }
 
       case 'type': {
         const outcome = await performType(tabId, {

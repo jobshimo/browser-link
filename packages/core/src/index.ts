@@ -8,7 +8,8 @@
 // the extension imports and the server compiles from its generated mirror.
 // Slice 9 adds the page driver (`session/page-driver`, the CDP implementation
 // of the `PageDriver` port) and the load wait behind `PageInfo.armLoadWait`
-// (`session/load-wait`).
+// (`session/load-wait`). Slice 10 adds the tool registry and the failure
+// contract (`tools/`) and the find and click actions (`actions/`).
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -23,6 +24,14 @@ export * from './flow/flow-engine.js';
 export * from './policies/idle-rules.js';
 export * from './session/load-wait.js';
 export * from './session/page-driver.js';
+export * from './actions/perform-find.js';
+export * from './actions/perform-click.js';
+export * from './tools/requirement.js';
+export * from './tools/failure.js';
+export * from './tools/registry.js';
+export * from './tools/interaction.js';
+export * from './tools/catalog.js';
+export * from './tools/outcome-mapping.contract.js';
 export * from './inpage/builders.js';
 export * from './inpage/observer.js';
 export * from './inpage/deep-query.js';

@@ -69,6 +69,17 @@ export type KeyEvent = {
   unmodifiedText?: string;
 };
 
+/** One CDP `Input.dispatchMouseEvent` payload (`Pointer.mouse`): the move,
+ * press and release of a click (slice 10). A type alias, so it is
+ * assignable to the plain params object `CdpSession.send` takes. */
+export type MouseEventParams = {
+  type: 'mouseMoved' | 'mousePressed' | 'mouseReleased';
+  x: number;
+  y: number;
+  button?: 'left';
+  clickCount?: number;
+};
+
 /** A load wait armed before the navigation is sent (`PageInfo.armLoadWait`):
  * `done` resolves when the page reports load complete and rejects when the
  * timeout passes first; `cancel` releases the wait, after which `done`

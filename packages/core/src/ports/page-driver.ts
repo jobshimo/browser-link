@@ -1,10 +1,17 @@
 // Narrow page capabilities (design 3.2), built once per `CdpSession` by
 // `session/page-driver.ts`. Handlers require them one by one. Ports
-// describe what is used: the pointer, `insertText` and CDP event waits join
-// with the slices that move the handlers using them (10, 11, 14).
+// describe what is used: the pointer joined with click (slice 10);
+// `insertText` and CDP event waits join with the slices that move the
+// handlers using them (11, 14).
 
 import type { PageInfo } from './page-info.js';
-import type { KeyEvent, ObserverMarkResult, SettleParams, SettleReport } from './values.js';
+import type {
+  KeyEvent,
+  MouseEventParams,
+  ObserverMarkResult,
+  SettleParams,
+  SettleReport,
+} from './values.js';
 
 export interface Evaluator {
   /** `Runtime.evaluate` with the user-gesture flag, awaiting a promise
@@ -15,6 +22,24 @@ export interface Evaluator {
 export interface Keyboard {
   /** One `Input.dispatchKeyEvent`. */
   key(event: KeyEvent): Promise<void>;
+}
+
+export interface Pointer {
+  /** `Input.dispatchMouseEvent` for each event, in order; rejects when one
+   * fails. `dialog: true` when a JavaScript dialog is open after them, or
+   * opened by one: the page is paused, the event that opened it is answered
+   * only once it closes, so nothing after it is sent. */
+  mouse(events: readonly MouseEventParams[]): Promise<{ dialog: boolean }>;
+  /** The move of a click whose landing is watched, within `budgetMs`.
+   * `unanswered` when the transport counts the dispatch as not answered
+   * (cdp-direct: it failed or ran past the budget); otherwise as `mouse`. */
+  watchedMove(
+    event: MouseEventParams,
+    budgetMs: number,
+  ): Promise<{ dialog: boolean } | 'unanswered'>;
+  /** Whether a JavaScript dialog is open now; always false where the
+   * transport does not track dialogs (cdp-direct). */
+  dialogOpen(): boolean;
 }
 
 export interface Settler {
@@ -29,6 +54,7 @@ export interface Settler {
 export interface PageDriver {
   evaluator: Evaluator;
   keyboard: Keyboard;
+  pointer: Pointer;
   settler: Settler;
   page: PageInfo;
 }
