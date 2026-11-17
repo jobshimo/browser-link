@@ -58,7 +58,13 @@ describe('buildAdminState — envelope', () => {
     const state = buildAdminState(input());
     expect(state.version).toBe(1);
     expect(state.generatedAt).toBe('2026-11-09T12:00:00.000Z');
-    expect(state.sections.map((s) => s.id)).toEqual(['status', 'setup', 'diagnose', 'reference']);
+    expect(state.sections.map((s) => s.id)).toEqual([
+      'status',
+      'setup',
+      'console',
+      'diagnose',
+      'reference',
+    ]);
     expect(state.ui).toEqual({
       language: 'en',
       confirm: 'Confirm',
@@ -197,25 +203,15 @@ describe('buildAdminState — status section', () => {
 });
 
 describe('buildAdminState — setup section', () => {
-  test('ids and kinds, one readout per catalogue tool, restart flags', () => {
+  test('ids and kinds: only what the extension may change, plus flow recording; restart flags', () => {
     const sec = section(buildAdminState(input()), 'setup');
     expect(shape(sec)).toEqual([
       ['language', 'select'],
-      ['tools.browser.list_tabs', 'readout'],
-      ['tools.browser.evaluate', 'readout'],
       ['multiAgent', 'toggle'],
       ['autoReelect', 'toggle'],
       ['instructionsAutoRefresh', 'toggle'],
-      ['cdpDirectEnabled', 'readout'],
-      ['cdpDirectPort', 'readout'],
-      ['cdpDirectGrantTtlMinutes', 'readout'],
       ['activityEnabled', 'toggle'],
       ['activityRecordPayloads', 'toggle'],
-      ['activityHideSensitive', 'readout'],
-      ['hidePasswordValues', 'readout'],
-      ['downloadsDir', 'readout'],
-      ['allowExecutableDownloads', 'readout'],
-      ['idleTtl', 'readout'],
       ['flowRecording', 'readout'],
     ]);
     for (const it of sec.items) expect(it.writesDisk).toBe(it.kind !== 'readout');
@@ -225,26 +221,31 @@ describe('buildAdminState — setup section', () => {
   });
 
   test('values reflect the config: defaults applied', () => {
-    const sec = section(buildAdminState(input({ config: {} })), 'setup');
+    const state = buildAdminState(input({ config: {} }));
+    const sec = section(state, 'setup');
     expect(item(sec, 'language').value).toBe('en');
     expect(item(sec, 'language').options).toEqual([
       { value: 'en', label: 'English' },
       { value: 'es', label: 'Español' },
     ]);
-    expect(item(sec, 'cdpDirectPort')).toMatchObject({
+    const con = section(state, 'console');
+    expect(item(con, 'cdpDirectPort')).toMatchObject({
       value: 9222,
       hint: 'A port number, for example: browser-link config set cdp-direct.port 9222',
+      command: 'browser-link config set cdp-direct.port 9222',
     });
-    expect(item(sec, 'downloadsDir')).toMatchObject({
+    expect(item(con, 'downloadsDir')).toMatchObject({
       value: '/data/downloads',
+      consoleOnly: true,
       hint: 'browser-link config set downloads.dir <absolute-path|default>',
+      command: 'browser-link config set downloads.dir <absolute-path|default>',
     });
   });
 
   test('tools, cdp-direct and its grant lifetime are readouts carrying their console command', () => {
     const sec = section(
       buildAdminState(input({ config: { disabledTools: ['browser.evaluate'] } })),
-      'setup',
+      'console',
     );
     expect(item(sec, 'tools.browser.list_tabs')).toEqual({
       id: 'tools.browser.list_tabs',
@@ -254,11 +255,13 @@ describe('buildAdminState — setup section', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'browser-link tools disable browser.list_tabs',
+      command: 'browser-link tools disable browser.list_tabs',
     });
     expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
       kind: 'readout',
       value: 'off',
       hint: 'browser-link tools enable browser.evaluate',
+      command: 'browser-link tools enable browser.evaluate',
     });
     expect(item(sec, 'cdpDirectEnabled')).toEqual({
       id: 'cdpDirectEnabled',
@@ -268,6 +271,7 @@ describe('buildAdminState — setup section', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'browser-link config set cdp-direct.enabled true',
+      command: 'browser-link config set cdp-direct.enabled true',
     });
     expect(item(sec, 'cdpDirectGrantTtlMinutes')).toEqual({
       id: 'cdpDirectGrantTtlMinutes',
@@ -277,13 +281,14 @@ describe('buildAdminState — setup section', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl 60',
+      command: 'browser-link config set cdp-direct.grant-ttl 60',
     });
   });
 
   test('the readout values follow the config', () => {
     const sec = section(
       buildAdminState(input({ config: { cdpDirectEnabled: true, cdpDirectGrantTtlMinutes: 0 } })),
-      'setup',
+      'console',
     );
     expect(item(sec, 'cdpDirectEnabled')).toMatchObject({
       value: 'on',
@@ -293,13 +298,13 @@ describe('buildAdminState — setup section', () => {
       value: 'never expires',
       hint: 'A whole number of minutes or never, for example: browser-link config set cdp-direct.grant-ttl never',
     });
-    const port = section(buildAdminState(input({ config: { cdpDirectPort: 9333 } })), 'setup');
+    const port = section(buildAdminState(input({ config: { cdpDirectPort: 9333 } })), 'console');
     expect(item(port, 'cdpDirectPort').hint).toBe(
       'A port number, for example: browser-link config set cdp-direct.port 9333',
     );
     const seven = section(
       buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 7 } })),
-      'setup',
+      'console',
     );
     expect(item(seven, 'cdpDirectGrantTtlMinutes').value).toBe('7 min');
   });
@@ -310,7 +315,7 @@ describe('buildAdminState — setup section', () => {
         input({ config: { language: 'en', disabledTools: ['browser.evaluate'] } }),
         'es',
       ),
-      'setup',
+      'console',
     );
     expect(item(sec, 'tools.browser.evaluate')).toMatchObject({
       label: 'Tool browser.evaluate',
@@ -332,7 +337,7 @@ describe('buildAdminState — setup section', () => {
     });
     const never = section(
       buildAdminState(input({ config: { cdpDirectGrantTtlMinutes: 0 } }), 'es'),
-      'setup',
+      'console',
     );
     expect(item(never, 'cdpDirectGrantTtlMinutes').value).toBe('no vence');
   });
@@ -341,14 +346,111 @@ describe('buildAdminState — setup section', () => {
     const en = section(buildAdminState(input()), 'setup');
     expect(en.title).toBe('Setup');
     expect(item(en, 'multiAgent').label).toBe('Multi-agent mode');
-    expect(item(en, 'tools.browser.evaluate').label).toBe('Tool browser.evaluate');
     const es = section(buildAdminState(input({ config: { language: 'es' } })), 'setup');
     expect(es.title).toBe('Configuración');
     expect(item(es, 'multiAgent').label).toBe('Modo multi-agente');
-    expect(item(es, 'tools.browser.evaluate').label).toBe('Tool browser.evaluate');
-    expect(item(es, 'idleTtl').hint).toBe(
-      'Se cambia desde el popup (Desconexión por inactividad) o con browser-link config set idle-ttl',
+  });
+});
+
+describe('buildAdminState — console settings section (S4)', () => {
+  test('its own section, with one notice that says once why nothing in it changes here', () => {
+    const en = section(buildAdminState(input()), 'console');
+    expect(en.title).toBe('Console settings');
+    expect(en.notice).toBe(
+      'These settings change only from the console, in a terminal. Each one widens what an agent may do or see, so anything that can reach the bridge, an agent included, could grant it if it could be changed here. Copy the command next to a setting and run it in a terminal; this window shows the new value once it applies.',
     );
+    const es = section(buildAdminState(input(), 'es'), 'console');
+    expect(es.title).toBe('Ajustes de la consola');
+    expect(es.notice).toBe(
+      'Estos ajustes solo se cambian desde la consola, en una terminal. Cada uno amplía lo que un agente puede hacer o ver, así que cualquier cosa que llegue al puente, un agente incluido, podría concederlo si se pudiera cambiar aquí. Copie el comando junto al ajuste y ejecútelo en una terminal; esta ventana muestra el valor nuevo cuando se aplica.',
+    );
+  });
+
+  test('holds every console-only setting, each a readout with its value and exact command', () => {
+    const sec = section(buildAdminState(input()), 'console');
+    expect(shape(sec)).toEqual([
+      ['tools.browser.list_tabs', 'readout'],
+      ['tools.browser.evaluate', 'readout'],
+      ['cdpDirectEnabled', 'readout'],
+      ['cdpDirectPort', 'readout'],
+      ['cdpDirectGrantTtlMinutes', 'readout'],
+      ['activityHideSensitive', 'readout'],
+      ['hidePasswordValues', 'readout'],
+      ['downloadsDir', 'readout'],
+      ['allowExecutableDownloads', 'readout'],
+      ['idleTtl', 'readout'],
+      ['claimTtl', 'readout'],
+      ['client.register.claude', 'readout'],
+    ]);
+    for (const it of sec.items) {
+      expect(it).toMatchObject({ writesDisk: false, consoleOnly: true });
+      expect(it.command).toMatch(/^browser-link /);
+    }
+    // Nothing console-only is left outside it.
+    const elsewhere = buildAdminState(input())
+      .sections.filter((s) => s.id !== 'console')
+      .flatMap((s) => s.items)
+      .filter((i) => i.consoleOnly === true || i.command !== undefined);
+    expect(elsewhere).toEqual([]);
+  });
+
+  test('idle disconnect (S2): the one value in effect, 30 min when never set, with the command', () => {
+    const fresh = section(buildAdminState(input({ config: {} })), 'console');
+    expect(item(fresh, 'idleTtl')).toEqual({
+      id: 'idleTtl',
+      kind: 'readout',
+      label: 'Idle disconnect',
+      value: '30 min',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set idle-ttl 30',
+      command: 'browser-link config set idle-ttl 30',
+    });
+    const never = section(
+      buildAdminState(input({ config: { idleTtlMinutes: 0 } }), 'es'),
+      'console',
+    );
+    expect(item(never, 'idleTtl')).toMatchObject({
+      label: 'Desconexión por inactividad',
+      value: 'nunca (sigue conectada)',
+      command: 'browser-link config set idle-ttl never',
+    });
+  });
+
+  test('claim expiry between agents (S3): 10 min by default, "never" when set to 0, with the command', () => {
+    const fresh = section(buildAdminState(input({ config: {} })), 'console');
+    expect(item(fresh, 'claimTtl')).toEqual({
+      id: 'claimTtl',
+      kind: 'readout',
+      label: 'Claim expiry between agents',
+      value: '10 min',
+      writesDisk: false,
+      consoleOnly: true,
+      hint: 'browser-link config set claim-ttl 10',
+      command: 'browser-link config set claim-ttl 10',
+    });
+    const never = section(buildAdminState(input({ config: { claimTtlMinutes: 0 } })), 'console');
+    expect(item(never, 'claimTtl')).toMatchObject({
+      value: 'never (until its agent releases it or disconnects)',
+      command: 'browser-link config set claim-ttl never',
+    });
+    const es = section(
+      buildAdminState(input({ config: { claimTtlMinutes: 25 } }), 'es'),
+      'console',
+    );
+    expect(item(es, 'claimTtl')).toMatchObject({
+      label: 'Vencimiento de la reserva entre agentes',
+      value: '25 min',
+      command: 'browser-link config set claim-ttl 25',
+    });
+  });
+
+  test('client registration carries the install or removal command', () => {
+    const sec = section(buildAdminState(input()), 'console');
+    expect(item(sec, 'client.register.claude')).toMatchObject({
+      value: 'registered',
+      command: 'browser-link uninstall --client claude',
+    });
   });
 });
 
@@ -361,7 +463,6 @@ describe('buildAdminState — diagnose section', () => {
       ['instructions.install.claude', 'button'],
       ['instructions.uninstall.claude', 'button'],
       ['instructions.install.opencode', 'button'],
-      ['client.register.claude', 'readout'],
       ['stop', 'readout'],
       ['selfUpdate', 'readout'],
     ]);
@@ -370,7 +471,6 @@ describe('buildAdminState — diagnose section', () => {
     expect(item(sec, 'updates.check').writesDisk).toBe(true);
     expect(item(sec, 'instructions.install.claude').writesDisk).toBe(true);
     expect(item(sec, 'instructions.uninstall.claude').writesDisk).toBe(true);
-    expect(item(sec, 'client.register.claude').writesDisk).toBe(false);
   });
 
   test('client registration is a readout carrying the install or removal command, only for installed clients', () => {
@@ -384,7 +484,7 @@ describe('buildAdminState — diagnose section', () => {
           ],
         }),
       ),
-      'diagnose',
+      'console',
     );
     expect(item(sec, 'client.register.claude')).toEqual({
       id: 'client.register.claude',
@@ -394,10 +494,12 @@ describe('buildAdminState — diagnose section', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'Already registered; to remove it: browser-link uninstall --client claude',
+      command: 'browser-link uninstall --client claude',
     });
     expect(item(sec, 'client.register.copilot')).toMatchObject({
       value: 'not registered',
       hint: 'browser-link install --client copilot',
+      command: 'browser-link install --client copilot',
     });
     expect(sec.items.some((i) => i.id === 'client.register.opencode')).toBe(false);
   });
@@ -433,11 +535,14 @@ describe('buildAdminState — diagnose section', () => {
     const en = section(buildAdminState(input()), 'diagnose');
     expect(en.title).toBe('Diagnose');
     expect(item(en, 'doctor').label).toBe('Run doctor');
-    expect(item(en, 'client.register.claude').label).toBe('MCP registration — Claude Code');
-    const es = section(buildAdminState(input({ config: { language: 'es' } })), 'diagnose');
+    expect(item(section(buildAdminState(input()), 'console'), 'client.register.claude').label).toBe(
+      'MCP registration — Claude Code',
+    );
+    const esState = buildAdminState(input({ config: { language: 'es' } }));
+    const es = section(esState, 'diagnose');
     expect(es.title).toBe('Diagnóstico');
     expect(item(es, 'doctor').label).toBe('Ejecutar doctor');
-    expect(item(es, 'client.register.claude')).toMatchObject({
+    expect(item(section(esState, 'console'), 'client.register.claude')).toMatchObject({
       label: 'Registro MCP — Claude Code',
       value: 'registrado',
       hint: 'Ya está registrado; para quitarlo: browser-link uninstall --client claude',
@@ -484,7 +589,7 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       value: 'hidden',
       hint: 'browser-link config set activity.hide-sensitive off',
     });
-    const setup = section(state, 'setup');
+    const setup = section(state, 'console');
     // Owner decision (2026-11-16): read-only in the extension, changed from the console.
     expect(item(setup, 'hidePasswordValues')).toEqual({
       id: 'hidePasswordValues',
@@ -494,6 +599,7 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'browser-link config set hide-password-values on',
+      command: 'browser-link config set hide-password-values on',
     });
     expect(item(setup, 'activityHideSensitive')).toEqual({
       id: 'activityHideSensitive',
@@ -503,10 +609,11 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'browser-link config set activity.hide-sensitive off',
+      command: 'browser-link config set activity.hide-sensitive off',
     });
   });
 
-  test('every console-only setting carries the marker the Admin window draws its info icon from', () => {
+  test('every console-only setting carries the consoleOnly marker and is a readout', () => {
     const state = buildAdminState(input());
     const marked = state.sections
       .flatMap((s) => s.items)
@@ -520,7 +627,10 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       'cdpDirectGrantTtlMinutes',
       'activityHideSensitive',
       'hidePasswordValues',
+      'downloadsDir',
       'allowExecutableDownloads',
+      'idleTtl',
+      'claimTtl',
       'client.register.claude',
     ]);
     for (const i of state.sections.flatMap((s) => s.items)) {
@@ -529,7 +639,7 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
   });
 
   test('executable downloads: a console-only readout, refused by default, with the command that flips it', () => {
-    const off = section(buildAdminState(input({ config: {} })), 'setup');
+    const off = section(buildAdminState(input({ config: {} })), 'console');
     expect(item(off, 'allowExecutableDownloads')).toEqual({
       id: 'allowExecutableDownloads',
       kind: 'readout',
@@ -538,10 +648,11 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       writesDisk: false,
       consoleOnly: true,
       hint: 'browser-link config set downloads.allow-executables on',
+      command: 'browser-link config set downloads.allow-executables on',
     });
     const on = section(
       buildAdminState(input({ config: { allowExecutableDownloads: true, language: 'es' } })),
-      'setup',
+      'console',
     );
     expect(item(on, 'allowExecutableDownloads')).toMatchObject({
       value: 'permitidas',
@@ -563,7 +674,7 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       value: 'stored unhidden',
       hint: 'browser-link config set activity.hide-sensitive on',
     });
-    const setup = section(state, 'setup');
+    const setup = section(state, 'console');
     expect(item(setup, 'hidePasswordValues')).toMatchObject({
       value: 'hidden',
       hint: 'browser-link config set hide-password-values off',
@@ -585,7 +696,7 @@ describe('buildAdminState — which hide setting is active (D12, D13)', () => {
       label: 'Filas sensibles',
       value: 'ocultas',
     });
-    const setup = section(state, 'setup');
+    const setup = section(state, 'console');
     expect(item(setup, 'hidePasswordValues')).toMatchObject({
       label: 'Ocultar a los agentes el valor de las contraseñas',
       value: 'ocultas',

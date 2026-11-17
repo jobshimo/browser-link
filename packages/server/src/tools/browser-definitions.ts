@@ -121,14 +121,15 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.claim_tab',
     description:
-      'Claim a tab so other agents stop touching it. Returns ok:true with your claim, or ok:false reason:"conflict" with the existing claim. Pass an optional label (eg "claude-code") that other agents will see in browser.list_tabs. Pass ttl_minutes (default 10, max 60) — the claim auto-expires after that many minutes of inactivity. A running browser.flow you launched holds the claim: it cannot expire while the flow runs, and the clock restarts from the last step of the flow when it ends (a long single call such as wait_for holds nothing). Action tools (click/type/navigate/evaluate) auto-claim free tabs, so an explicit claim_tab is only needed when you want to reserve a tab before you start, or to refresh the label/TTL.',
+      'Claim a tab so other agents stop touching it. Returns ok:true with your claim, or ok:false reason:"conflict" with the existing claim. Pass an optional label (eg "claude-code") that other agents will see in browser.list_tabs. Pass ttl_minutes (capped at 60) — the claim auto-expires after that many minutes of inactivity. Without ttl_minutes the claim follows the console setting claim-ttl (10 minutes unless the user changed it), read on every check; when the user set it to never, the claim reports ttl_ms: null and only a release, your disconnect or a reset ends it. A running browser.flow you launched holds the claim: it cannot expire while the flow runs, and the clock restarts from the last step of the flow when it ends (a long single call such as wait_for does not hold the claim). Action tools (click/type/navigate/evaluate) auto-claim free tabs, so an explicit claim_tab is only needed when you want to reserve a tab before you start, or to refresh the label/TTL.',
     inputSchema: {
       type: 'object',
       properties: {
         tab_id: { type: 'string' },
         ttl_minutes: {
           type: 'number',
-          description: 'Inactivity timeout for the claim, in minutes. Default 10, capped at 60.',
+          description:
+            'Inactivity timeout for the claim, in minutes, capped at 60. Without it the claim follows the console setting claim-ttl (10 minutes unless the user changed it, or never).',
         },
         label: {
           type: 'string',
@@ -1398,7 +1399,7 @@ export const BROWSER_TOOL_DEFINITIONS: ToolDefinition[] = [
         'Pass either steps or name. A saved flow runs with { tab_id, name, values } instead of being recalled and adapted by hand; inline steps written with <PLACEHOLDER> tokens plus values are what browser.wrap_up can save as a reusable recipe (steps holding typed text are refused there, rule 7).',
         'A flow can be STOPPED by the human mid-run, from the extension popup\'s Flows panel (on a cdp: tab, by `browser-link cdp revoke`). It then returns `ok:true` with `stopped_by:"cancelled"`, `steps_completed` and the results of what already ran — a repeat reports its own `stopped_by:"cancelled"` plus `iterations_completed`, and a `partial_iteration` when the stop landed mid-iteration. NEVER relaunch a cancelled flow: it is not a transient failure, it is a person deciding to stop you, and re-running it would repeat irreversible actions they just interrupted. Report what completed and ask.',
         '`detach: true` returns `{ flow_id, detached:true, started_at, steps, expires_at }` INSTEAD of the result — the flow keeps acting between your turns, so poll browser.flow_status(flow_id) for progress and, once it ends, for the action manifest. Only one detached flow per tab: a second attempt is rejected naming the one already running. A detached flow self-cancels at 30 minutes with `stopped_by:"expired"`, and if Chrome terminates the extension service worker under it, it comes back `failed` / `worker-terminated` and is NEVER resumed — check flow_status before relaunching anything.',
-        'While a flow runs, foreground or detached, it holds your tab claim, the extension idle disconnect and the cdp: connection, each for at most the maximum duration of the flow (60 s; 30 minutes detached); each restarts from the last step of the flow when it ends. A long single call (wait_for) holds nothing.',
+        'While a flow runs, foreground or detached, it holds your tab claim, the extension idle disconnect and the cdp: connection, each for at most the maximum duration of the flow (60 s; 30 minutes detached); each restarts from the last step of the flow when it ends. A long single call (wait_for, download) on an extension tab holds the extension idle disconnect while it runs (at most 10 minutes) and restarts it when it answers; it does not hold your tab claim, and on a cdp: tab the connection counts from when the call started.',
       ],
       example:
         'browser.flow({ tab_id: "tab_1", steps: [{ find: { text: "GIF", role: "button" } }, { click: {} }, { wait_for: { selector: "[data-testid=gif-search]", condition: "visible" } }, { type: { selector: "[data-testid=gif-search]", text: "shrek" } }, { press: { key: "Enter" } }] })',

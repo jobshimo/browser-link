@@ -1,22 +1,28 @@
 import {
   DEFAULT_ACTIVITY_HIDE_SENSITIVE,
   DEFAULT_ALLOW_EXECUTABLE_DOWNLOADS,
+  DEFAULT_CLAIM_TTL_MINUTES,
   DEFAULT_DOWNLOADS_MAX_MB,
   DEFAULT_HIDE_PASSWORD_VALUES,
   MAX_CDP_DIRECT_PORT,
+  MAX_CLAIM_TTL_MINUTES,
   MAX_DOWNLOADS_MAX_MB,
   MAX_GRANT_TTL_MINUTES,
   MAX_IDLE_TTL_MINUTES,
   MIN_CDP_DIRECT_PORT,
+  MIN_CLAIM_TTL_MINUTES,
   MIN_DOWNLOADS_MAX_MB,
   MIN_GRANT_TTL_MINUTES,
   MIN_IDLE_TTL_MINUTES,
   activityHidesSensitive,
   allowsExecutableDownloads,
   clampCdpDirectPort,
+  clampClaimTtlMinutes,
   clampGrantTtlMinutes,
   clampIdleTtlMinutes,
   hidesPasswordValues,
+  claimTtlMinutesInEffect,
+  idleTtlMinutesInEffect,
   loadConfig,
   readConfig,
   restoreDefaultConfig,
@@ -34,24 +40,20 @@ import type { Language } from './welcome.js';
 import { readArgs } from '../cli-args.js';
 
 /**
- * `browser-link config` — scriptable CLI surface for settings that are also
- * editable from the extension's popup: the idle-disconnect TTL (see
- * `packages/extension/src/idle-policy.ts`) and the opt-in flow-recording
- * toggle (see `packages/extension/src/flow-recording-policy.ts`). `get`/`set`
- * are structured as `<action> <key> [value]` so each setting slots in
- * without a redesign.
+ * `browser-link config` — the console's settings. `get`/`set` are
+ * structured as `<action> <key> [value]` so each setting slots in without a
+ * redesign.
  *
  *   browser-link config get                       Show every known setting.
  *   browser-link config get idle-ttl               Show just idle-ttl.
- *   browser-link config get flow-recording          Show just flow-recording.
  *   browser-link config set idle-ttl <minutes|never>
+ *   browser-link config set claim-ttl <minutes|never|default>
  *   browser-link config set flow-recording <on|off>
  *
- * Precedence with the popup: both editors write to ONE logical value per
- * setting — last write wins, decided by comparing `updatedAt` epoch-ms
- * timestamps (see messages.ts's SettingsUpdatePayload doc and the README's
- * "Idle disconnect" / "Recording flows by demonstration" sections). Each
- * `config set` here:
+ * idle-ttl (1.3.0) has ONE value, owned here: the popup no longer edits it,
+ * the extension applies whatever the server pushes. Flow recording is still
+ * editable from the popup too, last write wins by `updatedAt` (see
+ * messages.ts's SettingsUpdatePayload doc). Each of these two `config set`:
  *   1. Persists the value plus its own `*UpdatedAt: Date.now()` to
  *      config.json — this is what a NEW tab connecting later reads (see
  *      ws-bridge.ts's `tab.register` handler).
@@ -68,10 +70,15 @@ export interface ConfigI18n {
   idleTtlLabel: string;
   never: string;
   minutes: (n: number) => string;
-  notSetViaCli: string;
+  /** Appended to a value that is the default. */
+  defaultNote: string;
   invalidValue: (raw: string) => string;
   clampedNote: (original: number, clamped: number) => string;
   setSaved: (label: string) => string;
+  claimTtlLabel: string;
+  claimTtlNever: string;
+  invalidClaimTtlValue: (raw: string) => string;
+  claimTtlSetSaved: (minutes: number, label: string) => string;
   pushedLive: (n: number) => string;
   pushedNone: string;
   pushUnavailable: string;
@@ -137,12 +144,19 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     idleTtlLabel: 'idle-ttl',
     never: 'never (auto-disconnect disabled)',
     minutes: (n) => `${n} min`,
-    notSetViaCli:
-      "not set via CLI — the extension's own default/popup choice applies (30 min unless changed in the popup)",
+    defaultNote: ' (default)',
     invalidValue: (raw) =>
       `Invalid idle-ttl value: "${raw}". Use a whole number of minutes (${MIN_IDLE_TTL_MINUTES}-${MAX_IDLE_TTL_MINUTES}) or "never".`,
     clampedNote: (original, clamped) => ` (clamped from ${original} to ${clamped})`,
     setSaved: (label) => `Idle-disconnect TTL set to ${label}.`,
+    claimTtlLabel: 'claim-ttl',
+    claimTtlNever: 'never (a claim lasts until its agent releases it or disconnects)',
+    invalidClaimTtlValue: (raw) =>
+      `Invalid claim-ttl value: "${raw}". Use a whole number of minutes (${MIN_CLAIM_TTL_MINUTES}-${MAX_CLAIM_TTL_MINUTES}), "never" or "default".`,
+    claimTtlSetSaved: (minutes, label) =>
+      minutes === 0
+        ? `claim-ttl set to ${label}. Applies to the next check, no restart needed.`
+        : `claim-ttl set to ${label}. A claim between agents now expires after ${minutes} min without activity; applies to the next check, no restart needed.`,
     pushedLive: (n) => ` Pushed immediately to ${n} connected tab(s).`,
     pushedNone: ' No tabs are currently connected — it will apply the next time one connects.',
     pushUnavailable:
@@ -150,9 +164,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' A running primary rejected the push (stale or mismatched multi-agent token — it may have just restarted). The value is saved and applies the next time a tab connects.',
     usage:
-      'Usage: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutes|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
+      'Usage: browser-link config get [idle-ttl|claim-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutes|never> | browser-link config set claim-ttl <minutes|never|default> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <port> | browser-link config set cdp-direct.grant-ttl <minutes|never> | browser-link config set downloads.dir <absolute-path|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Unknown config key: ${key}. Known keys: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
+      `Unknown config key: ${key}. Known keys: idle-ttl, claim-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Unknown config action: ${action}. Use get, set or restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -228,12 +242,19 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     idleTtlLabel: 'idle-ttl',
     never: 'nunca (auto-desconexión deshabilitada)',
     minutes: (n) => `${n} min`,
-    notSetViaCli:
-      'no configurado por CLI — se aplica el valor por defecto o el elegido en el popup de la extensión (30 min salvo que se haya cambiado en el popup)',
+    defaultNote: ' (por defecto)',
     invalidValue: (raw) =>
       `Valor de idle-ttl inválido: "${raw}". Usá un número entero de minutos (${MIN_IDLE_TTL_MINUTES}-${MAX_IDLE_TTL_MINUTES}) o "never".`,
     clampedNote: (original, clamped) => ` (ajustado de ${original} a ${clamped})`,
     setSaved: (label) => `TTL de auto-desconexión configurado a ${label}.`,
+    claimTtlLabel: 'claim-ttl',
+    claimTtlNever: 'nunca (una reserva dura hasta que su agente la libera o se desconecta)',
+    invalidClaimTtlValue: (raw) =>
+      `Valor de claim-ttl inválido: "${raw}". Usá un número entero de minutos (${MIN_CLAIM_TTL_MINUTES}-${MAX_CLAIM_TTL_MINUTES}), "never" o "default".`,
+    claimTtlSetSaved: (minutes, label) =>
+      minutes === 0
+        ? `claim-ttl configurado a ${label}. Se aplica en la próxima comprobación, sin reiniciar.`
+        : `claim-ttl configurado a ${label}. Una reserva entre agentes vence ahora tras ${minutes} min sin actividad; se aplica en la próxima comprobación, sin reiniciar.`,
     pushedLive: (n) => ` Aplicado de inmediato a ${n} pestaña(s) conectada(s).`,
     pushedNone:
       ' No hay pestañas conectadas actualmente — se aplicará la próxima vez que una se conecte.',
@@ -242,9 +263,9 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
     pushRejected:
       ' Un primary en ejecución rechazó el push (token multi-agente obsoleto o no coincidente — puede haberse reiniciado recién). El valor quedó guardado y se aplicará la próxima vez que una pestaña se conecte.',
     usage:
-      'Uso: browser-link config get [idle-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutos|never> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
+      'Uso: browser-link config get [idle-ttl|claim-ttl|flow-recording|cdp-direct.enabled|cdp-direct.port|cdp-direct.grant-ttl|downloads.dir|downloads.max-mb|downloads.allow-executables|map-learning|hide-password-values|activity.hide-sensitive] | browser-link config set idle-ttl <minutos|never> | browser-link config set claim-ttl <minutos|never|default> | browser-link config set flow-recording <on|off> | browser-link config set cdp-direct.enabled <true|false> | browser-link config set cdp-direct.port <puerto> | browser-link config set cdp-direct.grant-ttl <minutos|never> | browser-link config set downloads.dir <ruta-absoluta|default> | browser-link config set downloads.max-mb <1..64|default> | browser-link config set downloads.allow-executables <on|off> | browser-link config set map-learning <on|off> | browser-link config set hide-password-values <on|off> | browser-link config set activity.hide-sensitive <on|off> | browser-link config restore-defaults [--yes]',
     unknownKey: (key) =>
-      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
+      `Clave de configuración desconocida: ${key}. Claves conocidas: idle-ttl, claim-ttl, flow-recording, cdp-direct.enabled, cdp-direct.port, cdp-direct.grant-ttl, downloads.dir, downloads.max-mb, downloads.allow-executables, map-learning, hide-password-values, activity.hide-sensitive.`,
     unknownAction: (action) =>
       `Acción de config desconocida: ${action}. Usá get, set o restore-defaults.`,
     flowRecordingLabel: 'flow-recording',
@@ -328,13 +349,22 @@ export const CFG_I18N: Record<Language, ConfigI18n> = {
 export function getIdleTtlLine(language: Language = 'en'): string {
   const t = CFG_I18N[language];
   const cfg = loadConfig();
+  const minutes = idleTtlMinutesInEffect(cfg);
   const value =
-    cfg.idleTtlMinutes === undefined
-      ? t.notSetViaCli
-      : cfg.idleTtlMinutes === 0
-        ? t.never
-        : t.minutes(cfg.idleTtlMinutes);
+    (minutes === 0 ? t.never : t.minutes(minutes)) +
+    (cfg.idleTtlMinutes === undefined ? t.defaultNote : '');
   return `  ${t.idleTtlLabel}   ${value}`;
+}
+
+/** One formatted line describing the claim expiry between agents (S3). */
+export function getClaimTtlLine(language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  const cfg = loadConfig();
+  const minutes = claimTtlMinutesInEffect(cfg);
+  const value =
+    (minutes === 0 ? t.claimTtlNever : t.minutes(minutes)) +
+    (cfg.claimTtlMinutes === undefined ? t.defaultNote : '');
+  return `  ${t.claimTtlLabel}   ${value}`;
 }
 
 /** One formatted line describing the current `flowRecordingEnabled` state —
@@ -387,6 +417,7 @@ export function listConfig(language: Language = 'en'): string {
     t.header,
     '',
     getIdleTtlLine(language),
+    getClaimTtlLine(language),
     getFlowRecordingLine(language),
     getCdpDirectEnabledLine(language),
     getCdpDirectPortLine(language),
@@ -414,17 +445,58 @@ export function listConfig(language: Language = 'en'): string {
  * feedback loops for an interactive command than defaulting silently.
  */
 function parseIdleTtlArg(raw: string, t: ConfigI18n): { minutes: number; note: string } {
+  return parseMinutesOrNever(raw, MIN_IDLE_TTL_MINUTES, MAX_IDLE_TTL_MINUTES, t.invalidValue, t);
+}
+
+/** The `<minutes|never>` rule idle-ttl and claim-ttl share: "never" or "0"
+ * is 0, a whole number in [min, max] passes, one outside is clamped with a
+ * note, anything else is `invalid(raw)`. */
+function parseMinutesOrNever(
+  raw: string,
+  min: number,
+  max: number,
+  invalid: (raw: string) => string,
+  t: ConfigI18n,
+): { minutes: number; note: string } {
   const normalized = raw.trim().toLowerCase();
   if (normalized === 'never' || normalized === '0') return { minutes: 0, note: '' };
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-    throw new Error(t.invalidValue(raw));
+    throw new Error(invalid(raw));
   }
-  if (parsed < MIN_IDLE_TTL_MINUTES || parsed > MAX_IDLE_TTL_MINUTES) {
-    const clamped = Math.min(Math.max(parsed, MIN_IDLE_TTL_MINUTES), MAX_IDLE_TTL_MINUTES);
+  if (parsed < min || parsed > max) {
+    const clamped = Math.min(Math.max(parsed, min), max);
     return { minutes: clamped, note: t.clampedNote(parsed, clamped) };
   }
   return { minutes: parsed, note: '' };
+}
+
+/**
+ * `config set claim-ttl <minutes|never|default>` (S3): how long a claim
+ * between agents lasts without activity. Console only: it widens what an
+ * agent may do (see admin/descriptor.ts). "default" removes the key (10
+ * min). No live push: the claim registry reads config.json on every check.
+ */
+export function setClaimTtl(rawValue: string, language: Language = 'en'): string {
+  const t = CFG_I18N[language];
+  if (rawValue.trim().toLowerCase() === 'default') {
+    saveConfig({ claimTtlMinutes: undefined });
+    return t.claimTtlSetSaved(
+      DEFAULT_CLAIM_TTL_MINUTES,
+      t.minutes(DEFAULT_CLAIM_TTL_MINUTES) + t.defaultNote,
+    );
+  }
+  const { minutes: parsed, note } = parseMinutesOrNever(
+    rawValue,
+    MIN_CLAIM_TTL_MINUTES,
+    MAX_CLAIM_TTL_MINUTES,
+    t.invalidClaimTtlValue,
+    t,
+  );
+  const minutes = clampClaimTtlMinutes(parsed);
+  saveConfig({ claimTtlMinutes: minutes });
+  const label = (minutes === 0 ? t.claimTtlNever : t.minutes(minutes)) + note;
+  return t.claimTtlSetSaved(minutes, label);
 }
 
 /** Override the IPC endpoint the live push dials. Production callers never
@@ -892,8 +964,10 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
       cdpDirectGrantTtlMinutes:
         'default lifetime of a cdp-direct grant, in minutes (config set cdp-direct.grant-ttl)',
       idleTtlMinutes:
-        "idle-disconnect TTL, in minutes (config set idle-ttl; not set: the extension's own choice)",
+        'idle-disconnect TTL of the extension tabs, in minutes, 0 is never (config set idle-ttl; not set: 30)',
       idleTtlUpdatedAt: 'when idle-ttl was last set from the CLI',
+      claimTtlMinutes:
+        'how long a claim between agents lasts without activity, in minutes, 0 is never (config set claim-ttl; not set: 10)',
       language: 'console language',
       flowRecordingEnabled:
         "flow recording (config set flow-recording; not set: the extension's own choice)",
@@ -946,8 +1020,10 @@ export const RESTORE_I18N: Record<Language, RestoreI18n> = {
       cdpDirectGrantTtlMinutes:
         'duración por defecto de un permiso de cdp-direct, en minutos (config set cdp-direct.grant-ttl)',
       idleTtlMinutes:
-        'TTL de auto-desconexión, en minutos (config set idle-ttl; sin valor: lo que elija la extensión)',
+        'TTL de auto-desconexión de las pestañas de la extensión, en minutos, 0 es nunca (config set idle-ttl; sin valor: 30)',
       idleTtlUpdatedAt: 'cuándo se configuró idle-ttl por última vez desde la CLI',
+      claimTtlMinutes:
+        'cuánto dura sin actividad una reserva entre agentes, en minutos, 0 es nunca (config set claim-ttl; sin valor: 10)',
       language: 'idioma de la consola',
       flowRecordingEnabled:
         'grabación de flows (config set flow-recording; sin valor: lo que elija la extensión)',
@@ -1040,6 +1116,7 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
   if (action === undefined || action === 'get') {
     if (key === undefined) return listConfig(language);
     if (key === 'idle-ttl') return getIdleTtlLine(language);
+    if (key === 'claim-ttl') return getClaimTtlLine(language);
     if (key === 'flow-recording') return getFlowRecordingLine(language);
     if (isCdpDirectKey(key)) return getCdpDirectLine(key, language);
     if (key === 'downloads.dir') return getDownloadsDirLine(language);
@@ -1055,6 +1132,10 @@ export async function runConfigCommand(argv: string[], language: Language = 'en'
   if (key === 'idle-ttl' || key === 'flow-recording') {
     if (value === undefined) throw new Error(t.usage);
     return key === 'idle-ttl' ? setIdleTtl(value, language) : setFlowRecording(value, language);
+  }
+  if (key === 'claim-ttl') {
+    if (value === undefined) throw new Error(t.usage);
+    return setClaimTtl(value, language);
   }
   if (isCdpDirectKey(key)) {
     if (value === undefined) throw new Error(t.usage);

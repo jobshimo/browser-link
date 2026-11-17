@@ -33,7 +33,7 @@ import { VERSION, readInstalledVersion } from '../version.js';
 import { handleBridgeHttpRequest } from '../lifecycle/version-endpoint.js';
 import { answerRepairRequest } from '../lifecycle/repair.js';
 import { isExtensionEventKind, type BridgeEventLog } from './events.js';
-import { loadConfig } from '../config.js';
+import { idleTtlMinutesInEffect, loadConfig } from '../config.js';
 import { recordAppBuild, saveFlow } from '../map/queries.js';
 import { validateFlowSteps } from '../tools/browser-dispatch.js';
 import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
@@ -389,11 +389,10 @@ export function startWsBridge(
             ),
           });
           log(`Tab registered: ${assignedTabId} -> ${msg.payload.url}`);
-          // Hand the freshly-connected tab the CLI's idle-TTL choice, if it
-          // ever made one — see buildRegisterSettingsUpdate below for the
-          // exact rules (undefined → no push at all).
-          const settingsUpdate = buildRegisterSettingsUpdate(loadConfig());
-          if (settingsUpdate) send(ws, settingsUpdate);
+          // Hand the freshly-connected tab the idle-TTL in effect (the
+          // console owns it, 1.3.0) and the CLI's flow-recording choice, if
+          // it made one — see buildRegisterSettingsUpdate below.
+          send(ws, buildRegisterSettingsUpdate(loadConfig()));
           if (previousTabId && previousTabId !== assignedTabId) {
             events.add('tab-renamed', {
               previous: previousTabId,
@@ -565,35 +564,34 @@ export function startWsBridge(
 }
 
 /**
- * Build the `settings.update` a freshly-registered tab should receive, or
- * `null` when nothing should be sent. Each of `idleTtlMinutes` and
- * `flowRecordingEnabled` independently stays undefined in config.json until
- * its own `browser-link config set` command runs at least once — a
- * popup-only user (who never touched the CLI) never gets an unsolicited
- * settings.update overwriting their own popup choice for that setting.
- * Note idle-ttl's `0` ("never") and flow-recording's `false` ("off") ARE
- * real values and MUST push — only `undefined` suppresses a given pair, and
- * the two pairs are independent (a message can carry one, the other, or
- * both). See messages.ts's SettingsUpdatePayload doc for the newest-wins
- * precedence rule the extension applies on receipt. Exported so the
- * register-path push is unit-testable without binding the fixed WS port.
+ * Build the `settings.update` a freshly-registered tab receives.
+ *
+ * The idle-TTL pair is always there (S2, 1.3.0): the console owns the one
+ * value, so the tab gets the value in effect, the 30-minute default when
+ * `config set idle-ttl` never ran, and `0` for "never". Its `updatedAt` is
+ * the CLI's timestamp (0 when never set) only so an extension older than
+ * 1.3.0 keeps parsing it.
+ *
+ * The flow-recording pair is still sent only once `config set
+ * flow-recording` ran (its `false` is a real value and pushes): that toggle
+ * stays editable from the popup, newest write wins (see messages.ts's
+ * SettingsUpdatePayload doc). Exported so the register-path push is
+ * unit-testable without binding the fixed WS port.
  */
 export function buildRegisterSettingsUpdate(cfg: {
   idleTtlMinutes?: number;
   idleTtlUpdatedAt?: number;
   flowRecordingEnabled?: boolean;
   flowRecordingUpdatedAt?: number;
-}): SettingsUpdateMessage | null {
-  const settings: SettingsUpdateMessage['settings'] = {};
-  if (cfg.idleTtlMinutes !== undefined) {
-    settings.idleTtlMinutes = cfg.idleTtlMinutes;
-    settings.updatedAt = cfg.idleTtlUpdatedAt ?? 0;
-  }
+}): SettingsUpdateMessage {
+  const settings: SettingsUpdateMessage['settings'] = {
+    idleTtlMinutes: idleTtlMinutesInEffect(cfg),
+    updatedAt: cfg.idleTtlUpdatedAt ?? 0,
+  };
   if (cfg.flowRecordingEnabled !== undefined) {
     settings.flowRecordingEnabled = cfg.flowRecordingEnabled;
     settings.flowRecordingUpdatedAt = cfg.flowRecordingUpdatedAt ?? 0;
   }
-  if (Object.keys(settings).length === 0) return null;
   return { kind: 'settings.update', settings };
 }
 

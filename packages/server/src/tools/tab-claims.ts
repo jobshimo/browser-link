@@ -20,6 +20,10 @@
  *   - Claims expire after `ttl_minutes` of inactivity. Every action on the
  *     tab refreshes `last_activity_at`. Stale claims are dropped by
  *     `pruneStale()` (called periodically by the primary).
+ *   - A claim that did not ask for its own `ttl_minutes` follows the
+ *     console setting `claim-ttl` (default 10 minutes, `0` = never), read
+ *     on every check, so a change applies without a restart. With "never"
+ *     (`ttl_ms: null`) only a release, a disconnect or a reset ends it.
  *   - Sessions ending (proxy disconnect) drop the agent's claims
  *     immediately via `onAgentDisconnect()`.
  *   - A running flow holds its agent's claim (owner decision D1): its steps
@@ -29,6 +33,8 @@
  *     never outlives the flow's own maximum duration: past it the clock
  *     restarts from that bound, as if a step had run there.
  */
+
+import { DEFAULT_CLAIM_TTL_MINUTES, claimTtlMinutesInEffect, loadConfig } from '../config.js';
 
 export interface AgentCaller {
   agent_id: string;
@@ -45,7 +51,8 @@ export interface TabClaim {
   label?: string;
   claimed_at: number;
   last_activity_at: number;
-  ttl_ms: number;
+  /** Inactivity allowed, in ms; `null` = never expires (claim-ttl "never"). */
+  ttl_ms: number | null;
 }
 
 export type ClaimEvent =
@@ -56,7 +63,7 @@ export type ClaimEvent =
       pid: number;
       binary: string;
       label?: string;
-      ttl_ms: number;
+      ttl_ms: number | null;
       auto: boolean;
     }
   | {
@@ -77,8 +84,10 @@ export type ClaimOutcome =
   | { ok: false; reason: 'conflict'; existing: TabClaim };
 
 export interface TabClaimRegistryOptions {
-  /** Default TTL when a claim does not specify one. Defaults to 10 minutes. */
-  defaultTtlMinutes?: number;
+  /** TTL of a claim that does not specify one, in minutes; `0` = never. A
+   * function is read on every check. Defaults to the console setting
+   * `claim-ttl` from config.json (10 minutes when unset or unreadable). */
+  defaultTtlMinutes?: number | (() => number);
   /** Upper bound on TTL a caller may request. Defaults to 60 minutes. */
   maxTtlMinutes?: number;
   /** Time source. Tests inject a fake clock to make TTL assertions deterministic. */
@@ -88,6 +97,16 @@ export interface TabClaimRegistryOptions {
 }
 
 const MS_PER_MINUTE = 60_000;
+
+/** The console's `claim-ttl`, read now. An unreadable config.json reads as
+ * the default here: every tool call is refused in that state anyway. */
+function configuredClaimTtlMinutes(): number {
+  try {
+    return claimTtlMinutesInEffect(loadConfig());
+  } catch {
+    return DEFAULT_CLAIM_TTL_MINUTES;
+  }
+}
 
 /** One running flow holding its agent's claim on a tab. */
 interface FlowHold {
@@ -102,13 +121,17 @@ export class TabClaimRegistry {
   private claims = new Map<string, TabClaim>();
   /** Keyed by flow_id. */
   private flowHolds = new Map<string, FlowHold>();
-  private readonly defaultTtlMs: number;
+  /** The ttl (ms) each claim's agent asked for with `ttl_minutes`, by
+   * tab_id; a claim absent here follows the configured default. */
+  private requestedTtlMs = new Map<string, number>();
+  private readonly defaultTtlMinutes: () => number;
   private readonly maxTtlMs: number;
   private readonly now: () => number;
   private readonly onEvent: (event: ClaimEvent) => void;
 
   constructor(opts: TabClaimRegistryOptions = {}) {
-    this.defaultTtlMs = (opts.defaultTtlMinutes ?? 10) * MS_PER_MINUTE;
+    const configured = opts.defaultTtlMinutes ?? configuredClaimTtlMinutes;
+    this.defaultTtlMinutes = typeof configured === 'function' ? configured : () => configured;
     this.maxTtlMs = (opts.maxTtlMinutes ?? 60) * MS_PER_MINUTE;
     this.now = opts.nowMs ?? (() => Date.now());
     this.onEvent = opts.onEvent ?? (() => {});
@@ -117,10 +140,11 @@ export class TabClaimRegistry {
   /** Snapshot of the current claim for a tab, or null when free or expired. */
   getClaim(tab_id: string): TabClaim | null {
     this.retireOverdueHolds(this.now());
-    const claim = this.claims.get(tab_id);
-    if (!claim) return null;
+    const stored = this.claims.get(tab_id);
+    if (!stored) return null;
+    const claim = this.withCurrentTtl(stored);
     if (this.isExpired(claim)) {
-      this.claims.delete(tab_id);
+      this.forget(tab_id);
       this.onEvent({
         kind: 'tab-released',
         tab_id,
@@ -156,7 +180,7 @@ export class TabClaimRegistry {
     if (claim.agent_id !== caller.agent_id) {
       return { ok: false, reason: 'not-owner', existing: claim };
     }
-    this.claims.delete(tab_id);
+    this.forget(tab_id);
     this.onEvent({
       kind: 'tab-released',
       tab_id,
@@ -182,7 +206,7 @@ export class TabClaimRegistry {
     for (const [tabId, claim] of this.claims) {
       if (claim.agent_id === agent_id) {
         released.push(claim);
-        this.claims.delete(tabId);
+        this.forget(tabId);
         this.onEvent({
           kind: 'tab-released',
           tab_id: tabId,
@@ -231,10 +255,11 @@ export class TabClaimRegistry {
   pruneStale(): TabClaim[] {
     this.retireOverdueHolds(this.now());
     const expired: TabClaim[] = [];
-    for (const [tabId, claim] of this.claims) {
+    for (const [tabId, stored] of this.claims) {
+      const claim = this.withCurrentTtl(stored);
       if (this.isExpired(claim)) {
         expired.push(claim);
-        this.claims.delete(tabId);
+        this.forget(tabId);
         this.onEvent({
           kind: 'tab-released',
           tab_id: tabId,
@@ -266,10 +291,36 @@ export class TabClaimRegistry {
       });
     }
     this.claims.clear();
+    this.requestedTtlMs.clear();
     return released;
   }
 
+  private forget(tab_id: string): void {
+    this.claims.delete(tab_id);
+    this.requestedTtlMs.delete(tab_id);
+  }
+
+  /** The ttl (ms) a claim on `tab_id` has now: its agent's own request, or
+   * the configured default (`null` = never). */
+  private currentTtlMs(tab_id: string): number | null {
+    const requested = this.requestedTtlMs.get(tab_id);
+    if (requested !== undefined) return requested;
+    const minutes = this.defaultTtlMinutes();
+    return minutes === 0 ? null : minutes * MS_PER_MINUTE;
+  }
+
+  /** The stored claim, replaced when the configured default changed since:
+   * callers hold earlier snapshots, so it is never mutated. */
+  private withCurrentTtl(claim: TabClaim): TabClaim {
+    const ttl_ms = this.currentTtlMs(claim.tab_id);
+    if (ttl_ms === claim.ttl_ms) return claim;
+    const fresh = { ...claim, ttl_ms };
+    this.claims.set(claim.tab_id, fresh);
+    return fresh;
+  }
+
   private isExpired(claim: TabClaim): boolean {
+    if (claim.ttl_ms === null) return false;
     const now = this.now();
     if (this.isHeldByFlow(claim, now)) return false;
     return now - claim.last_activity_at >= claim.ttl_ms;
@@ -320,8 +371,15 @@ export class TabClaimRegistry {
     }
 
     const now = this.now();
-    const requestedTtlMs = opts.ttlMinutes != null ? opts.ttlMinutes * MS_PER_MINUTE : undefined;
-    const ttlMs = clamp(requestedTtlMs ?? existing?.ttl_ms ?? this.defaultTtlMs, 1, this.maxTtlMs);
+    // An agent's own ttl_minutes is bounded by the cap; the console's
+    // setting is not (the human chose it). A re-claim without one keeps
+    // what the claim had.
+    if (opts.ttlMinutes != null) {
+      this.requestedTtlMs.set(tab_id, clamp(opts.ttlMinutes * MS_PER_MINUTE, 1, this.maxTtlMs));
+    } else if (!existing) {
+      this.requestedTtlMs.delete(tab_id);
+    }
+    const ttlMs = this.currentTtlMs(tab_id);
 
     const label = opts.label ?? existing?.label ?? caller.label;
 

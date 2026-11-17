@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as paths from '../map/paths.js';
+import { saveConfig } from '../config.js';
 import {
   TabClaimRegistry,
   followFlowFinishedEvents,
@@ -255,7 +260,11 @@ describe('TabClaimRegistry flow holds (owner decision D1)', () => {
   beforeEach(() => {
     now = 1_000_000;
     events = [];
-    registry = new TabClaimRegistry({ nowMs: () => now, onEvent: (e) => events.push(e) });
+    registry = new TabClaimRegistry({
+      defaultTtlMinutes: 10,
+      nowMs: () => now,
+      onEvent: (e) => events.push(e),
+    });
   });
 
   test('pruneStale keeps a claim a running flow holds, and drops it once the clock runs out after the release', () => {
@@ -343,7 +352,7 @@ describe('TabClaimRegistry flow holds (owner decision D1)', () => {
 describe('followFlowFinishedEvents', () => {
   test('releases the hold named by a flow-finished event, dated by its duration, and nothing else', () => {
     let now = 1_000_000;
-    const registry = new TabClaimRegistry({ nowMs: () => now });
+    const registry = new TabClaimRegistry({ defaultTtlMinutes: 10, nowMs: () => now });
     let listener: ((e: { kind: string; data: Record<string, unknown> }) => void) | undefined;
     const unsubscribe = vi.fn();
     const off = followFlowFinishedEvents(registry, (fn) => {
@@ -360,5 +369,96 @@ describe('followFlowFinishedEvents', () => {
     expect(registry.getClaim('tab_1')?.last_activity_at).toBe(1_000_000 + 12 * 60_000);
     off();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+});
+
+describe('TabClaimRegistry — the claim expiry is a console setting (S3)', () => {
+  const MIN = 60_000;
+  let now: number;
+
+  beforeEach(() => {
+    now = 1_000_000;
+  });
+
+  test('0 ("never"): a claim made without ttl_minutes never expires by inactivity, and says so with ttl_ms null', () => {
+    const registry = new TabClaimRegistry({ defaultTtlMinutes: 0, nowMs: () => now });
+    const made = registry.ensureActionAllowed('tab_1', A);
+    expect(made.ok && made.claim.ttl_ms).toBeNull();
+    now += 7 * 24 * 60 * MIN;
+    expect(registry.pruneStale()).toEqual([]);
+    expect(registry.getClaim('tab_1')?.agent_id).toBe(A.agent_id);
+    expect(registry.claim('tab_1', B)).toMatchObject({ ok: false, reason: 'conflict' });
+  });
+
+  test('"never" still lets the owner release, a disconnect drop and a reset clear the claim', () => {
+    const registry = new TabClaimRegistry({ defaultTtlMinutes: 0, nowMs: () => now });
+    registry.claim('tab_1', A);
+    registry.claim('tab_2', A);
+    registry.claim('tab_3', B);
+    expect(registry.release('tab_1', A)).toEqual({ ok: true });
+    expect(registry.onAgentDisconnect(A.agent_id).map((c) => c.tab_id)).toEqual(['tab_2']);
+    expect(registry.releaseAll().map((c) => c.tab_id)).toEqual(['tab_3']);
+  });
+
+  test('the configured value is read live: a change applies to every claim that did not ask for its own ttl', () => {
+    let configured = 10;
+    const registry = new TabClaimRegistry({
+      defaultTtlMinutes: () => configured,
+      nowMs: () => now,
+    });
+    registry.ensureActionAllowed('tab_1', A);
+    registry.claim('tab_2', B, { ttlMinutes: 5 });
+    configured = 30;
+    now += 20 * MIN;
+    expect(registry.getClaim('tab_1')).toMatchObject({ agent_id: A.agent_id, ttl_ms: 30 * MIN });
+    // An agent's own ttl_minutes is its choice and is kept.
+    expect(registry.getClaim('tab_2')).toBeNull();
+    configured = 0;
+    now += 60 * MIN;
+    expect(registry.pruneStale()).toEqual([]);
+    expect(registry.getClaim('tab_1')?.ttl_ms).toBeNull();
+  });
+
+  test('a configured value above the 60-minute cap applies: the cap bounds what an agent asks, not the console', () => {
+    const registry = new TabClaimRegistry({ defaultTtlMinutes: 120, nowMs: () => now });
+    registry.ensureActionAllowed('tab_1', A);
+    now += 119 * MIN;
+    expect(registry.pruneStale()).toEqual([]);
+    now += MIN;
+    expect(registry.pruneStale().map((c) => c.tab_id)).toEqual(['tab_1']);
+  });
+});
+
+describe('TabClaimRegistry — without an explicit default it reads claim-ttl from config.json (S3)', () => {
+  let dataDir: string;
+  let spy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'browser-link-claim-ttl-'));
+    spy = vi.spyOn(paths, 'getDataDir').mockReturnValue(dataDir);
+  });
+
+  afterEach(() => {
+    spy.mockRestore();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test('no setting: 10 minutes; `config set claim-ttl never` applies to the next check', () => {
+    let now = 1_000_000;
+    const registry = new TabClaimRegistry({ nowMs: () => now });
+    const made = registry.ensureActionAllowed('tab_1', A);
+    expect(made.ok && made.claim.ttl_ms).toBe(10 * 60_000);
+    saveConfig({ claimTtlMinutes: 0 });
+    now += 11 * 60_000;
+    expect(registry.pruneStale()).toEqual([]);
+    saveConfig({ claimTtlMinutes: 3 });
+    expect(registry.pruneStale().map((c) => c.tab_id)).toEqual(['tab_1']);
+  });
+
+  test('a hand-edited value out of range reads as the 10-minute default', () => {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ claimTtlMinutes: 'soon' }));
+    const registry = new TabClaimRegistry({ nowMs: () => 1_000_000 });
+    const made = registry.ensureActionAllowed('tab_1', A);
+    expect(made.ok && made.claim.ttl_ms).toBe(10 * 60_000);
   });
 });

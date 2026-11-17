@@ -12,6 +12,13 @@ import {
   shouldDisconnectForIdle,
   shouldScheduleIdleSweep,
   tabsToDisconnectForIdle,
+  CONSOLE_IDLE_TTL_STORAGE_KEY,
+  LEGACY_IDLE_TTL_STORAGE_KEY,
+  LEGACY_IDLE_TTL_UPDATED_AT_STORAGE_KEY,
+  MAX_CALL_HOLD_MS,
+  effectiveIdleTtlMinutes,
+  idleTtlCommand,
+  legacyIdleChoice,
 } from './idle-policy.js';
 import { MAX_DETACHED_FLOW_MS } from './flow-registry.js';
 
@@ -239,5 +246,75 @@ describe('parseIncomingSettings', () => {
     expect(
       parseIncomingSettings({ idleTtlMinutes: 30, updatedAt: Number.POSITIVE_INFINITY }),
     ).toBeNull();
+  });
+});
+
+describe('the idle sweep and calls in progress (BL-EXT-098)', () => {
+  const NOW = 1_000_000_000;
+  const MIN = 60_000;
+
+  test('a call still running keeps its tab connected past a TTL shorter than the call', () => {
+    // A 2-minute browser.download started at its tool.request, idle-ttl 1 minute.
+    const tabs: [number, number][] = [[1, NOW - 2 * MIN]];
+    const calls = [{ tabId: 1, startedAt: NOW - 2 * MIN }];
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 1, calls)).toEqual([]);
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 1)).toEqual([1]);
+  });
+
+  test('a call that never answers stops holding at its bound, and the window counts from there', () => {
+    const startedAt = NOW - MAX_CALL_HOLD_MS - 30 * MIN;
+    const tabs: [number, number][] = [[1, startedAt]];
+    const calls = [{ tabId: 1, startedAt }];
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 31, calls)).toEqual([]);
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 30, calls)).toEqual([1]);
+  });
+
+  test('a call holds only its own tab, and "never" stays never', () => {
+    const tabs: [number, number][] = [
+      [1, NOW - 45 * MIN],
+      [2, NOW - 45 * MIN],
+    ];
+    const calls = [{ tabId: 2, startedAt: NOW - 2 * MIN }];
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, 30, calls)).toEqual([1]);
+    expect(tabsToDisconnectForIdle(tabs, [], NOW, IDLE_TTL_NEVER, calls)).toEqual([]);
+  });
+});
+
+describe('one idle value, owned by the console (S2)', () => {
+  test('the value in effect is the one the server pushed, 30 min until it pushes one', () => {
+    expect(effectiveIdleTtlMinutes({})).toBe(DEFAULT_IDLE_TTL_MINUTES);
+    expect(effectiveIdleTtlMinutes({ [CONSOLE_IDLE_TTL_STORAGE_KEY]: 45 })).toBe(45);
+    expect(effectiveIdleTtlMinutes({ [CONSOLE_IDLE_TTL_STORAGE_KEY]: 0 })).toBe(IDLE_TTL_NEVER);
+    expect(effectiveIdleTtlMinutes({ [CONSOLE_IDLE_TTL_STORAGE_KEY]: 'x' })).toBe(30);
+  });
+
+  test('an old popup choice never wins, whatever its timestamp', () => {
+    const stored = {
+      [LEGACY_IDLE_TTL_STORAGE_KEY]: 5,
+      [LEGACY_IDLE_TTL_UPDATED_AT_STORAGE_KEY]: Number.MAX_SAFE_INTEGER,
+    };
+    expect(effectiveIdleTtlMinutes(stored)).toBe(30);
+    expect(effectiveIdleTtlMinutes({ ...stored, [CONSOLE_IDLE_TTL_STORAGE_KEY]: 120 })).toBe(120);
+  });
+
+  test('the old popup choice is reported while it differs from the value in effect, with the command that keeps it', () => {
+    expect(legacyIdleChoice({})).toBeNull();
+    expect(legacyIdleChoice({ [LEGACY_IDLE_TTL_STORAGE_KEY]: 30 })).toBeNull();
+    expect(legacyIdleChoice({ [LEGACY_IDLE_TTL_STORAGE_KEY]: 5 })).toEqual({
+      minutes: 5,
+      command: 'browser-link config set idle-ttl 5',
+    });
+    expect(legacyIdleChoice({ [LEGACY_IDLE_TTL_STORAGE_KEY]: 0 })).toEqual({
+      minutes: 0,
+      command: 'browser-link config set idle-ttl never',
+    });
+    expect(
+      legacyIdleChoice({ [LEGACY_IDLE_TTL_STORAGE_KEY]: 5, [CONSOLE_IDLE_TTL_STORAGE_KEY]: 5 }),
+    ).toBeNull();
+  });
+
+  test('the console command for the value in effect', () => {
+    expect(idleTtlCommand(30)).toBe('browser-link config set idle-ttl 30');
+    expect(idleTtlCommand(IDLE_TTL_NEVER)).toBe('browser-link config set idle-ttl never');
   });
 });

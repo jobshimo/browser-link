@@ -114,7 +114,8 @@ export interface PublicClaim {
   label?: string;
   claimed_at: number;
   last_activity_at: number;
-  ttl_ms: number;
+  /** Inactivity allowed, in ms; `null` when the console set claim-ttl to never. */
+  ttl_ms: number | null;
 }
 
 export interface EnrichedTabSnapshot extends TabSnapshot {

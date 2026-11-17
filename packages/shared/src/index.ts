@@ -131,8 +131,12 @@ export interface ToolCancelMessage {
  * Every field is optional because a single `settings.update` message may
  * carry only the idle-TTL pair, only the flow-recording pair, or both —
  * the extension applies each pair independently (see `background.ts`'s
- * `settings.update` case). Omitted entirely by whichever side has never
- * touched that particular setting via the CLI.
+ * `settings.update` case).
+ *
+ * Idle TTL from 1.3.0: the console owns the one value. A server from 1.3.0
+ * sends the value in effect on every tab registration (30 when never set)
+ * and an extension from 1.3.0 applies it whatever `updatedAt` says; the
+ * popup no longer edits it. `updatedAt` stays for older extensions.
  */
 export interface SettingsUpdatePayload {
   idleTtlMinutes?: number;
@@ -320,12 +324,20 @@ export interface AdminItem {
   requiresRestart?: boolean;
   hint?: string;
   /** A readout of a setting only the console changes (it widens or narrows
-   * what an agent may see or do); the Admin window marks it with an info icon. */
+   * what an agent may see or do). Servers from 1.3.0 put every such item in
+   * the `console` section. */
   consoleOnly?: boolean;
+  /** The exact console command for this setting (1.3.0): the Admin window
+   * shows it with a Copy button. `hint` still carries it for older windows. */
+  command?: string;
 }
 export interface AdminSection {
-  id: 'status' | 'setup' | 'diagnose' | 'reference';
+  /** `console` (1.3.0): the settings only the console changes. */
+  id: 'status' | 'setup' | 'console' | 'diagnose' | 'reference';
   title: string;
+  /** Shown once under the title (the `console` section says why nothing in
+   * it changes from the Admin window). */
+  notice?: string;
   items: AdminItem[];
 }
 export interface AdminUiStrings {

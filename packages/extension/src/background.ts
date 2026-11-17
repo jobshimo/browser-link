@@ -117,16 +117,17 @@ import {
   type RunningFlowView,
 } from './flow-registry.js';
 import {
+  CONSOLE_IDLE_TTL_STORAGE_KEY,
   DEFAULT_IDLE_TTL_MINUTES,
-  IDLE_TTL_STORAGE_KEY,
-  IDLE_TTL_UPDATED_AT_STORAGE_KEY,
   activityAfterFlowEnded,
   clampIdleTtlMinutes,
+  effectiveIdleTtlMinutes,
   idleHoldUntil,
   parseIncomingSettings,
   shouldAcceptIncomingSettings,
   shouldScheduleIdleSweep,
   tabsToDisconnectForIdle,
+  type IdleCallInProgress,
   type IdleFlowHold,
   type IncomingIdleSettings,
 } from './idle-policy.js';
@@ -189,8 +190,8 @@ const NETWORK_BUFFER_MAX = 200;
  * After this many minutes without a tool.request from the server, the
  * extension closes its side of the WS and detaches the debugger. The
  * popup then shows "Not connected" again and the user explicitly
- * re-presses Connect when they want to reactivate — unless the user
- * configured "Never" in the popup, in which case the sweep never fires.
+ * re-presses Connect when they want to reactivate — unless the console
+ * set "never", in which case the sweep never fires.
  *
  * This replaces the previous behaviour where the bridge implicitly
  * died together with the MCP server subprocess (parent_death_guard,
@@ -198,10 +199,11 @@ const NETWORK_BUFFER_MAX = 200;
  * keeps the tab warm, silence eventually parks it (or never does, if
  * the user opted out).
  *
- * The TTL itself is user-configurable (`idleTtlMinutes` in
- * `chrome.storage.local`, edited from the popup — see idle-policy.ts for
- * the decision logic and popup.ts for the control). `idleTtlMinutesCache`
- * is the in-memory mirror the sweep reads on every tick: chrome.storage is
+ * The TTL has one value, owned by the console (`browser-link config set
+ * idle-ttl`, 1.3.0): the server pushes it in `settings.update` and it is
+ * stored under `CONSOLE_IDLE_TTL_STORAGE_KEY` (see idle-policy.ts). A value
+ * the popup stored before 1.3.0 is never applied. `idleTtlMinutesCache` is
+ * the in-memory mirror the sweep reads on every tick: chrome.storage is
  * async, the sweep loop below is not, so the value is loaded once at
  * startup and kept current via `chrome.storage.onChanged` instead of being
  * awaited inside the interval callback. */
@@ -210,8 +212,8 @@ let idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
 
 async function loadIdleTtlMinutes(): Promise<void> {
   try {
-    const data = await chrome.storage.local.get(IDLE_TTL_STORAGE_KEY);
-    idleTtlMinutesCache = clampIdleTtlMinutes(data[IDLE_TTL_STORAGE_KEY]);
+    const data = await chrome.storage.local.get(CONSOLE_IDLE_TTL_STORAGE_KEY);
+    idleTtlMinutesCache = effectiveIdleTtlMinutes(data);
   } catch {
     idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
   }
@@ -221,8 +223,10 @@ void loadIdleTtlMinutes();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (!(IDLE_TTL_STORAGE_KEY in changes)) return;
-  idleTtlMinutesCache = clampIdleTtlMinutes(changes[IDLE_TTL_STORAGE_KEY].newValue);
+  if (!(CONSOLE_IDLE_TTL_STORAGE_KEY in changes)) return;
+  idleTtlMinutesCache = effectiveIdleTtlMinutes({
+    [CONSOLE_IDLE_TTL_STORAGE_KEY]: changes[CONSOLE_IDLE_TTL_STORAGE_KEY].newValue,
+  });
 });
 
 /**
@@ -232,21 +236,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
  * `browser-link config set idle-ttl` was run at least once) AND on demand
  * when the CLI pushes a change to an already-connected tab.
  *
- * Applies `shouldAcceptIncomingSettings` (idle-policy.ts) — newest
- * `updatedAt` wins against whatever was last written locally (typically by
- * the popup). Writing through `chrome.storage.local.set` here is enough to
- * take effect: the `onChanged` listener above keeps `idleTtlMinutesCache`
- * current, and the popup re-reads storage on its own refresh interval.
+ * The console owns the value (1.3.0, S2): it is applied whatever its
+ * `updatedAt` says, and whatever the popup stored before 1.3.0. Writing
+ * through `chrome.storage.local.set` here is enough to take effect: the
+ * `onChanged` listener above keeps `idleTtlMinutesCache` current, and the
+ * popup re-reads storage on its own refresh interval.
  */
 async function applyIncomingSettings(settings: IncomingIdleSettings): Promise<void> {
   try {
-    const data = await chrome.storage.local.get(IDLE_TTL_UPDATED_AT_STORAGE_KEY);
-    const rawLocalUpdatedAt = data[IDLE_TTL_UPDATED_AT_STORAGE_KEY];
-    const localUpdatedAt = typeof rawLocalUpdatedAt === 'number' ? rawLocalUpdatedAt : undefined;
-    if (!shouldAcceptIncomingSettings(localUpdatedAt, settings.updatedAt)) return;
     await chrome.storage.local.set({
-      [IDLE_TTL_STORAGE_KEY]: clampIdleTtlMinutes(settings.idleTtlMinutes),
-      [IDLE_TTL_UPDATED_AT_STORAGE_KEY]: settings.updatedAt,
+      [CONSOLE_IDLE_TTL_STORAGE_KEY]: clampIdleTtlMinutes(settings.idleTtlMinutes),
     });
   } catch {
     // Best effort — a failed sync just leaves the local value as-is; the
@@ -368,6 +367,10 @@ interface TabState {
    * idle-policy.ts). Touched on every tool.request received AND once at
    * connect time. */
   lastActivityAt: number;
+  /** Tool calls this tab is still answering (BL-EXT-098): each holds the
+   * idle clock until it replies, so the sweep never parks a call that runs
+   * longer than the TTL. Absent until the first call. */
+  callsInProgress?: Set<{ startedAt: number }>;
   /** Present from `startRecording` through save/discard. `undefined` means
    * "not recording and nothing to review" — the common case, and what
    * every tab starts as regardless of the flow-recording setting. */
@@ -4066,7 +4069,18 @@ async function doConnectTab(tabId: number): Promise<ConnectResult> {
             // Touch the activity timestamp so the WS-idle sweeper keeps
             // this tab warm.
             state.lastActivityAt = Date.now();
-            const response = await handleTool(state, msg);
+            // The call holds the idle clock while it runs, and its reply is
+            // activity too (BL-EXT-098).
+            const call = { startedAt: state.lastActivityAt };
+            const calls = (state.callsInProgress ??= new Set());
+            calls.add(call);
+            let response: Awaited<ReturnType<typeof handleTool>>;
+            try {
+              response = await handleTool(state, msg);
+            } finally {
+              calls.delete(call);
+              state.lastActivityAt = Math.max(state.lastActivityAt, Date.now());
+            }
             if (ws.readyState === WebSocket.OPEN) send(ws, response);
             return;
           }
@@ -4865,9 +4879,10 @@ chrome.debugger.onDetach.addListener((source) => {
  * ago gets disconnected: the WS closes, the debugger detaches, the popup
  * goes back to "Not connected". The user explicitly re-presses Connect to
  * bring it back. A tab with a flow running is never idle, and a finished
- * flow's last step counts as its last activity (owner decision D1).
+ * flow's last step counts as its last activity (owner decision D1); the
+ * same holds for a single call still running (BL-EXT-098).
  *
- * When the user picked "Never" (idleTtlMinutesCache === 0),
+ * When the console set "never" (idleTtlMinutesCache === 0),
  * `shouldScheduleIdleSweep` short-circuits the tick before it walks
  * `tabStates` — the interval itself keeps ticking (cancelling/rearming a
  * service-worker timer from a storage listener is more moving parts than
@@ -4893,7 +4908,13 @@ setInterval(() => {
     });
   }
   const tabs = [...tabStates].map(([tabId, state]) => [tabId, state.lastActivityAt] as const);
-  for (const tabId of tabsToDisconnectForIdle(tabs, holds, now, idleTtlMinutesCache)) {
+  // BL-EXT-098: a call still running holds its tab too.
+  const calls: IdleCallInProgress[] = [];
+  for (const [tabId, state] of tabStates) {
+    for (const call of state.callsInProgress ?? [])
+      calls.push({ tabId, startedAt: call.startedAt });
+  }
+  for (const tabId of tabsToDisconnectForIdle(tabs, holds, now, idleTtlMinutesCache, calls)) {
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

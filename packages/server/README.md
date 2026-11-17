@@ -290,7 +290,12 @@ it prints the draft and creates nothing.
   Admin section render the same server-built sections and labels (English
   or Spanish). Every change that writes to disk shows a one-line preview with
   a single-use code, and the server applies it only with that code; stopping or updating the server stays a
-  console command. See
+  console command. The settings that widen what an agent may do (the tool set,
+  cdp-direct, the hide settings, downloads, the idle disconnect, the claim
+  expiry between agents, client registration) sit in their own Console
+  settings section, each with its value and the exact command to copy; only
+  the console changes them (`browser-link config set idle-ttl <minutes|never>`,
+  `browser-link config set claim-ttl <minutes|never|default>`, …). See
   [Admin panel](https://github.com/jobshimo/browser-link#admin-panel-console-and-popup).
 - **cdp-direct mode** (off by default): an extension-free transport gated
   behind `browser-link config set cdp-direct.enabled true` PLUS a

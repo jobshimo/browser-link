@@ -5,7 +5,7 @@ import {
   fallbackAdminUi,
   adminUi,
   buildAdminRows,
-  createConsoleInfo,
+  createCommandLine,
   describeAdminError,
   initialConfirmState,
   nextAction,
@@ -573,72 +573,122 @@ describe('admin window in Spanish', () => {
     expect(rows.find((r) => r.itemId === 'server.multiAgent')?.valueText).toBe('activado');
   });
 });
+describe('the Console settings section (S4)', () => {
+  const consoleState = (): AdminState =>
+    state({
+      sections: [
+        {
+          id: 'console',
+          title: 'Console settings',
+          notice: 'These settings change only from the console.',
+          items: [
+            {
+              id: 'idleTtl',
+              kind: 'readout',
+              label: 'Idle disconnect',
+              value: '30 min',
+              writesDisk: false,
+              consoleOnly: true,
+              hint: 'browser-link config set idle-ttl 30',
+              command: 'browser-link config set idle-ttl 30',
+            },
+            {
+              id: 'client.register.claude',
+              kind: 'readout',
+              label: 'MCP registration — Claude Code',
+              value: 'registered',
+              writesDisk: false,
+              consoleOnly: true,
+              hint: 'Already registered; to remove it: browser-link uninstall --client claude',
+              command: 'browser-link uninstall --client claude',
+            },
+          ],
+        },
+      ],
+    });
 
-describe('the console-only info control', () => {
-  function mount(t: typeof EN): { button: HTMLButtonElement; panel: HTMLElement } {
-    document.body.replaceChildren();
-    const info = createConsoleInfo(document, t, 'cdpDirectEnabled');
-    document.body.append(info.button, info.panel);
-    return info;
-  }
-  const key = (el: Element, k: string): void => {
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
-  };
+  test('each row shows its value and exact command, no control and no hover hint; the notice rides on the section', () => {
+    const rows = buildAdminRows(consoleState(), EN);
+    expect(rows).toEqual([
+      {
+        sectionId: 'console',
+        sectionTitle: 'Console settings',
+        sectionNotice: 'These settings change only from the console.',
+        itemId: 'idleTtl',
+        kind: 'readout',
+        label: 'Idle disconnect',
+        valueText: '30 min',
+        control: 'none',
+        command: 'browser-link config set idle-ttl 30',
+        consoleOnly: true,
+      },
+      {
+        sectionId: 'console',
+        sectionTitle: 'Console settings',
+        sectionNotice: 'These settings change only from the console.',
+        itemId: 'client.register.claude',
+        kind: 'readout',
+        label: 'MCP registration — Claude Code',
+        valueText: 'registered',
+        control: 'none',
+        command: 'browser-link uninstall --client claude',
+        consoleOnly: true,
+      },
+    ]);
+  });
+
+  test('a command that is not text is dropped, never rendered', () => {
+    const s = consoleState();
+    (s.sections[0]!.items[0] as { command?: unknown }).command = 42;
+    expect(buildAdminRows(s, EN)[0]).not.toHaveProperty('command');
+  });
 
   test.each([
     ['en', EN],
     ['es', ES],
-  ] as const)('is a focusable button with a non-empty accessible name in %s', (_l, t) => {
-    const { button, panel } = mount(t);
-    expect(button.tagName).toBe('BUTTON');
-    expect(button.type).toBe('button');
-    expect(button.tabIndex).toBe(0);
-    expect(button.getAttribute('aria-label')).toBe(t.adminConsoleOnlyName);
-    expect(button.getAttribute('aria-label')?.trim()).not.toBe('');
-    expect(button.getAttribute('aria-describedby')).toBe(panel.id);
-    expect(panel.textContent).toBe(t.adminConsoleOnlyInfo);
-    expect(panel.hidden).toBe(true);
-    expect(button.getAttribute('aria-expanded')).toBe('false');
+  ] as const)('the command line shows the command and a named Copy button (%s)', (_l, t) => {
+    const copied: string[] = [];
+    const line = createCommandLine(document, t, 'browser-link config set idle-ttl 30', (text) => {
+      copied.push(text);
+      return Promise.resolve();
+    });
+    const code = line.querySelector('code');
+    const button = line.querySelector('button');
+    expect(code?.textContent).toBe('browser-link config set idle-ttl 30');
+    expect(button?.type).toBe('button');
+    expect(button?.textContent).toBe(t.adminCopy);
+    expect(button?.getAttribute('aria-label')).toBe(t.adminCopyCommand);
+    expect(copied).toEqual([]);
   });
 
-  test('the text says it is changed from the console, in both languages', () => {
-    expect(EN.adminConsoleOnlyInfo).toContain('console');
-    expect(ES.adminConsoleOnlyInfo).toContain('consola');
+  test('Copy puts the exact command on the clipboard and says so; a refused clipboard says that', async () => {
+    const copied: string[] = [];
+    const ok = createCommandLine(
+      document,
+      EN,
+      'browser-link tools enable browser.evaluate',
+      (text) => {
+        copied.push(text);
+        return Promise.resolve();
+      },
+    );
+    ok.querySelector('button')!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(copied).toEqual(['browser-link tools enable browser.evaluate']);
+    expect(ok.querySelector('button')!.textContent).toBe(EN.adminCopied);
+
+    const refused = createCommandLine(document, ES, 'browser-link stop', () =>
+      Promise.reject(new Error('denied')),
+    );
+    refused.querySelector('button')!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(refused.querySelector('button')!.textContent).toBe(ES.adminCopyFailed);
   });
 
-  test('click shows the text, a second click hides it, Escape closes it', () => {
-    const { button, panel } = mount(EN);
-    button.click();
-    expect(panel.hidden).toBe(false);
-    expect(button.getAttribute('aria-expanded')).toBe('true');
-    button.click();
-    expect(panel.hidden).toBe(true);
-    button.click();
-    expect(panel.hidden).toBe(false);
-    key(button, 'Escape');
-    expect(panel.hidden).toBe(true);
-    expect(button.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  test('hover and keyboard focus show it without a click; leaving or blurring hides it', () => {
-    const { button, panel } = mount(EN);
-    button.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(panel.hidden).toBe(false);
-    button.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(panel.hidden).toBe(true);
-    button.dispatchEvent(new FocusEvent('focus'));
-    expect(panel.hidden).toBe(false);
-    button.dispatchEvent(new FocusEvent('blur'));
-    expect(panel.hidden).toBe(true);
-  });
-
-  test('a clicked (pinned) text survives the pointer leaving, and blur closes it', () => {
-    const { button, panel } = mount(EN);
-    button.dispatchEvent(new MouseEvent('mouseenter'));
-    button.click();
-    button.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(panel.hidden).toBe(false);
-    button.dispatchEvent(new FocusEvent('blur'));
-    expect(panel.hidden).toBe(true);
+  test('there is no hover info control any more', async () => {
+    const mod: Record<string, unknown> = await import('./admin-view.js');
+    expect(mod.createConsoleInfo).toBeUndefined();
   });
 });

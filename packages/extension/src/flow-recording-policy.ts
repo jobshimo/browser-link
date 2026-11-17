@@ -6,13 +6,14 @@
  * Deliberately does NOT redefine a last-write-wins comparator — that rule
  * is generic (compare two epoch-ms timestamps, newest wins) and already
  * lives as `shouldAcceptIncomingSettings` in idle-policy.ts. A second copy
- * here would just be a fork waiting to drift; callers import that one
- * function for both settings.
+ * here would just be a fork waiting to drift; this setting imports that one
+ * function. (The idle TTL no longer uses it: since 1.3.0 the console owns that
+ * value and the extension applies it unconditionally.)
  */
 
 /** chrome.storage key the setting is persisted under, in
- * `chrome.storage.local` — same storage area as `IDLE_TTL_STORAGE_KEY`, a
- * per-device preference. */
+ * `chrome.storage.local` — same storage area as idle-policy.ts's
+ * `CONSOLE_IDLE_TTL_STORAGE_KEY`, a per-device preference. */
 export const FLOW_RECORDING_STORAGE_KEY = 'flowRecordingEnabled';
 
 /** chrome.storage key for the epoch-ms timestamp of the last LOCAL write

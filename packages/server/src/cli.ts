@@ -96,15 +96,20 @@ Uso:
   browser-link multi-agent      Estado del modo multi-agente y re-elección automática.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Muestra todas las configuraciones conocidas (idle-ttl, flow-recording, map-learning…).
+  browser-link config get       Muestra todas las configuraciones conocidas (idle-ttl, claim-ttl, flow-recording…).
   browser-link config get idle-ttl
-                                Muestra el TTL de auto-desconexión por inactividad configurado.
+                                Muestra el TTL de auto-desconexión por inactividad en efecto.
   browser-link config set idle-ttl <minutos|never>
                                 Configura el TTL de auto-desconexión (1-1440 min, o "never" para
-                                desactivarlo). El mismo valor es editable desde el popup de la
-                                extensión — gana la última escritura (ver README). Bajar el TTL
-                                cuenta desde la última actividad de cada pestaña: una pestaña ya
-                                inactiva puede desconectarse en el próximo barrido.
+                                desactivarlo; 30 por defecto). Se cambia solo desde la consola:
+                                la extensión lo recibe y lo muestra, el popup ya no lo edita.
+                                Bajar el TTL cuenta desde la última actividad de cada pestaña:
+                                una pestaña ya inactiva puede desconectarse en el próximo barrido.
+  browser-link config set claim-ttl <minutos|never|default>
+                                Cuánto dura sin actividad la reserva de una pestaña entre agentes
+                                (1-1440 min, "never": hasta que su agente la libere o se
+                                desconecte; 10 por defecto). Solo desde la consola: amplía lo que
+                                un agente puede hacer. Se aplica en la próxima comprobación.
   browser-link config get flow-recording
                                 Muestra si la grabación de flows por demostración está habilitada.
   browser-link config set flow-recording <on|off>
@@ -277,15 +282,20 @@ Usage:
   browser-link multi-agent      Show multi-agent mode + auto-reelect status.
   browser-link multi-agent enable | disable
   browser-link multi-agent auto-reelect enable | disable
-  browser-link config get       Show every known config setting (idle-ttl, flow-recording, map-learning…).
+  browser-link config get       Show every known config setting (idle-ttl, claim-ttl, flow-recording…).
   browser-link config get idle-ttl
-                                Show the configured idle-disconnect TTL.
+                                Show the idle-disconnect TTL in effect.
   browser-link config set idle-ttl <minutes|never>
                                 Set the idle-disconnect TTL (1-1440 min, or "never" to disable
-                                it). The same setting is editable from the extension's popup —
-                                last write wins (see README). Lowering the TTL counts from each
-                                tab's last activity: an already-idle tab may disconnect on the
-                                next sweep.
+                                it; 30 by default). Changed only from the console: the extension
+                                receives and shows it, the popup no longer edits it. Lowering
+                                the TTL counts from each tab's last activity: an already-idle tab
+                                may disconnect on the next sweep.
+  browser-link config set claim-ttl <minutes|never|default>
+                                How long a claim on a tab between agents lasts without activity
+                                (1-1440 min, "never": until its agent releases it or
+                                disconnects; 10 by default). Console only: it widens what an
+                                agent may do. Applies to the next check.
   browser-link config get flow-recording
                                 Show whether flow recording by demonstration is enabled.
   browser-link config set flow-recording <on|off>

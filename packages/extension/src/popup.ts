@@ -3,9 +3,12 @@
 // so a plain relative import works the same way background.ts already
 // imports settle.js/keymap.js.
 import {
-  IDLE_TTL_STORAGE_KEY,
-  IDLE_TTL_UPDATED_AT_STORAGE_KEY,
-  clampIdleTtlMinutes,
+  CONSOLE_IDLE_TTL_STORAGE_KEY,
+  IDLE_TTL_NEVER,
+  LEGACY_IDLE_TTL_STORAGE_KEY,
+  effectiveIdleTtlMinutes,
+  idleTtlCommand,
+  legacyIdleChoice,
 } from './idle-policy.js';
 import {
   FLOW_RECORDING_STORAGE_KEY,
@@ -328,91 +331,37 @@ async function refreshVersionBanner(): Promise<void> {
 }
 
 /**
- * Idle-disconnect TTL control. Reads/writes `chrome.storage.local`
- * directly — no round trip through background.ts's runtime-message
- * protocol is needed, since the popup already holds the "storage"
- * permission and background.ts independently reacts to the same key via
- * `chrome.storage.onChanged` (see background.ts's `idleTtlMinutesCache`).
+ * Idle disconnect, read-only (1.3.0, S2): the console owns the one value
+ * (`browser-link config set idle-ttl`), the server pushes it and
+ * background.ts stores it. The popup shows the value in effect and the
+ * command that changes it. A choice this popup stored before 1.3.0 is never
+ * applied; while it differs from the value in effect the popup says so, with
+ * the command that would keep it.
  *
- * Refreshed on the same periodic timer as the version banner / pending
- * dialog (see the `setInterval` near the bottom of this file), so a value
- * pushed by the server (`browser-link config set idle-ttl` while this
- * popup happens to be open) shows up within one tick instead of only on
- * the next popup open.
+ * Refreshed on the same periodic timer as the version banner (see the
+ * `setInterval` near the bottom of this file), so a value the console
+ * pushes while the popup is open shows up within one tick.
  */
-/** DOM id of the synthetic <option> injected for out-of-preset values. */
-const IDLE_TTL_CUSTOM_OPTION_ID = 'idle-ttl-custom';
-
-/** The curated choices, in minutes; 0 is "Never". */
-const IDLE_TTL_PRESETS = [5, 15, 30, 60, 120, 0] as const;
-
-/** Fill the select with the presets, labelled in the interface language. */
-function renderIdleTtlPresets(select: HTMLSelectElement): void {
-  for (const minutes of IDLE_TTL_PRESETS) {
-    const option = document.createElement('option');
-    option.value = String(minutes);
-    lang.text(option, (t) => (minutes === 0 ? t.popupNever : t.popupMinutes(minutes)));
-    select.appendChild(option);
-  }
-}
-
-renderIdleTtlPresets($('idle-ttl-select') as HTMLSelectElement);
-
-/**
- * Make sure the select can actually DISPLAY `minutes`. The popup only
- * ships a curated preset list (5/15/30/60/120/Never), but the CLI accepts
- * any 1-1440 — so `browser-link config set idle-ttl 45` is a perfectly
- * valid effective value with no matching <option>, which would otherwise
- * leave the control rendering BLANK (selectedIndex -1) while the policy
- * correctly enforces 45. Inject a synthetic "45 min (custom)" option in
- * that case (kept just before "Never" so the preset order stays intact),
- * and remove it again once the effective value is back on a preset.
- */
-function ensureIdleTtlOption(select: HTMLSelectElement, minutes: number): void {
-  const value = String(minutes);
-  const custom = document.getElementById(IDLE_TTL_CUSTOM_OPTION_ID) as HTMLOptionElement | null;
-  const hasPreset = Array.from(select.options).some(
-    (opt) => opt.id !== IDLE_TTL_CUSTOM_OPTION_ID && opt.value === value,
-  );
-  if (hasPreset) {
-    custom?.remove();
-    return;
-  }
-  const option = custom ?? document.createElement('option');
-  option.id = IDLE_TTL_CUSTOM_OPTION_ID;
-  option.value = value;
-  lang.text(option, (t) => t.popupMinutesCustom(minutes));
-  if (!custom) {
-    const neverOption = Array.from(select.options).find((opt) => opt.value === '0') ?? null;
-    select.insertBefore(option, neverOption);
-  }
+function idleTtlLabel(t: Messages, minutes: number): string {
+  return minutes === IDLE_TTL_NEVER ? t.popupNever : t.popupMinutes(minutes);
 }
 
 async function refreshIdleTtlSetting(): Promise<void> {
-  const select = $('idle-ttl-select') as HTMLSelectElement;
-  // Never clobber a selection while the user has the dropdown focused —
-  // an incoming settings.update mid-edit should not yank the control out
-  // from under them.
-  if (document.activeElement === select) return;
-  const data = await chrome.storage.local.get(IDLE_TTL_STORAGE_KEY);
-  const minutes = clampIdleTtlMinutes(data[IDLE_TTL_STORAGE_KEY]);
-  ensureIdleTtlOption(select, minutes);
-  select.value = String(minutes);
-}
-
-async function onIdleTtlChange(): Promise<void> {
-  const select = $('idle-ttl-select') as HTMLSelectElement;
-  const minutes = clampIdleTtlMinutes(Number(select.value));
-  // Reflect the clamped value back into the control immediately in case
-  // Number(select.value) ever disagreed with it (it won't, in practice —
-  // every <option> is a safe preset or a clamped CLI value the synthetic
-  // custom entry mirrors — but this keeps the displayed value truthful to
-  // what was actually persisted).
-  select.value = String(minutes);
-  await chrome.storage.local.set({
-    [IDLE_TTL_STORAGE_KEY]: minutes,
-    [IDLE_TTL_UPDATED_AT_STORAGE_KEY]: Date.now(),
-  });
+  const stored = await chrome.storage.local.get([
+    CONSOLE_IDLE_TTL_STORAGE_KEY,
+    LEGACY_IDLE_TTL_STORAGE_KEY,
+  ]);
+  const minutes = effectiveIdleTtlMinutes(stored);
+  lang.text($('idle-ttl-value'), (t) => idleTtlLabel(t, minutes));
+  lang.text($('idle-ttl-console'), (t) => t.popupIdleTtlConsole(idleTtlCommand(minutes)));
+  const legacy = legacyIdleChoice(stored);
+  const legacyNote = $('idle-ttl-legacy');
+  legacyNote.hidden = legacy === null;
+  if (legacy) {
+    lang.text(legacyNote, (t) =>
+      t.popupIdleTtlLegacy(idleTtlLabel(t, legacy.minutes), legacy.command),
+    );
+  }
 }
 
 /** Card label shown while background.ts's auto-reconnect scheduler is
@@ -489,7 +438,7 @@ async function refreshPendingDialog(tabId: number): Promise<void> {
  */
 async function refreshFlowRecordingToggle(): Promise<void> {
   const checkbox = $('flow-recording-toggle') as HTMLInputElement;
-  // Same "don't yank a live edit" guard idle-ttl's select uses.
+  // Never clobber the checkbox while the user has it focused.
   if (document.activeElement === checkbox) return;
   const data = await chrome.storage.local.get(FLOW_RECORDING_STORAGE_KEY);
   checkbox.checked = normalizeFlowRecordingEnabled(data[FLOW_RECORDING_STORAGE_KEY]);
@@ -1000,13 +949,6 @@ $('version-open-extensions').addEventListener('click', () => {
   // unpacked extensions (chrome.runtime.reload() only restarts the SW,
   // it does NOT re-read the filesystem).
   void chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
-});
-
-$('idle-ttl-select').addEventListener('change', () => {
-  onIdleTtlChange().catch(() => {
-    // Best effort — the next refreshIdleTtlSetting tick re-syncs the
-    // control to whatever actually made it into storage.
-  });
 });
 
 $('flow-recording-toggle').addEventListener('change', () => {

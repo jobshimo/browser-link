@@ -220,7 +220,8 @@ browser-link tools                         # show which MCP tools are enabled
 browser-link tools disable browser.evaluate
 browser-link tools preset readonly         # all | readonly | no-eval | no-map
 browser-link config get                    # list every known setting
-browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it)
+browser-link config set idle-ttl 15        # idle-disconnect TTL, in minutes ("never" disables it); console only
+browser-link config set claim-ttl never    # how long a claim between agents lasts idle (10 min by default); console only
 browser-link config set flow-recording on  # opt in to recording flows by demonstration (off by default)
 browser-link config set cdp-direct.enabled true  # opt in to cdp-direct mode (off by default, see below)
 browser-link config set map-learning off  # stop the map learning from use (on by default, see below)
@@ -1665,8 +1666,8 @@ explicitly turn the feature on AND press Record on a specific tab.
 
 **How to record:**
 
-1. In the popup, check **"Enable flow recording"** (a settings toggle,
-   same place and same persistence as the idle-disconnect TTL).
+1. In the popup, check **"Enable flow recording"** (a settings toggle
+   below the Connect button).
 2. On an already-**connected** tab, the popup now shows a **Record**
    button. Press it and demonstrate the task: click things, type into
    fields, use keyboard navigation.
@@ -1696,9 +1697,9 @@ into the saved recipe's description, so the signal follows the recipe.
 
 - Recording is **off by default**; the setting lives in
   `chrome.storage.local` and is also editable via
-  `browser-link config get/set flow-recording` (same last-write-wins
-  precedence as idle-ttl — see [Idle-disconnect TTL](#idle-disconnect-ttl)
-  above).
+  `browser-link config get/set flow-recording`. Last write wins: the popup
+  and the CLI each stamp an `updatedAt` on every change, and the extension
+  applies a value pushed by the server only when it is newer than its own.
 - Only ever **user-initiated, per tab**: the recorder script is injected
   via CDP `Runtime.evaluate` only after you press Record on that
   specific connected tab, and is removed (its listeners torn down
@@ -2139,22 +2140,29 @@ From the Admin window you can switch the console language; toggle multi-agent,
 auto-reelect, the instructions auto-refresh and the activity trail; run `doctor`
 and an update check; and install or remove the instructions block per client.
 Since 1.0.0 it only **shows** the settings that widen what an agent may see or
-do: each MCP tool, cdp-direct on or off, its port and grant lifetime, MCP client
-registration, the two hide settings (password values, sensitive values in the
-trail) and whether `browser.download` may save executable file types appear as a
-value plus the console command that changes it
-(`browser-link tools disable <tool>`, `browser-link config set cdp-direct.enabled true`,
+do. Since 1.3.0 they all sit in their own section, **Console settings**
+("Ajustes de la consola" in Spanish): each MCP tool, cdp-direct on or off, its
+port and grant lifetime, the two hide settings (password values, sensitive
+values in the trail), the downloads folder, whether `browser.download` may save
+executable file types, the idle disconnect, the claim expiry between agents and
+MCP client registration. One notice at the top of the section says once why
+they are not changed there: each one widens what an agent may do or see, so
+anything that can reach the bridge, an agent included, could otherwise grant
+it. Each row shows the current value and the exact console command that
+changes it (`browser-link tools disable <tool>`,
+`browser-link config set cdp-direct.enabled true`,
 `browser-link config set cdp-direct.port <port>`,
 `browser-link config set cdp-direct.grant-ttl <minutes>`,
-`browser-link install --client <id>`,
 `browser-link config set hide-password-values <on|off>`,
 `browser-link config set activity.hide-sensitive <on|off>`,
-`browser-link config set downloads.allow-executables <on|off>`), and the server
-refuses a write for them if one arrives, with or without a confirmation code.
-Each of these rows has an info control next to its label. On hover, keyboard
-focus or click it says: "This setting is changed from the console, not from
-here: it changes what agents can see or do." Turning either hide setting off
-widens what an agent can read, so the rule covers both. See
+`browser-link config set downloads.dir <absolute-path|default>`,
+`browser-link config set downloads.allow-executables <on|off>`,
+`browser-link config set idle-ttl <minutes|never>`,
+`browser-link config set claim-ttl <minutes|never>`,
+`browser-link install --client <id>`) with a **Copy** button; nothing is behind a
+hover. The server refuses a write for any of them if one arrives, with or
+without a confirmation code. Turning either hide setting off widens what an
+agent can read, so the rule covers both. See
 [Upgrading to 1.0](#upgrading-to-10). The rules:
 
 - **Every change that writes to disk asks first.** The server answers with a
@@ -2181,11 +2189,8 @@ widens what an agent can read, so the rule covers both. See
 - **Never from the popup:** stopping the server (`browser-link stop`) and
   updating it (`npm install -g @jobshimo/browser-link@latest`) end the very
   server that answers the popup, so they appear as the console commands to
-  run. The same goes for the tool set, cdp-direct (on or off, grant lifetime and
-  port), MCP client registration, the two hide settings and the downloads
-  folder, shown with their
-  console command; idle disconnect and flow recording keep their own popup
-  controls.
+  run. The same goes for every setting in Console settings (above), shown
+  with their console command; flow recording keeps its own popup control.
 
 ### Agent instructions
 
@@ -2334,8 +2339,14 @@ calling agent currently owns. Claims are advisory — they inform, they
 do not block — so a single-client workflow never has to think about
 them.
 
-The TTL is the agent's own choice (`ttl_minutes`, default 10, at most 60);
-it is not a setting you change. A running `browser.flow` holds the claim of
+An agent may pass its own TTL (`ttl_minutes`, at most 60). Without one, the
+claim follows your console setting `claim-ttl`: 10 minutes by default,
+`browser-link config set claim-ttl <minutes>` (1-1440) to change it,
+`never` so a claim lasts until its agent releases it or disconnects, and
+`default` to go back to 10. It is read on every check, so a change applies
+without a restart, and a claim reports it as `ttl_ms` (`null` for never). It
+widens what an agent may do, so only the console changes it; the Admin window
+shows it read-only. A running `browser.flow` holds the claim of
 the agent that launched it: while the flow runs the claim cannot expire, and
 when the flow ends, however it ends, the TTL restarts from the flow's last
 step. The hold is bounded by the flow's own maximum duration (its time
@@ -2343,7 +2354,7 @@ budget, at most 60 s, in the foreground; 30 minutes when detached): past it
 the TTL restarts from that bound. A detached flow's hold ends with its
 `flow-finished` event. Only the claim of the flow's own agent is held;
 another agent still gets the usual conflict. A long single call, such as a
-`wait_for`, holds nothing: the TTL counts from the call that started it.
+`wait_for`, holds no claim: the TTL counts from the call that started it.
 Claims live in the primary's memory, so after a primary restart no claim and
 no hold survive, and a detached flow still running in the extension is
 unclaimed until an agent acts on its tab.
@@ -2472,23 +2483,27 @@ doctor` prints `running 0.37.0 (pid 40296) / installed 0.41.0 → outdated`
 
 By default, a connected tab whose bridge sees no `tool.request` for 30
 minutes gets automatically parked (WS closed, debugger detached — the
-popup goes back to "Not connected"). This is configurable two ways,
-and both edit the **same** logical setting:
-
-**From the extension popup** — a small control below the Connect
-button: `Auto-disconnect idle tabs: [30 min ▾]`, with presets from 5
-minutes up to 2 hours plus `Never` (disables auto-disconnect entirely).
-Applies immediately — no extension reload needed. A CLI-set value
-outside the preset list (say, 45) shows up as `45 min (custom)` in the
-dropdown rather than leaving it blank.
-
-**From the shell:**
+popup goes back to "Not connected"). Since 1.3.0 the setting has **one**
+value, changed **only from the console**:
 
 ```bash
-browser-link config get idle-ttl              # show the current CLI-side value
+browser-link config get idle-ttl              # show the value in effect (30 min by default)
 browser-link config set idle-ttl 15           # 15 minutes
 browser-link config set idle-ttl never        # disable auto-disconnect
 ```
+
+The server sends that value to every tab when it connects, and
+`config set idle-ttl` also pushes it to the tabs already connected (see
+below). The popup and the Admin window show the same value read-only, with
+the command that changes it.
+
+**A value you chose in the popup before 1.3.0 is no longer used.** The
+extension ignores it, whatever its age, and applies the console's value
+(30 minutes if you never set one there). While your old choice differs from
+the value in effect, the popup shows it with the exact command that keeps
+it, for example `browser-link config set idle-ttl 5`; once you run it, or
+choose to keep the new value, the note goes away by itself when the two
+agree.
 
 (Values outside 1-1440 minutes are clamped to the nearest bound; a
 non-numeric value is rejected with an error instead of being applied.)
@@ -2503,24 +2518,17 @@ never arrive as tool calls, so while a flow runs on a tab, that tab is not
 disconnected, whatever the TTL. When the flow ends, however it ends, the idle
 window restarts from its last step. The hold is bounded by the flow's own
 maximum duration (its time budget, at most 60 s, in the foreground; 30
-minutes when detached): past it the window restarts from that bound. A long
-single call, such as a `wait_for`, holds nothing: the window counts from the
-call that started it.
+minutes when detached): past it the window restarts from that bound. A
+single call still running, such as a long `wait_for` or `download`, holds
+the tab too, so a TTL shorter than the call never parks it in the middle;
+its reply restarts the window. A call that never answers stops holding after
+10 minutes.
 
-**Precedence — last write wins.** The popup and the CLI both stamp an
-`updatedAt` timestamp on every change. When a tab (re)connects, the
-server sends its last CLI-set value (if any) to the extension; the
-extension only applies it when it is **newer** than whatever was last
-set locally (typically from the popup). If the CLI has never touched
-the setting, the server never pushes anything, so a popup-only user is
-never bothered. `config set idle-ttl` also tries to push the new value
-to **already-connected** tabs immediately, over the multi-agent IPC
-bridge (see above) — this requires a `browser-link` primary to be
-running with multi-agent mode on (the default); otherwise the value is
-saved and applies the next time a tab connects. Comparing raw
-timestamps between the CLI (Node) and the extension (Chrome) is safe
-here specifically because both always run on the same machine — this
-is a loopback-only bridge, not a distributed system.
+**Applying a change to connected tabs.** `config set idle-ttl` tries to
+push the new value to **already-connected** tabs immediately, over the
+multi-agent IPC bridge (see above) — this requires a `browser-link`
+primary to be running with multi-agent mode on (the default); otherwise
+the value is saved and applies the next time a tab connects.
 
 ## cdp-direct mode (no extension)
 
