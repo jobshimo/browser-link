@@ -15,10 +15,9 @@ test('patches a var BRIDGE_PORT (esbuild) and keeps var', () => {
 });
 
 test('throws naming const|var when the line is absent', () => {
-  assert.throws(
-    () => patchBridgePort('let BRIDGE_PORT = 17529;\n', 4242),
-    { message: '"const|var BRIDGE_PORT = 17529;" not found in background.js' },
-  );
+  assert.throws(() => patchBridgePort('let BRIDGE_PORT = 17529;\n', 4242), {
+    message: '"const|var BRIDGE_PORT = 17529;" not found in background.js',
+  });
 });
 
 test('does not match an indented or mid-line declaration', () => {
