@@ -95,6 +95,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- A `find` single match carries `semantic_key`. When the selector you save is structural (`:nth-of-type`), save that `semantic_key` in the payload next to it, and use `browser.find({ key })` when recall returns `prefer: "semantic_key"`. Never save a key for an `ambiguous` entry.',
       '- Never save a `ref` or an `ambiguous` selector, and never domain data: no IDs, names, dates or real values.',
       '- It learns alone: `recall`/`list_tabs` show `learned` counts per selector or `find` key, failed first: avoid those. Never values. Off: `browser-link config set map-learning off`.',
+      '- `confidence` is `fresh` when an item worked on the current `build` (a hash of the external script and stylesheet URLs, compared only within one app). A page without external assets always reports `811c9dc5`, and a redeploy that changes only inline code or unversioned asset URLs keeps items `fresh`: treat `fresh` as a hint, not proof.',
     ),
   },
   'token-efficiency': {
