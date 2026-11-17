@@ -15,8 +15,10 @@
  * (`navigator`), the screen capture (`screen-capture`) and the response
  * bodies (`response-bodies`); slice 16 adds the dialog input
  * (`dialog-input`), the downloads (`downloads`) and the content settings
- * (`content-settings`).
+ * (`content-settings`); slice 18b adds the flow control (`flows`) and the
+ * flow cancel (`flow-cancel`).
  */
+import type { FlowCancel, FlowControl } from '../flow/flow-control.js';
 import type { Clock } from '../ports/clock.js';
 import type { ContentSettings } from '../ports/content-settings.js';
 import type { Downloads } from '../ports/downloads.js';
@@ -49,6 +51,8 @@ export interface RequirementDeps {
   'dialog-input': DialogInput;
   downloads: Downloads;
   'content-settings': ContentSettings;
+  flows: FlowControl;
+  'flow-cancel': FlowCancel;
 }
 
 /** A requirement that is a provides-set entry, not a port: `capture-buffers`
@@ -62,7 +66,14 @@ export type ScopeRequirement = 'capture-buffers' | 'canvas';
  * the requirement gives the port; a handler reads it with `providedPort`. */
 export type AdapterRequirement = 'downloads' | 'content-settings';
 
-/** What a tool may require: a port, or a scope entry. */
+/** A per-transport flow service (`flow/flow-control.ts`, revision 11): the
+ * flow control, given with the deps of a tool call on both transports, and
+ * the flow cancel, which only cdp-direct gives. Optional in `ToolDeps`
+ * because the deps an action builds for one step carry neither; a handler
+ * reads them with `providedPort`. */
+export type ServiceRequirement = 'flows' | 'flow-cancel';
+
+/** What a tool may require: a port, a flow service, or a scope entry. */
 export type Requirement = keyof RequirementDeps | ScopeRequirement;
 
 /** What every transport gives besides its requirements. */
@@ -76,16 +87,19 @@ export interface CommonDeps {
 /** Every dependency a transport gives the registry. */
 export interface ToolDeps
   extends
-    Omit<RequirementDeps, AdapterRequirement>,
-    Partial<Pick<RequirementDeps, AdapterRequirement>>,
+    Omit<RequirementDeps, AdapterRequirement | ServiceRequirement>,
+    Partial<Pick<RequirementDeps, AdapterRequirement | ServiceRequirement>>,
     CommonDeps {}
 
 /** The deps of a handler that requires `R`. */
 export type DepsFor<R extends Requirement> = Pick<ToolDeps, Exclude<R, ScopeRequirement>> &
   CommonDeps;
 
-/** The port a transport gives with a requirement it provides. */
-export function providedPort<T>(port: T | undefined, requirement: AdapterRequirement): T {
+/** The port or service a transport gives with a requirement it provides. */
+export function providedPort<T>(
+  port: T | undefined,
+  requirement: AdapterRequirement | ServiceRequirement,
+): T {
   if (port === undefined) throw new Error(`${requirement} provided without its port`);
   return port;
 }

@@ -10,8 +10,6 @@ import type {
   ToolRequestMessage,
 } from '@browser-link/shared';
 import {
-  buildSnapshotJs,
-  withValuesHiddenNote,
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
   shouldScheduleIdleSweep,
@@ -23,12 +21,6 @@ import {
   TabSession,
   createPageDriver,
   dispatchTool,
-  performClick,
-  performDrag,
-  performFind,
-  performPress,
-  performWaitFor,
-  performType,
   type Requirement,
   TOOL_REGISTRY,
   type ToolDeps,
@@ -36,17 +28,12 @@ import {
   type CdpSession,
   type ObserverMessageOutcome,
   type PageDriverHandle,
-  runFlow,
-  type FlowDeps,
-  type FlowResult,
+  type FlowControl,
   type FlowStep,
-  MAX_DETACHED_FLOW_MS,
   createFlowHistory,
   createFlowRegistry,
-  toFlowStatus,
   type DetachedFlowRecord,
   type FlowHistoryEntry,
-  type FlowStatusPayload,
   type RunningFlowView,
 } from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
@@ -57,6 +44,7 @@ import { createChromeContentSettings } from './adapters/chrome-content-settings.
 import { createChromeDownloads } from './adapters/chrome-downloads.js';
 import { chromeFlowHistoryStore } from './adapters/chrome-flow-history-store.js';
 import { chromeDetachedFlowStore } from './adapters/chrome-detached-flow-store.js';
+import { chromeTabTitle } from './adapters/chrome-tab-title.js';
 import {
   closeTabConnection,
   debuggerIntake,
@@ -68,6 +56,7 @@ import {
   type TabConnection,
   type TabEventListener,
 } from './app/tab-connection.js';
+import { createExtensionFlowControl } from './app/flow-control.js';
 import { createDownloadCapture } from './download-capture.js';
 import {
   CONSOLE_IDLE_TTL_STORAGE_KEY,
@@ -640,14 +629,6 @@ const flowHistory = createFlowHistory({
   },
 });
 
-/** Fallback id for a `browser.flow` that arrived without one (a server
- * older than this extension). `crypto.randomUUID` is available in the MV3
- * service worker; the `flow_` prefix keeps a locally-minted id visually
- * distinguishable from a server-minted one in the popup. */
-function newFlowId(): string {
-  return `flow_${crypto.randomUUID()}`;
-}
-
 /** Answer the popup's Flows panel: everything running (across ALL tabs —
  * the Stop button has to reach a flow on a tab the user is not looking at)
  * plus the completed history of the ONE tab the popup is showing. */
@@ -693,7 +674,9 @@ function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDri
   });
 }
 
-/** Every requirement of the tool registry: the extension provides them all. */
+/** What the extension provides to the tool registry: every requirement but
+ * `flow-cancel`, since it cancels a flow through the `tool.cancel` frame and
+ * never receives a `flow_cancel` request (design revision 11). */
 const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
   'keyboard',
@@ -710,6 +693,7 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'dialog-input',
   'downloads',
   'content-settings',
+  'flows',
 ]);
 
 /** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
@@ -811,268 +795,6 @@ async function reportTopDocument(
   sendBridgeEvent(state, 'tab-navigated', { url: outcome.url, title });
 }
 
-/**
- * `handleFlow` and `handleFlowStatus`: the extracted bodies of the
- * remaining standalone tool cases in `handleTool` below, which do not run
- * through core's tool registry (the actions moved to core's `actions/` in
- * slices 10, 11, 13 and 14, the page reads and captures to core's
- * `tools/page-read.ts` in slice 15, the dialog, permission and download
- * tools to `tools/dialog-permission.ts` and `tools/download.ts` in slice
- * 16). Each takes the locals its original `case` block closed over and
- * returns the same wire-level `tool.response` envelope the case built.
- */
-
-async function handleFlow(
-  tabId: number,
-  state: TabSession,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-): Promise<ExtensionToServer> {
-  // Wire-boundary narrowing: `p.steps` is untrusted JSON. Keep only
-  // object-shaped entries here — `runFlow`'s own `stepKind()` guard
-  // re-validates each one at runtime regardless, so a malformed
-  // entry fails the flow cleanly instead of throwing.
-  const rawSteps = Array.isArray(p.steps)
-    ? p.steps.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
-    : [];
-  // Strict `=== true`: any other wire value (missing, "true", 1) runs
-  // the flow FOR REAL. A dry run that silently became a real run would
-  // be the worst possible failure of this flag, so only the exact
-  // boolean opts into it.
-  const dryRun = p.dry_run === true;
-  // Strict `=== true` for the same reason: a flow that silently detached
-  // would keep acting after the caller believed it had returned.
-  const detach = p.detach === true;
-  // The server mints the id (see `browser-dispatch.ts`) so the agent gets
-  // it back even when the extension never answers. The local fallback
-  // covers a server too old to send one: the popup's Stop button must work
-  // regardless of which half was upgraded first.
-  const flowId = typeof p.flow_id === 'string' && p.flow_id.length > 0 ? p.flow_id : newFlowId();
-  // Strict `=== true`: the user's hide-password-values setting (owner
-  // decision D12), sent by the server only when it is on.
-  const hidePasswordValues = p.hide_password_values === true;
-
-  // A dry run dispatches nothing and finishes in milliseconds, so it is
-  // deliberately NOT registered: there is nothing to stop, and listing it
-  // would push real runs out of a 20-entry history with entries that never
-  // touched the page. It also ignores `detach` — projecting a flow is
-  // fast and synchronous whichever way the real run would go.
-  if (dryRun) {
-    const projection = await runFlow(
-      rawSteps as FlowStep[],
-      buildFlowDeps(tabId, state, undefined, hidePasswordValues),
-      { dryRun: true },
-    );
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: true,
-      result: withValuesHiddenNote(projection, hidePasswordValues),
-    };
-  }
-
-  if (detach) {
-    // ONE detached flow per tab, enforced HERE because the registry is the
-    // only place that knows. Two loops clicking through the same page have
-    // no use case and every failure mode: they interleave on the same DOM,
-    // race each other's `while_found` probes, and leave a human with two
-    // Stop buttons and no way to tell which is which. The error names the
-    // running id so the caller can inspect or stop it.
-    const running = flowRegistry.detachedForTab(tabId);
-    if (running) {
-      return {
-        kind: 'tool.response',
-        id: msg.id,
-        ok: false,
-        error:
-          `flow: a detached flow is already running on this tab (${running.flowId}). ` +
-          `Wait for it, or stop it with browser.flow_cancel, before detaching another.`,
-      };
-    }
-  }
-
-  // The server's time budget for a FOREGROUND flow, as a relative
-  // duration (no shared clock). A detached flow has its own ceiling, so
-  // the field is ignored there.
-  const deadlineAt =
-    !detach && typeof p.deadline_ms === 'number' && Number.isFinite(p.deadline_ms)
-      ? Date.now() + Math.max(0, p.deadline_ms)
-      : undefined;
-  const entry = flowRegistry.register({
-    flowId,
-    tabId,
-    steps: rawSteps.length,
-    detached: detach,
-    ...(detach ? { expiresAt: Date.now() + MAX_DETACHED_FLOW_MS } : {}),
-    ...(deadlineAt === undefined ? {} : { foregroundDeadlineAt: deadlineAt }),
-  });
-  // Best effort and deliberately not awaited: the title is only there so
-  // the popup can tell two concurrent flows apart, and no flow should pay
-  // a round trip to chrome.tabs before its first step.
-  void chrome.tabs
-    .get(tabId)
-    .then((tab) => {
-      if (typeof tab.title === 'string') entry.title = tab.title;
-    })
-    .catch(() => {
-      // Tab gone or title unavailable — the panel falls back to the id.
-    });
-
-  // Also covers the detached ceiling: `shouldStop` flips the entry to
-  // `expired` the first time the deadline has passed, so the outcome
-  // distinguishes "ran out of time" from "someone pressed Stop".
-  const shouldCancel = (): boolean => flowRegistry.shouldStop(flowId, Date.now());
-  // A `wait_for` poll loop only knows this one flag, so it must also
-  // trip at the deadline or a 30s wait would sail past the bridge timeout.
-  // The runner itself keeps the two causes apart (`shouldCancel` alone is
-  // a human stop; the deadline is `deadlineAt`).
-  const stopWaiting = (): boolean =>
-    shouldCancel() || (deadlineAt !== undefined && Date.now() >= deadlineAt);
-  const run = (): Promise<FlowResult> =>
-    runFlow(rawSteps as FlowStep[], {
-      ...buildFlowDeps(tabId, state, stopWaiting, hidePasswordValues),
-      shouldCancel,
-      ...(deadlineAt === undefined ? {} : { deadlineAt }),
-      onProgress: (progress) => {
-        entry.progress = progress;
-      },
-    });
-
-  if (detach) {
-    // The record lands BEFORE the first step is dispatched: it is the only
-    // evidence a worker termination leaves behind, and a flow that acted
-    // before it was recorded would be exactly the invisible run this whole
-    // slice exists to make impossible. A record that will not store is
-    // therefore a refusal, not a warning: nothing has run yet, and that is
-    // the only moment refusing is still free.
-    if (!(await flowHistory.persistLaunch(entry))) {
-      flowRegistry.finish(flowId);
-      return {
-        kind: 'tool.response',
-        id: msg.id,
-        ok: false,
-        error:
-          'flow: could not persist the detached-flow launch record ' +
-          '(chrome.storage.session write failed). NOTHING was executed: a ' +
-          'detached flow with no record acts irreversibly with no evidence.',
-      };
-    }
-    // Deliberately floating. This is the entire point of `detach`: the
-    // tool.response below goes out now, the loop keeps running, and the
-    // agent's turn is free. `recordFinishedFlow` in the `finally` is what
-    // eventually retires it.
-    void (async () => {
-      let flowResult: FlowResult | null = null;
-      try {
-        flowResult = await run();
-      } catch {
-        // A throw (detached debugger, closed tab) is a `failed` outcome —
-        // recorded below from a null result. Nothing to rethrow to: there
-        // is no caller left.
-      } finally {
-        recordFinishedFlow(flowId, flowResult);
-      }
-    })();
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: true,
-      result: withValuesHiddenNote(
-        {
-          detached: true,
-          started_at: entry.startedAt,
-          steps: rawSteps.length,
-          expires_at: entry.expiresAt,
-        },
-        hidePasswordValues,
-      ),
-    };
-  }
-
-  let flowResult: FlowResult | null = null;
-  try {
-    flowResult = await run();
-    // The wire-level response is ok:true whenever the flow RAN (even a
-    // failed step, and even a cancellation, is a legitimate business
-    // outcome — same pattern as wait_for's matched:false) — flowResult
-    // itself carries the ok:true/false and stopped_by the agent reads.
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: true,
-      result: withValuesHiddenNote(flowResult, hidePasswordValues),
-    };
-  } finally {
-    // In `finally` so a throw (detached debugger, closed tab) still retires
-    // the registry entry — a phantom "running" flow in the popup would be
-    // worse than no panel at all, since it offers a Stop button that can
-    // never do anything.
-    recordFinishedFlow(flowId, flowResult);
-  }
-}
-
-/** Answer the `flow_status` wire tool (behind `browser.flow_status`).
- * Reads the live registry first and falls back to the persisted detached
- * record; an id neither knows comes back as `state: 'unknown'`, never as an
- * error — see `FlowState`. */
-async function handleFlowStatus(
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-): Promise<ExtensionToServer> {
-  const flowId = typeof p.flow_id === 'string' ? p.flow_id : '';
-  if (flowId.length === 0) {
-    return { kind: 'tool.response', id: msg.id, ok: false, error: 'flow_status: flow_id required' };
-  }
-  const entry = flowRegistry.get(flowId);
-  const record = entry ? undefined : await flowHistory.record(flowId);
-  const status: FlowStatusPayload = toFlowStatus(flowId, entry, record);
-  return { kind: 'tool.response', id: msg.id, ok: true, result: status };
-}
-
-/** The perform* bindings `runFlow` needs, in one place so the real run and
- * the dry-run projection cannot drift apart. `shouldCancel` is threaded
- * into `performWaitFor` alone: it is the only perform* with a loop of its
- * own to break out of. */
-function buildFlowDeps(
-  tabId: number,
-  state: TabSession,
-  shouldCancel?: () => boolean,
-  /** The user's hide-password-values setting (owner decision D12): find
-   * steps and the recovery snapshot hide password values too. */
-  hidePasswordValues = false,
-): Omit<FlowDeps, 'shouldCancel' | 'onProgress'> {
-  return {
-    performFind: (params) =>
-      performFind(actionDeps(tabId), { ...params, hide_password_values: hidePasswordValues }),
-    performClick: (params) => performClick(actionDeps(tabId), params),
-    performType: (params) => performType(actionDeps(tabId), params),
-    performPress: (params) => performPress(actionDeps(tabId), params),
-    performWaitFor: (params) => performWaitFor(actionDeps(tabId, state), params, shouldCancel),
-    performDrag: (params) => performDrag({ ...pageDriver(tabId), clock: systemClock }, params),
-    clock: systemClock,
-    buildRecoverySnapshot: () =>
-      pageDriver(tabId).evaluator.evaluate(
-        buildSnapshotJs({
-          only_interactive: true,
-          max_interactive: 40,
-          hide_password_values: hidePasswordValues,
-        }),
-      ),
-  };
-}
-
-/** Retire a finished flow: drop it from the registry, restart its tab's
- * idle window from its end (owner decision D1), and hand it to the history.
- * Never throws: a storage failure must not turn a completed flow into a
- * failed tool call, and a detached flow has no caller left to fail. */
-function recordFinishedFlow(flowId: string, result: FlowResult | null): void {
-  const entry = flowRegistry.finish(flowId);
-  if (!entry) return;
-  const endedAt = Date.now();
-  tabConnections.get(entry.tabId)?.session.flowEnded(endedAt);
-  flowHistory.recordFinished(entry, result, endedAt);
-}
-
 /** Push the one-per-flow summary `bridge.event`. Returns whether it
  * actually went out — the caller defers it onto the record when it did
  * not, so an audit trail is never quietly dropped just because the tab's
@@ -1103,50 +825,41 @@ function publishFlowFinished(tabId: number, record: DetachedFlowRecord): boolean
   return true;
 }
 
+/** The flow tools' `FlowControl` on one tab (`app/flow-control.ts`), over
+ * the worker's flow registry and history; built per call, it holds no state. */
+function flowControl(tabId: number, session: TabSession): FlowControl {
+  return createExtensionFlowControl({
+    tabId,
+    registry: flowRegistry,
+    history: flowHistory,
+    clock: systemClock,
+    tabTitle: chromeTabTitle,
+    stepDeps: () => actionDeps(tabId),
+    waitDeps: () => actionDeps(tabId, session),
+    driver: () => pageDriver(tabId),
+    flowEnded: (id, endedAt) => {
+      tabConnections.get(id)?.session.flowEnded(endedAt);
+    },
+  });
+}
+
+/** Every wire tool runs through core's registry (design 3.3) and maps its
+ * outcome to the wire once (3.4); an unregistered one answers
+ * `Unknown tool: <name>`. */
 async function handleTool(
   state: TabConnection,
   msg: ToolRequestMessage,
 ): Promise<ExtensionToServer> {
   const tabId = state.tabId;
-  // A registered tool (design 3.3) runs through core and maps its outcome
-  // to the wire once (3.4).
-  if (TOOL_REGISTRY.has(msg.tool)) {
-    const outcome = await dispatchTool(
-      TOOL_REGISTRY,
-      EXTENSION_PROVIDES,
-      actionDeps(tabId, state.session),
-      'extension',
-      msg.tool,
-      msg.params,
-    );
-    return toolResponse(msg.id, outcome);
-  }
-  // Params come over the wire as JSON: each field is unknown until narrowed.
-  const p = (msg.params ?? {}) as Record<string, unknown>;
-  try {
-    switch (msg.tool) {
-      case 'flow':
-        return await handleFlow(tabId, state.session, msg, p);
-
-      case 'flow_status':
-        // Deliberately NOT scoped to `tabId`: the registry and the
-        // detached records are worker-global, keyed by flow_id. The tab
-        // this request arrived on is a transport route, not a filter — so
-        // an agent can still read a finished flow's manifest through any
-        // connected tab after the flow's own tab has closed.
-        return await handleFlowStatus(msg, p);
-
-      default:
-        return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };
-    }
-  } catch (err) {
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  const outcome = await dispatchTool(
+    TOOL_REGISTRY,
+    EXTENSION_PROVIDES,
+    { ...actionDeps(tabId, state.session), flows: flowControl(tabId, state.session) },
+    'extension',
+    msg.tool,
+    msg.params,
+  );
+  return toolResponse(msg.id, outcome);
 }
 
 /** Tear the tab's connection down (`app/tab-connection.ts` `closeTabConnection`). */

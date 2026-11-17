@@ -52,7 +52,8 @@ swapped).
 
 ### Revision 11 (2026-11-18)
 
-Arch's decisions on slice 18 (3.3 "As built in slice 18a", 2.5, slice
+Arch's decisions on slice 18 (3.3 "As built in slice 18a" and "As built in
+slice 18b", 3.4, 2.5, slice
 table rows 18a and 18b):
 
 | # | Decision | Why |
@@ -60,6 +61,9 @@ table rows 18a and 18b):
 | 1 | `CDP_TOOL_SUPPORT` is pinned by Map equality with the 23 entries of 1.4.23 plus the relative order of the rows the registry derives; this supersedes "in today's order" in 3.3. A comment on `CDP_TOOL_SUPPORT` says its order is not a contract | production only calls `.get` (`isCdpToolSupported`, read by the dispatcher gate in `tools/browser-dispatch.ts`) and nothing iterates the map, so its order is not behavior |
 | 2 | `cdp/support.ts` declares the rows no registry entry derives, each with its reason: `wait_for_tab` (dispatcher-only, in no registry) and, until slice 18b, `flow`, `flow_status` and `flow_cancel` (transport-owned); the snapshot test names them | `browser-dispatch.ts` answers `wait_for_tab` itself; the flow tools join the registry only in 18b |
 | 3 | Slice 18 splits into two PRs: 18a derives `CDP_TOOL_SUPPORT` with its snapshot test; 18b adds `FlowControl` and `FlowCancel`, removes the five transitional tool cases and the three declared flow rows, adds `flows` and `flow-cancel` to `CDP_DIRECT_PROVIDES`, and lands the no-tool-`case` fitness rule | the flow tools need an interface both transports implement, and cdp-direct keeps its own detached-flow model (Q4); deriving the table does not wait for it |
+| 4 | `FlowControl` (`detachedOnTab()`, `steps({ hidePasswordValues, stopWaiting? })`, `start(launch)`, `status(flowId)`) lives in core `flow/flow-control.ts`, outside `ports/`, as the `flows` entry of `RequirementDeps`. It is a per-transport service (each transport's own flow model, Q4), in the family of `DialogWatch` and `CaptureWatch`, not a port. `steps` returns each transport's step bindings, so cdp-direct's flow drag step keeps its refusal. Each optional member names in its doc which transport uses it (`stopWaiting` absent only for a dry run; the launch's `onProgress` given by the extension and by cdp-direct's detached launch) | the flow tools need one body over two flow models, and cdp-direct's page driver has a `drag` port that `ToolDeps` alone would let a flow use |
+| 5 | `FlowControl` has no `cancel`. `flow_cancel` requires `flows` (for the status read that answers it) and `flow-cancel`, a one-member `FlowCancel { cancel(flowId) }` that only cdp-direct provides. The extension lacks `flow-cancel`; the request never reaches it. Its answer to a `flow_cancel` request sent straight to it changes from `Unknown tool: flow_cancel` to `Unsupported tool: flow_cancel needs flow-cancel`, which no wire path reaches: the server routes a `flow_cancel` request only to a `cdp:` tab and cancels an extension flow with the `tool.cancel` frame (`tools/browser-dispatch.test.ts`, the `flow_cancel` cases) | the extension's cancel is the `tool.cancel` frame and the popup, which go straight to the `FlowRegistry` |
+| 6 | 3.4's `unsupported` row and the requirements text of 3.3 read "the extension lacks `flow-cancel`; the request never reaches it" instead of "the extension provides every requirement" | decision 5 |
 
 ### Revision 10 (2026-11-17)
 
@@ -440,6 +444,7 @@ packages/core/src/
                     page-driver.ts (CDP implementation of the PageDriver port)
   flow/             flow-engine.ts (today flow.ts) flow-run.ts
                     flow-registry.ts flow-history.ts detached-flows.ts
+                    flow-control.ts (FlowControl, FlowCancel; slice 18b)
   actions/          perform-find.ts perform-click.ts perform-type.ts
                     perform-press.ts perform-wait-for.ts perform-drag.ts
                     click-landing.ts (the frame watch already lives in
@@ -459,8 +464,10 @@ packages/extension/src/
                     chrome-content-settings.ts chrome-windows.ts
                     chrome-alarms.ts chrome-runtime.ts chrome-tab-events.ts
                     web-socket.ts system-clock.ts (from slice 5b-1)
+                    chrome-tab-title.ts (slice 18b)
   app/              tab-connection.ts connection.ts recording.ts repair.ts
                     popup-router.ts windows.ts activity-admin.ts tab-events.ts
+                    flow-control.ts (slice 18b)
   (UI zone, 5.3)    popup.ts activity.ts admin.ts ui-language.ts
   (stays)           admin-view.ts i18n.ts notice-policy.ts reconnect-policy.ts
                     repair-policy.ts connect-failure-policy.ts
@@ -474,6 +481,7 @@ packages/server/src/cdp/
   transport.ts      cdp-direct adapter: connections, gate, outcome -> wire
   adapters/         cdp-client-session.ts cdp-page-info.ts
                     config-settings.ts bridge-events-out.ts
+  flow-control.ts   cdp-direct FlowControl and FlowCancel (slice 18b)
                     system-clock.ts (from slice 5b-1)
   clock.ts          slices 5b-1 to 8 only, byte-identical sibling (5.1)
   (unchanged)       client.ts targets.ts gate.ts grant.ts
@@ -876,6 +884,33 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   rows, pins the relative order of the 19 derived rows, and shows that
   declaring `drag` on cdp-direct changes the map. The map's order is not a
   contract (revision 11).
+- As built in slice 18b (1.4.25): `flow`, `flow_status` and `flow_cancel`
+  are registered in `tools/flow.ts`, and every wire tool of both transports
+  is in the registry: `background.ts` `handleTool` and `cdp/transport.ts`
+  `callCdpTool` are one `dispatchTool` call each, with no `switch`. `flow`
+  and `flow_status` require `flows`, the transport's `FlowControl`
+  (`flow/flow-control.ts`, revision 11); `flow_cancel` requires `flows` and
+  `flow-cancel` (`FlowCancel`). Both are `ServiceRequirement`s, optional in
+  `ToolDeps` like the `AdapterRequirement`s (the deps an action builds for
+  one step carry neither) and read through `providedPort`. The handler holds
+  the parameter reading, the dry run, the one-detached-flow-per-tab refusal,
+  the foreground deadline, the detached launch answer and the
+  hidden-password-values note; `start` returns the launch (`shouldCancel`,
+  `onProgress`, `startedAt`, `expiresAt`, `finish`) or the transport's
+  refusal. The extension's `FlowControl` (`app/flow-control.ts`) runs over
+  `FlowRegistry` and `FlowHistory`, mints a `flow_` id when the server sent
+  none, refuses an unpersisted detached launch, and reads the tab title
+  through `adapters/chrome-tab-title.ts`; it is built per tool call and holds
+  no state. cdp-direct's (`cdp/flow-control.ts`) runs over
+  `cdp/detached-flows.ts`, its gate (checked before each step; a detached
+  flow stops as `grant-revoked`) and its connection hold (Q4); it and
+  `cdpFlowCancel` are what `CDP_DIRECT_PROVIDES` adds as `flows` and
+  `flow-cancel`. The extension provides `flows` but not `flow-cancel`
+  (revision 11). The requirement `idle` of the sketch above has no caller:
+  each transport's flow control holds its own idle model. `cdp/support.ts`
+  declares only `wait_for_tab` now, and `CDP_TOOL_SUPPORT` still equals the
+  1.4.23 table. The extension `fitness.test.ts` fails on a `case` label of
+  `background.ts` naming a registered tool.
 
 ### 3.4 Failure contract
 
@@ -900,7 +935,7 @@ export type ToolOutcome = { ok: true; result: unknown } | { ok: false; failure: 
 | `sensitive` | `ok: false, error: message, sensitive_field: true` (the server rejects with `SensitiveFieldError`; the agent sees only `message`; the trail row stores `[sensitive field]`) | `throw new SensitiveFieldError(message)` | `handleTool` cases `type`, `press`; `ws-bridge.ts`; `failureError`; `activity/extract.ts` `buildRow` |
 | `thrown` | `ok: false, error: err.message` (or `String(err)`) | rethrown unchanged | `handleTool` `catch` |
 | `unknown-tool` | `ok: false, error: "Unknown tool: <tool>"` | today's defense-in-depth `default` text, unchanged | `handleTool` `default`; `callCdpTool` `default` |
-| `unsupported` | not reachable (the extension provides every requirement) | not reachable (the dispatcher gate refuses first); kept as a typed defense | `browser-dispatch.ts` gate |
+| `unsupported` | `ok: false, error: "Unsupported tool: <tool> needs <requirements>"`; not reachable over the wire (the extension lacks `flow-cancel`; the request never reaches it, revision 11) | not reachable (the dispatcher gate refuses first); kept as a typed defense | `browser-dispatch.ts` gate |
 
 The `sensitive` kind shows on three different surfaces. On the extension
 wire the response carries `sensitive_field: true` (core `tools/failure.ts`
@@ -1236,7 +1271,8 @@ to `support/flow-limits.ts`.
      is capped at three entries and each addition needs arch's sign-off in
      the PR (condition 2 of R6).
    - `background.ts` line budget, constant `BACKGROUND_LINE_BUDGET` (5.4);
-   - `background.ts` contains no `case '<tool>'` for any registry name;
+   - `background.ts` contains no `case '<tool>'` for any registry name (since
+     slice 18b; its RED fixture is the transitional `case 'flow'`);
    - **Wake listeners are registered synchronously by the composition root
      (R1, N3).** The test holds `WAKE_SUBSCRIPTIONS`, the events of the ten
      permanent registrations of section 1 (eight distinct events:
@@ -1335,7 +1371,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 16 | Dialogs, permission, downloads | `handleDialogRespond`, `handleSetPermission`, `handleDownloadCapture`, `handleDownloadSettle`; `ContentSettings` and `Downloads` adapters | ~220 | e2e `dialog_respond`, `set_permission`, `download` | revert |
 | 17 | `FlowRun`, `FlowRegistry`, `FlowHistory` | aggregates and the two store adapters (lines 3025-3287, `foregroundFlowDeadlines`); `flow-registry.ts` moves to core and `tsconfig.purity.json` is deleted (5.1) | ~330 | unit tests of each invariant with in-memory stores; store contract on fakes and in the worker | revert |
 | 18a | Derived support table (**done**, release 1.4.24) | `CDP_TOOL_SUPPORT` derived from the registry (`cdpToolSupport`) plus four declared rows, `CDP_DIRECT_PROVIDES` moved to `cdp/support.ts` (3.3, revision 11) | ~100 authored | snapshot test against the 1.4.23 table, RED-probed by declaring `drag`; e2e; differential | revert |
-| 18b | Flow tools | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases behind `FlowControl` and `FlowCancel`; the five transitional tool cases and the three declared flow rows removed; `CDP_DIRECT_PROVIDES` gains `flows` and `flow-cancel`; the no-tool-`case` fitness rule (revision 11) | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; the snapshot test unchanged | revert |
+| 18b | Flow tools (**done**, release 1.4.25) | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases behind `FlowControl` and `FlowCancel`; the five transitional tool cases and the three declared flow rows removed; `CDP_DIRECT_PROVIDES` gains `flows` and `flow-cancel`; the no-tool-`case` fitness rule (revision 11) | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; the support snapshot still equals the 1.4.23 table; the no-tool-`case` rule RED-probed | revert |
 | — | **Checkpoint B** (6.2) | | | | |
 | 19 | Connection lifecycle | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
 | 20 | Recording | `app/recording.ts` (lines 4328-4658) | ~330 | existing `recording.test.ts` plus new unit tests; manual popup check noted in PR | revert |

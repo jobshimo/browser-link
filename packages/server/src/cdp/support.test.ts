@@ -38,7 +38,7 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
   ['download', false],
 ];
 
-const HAND_DECLARED = ['flow', 'flow_status', 'flow_cancel', 'wait_for_tab'];
+const HAND_DECLARED = ['wait_for_tab'];
 
 describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
   test('equals the 1.4.23 table: the same 23 tools with the same values', () => {
@@ -47,12 +47,12 @@ describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
     expect(Object.fromEntries(CDP_TOOL_SUPPORT)).toEqual(Object.fromEntries(TABLE_AT_1_4_23));
   });
 
-  test('four rows are hand-declared: the transport-owned flow tools and the dispatcher-only wait_for_tab', () => {
+  test('one row is hand-declared: the dispatcher-only wait_for_tab', () => {
     expect([...CDP_DECLARED_SUPPORT.keys()]).toEqual(HAND_DECLARED);
     for (const tool of HAND_DECLARED) expect(TOOL_REGISTRY.has(tool)).toBe(false);
   });
 
-  test('the other 19 rows come from the registry, in the 1.4.23 relative order', () => {
+  test('the other 22 rows come from the registry, in the 1.4.23 relative order', () => {
     const derived = cdpToolSupport(TOOL_REGISTRY, CDP_DIRECT_PROVIDES);
     expect([...derived]).toEqual(TABLE_AT_1_4_23.filter(([tool]) => !HAND_DECLARED.includes(tool)));
   });

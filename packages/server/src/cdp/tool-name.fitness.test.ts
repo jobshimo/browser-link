@@ -10,9 +10,9 @@ import { describe, expect, test } from 'vitest';
  * registry entry (`requires`, `needs`, `commandTimeout`), and the transport
  * reads the entry. A tool-name check is a comparison (`===`, `!==`, `==`,
  * `!=`) between an expression named `tool` (`tool`, `msg.tool`) and a string
- * literal, in a production file under `cdp/` (tests excluded). The
- * `switch (tool)` of `callCdpTool` is the transitional dispatch of the tools
- * not yet in the registry and is not counted.
+ * literal, in a production file under `cdp/` (tests excluded). Since slice
+ * 18b `callCdpTool` has no `switch (tool)`: every wire tool runs through the
+ * registry.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,7 +74,7 @@ describe('cdp-direct makes no tool-name checks (slice 15)', () => {
 
   test("RED: the slice 15 `tool === 'evaluate'` branch fails", () => {
     const probe = transportText.replace(
-      "entry.commandTimeout === 'call-budget'",
+      "entry?.commandTimeout === 'call-budget'",
       "tool === 'evaluate'",
     );
     expect(probe).not.toBe(transportText);

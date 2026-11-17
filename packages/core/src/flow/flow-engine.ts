@@ -32,7 +32,7 @@
  *
  * Deliberately decoupled from any specific transport: every side effect
  * goes through the `FlowDeps` the caller injects. The concrete wiring —
- * `background.ts` in the extension, `cdp/transport.ts` on the server —
+ * the extension's `app/flow-control.ts`, `cdp/transport.ts` on the server —
  * binds the real perform* functions (already closed over the tab id / CDP
  * client); tests wire fakes. This is what makes the sequencing logic —
  * step-shape validation, implicit-target threading, fail-fast, result
@@ -284,8 +284,8 @@ function stepKind(step: unknown): StepKind | null {
   return isStepKind(keys[0]) ? keys[0] : null;
 }
 
-/** Everything the step executor needs from the outside world. `background.ts`
- * (extension) / `cdp/transport.ts` (server) binds each method to the real
+/** Everything the step executor needs from the outside world. The flow control
+ * of each transport (`flow/flow-control.ts` `steps`) binds each method to the real
  * perform* function; tests bind fakes.
  * `buildRecoverySnapshot` is called only on failure, and always renders the
  * same focused view (`only_interactive:true, max_interactive:40`) via the
@@ -1042,7 +1042,7 @@ async function planFlow(steps: readonly FlowStep[], deps: FlowDeps): Promise<Flo
  * `steps` is typed as `FlowStep[]` for ergonomic test-writing, but every
  * element is re-validated at runtime via `stepKind()` before use — the
  * array may originate from an untrusted JSON payload cast at the wire
- * boundary in `background.ts` (extension) / `cdp/transport.ts` (server),
+ * boundary in core's `tools/flow.ts` (both transports),
  * and a malformed entry must fail the flow cleanly rather than throw.
  *
  * With `options.dryRun`, the flow is validated and projected instead:

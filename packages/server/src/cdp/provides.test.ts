@@ -16,10 +16,12 @@ import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports and the CDP event wait, without drag, canvas, capture-buffers or response-bodies', () => {
+  test('is the page ports, the CDP event wait and the flow services, without drag, canvas, capture-buffers or response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
       'cdp-events',
       'evaluator',
+      'flow-cancel',
+      'flows',
       'keyboard',
       'navigator',
       'page',
