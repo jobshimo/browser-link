@@ -1110,14 +1110,21 @@ async function pageValue(T, expression) {
  * not here: no MCP path sends one (contract suite only).
  */
 async function errorPaths(T) {
+  // `want`: the exact error text, or a RegExp when part of it (a stack trace)
+  // is Chrome's own and may change between versions.
   const expectError = async (name, tool, args, want, extra) => {
     const label = `error.${name}`;
     const t = now();
     const r = await attempt(tool, { tab_id: T, ...args }, label);
-    if (!r.isError || r.text !== want) {
+    const matches = want instanceof RegExp ? want.test(r.text) : r.text === want;
+    if (!r.isError || !matches) {
+      const expected =
+        want instanceof RegExp
+          ? `text matching ${String(want)}`
+          : `exactly ${JSON.stringify(want)}`;
       throw new StepFailure(
         label,
-        `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+        `expected isError with ${expected}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
       );
     }
     if (extra) await extra();
@@ -1137,7 +1144,9 @@ async function errorPaths(T) {
     'thrown',
     'browser.evaluate',
     { expression: "(() => { throw new Error('e2e-boom'); })()" },
-    'Error: Error: e2e-boom\n    at <anonymous>:1:16\n    at <anonymous>:1:41',
+    // The message line exactly, then only that a stack follows: the frame
+    // text (`at <anonymous>:1:16`) is Chrome's own and is not pinned.
+    /^Error: Error: e2e-boom\n {4}at \S/,
   );
 
   // timeout: wait_for expires on a selector that never appears.
