@@ -8,6 +8,13 @@
 //  2) List the tarball entries and assert the publishable set is there:
 //     dist/cli.js, dist/index.js, dist/extension/manifest.json (with the
 //     package version), LICENSE, README.md, and no compiled test files.
+//     The bundled extension under dist/extension/ is exactly the four
+//     entries (background.js, popup.js, activity.js, admin.js), each with
+//     its .js.map, plus the HTML pages, icons and manifest byte-identical
+//     to packages/extension; no .d.ts, and no top-level `await` in the
+//     service worker the manifest names (a module service worker refuses
+//     one; the HTML pages' modules may use it, popup.ts does), checked on
+//     the parsed output.
 //  3) Install the tarball into a temp prefix and run the installed
 //     `browser-link version` binary; its stdout must equal the version.
 // Every failed assertion prints one `FAIL:` line; the exit code is 1 if
@@ -24,8 +31,85 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
+import ts from 'typescript';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const extensionDir = join(repoRoot, 'packages', 'extension');
+
+/** The extension's bundled entries; the manifest and HTML pages name them. */
+export const EXTENSION_ENTRIES = ['background.js', 'popup.js', 'activity.js', 'admin.js'];
+const EXTENSION_PAGES = ['popup.html', 'activity.html', 'admin.html'];
+
+/** True when `code` (an ES module) has an `await` outside every function:
+ * a top-level `await` or `for await`. Parsed, not matched by regex. */
+export function hasTopLevelAwait(code) {
+  const source = ts.createSourceFile(
+    'entry.js',
+    code,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JS,
+  );
+  const visit = (node) => {
+    if (ts.isFunctionLike(node)) return false;
+    if (ts.isAwaitExpression(node)) return true;
+    if (ts.isForOfStatement(node) && node.awaitModifier) return true;
+    return ts.forEachChild(node, visit) ?? false;
+  };
+  return ts.forEachChild(source, visit) ?? false;
+}
+
+/** Files the packed dist/extension/ holds verbatim from packages/extension. */
+function extensionSourceFiles() {
+  const files = new Map([['manifest.json', readFileSync(join(extensionDir, 'manifest.json'))]]);
+  for (const page of EXTENSION_PAGES) files.set(page, readFileSync(join(extensionDir, page)));
+  for (const icon of readdirSync(join(extensionDir, 'icons'))) {
+    files.set(`icons/${icon}`, readFileSync(join(extensionDir, 'icons', icon)));
+  }
+  return files;
+}
+
+/**
+ * Assertions on the bundled extension inside a tarball's entries (a Map of
+ * entry path -> Buffer). `sourceFiles` maps a path under dist/extension/ to
+ * the bytes it must have (manifest, HTML pages, icons). Returns one message
+ * per failed assertion.
+ */
+export function extensionFailures(entries, sourceFiles = extensionSourceFiles()) {
+  const found = [];
+  const prefix = 'package/dist/extension/';
+  const shipped = [...entries.keys()]
+    .filter((entry) => entry.startsWith(prefix))
+    .map((entry) => entry.slice(prefix.length));
+  const expected = [
+    ...EXTENSION_ENTRIES.flatMap((entry) => [entry, `${entry}.map`]),
+    ...sourceFiles.keys(),
+  ];
+  for (const file of expected) {
+    if (!shipped.includes(file)) found.push(`missing entry ${prefix}${file}`);
+  }
+  for (const file of shipped) {
+    if (file.endsWith('.d.ts')) found.push(`declaration file shipped: ${prefix}${file}`);
+    else if (!expected.includes(file)) found.push(`unexpected entry ${prefix}${file}`);
+  }
+  for (const [file, bytes] of sourceFiles) {
+    const packed = entries.get(prefix + file);
+    if (packed && !packed.equals(bytes)) {
+      found.push(`${prefix}${file} differs from packages/extension/${file}`);
+    }
+  }
+  const manifest = entries.get(`${prefix}manifest.json`);
+  const worker = manifest && JSON.parse(manifest.toString('utf8')).background?.service_worker;
+  if (worker !== 'background.js') {
+    found.push(`${prefix}manifest.json names service worker ${worker}, expected background.js`);
+  }
+  const workerCode = entries.get(`${prefix}background.js`);
+  if (workerCode && hasTopLevelAwait(workerCode.toString('utf8'))) {
+    found.push(`${prefix}background.js (the service worker) has a top-level await`);
+  }
+  return found;
+}
+
 const serverPkgPath = join(repoRoot, 'packages', 'server', 'package.json');
 const { name: pkgName, version } = JSON.parse(readFileSync(serverPkgPath, 'utf8'));
 const isWindows = process.platform === 'win32';
@@ -52,7 +136,7 @@ function run(command, args, options = {}) {
 }
 
 /** Read a .tgz into a Map of entry path -> file content (Buffer). */
-function readTarball(tgzPath) {
+export function readTarball(tgzPath) {
   const tar = gunzipSync(readFileSync(tgzPath));
   const entries = new Map();
   let offset = 0;
@@ -84,106 +168,114 @@ function readTarball(tgzPath) {
   return entries;
 }
 
-const tempDirs = [];
-const makeTemp = (label) => {
-  const dir = mkdtempSync(join(tmpdir(), `browser-link-smoke-${label}-`));
-  tempDirs.push(dir);
-  return dir;
-};
+function main() {
+  const tempDirs = [];
+  const makeTemp = (label) => {
+    const dir = mkdtempSync(join(tmpdir(), `browser-link-smoke-${label}-`));
+    tempDirs.push(dir);
+    return dir;
+  };
 
-try {
-  // 1) Pack
-  let tgzPath = process.env.SMOKE_TARBALL;
-  if (tgzPath) {
-    console.log(`[smoke] using SMOKE_TARBALL=${tgzPath}`);
-  } else {
-    const packDir = makeTemp('pack');
-    console.log(`[smoke] packing ${pkgName}@${version} into ${packDir}`);
-    const packed = run('pnpm', ['--filter', pkgName, 'pack', '--pack-destination', packDir], {
-      cwd: repoRoot,
-      stdio: 'inherit',
-    });
-    if (packed.status !== 0) {
-      throw new Error(`pnpm pack exited with ${packed.status}`);
-    }
-    const tgz = readdirSync(packDir).find((file) => file.endsWith('.tgz'));
-    if (!tgz) throw new Error(`pnpm pack produced no .tgz in ${packDir}`);
-    tgzPath = join(packDir, tgz);
-  }
-
-  // 2) Entries
-  const entries = readTarball(tgzPath);
-  console.log(`[smoke] ${entries.size} entries in ${tgzPath}`);
-  for (const required of [
-    'package/package.json',
-    'package/dist/cli.js',
-    'package/dist/index.js',
-    'package/dist/extension/manifest.json',
-    'package/LICENSE',
-    'package/README.md',
-  ]) {
-    check(entries.has(required), `missing entry ${required}`);
-  }
-  const packedPkg = entries.get('package/package.json');
-  if (packedPkg) {
-    const packedVersion = JSON.parse(packedPkg.toString('utf8')).version;
-    check(
-      packedVersion === version,
-      `package/package.json version is ${packedVersion}, expected ${version}`,
-    );
-  }
-  const manifest = entries.get('package/dist/extension/manifest.json');
-  if (manifest) {
-    const manifestVersion = JSON.parse(manifest.toString('utf8')).version;
-    check(
-      manifestVersion === version,
-      `dist/extension/manifest.json version is ${manifestVersion}, expected ${version}`,
-    );
-  }
-  const testFiles = [...entries.keys()].filter((entry) => /\.test\.(js|d\.ts)$/.test(entry));
-  console.log(`[smoke] compiled test files in the tarball: ${testFiles.length}`);
-  check(
-    testFiles.length === 0,
-    `${testFiles.length} compiled test files shipped (first: ${testFiles[0]})`,
-  );
-
-  // 3) Install and run the binary (only when the package looks complete,
-  // otherwise the install error would hide the precise failures above).
-  if (failures.length === 0) {
-    const prefix = makeTemp('install');
-    console.log(`[smoke] installing the tarball into ${prefix}`);
-    const installed = run(
-      'npm',
-      ['install', '--prefix', prefix, '--no-audit', '--no-fund', tgzPath],
-      {
+  try {
+    // 1) Pack
+    let tgzPath = process.env.SMOKE_TARBALL;
+    if (tgzPath) {
+      console.log(`[smoke] using SMOKE_TARBALL=${tgzPath}`);
+    } else {
+      const packDir = makeTemp('pack');
+      console.log(`[smoke] packing ${pkgName}@${version} into ${packDir}`);
+      const packed = run('pnpm', ['--filter', pkgName, 'pack', '--pack-destination', packDir], {
+        cwd: repoRoot,
         stdio: 'inherit',
-      },
-    );
-    check(installed.status === 0, `npm install of the tarball exited with ${installed.status}`);
-    if (installed.status === 0) {
-      const bin = join(
-        prefix,
-        'node_modules',
-        '.bin',
-        isWindows ? 'browser-link.cmd' : 'browser-link',
-      );
-      const result = run(bin, ['version']);
-      const stdout = (result.stdout ?? '').trim();
-      check(
-        result.status === 0,
-        `browser-link version exited with ${result.status}: ${result.stderr}`,
-      );
-      check(stdout === version, `browser-link version printed "${stdout}", expected "${version}"`);
+      });
+      if (packed.status !== 0) {
+        throw new Error(`pnpm pack exited with ${packed.status}`);
+      }
+      const tgz = readdirSync(packDir).find((file) => file.endsWith('.tgz'));
+      if (!tgz) throw new Error(`pnpm pack produced no .tgz in ${packDir}`);
+      tgzPath = join(packDir, tgz);
     }
+
+    // 2) Entries
+    const entries = readTarball(tgzPath);
+    console.log(`[smoke] ${entries.size} entries in ${tgzPath}`);
+    for (const required of [
+      'package/package.json',
+      'package/dist/cli.js',
+      'package/dist/index.js',
+      'package/dist/extension/manifest.json',
+      'package/LICENSE',
+      'package/README.md',
+    ]) {
+      check(entries.has(required), `missing entry ${required}`);
+    }
+    const packedPkg = entries.get('package/package.json');
+    if (packedPkg) {
+      const packedVersion = JSON.parse(packedPkg.toString('utf8')).version;
+      check(
+        packedVersion === version,
+        `package/package.json version is ${packedVersion}, expected ${version}`,
+      );
+    }
+    const manifest = entries.get('package/dist/extension/manifest.json');
+    if (manifest) {
+      const manifestVersion = JSON.parse(manifest.toString('utf8')).version;
+      check(
+        manifestVersion === version,
+        `dist/extension/manifest.json version is ${manifestVersion}, expected ${version}`,
+      );
+    }
+    const testFiles = [...entries.keys()].filter((entry) => /\.test\.(js|d\.ts)$/.test(entry));
+    console.log(`[smoke] compiled test files in the tarball: ${testFiles.length}`);
+    check(
+      testFiles.length === 0,
+      `${testFiles.length} compiled test files shipped (first: ${testFiles[0]})`,
+    );
+    failures.push(...extensionFailures(entries));
+
+    // 3) Install and run the binary (only when the package looks complete,
+    // otherwise the install error would hide the precise failures above).
+    if (failures.length === 0) {
+      const prefix = makeTemp('install');
+      console.log(`[smoke] installing the tarball into ${prefix}`);
+      const installed = run(
+        'npm',
+        ['install', '--prefix', prefix, '--no-audit', '--no-fund', tgzPath],
+        {
+          stdio: 'inherit',
+        },
+      );
+      check(installed.status === 0, `npm install of the tarball exited with ${installed.status}`);
+      if (installed.status === 0) {
+        const bin = join(
+          prefix,
+          'node_modules',
+          '.bin',
+          isWindows ? 'browser-link.cmd' : 'browser-link',
+        );
+        const result = run(bin, ['version']);
+        const stdout = (result.stdout ?? '').trim();
+        check(
+          result.status === 0,
+          `browser-link version exited with ${result.status}: ${result.stderr}`,
+        );
+        check(
+          stdout === version,
+          `browser-link version printed "${stdout}", expected "${version}"`,
+        );
+      }
+    }
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
+  } finally {
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   }
-} catch (error) {
-  failures.push(error instanceof Error ? error.message : String(error));
-} finally {
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+
+  if (failures.length > 0) {
+    for (const failure of failures) console.error(`FAIL: ${failure}`);
+    process.exit(1);
+  }
+  console.log(`[smoke] OK: ${pkgName}@${version} packs, installs and runs`);
 }
 
-if (failures.length > 0) {
-  for (const failure of failures) console.error(`FAIL: ${failure}`);
-  process.exit(1);
-}
-console.log(`[smoke] OK: ${pkgName}@${version} packs, installs and runs`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
