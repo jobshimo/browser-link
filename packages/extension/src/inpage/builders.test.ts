@@ -8,8 +8,13 @@ import {
   SNAPSHOT_NOT_COMPARED_TEXT_HINT,
   UNOBSERVED_FRAMES_HINT,
   UNOBSERVED_SHADOW_HINT,
+  buildClickAimJs,
+  buildClickHitCheckJs,
   buildClickResolveJs,
   buildDragProbeJs,
+  buildFrameWatchReadJs,
+  buildFrameWatchStartJs,
+  clickMissedMessage,
   buildElementRectJs,
   buildExpectProbeJs,
   buildFindJs,
@@ -4069,5 +4074,118 @@ describe('password values: shown by default, hidden by a setting (D12)', () => {
     const snap = evalExpr<Json>(buildSnapshotJs({}));
     expect(entries(snap).map((e) => e.value)).toEqual([SECRET, 'shoes']);
     expect(JSON.stringify(snap)).not.toContain('values_hidden');
+  });
+});
+
+describe('buildClickAimJs / buildClickHitCheckJs: a click is reported only where it landed', () => {
+  type Aim =
+    | { ok: true; x: number; y: number; tag: string; hit_element?: string }
+    | { ok: false; reason: string; blocker?: string; hit_element?: string };
+
+  afterEach(() => {
+    // Disarm any watch a test left behind.
+    evalExpr(buildClickHitCheckJs());
+  });
+
+  function button(id: string): HTMLButtonElement {
+    const el = document.createElement('button');
+    el.id = id;
+    document.body.appendChild(el);
+    giveBox(el);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => el;
+    return el;
+  }
+
+  test('a press that reaches the target is reported as landed', async () => {
+    const el = button('go');
+    const aim = await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    expect(aim).toMatchObject({ ok: true, x: 140, y: 210, tag: 'button' });
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: true, landed: true });
+  });
+
+  test('no press in the target document (delivered elsewhere) is a miss, not a click', async () => {
+    button('go');
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: true, landed: false });
+  });
+
+  test('a press on another element is a miss that names where it landed', async () => {
+    button('go');
+    const other = document.createElement('div');
+    other.id = 'cover';
+    document.body.appendChild(other);
+    await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    other.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({
+      armed: true,
+      landed: false,
+      landed_on: 'div#cover',
+    });
+  });
+
+  test('a press on the element the hit test named (pointer-events:none target) is landed', async () => {
+    const acc = document.createElement('div');
+    acc.id = 'acc';
+    acc.style.pointerEvents = 'none';
+    document.body.appendChild(acc);
+    giveBox(acc);
+    const layer = document.createElement('div');
+    layer.id = 'layer';
+    document.body.appendChild(layer);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => layer;
+    const aim = await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#acc', force: false }));
+    expect(aim).toMatchObject({ ok: true, hit_element: 'div#layer' });
+    layer.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: true, landed: true });
+  });
+
+  test('the aim re-checks occlusion after waiting: a cover that appeared fails as occluded', async () => {
+    button('go');
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    document.body.appendChild(overlay);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => overlay;
+    const aim = await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#go', force: false }));
+    expect(aim).toEqual({ ok: false, reason: 'occluded', blocker: 'div.modal-backdrop' });
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: false });
+  });
+
+  test('without an armed watch (document replaced) nothing is claimed either way', () => {
+    expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: false });
+  });
+
+  test('clickMissedMessage says the target was not clicked, and where the press went', () => {
+    expect(clickMissedMessage('#add', { x: 295.27, y: 90.4 })).toBe(
+      "Click on #add did not reach it: the mouse events were sent at (295, 90), but no press arrived in the target's document, so the browser delivered them elsewhere (another frame, possibly a cross-origin one, may have received them). The target was not clicked; check the page before retrying",
+    );
+    expect(clickMissedMessage('#add', { x: 1, y: 2 }, 'div#cover')).toContain(
+      'the press at (1, 2) landed on div#cover instead',
+    );
+  });
+});
+
+describe('buildFrameWatchStartJs / buildFrameWatchReadJs: same-origin frames (D5)', () => {
+  test('counts a change made inside a same-origin frame at once, before settle starts', async () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const idoc = iframe.contentDocument!;
+    idoc.body.innerHTML = '<p id="mark">frame</p>';
+    expect(evalExpr(buildFrameWatchStartJs())).toEqual({ ok: true, frames: 1 });
+    idoc.getElementById('mark')!.textContent = 'poked';
+    // Read synchronously: the records are still queued, takeRecords gets them.
+    const read = evalExpr<{ ok: boolean; records: number }>(buildFrameWatchReadJs());
+    expect(read.ok).toBe(true);
+    expect(read.records).toBeGreaterThanOrEqual(1);
+    // Read once: the watch is gone afterwards.
+    expect(evalExpr(buildFrameWatchReadJs())).toEqual({ ok: false });
+  });
+
+  test('a change in the top document is not counted here (the page observer counts it)', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    evalExpr(buildFrameWatchStartJs());
+    document.body.appendChild(document.createElement('span'));
+    expect(evalExpr(buildFrameWatchReadJs())).toEqual({ ok: true, records: 0 });
   });
 });

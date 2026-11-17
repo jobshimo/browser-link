@@ -12,7 +12,13 @@ import type {
 import {
   buildSnapshotJs,
   buildFindJs,
+  buildClickAimJs,
+  buildClickHitCheckJs,
   buildClickResolveJs,
+  buildFrameWatchReadJs,
+  buildFrameWatchStartJs,
+  clickMissedMessage,
+  type ClickHitCheck,
   buildProgrammaticClickJs,
   buildTypeResolveJs,
   buildFocusJs,
@@ -1095,6 +1101,44 @@ async function evaluateObserverJs(tabId: number, expression: string): Promise<un
 }
 
 /**
+ * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
+ * changes an action makes inside same-origin frames before the settle wait
+ * starts, which neither the page observer (top document only) nor the
+ * settle wait (from its own start) would count (owner decision D5). Never
+ * throws: a watch that cannot be armed counts nothing.
+ */
+async function startFrameWatch(session: number): Promise<void> {
+  try {
+    await evaluateInTab(session, buildFrameWatchStartJs());
+  } catch {
+    // nothing armed, nothing counted
+  }
+}
+
+/** Read and stop the frame watch right before the settle wait starts: the
+ * records it saw, 0 when there is none. Never throws. */
+async function readFrameWatch(session: number): Promise<number> {
+  try {
+    const read = await evaluateInTab<{ ok: boolean; records?: unknown }>(
+      session,
+      buildFrameWatchReadJs(),
+    );
+    return read.ok && typeof read.records === 'number' && read.records > 0 ? read.records : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Add frame records seen before the settle wait to its result, the way the
+ * wait reports its own (`frame_mutation_count`, already in `mutation_count`). */
+function addFrameRecords(settleResult: Record<string, unknown>, records: number): void {
+  const before =
+    typeof settleResult.frame_mutation_count === 'number' ? settleResult.frame_mutation_count : 0;
+  settleResult.frame_mutation_count = before + records;
+  if (typeof settleResult.mutation_count === 'number') settleResult.mutation_count += records;
+}
+
+/**
  * Take the page observer's action mark BEFORE an action dispatches (spec v4
  * §5.4). `null` when settle is off for this call (no changes are reported
  * then); an `observer-unavailable` marker when the observer was never
@@ -1105,6 +1149,7 @@ async function takeObserverMark(
   settle: ReturnType<typeof resolveSettleParams>,
 ): Promise<unknown> {
   if (!settle) return null;
+  await startFrameWatch(tabId);
   if (tabStates.get(tabId)?.observer?.installed !== true) return OBSERVER_UNAVAILABLE;
   try {
     return await evaluateObserverJs(tabId, buildObserverMarkJs());
@@ -1124,8 +1169,10 @@ async function settleWithChanges(
   settle: ReturnType<typeof resolveSettleParams>,
   mark: unknown,
 ): Promise<Record<string, unknown> | undefined> {
+  const early = settle ? await readFrameWatch(tabId) : 0;
   const settleResult = await runSettle(tabId, settle);
   if (!settleResult) return undefined;
+  if (early > 0) addFrameRecords(settleResult, early);
   const parsed = readObserverMark(mark);
   let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
   if (parsed) {
@@ -1761,10 +1808,18 @@ async function performClick(
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(tabId, expression);
-    const resolved = await evaluateInTab<ClickResolveResult>(
+    let resolved = await evaluateInTab<ClickResolveResult>(
       tabId,
       buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
+    if (resolved.ok && !('no_box' in resolved)) {
+      // The resolve scrolled the target into view; aim once the new layout
+      // was painted, and arm the watch that proves where the press lands.
+      resolved = await evaluateInTab<ClickResolveResult>(
+        tabId,
+        buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
+      );
+    }
     if (!resolved.ok) {
       const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
       if (refError) return { ok: false, error: refError };
@@ -1828,6 +1883,20 @@ async function performClick(
         button: 'left',
         clickCount: 1,
       });
+      // Report the click only where its press was seen (a document that was
+      // replaced meanwhile, `armed: false`, proves nothing either way).
+      let landing: ClickHitCheck;
+      try {
+        landing = await evaluateInTab<ClickHitCheck>(tabId, buildClickHitCheckJs());
+      } catch {
+        landing = { armed: false };
+      }
+      if (landing.armed && !landing.landed) {
+        return {
+          ok: false,
+          error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
+        };
+      }
     }
     const settleResult = await settleWithChanges(tabId, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
@@ -3229,7 +3298,14 @@ async function handleDownloadCapture(
     () => performClick(tabId, { selector, settle_ms: 0 }),
   );
   if (!outcome.ok) {
-    return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
+    // The click itself failed (not found, covered, or its press did not
+    // reach the target): say so, not "no download started".
+    return {
+      kind: 'tool.response',
+      id: msg.id,
+      ok: false,
+      error: `the click that should start the download failed, so no download was captured: ${outcome.error}`,
+    };
   }
   const result =
     outcome.outcome.state === 'captured'

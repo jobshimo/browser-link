@@ -1035,6 +1035,281 @@ export function buildClickResolveJs(opts: ClickResolveOpts): string {
 `;
 }
 
+/** Where `buildClickAimJs` leaves the armed hit watch for
+ * `buildClickHitCheckJs` (a non-enumerable property of the top window). */
+export const CLICK_WATCH_GLOBAL = '__browserLinkClickWatch';
+
+/** How long `buildClickAimJs` waits for the target to hold still. */
+export const CLICK_AIM_STABLE_MS = 500;
+
+/**
+ * Build the aim of a pointer click, run after `buildClickResolveJs` answered
+ * a point (it scrolled the target into view) and before the mouse events are
+ * dispatched. The browser routes a dispatched mouse event by the last frame
+ * it composited, so right after a scroll it can still deliver the event at
+ * the OLD position (into another element, or into another frame entirely)
+ * while the page already reports the new layout. So the aim:
+ *   1. waits until the target's click point is the same over two
+ *      consecutive animation frames (at most `CLICK_AIM_STABLE_MS`; a
+ *      throttled frame falls back to a 50 ms timer), so a frame with the
+ *      new layout was produced;
+ *   2. recomputes the point and runs the same occlusion check as the resolve
+ *      (the page may have moved meanwhile), failing with the same reasons;
+ *   3. arms a hit watch: a capture listener for `pointerdown` / `mousedown`
+ *      on the target's own window, which `buildClickHitCheckJs` reads after
+ *      the dispatch, so a click is reported only once its press was seen
+ *      landing on the target (or on the element the hit test said it lands
+ *      on: a pointer-events:none target, or a forced click on a cover).
+ * Returns `{ ok: true, x, y, tag, hit_element?, reresolved? }` or the
+ * failures of `buildClickResolveJs`.
+ */
+export function buildClickAimJs(opts: ClickResolveOpts): string {
+  const optsJson = JSON.stringify({
+    ...targetJson(opts),
+    force: opts.force,
+    key: CLICK_WATCH_GLOBAL,
+    stableMs: CLICK_AIM_STABLE_MS,
+  });
+  return `
+(async () => {
+  ${DEEP_QUERY_JS}
+  ${PAGE_OBSERVER_JS}
+  ${RESOLVE_TARGET_JS}
+  const opts = ${optsJson};
+  const target = resolveTarget(opts);
+  if (!target.ok) return target;
+  const el = target.el;
+  const tag = el.tagName.toLowerCase();
+  if (!hasVisibleBox(el)) return { ok: false, reason: 'no-box' };
+  function nextFrame() {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      try {
+        requestAnimationFrame(finish);
+      } catch (e) {}
+      setTimeout(finish, 50);
+    });
+  }
+  function pointKey() {
+    const c = viewportCenterOf(el);
+    return String(c.x) + ',' + String(c.y);
+  }
+  let last = pointKey();
+  let same = 0;
+  const deadline = Date.now() + opts.stableMs;
+  while (same < 2 && Date.now() < deadline) {
+    await nextFrame();
+    const now = pointKey();
+    if (now === last) same++;
+    else {
+      same = 0;
+      last = now;
+    }
+  }
+  const center = viewportCenterOf(el);
+  if (isEmptyRectAtOrigin(el, center)) return { ok: false, reason: 'no-box' };
+  const occlusion = checkOcclusion(el, center.localX, center.localY);
+  if (!occlusion.allowed && !opts.force) {
+    if (occlusion.retargeted) {
+      return { ok: false, reason: 'retargeted', hit_element: occlusion.hit };
+    }
+    return { ok: false, reason: 'occluded', blocker: occlusion.blocker };
+  }
+  const root = el.getRootNode ? el.getRootNode() : document;
+  const expected = hitTestDeep(root, center.localX, center.localY);
+  const previous = window[opts.key];
+  if (previous && typeof previous.stop === 'function') {
+    try {
+      previous.stop();
+    } catch (e) {}
+  }
+  const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+  const watch = { el: el, expected: expected, received: null, stop: null };
+  const onDown = (event) => {
+    if (watch.received) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    watch.received = path[0] || event.target || null;
+  };
+  win.addEventListener('pointerdown', onDown, true);
+  win.addEventListener('mousedown', onDown, true);
+  watch.stop = () => {
+    win.removeEventListener('pointerdown', onDown, true);
+    win.removeEventListener('mousedown', onDown, true);
+  };
+  Object.defineProperty(window, opts.key, {
+    value: watch,
+    configurable: true,
+    writable: true,
+    enumerable: false,
+  });
+  const result = { ok: true, x: center.x, y: center.y, tag };
+  const hit = occlusion.hit || occlusion.blocker;
+  if (hit) result.hit_element = hit;
+  if (target.reresolved) result.reresolved = true;
+  return result;
+})()
+`;
+}
+
+/** Result of `buildClickHitCheckJs`. */
+export type ClickHitCheck =
+  | { armed: false }
+  | { armed: true; landed: true }
+  | { armed: true; landed: false; landed_on?: string };
+
+/**
+ * Build the read of the hit watch `buildClickAimJs` armed, run right after
+ * the mouse events were dispatched; it disarms the watch. Returns
+ *   { armed: false } — no watch here (the document was replaced, typically
+ *     because the click navigated): nothing can be said either way;
+ *   { armed: true, landed: true } — the press reached the target, an element
+ *     inside it, or the element the hit test said it lands on;
+ *   { armed: true, landed: false } — no press arrived in the target's
+ *     document: the browser delivered it elsewhere;
+ *   { armed: true, landed: false, landed_on } — the press reached another
+ *     element of that document (`landed_on` describes it).
+ */
+export function buildClickHitCheckJs(): string {
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const key = ${JSON.stringify(CLICK_WATCH_GLOBAL)};
+  const watch = window[key];
+  if (!watch || typeof watch.stop !== 'function') return { armed: false };
+  try {
+    watch.stop();
+  } catch (e) {}
+  try {
+    delete window[key];
+  } catch (e) {}
+  const got = watch.received;
+  if (!got) return { armed: true, landed: false };
+  const inside = (outer) => !!outer && (got === outer || composedContains(outer, got));
+  if (inside(watch.el) || inside(watch.expected)) return { armed: true, landed: true };
+  return { armed: true, landed: false, landed_on: describeElement(got) };
+})()
+`;
+}
+
+/** The error of a pointer click whose press was not seen on the target
+ * (`buildClickHitCheckJs` answered `landed: false`). Shared by both
+ * transports. */
+export function clickMissedMessage(
+  target: string,
+  point: { x: number; y: number },
+  landedOn?: string,
+): string {
+  const at = `(${String(Math.round(point.x))}, ${String(Math.round(point.y))})`;
+  if (typeof landedOn === 'string' && landedOn.length > 0) {
+    return (
+      `Click on ${target} did not reach it: the press at ${at} landed on ${landedOn} instead ` +
+      '(the page moved between aiming and clicking). That element may have reacted; ' +
+      'check the page before retrying'
+    );
+  }
+  return (
+    `Click on ${target} did not reach it: the mouse events were sent at ${at}, but no press ` +
+    "arrived in the target's document, so the browser delivered them elsewhere (another " +
+    'frame, possibly a cross-origin one, may have received them). The target was not clicked; ' +
+    'check the page before retrying'
+  );
+}
+
+/** Where `buildFrameWatchStartJs` keeps its watch on the top window. */
+export const FRAME_WATCH_GLOBAL = '__browserLinkFrameWatch';
+
+/**
+ * Build the start of the frame watch: a MutationObserver on every
+ * same-origin frame document (and the open shadow roots inside them)
+ * reachable from the top document, armed with the action mark. The page
+ * observer covers only the top document and its shadow roots, and the
+ * settle wait watches frames only from its own start, so a change an action
+ * makes inside a same-origin frame at once (before settle starts) was
+ * counted by neither (owner decision D5: same-origin frames are observed).
+ * `buildFrameWatchReadJs` reads and stops it right before settle starts.
+ * Returns `{ ok: true, frames }`.
+ */
+export function buildFrameWatchStartJs(): string {
+  return `
+(() => {
+  ${DEEP_QUERY_JS}
+  const key = ${JSON.stringify(FRAME_WATCH_GLOBAL)};
+  const previous = window[key];
+  if (previous && typeof previous.stop === 'function') {
+    try {
+      previous.stop();
+    } catch (e) {}
+  }
+  const roots = collectSearchRoots(document).filter((root) => {
+    if (root === document) return false;
+    const owner = root.nodeType === 9 ? root : root.host && root.host.ownerDocument;
+    return owner !== document;
+  });
+  const watch = { records: 0, observers: [], stop: null };
+  for (const root of roots) {
+    try {
+      const owner = root.nodeType === 9 ? root : root.host.ownerDocument;
+      const view = owner && owner.defaultView;
+      const Observer = (view && view.MutationObserver) || MutationObserver;
+      const observer = new Observer((records) => {
+        watch.records += records.length;
+      });
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+      watch.observers.push(observer);
+    } catch (e) {}
+  }
+  watch.stop = () => {
+    for (const observer of watch.observers) {
+      try {
+        watch.records += observer.takeRecords().length;
+        observer.disconnect();
+      } catch (e) {}
+    }
+    watch.observers = [];
+  };
+  Object.defineProperty(window, key, {
+    value: watch,
+    configurable: true,
+    writable: true,
+    enumerable: false,
+  });
+  return { ok: true, frames: roots.length };
+})()
+`;
+}
+
+/**
+ * Build the read of the frame watch: stops it and returns the mutation
+ * records it saw, `{ ok: true, records }`, or `{ ok: false }` when there is
+ * no watch (the document was replaced, or none was armed).
+ */
+export function buildFrameWatchReadJs(): string {
+  return `
+(() => {
+  const key = ${JSON.stringify(FRAME_WATCH_GLOBAL)};
+  const watch = window[key];
+  if (!watch || typeof watch.stop !== 'function') return { ok: false };
+  try {
+    watch.stop();
+  } catch (e) {}
+  try {
+    delete window[key];
+  } catch (e) {}
+  return { ok: true, records: watch.records };
+})()
+`;
+}
+
 /**
  * Build the programmatic click of owner decision D4: a `force` click on a
  * target with no visible box (`buildClickResolveJs` answered `no_box`) calls

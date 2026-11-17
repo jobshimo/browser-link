@@ -452,10 +452,9 @@ async function main() {
     console.log(`e2e: FAIL ${e.message}`);
     deferredFailures.push(e.step);
   }
-  // The rule checks clicked targets below the fold. Back to the top, so the
-  // download click does not start scrolled away from #dl: a click that has
-  // to scroll its target into view can miss (see clickAfterScroll, last).
-  await pageValue(T, 'window.scrollTo(0, 0), window.scrollY');
+  // The download steps start scrolled to the bottom, away from #dl: the
+  // selector capture must scroll its target into view and still land on it.
+  await pageValue(T, 'window.scrollTo(0, document.body.scrollHeight), window.scrollY');
 
   await downloadChecks({
     T,
@@ -607,22 +606,30 @@ async function ruleChecks(T) {
     `browser.click.settle-closed-early info: mutation_count=${String(es.mutation_count)} unobserved=${JSON.stringify(es.unobserved?.shadow_roots ?? null)}`,
   );
 
-  // D5: a same-origin frame is watched; the cross-origin one is reported.
-  await call(
-    'browser.click',
-    { tab_id: T, selector: '#poke-frame' },
-    (b) => {
-      const s = settleOf(b);
-      const wrong = [];
-      if (!(s.mutation_count >= 1)) wrong.push('the same-origin frame change was not counted');
-      if (s.unobserved?.cross_origin_frames !== 1) wrong.push('cross_origin_frames is not 1');
-      if (!/Cross-origin frames cannot be watched/.test(String(s.unobserved?.hint))) {
-        wrong.push('no cross-origin hint');
-      }
-      return wrong.length === 0 || `${wrong.join('; ')}: settle ${JSON.stringify(s).slice(0, 600)}`;
-    },
-    { label: 'browser.click.settle-frames' },
-  );
+  // D5: a same-origin frame is watched, a change made by the click itself
+  // and one made during the settle wait; the cross-origin one is reported.
+  for (const [selector, label] of [
+    ['#poke-frame', 'browser.click.settle-frames'],
+    ['#poke-frame-late', 'browser.click.settle-frames-late'],
+  ]) {
+    await call(
+      'browser.click',
+      { tab_id: T, selector },
+      (b) => {
+        const s = settleOf(b);
+        const wrong = [];
+        if (!(s.mutation_count >= 1)) wrong.push('the same-origin frame change was not counted');
+        if (s.unobserved?.cross_origin_frames !== 1) wrong.push('cross_origin_frames is not 1');
+        if (!/Cross-origin frames cannot be watched/.test(String(s.unobserved?.hint))) {
+          wrong.push('no cross-origin hint');
+        }
+        return (
+          wrong.length === 0 || `${wrong.join('; ')}: settle ${JSON.stringify(s).slice(0, 600)}`
+        );
+      },
+      { label },
+    );
+  }
 
   // D6: a cut snapshot says it was cut and how much.
   await call(
@@ -943,9 +950,12 @@ async function downloadSituations({ T, origin, downloadsDir, cdp, swSession }) {
     if (b?.chrome_download !== 'left_in_chrome') {
       wrong.push(`chrome_download is ${String(b?.chrome_download)}`);
     }
-    // A re-fetch that answers an HTTP error fails as that error; a mismatch
-    // fails as "the capture failed". Either way the error says Chrome's copy stays.
-    if (!/left untouched|was not erased/.test(String(b?.error))) {
+    // Every capture failure (an HTTP error on the re-fetch, a mismatch, an
+    // unknown size) starts with "the capture failed" and says Chrome's copy stays.
+    if (!/^the capture failed: /.test(String(b?.error))) {
+      wrong.push('error does not start with "the capture failed"');
+    }
+    if (!/was not erased/.test(String(b?.error))) {
       wrong.push("error does not say Chrome's copy was kept");
     }
     if (extra && !extra.test(String(b?.error))) wrong.push(`error does not match ${String(extra)}`);
@@ -1003,6 +1013,24 @@ async function downloadSituations({ T, origin, downloadsDir, cdp, swSession }) {
   console.log(
     `${label} outcome: ${outcome} (Chrome totalBytes=${String(item?.totalBytes)} fileSize=${String(item?.fileSize)}; served gzip ${String(gzipSync(REPORT_BYTES).length)} bytes, decoded ${String(REPORT_BYTES.length)}): ${String(b?.error ?? b?.path).slice(0, 200)}`,
   );
+  stepDone(label, t);
+
+  // A selector whose click fails says the click failed, not only that no
+  // download started.
+  label = 'browser.download.click-failed';
+  t = now();
+  const failed = await attempt(
+    'browser.download',
+    { tab_id: T, selector: '#nobox', timeout_ms: 3000 },
+    label,
+  );
+  if (
+    !failed.text.includes('the click that should start the download failed') ||
+    !failed.text.includes('has no visible box') ||
+    failed.body?.ok === true
+  ) {
+    throw new StepFailure('download.click-failed', `answer: ${failed.text.slice(0, 400)}`);
+  }
   stepDone(label, t);
 
   // Executable types are refused, double extension included; nothing written.

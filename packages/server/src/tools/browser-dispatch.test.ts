@@ -3499,7 +3499,9 @@ describe('browser.download', () => {
         state: 'interrupted',
         path: null,
         chrome_download: 'left_in_chrome',
-        error: expect.stringMatching(/^HTTP 405; Chrome's own download was left untouched/),
+        error: expect.stringMatching(
+          /^the capture failed: fetching the file again failed \(HTTP 405\), .*; Chrome's own download was left untouched/,
+        ),
       });
     });
 

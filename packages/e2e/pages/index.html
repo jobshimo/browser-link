@@ -27,6 +27,7 @@
 <button id="poke-early" type="button">Poke early closed root</button>
 <iframe id="same-frame" title="same-origin frame" src="/frame.html"></iframe>
 <button id="poke-frame" type="button">Poke same-origin frame</button>
+<button id="poke-frame-late" type="button">Poke same-origin frame later</button>
 <iframe id="cross-frame" title="cross-origin frame"></iframe>
 <div id="many">
   <button type="button">Row action 1</button>
@@ -68,14 +69,15 @@
   document.getElementById('poke-early').addEventListener('click', () => {
     early.firstChild.textContent = 'early ' + String(++pokes);
   });
-  // The frame changes 50 ms after the click, inside settle's quiet window
-  // (the page observer that reports synchronous changes covers the top
-  // document only; frames are watched by the quiet window).
-  document.getElementById('poke-frame').addEventListener('click', () => {
-    setTimeout(() => {
-      const d = document.getElementById('same-frame').contentDocument;
-      d.getElementById('mark').textContent = 'poked ' + String(++pokes);
-    }, 50);
+  // The frame changes during the click itself, or 50 ms later, inside the
+  // settle wait: both must be counted.
+  function pokeFrame() {
+    const d = document.getElementById('same-frame').contentDocument;
+    d.getElementById('mark').textContent = 'poked ' + String(++pokes);
+  }
+  document.getElementById('poke-frame').addEventListener('click', pokeFrame);
+  document.getElementById('poke-frame-late').addEventListener('click', () => {
+    setTimeout(pokeFrame, 50);
   });
   // Another origin: the same server under the other loopback name.
   const other = location.hostname === 'localhost' ? '127.0.0.1' : 'localhost';

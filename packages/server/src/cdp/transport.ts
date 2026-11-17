@@ -24,7 +24,13 @@ import { CdpClient } from './client.js';
 import { cdpUnsupportedToolError } from './support.js';
 import { SensitiveFieldError } from '../activity/sensitive-field-error.js';
 import {
+  buildClickAimJs,
+  buildClickHitCheckJs,
   buildClickResolveJs,
+  buildFrameWatchReadJs,
+  buildFrameWatchStartJs,
+  clickMissedMessage,
+  type ClickHitCheck,
   buildFindJs,
   buildElementRectJs,
   buildFocusJs,
@@ -498,6 +504,44 @@ const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as co
 const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
 
 /**
+ * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
+ * changes an action makes inside same-origin frames before the settle wait
+ * starts, which neither the page observer (top document only) nor the
+ * settle wait (from its own start) would count (owner decision D5). Never
+ * throws: a watch that cannot be armed counts nothing.
+ */
+async function startFrameWatch(session: CdpClient): Promise<void> {
+  try {
+    await evaluateInTab(session, buildFrameWatchStartJs());
+  } catch {
+    // nothing armed, nothing counted
+  }
+}
+
+/** Read and stop the frame watch right before the settle wait starts: the
+ * records it saw, 0 when there is none. Never throws. */
+async function readFrameWatch(session: CdpClient): Promise<number> {
+  try {
+    const read = await evaluateInTab<{ ok: boolean; records?: unknown }>(
+      session,
+      buildFrameWatchReadJs(),
+    );
+    return read.ok && typeof read.records === 'number' && read.records > 0 ? read.records : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Add frame records seen before the settle wait to its result, the way the
+ * wait reports its own (`frame_mutation_count`, already in `mutation_count`). */
+function addFrameRecords(settleResult: Record<string, unknown>, records: number): void {
+  const before =
+    typeof settleResult.frame_mutation_count === 'number' ? settleResult.frame_mutation_count : 0;
+  settleResult.frame_mutation_count = before + records;
+  if (typeof settleResult.mutation_count === 'number') settleResult.mutation_count += records;
+}
+
+/**
  * Take the page observer's action mark BEFORE an action dispatches (spec v4
  * §5.4). `null` when settle is off for this call (no changes are reported
  * then); an `observer-unavailable` marker when the observer was never
@@ -505,6 +549,7 @@ const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
  */
 async function takeObserverMark(client: CdpClient, settle: SettleParams | null): Promise<unknown> {
   if (!settle) return null;
+  await startFrameWatch(client);
   if (observers.get(client)?.mirror.installed !== true) return OBSERVER_UNAVAILABLE;
   try {
     return await evaluateObserverJs(client, buildObserverMarkJs());
@@ -524,8 +569,10 @@ async function settleWithChanges(
   settle: SettleParams | null,
   mark: unknown,
 ): Promise<Record<string, unknown> | undefined> {
+  const early = settle ? await readFrameWatch(client) : 0;
   const settleResult = await runSettle(client, settle);
   if (!settleResult) return undefined;
+  if (early > 0) addFrameRecords(settleResult, early);
   const parsed = readObserverMark(mark);
   let changes: unknown = mark ?? OBSERVER_UNAVAILABLE;
   if (parsed) {
@@ -665,10 +712,18 @@ async function performClick(
     });
     const expectSpec = resolveExpectParams(params.expect);
     const evaluate = (expression: string): Promise<unknown> => evaluateInTab(client, expression);
-    const resolved = await evaluateInTab<ClickResolveResult>(
+    let resolved = await evaluateInTab<ClickResolveResult>(
       client,
       buildClickResolveJs(ref !== undefined ? { ref, force } : { selector, force }),
     );
+    if (resolved.ok && !('no_box' in resolved)) {
+      // The resolve scrolled the target into view; aim once the new layout
+      // was painted, and arm the watch that proves where the press lands.
+      resolved = await evaluateInTab<ClickResolveResult>(
+        client,
+        buildClickAimJs(ref !== undefined ? { ref, force } : { selector, force }),
+      );
+    }
     if (!resolved.ok) {
       const refError = ref !== undefined ? refFailureMessage(resolved, ref) : null;
       if (refError) return { ok: false, error: refError };
@@ -732,6 +787,20 @@ async function performClick(
         button: 'left',
         clickCount: 1,
       });
+      // Report the click only where its press was seen (a document that was
+      // replaced meanwhile, `armed: false`, proves nothing either way).
+      let landing: ClickHitCheck;
+      try {
+        landing = await evaluateInTab<ClickHitCheck>(client, buildClickHitCheckJs());
+      } catch {
+        landing = { armed: false };
+      }
+      if (landing.armed && !landing.landed) {
+        return {
+          ok: false,
+          error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
+        };
+      }
     }
     const settleResult = await settleWithChanges(client, settle, mark);
     const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);

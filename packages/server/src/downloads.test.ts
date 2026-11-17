@@ -795,3 +795,52 @@ describe('buildFetchDownloadJs over-cap message', () => {
     expect(out.data_b64).toBeUndefined();
   });
 });
+
+describe('shapeDownloadResult: a failed re-fetch of a held Chrome download (selector mode)', () => {
+  const expected = { url: 'https://x.test/post.pdf', mime: 'application/pdf', totalBytes: 2048 };
+
+  test('an HTTP error on the re-fetch (a POST answer fetched with GET) is a capture failure that keeps Chrome copy', () => {
+    const save = vi.fn(() => '/dl/x');
+    const res = shapeDownloadResult(
+      {
+        state: 'interrupted',
+        status: 405,
+        mime: 'text/html',
+        final_url: 'https://x.test/post.pdf',
+        bytes: 0,
+        error: 'HTTP 405',
+      },
+      { url: 'https://x.test/post.pdf' },
+      save,
+      { expected },
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(res.ok).toBe(false);
+    expect(res.state).toBe('interrupted');
+    expect(res.error).toBe(
+      "the capture failed: fetching the file again failed (HTTP 405), so nothing was saved here and Chrome's own download was not erased; use Chrome's own download, in Chrome's downloads list (chrome://downloads)",
+    );
+  });
+
+  test('a re-fetch that ran out of time keeps its state and also starts with "the capture failed"', () => {
+    const res = shapeDownloadResult(
+      { state: 'timeout', mime: null, bytes: 10, error: 'timed out after 100ms' },
+      { url: 'https://x.test/post.pdf' },
+      () => '/dl/x',
+      { expected },
+    );
+    expect(res.state).toBe('timeout');
+    expect(res.error).toMatch(
+      /^the capture failed: fetching the file again failed \(timed out after 100ms\)/,
+    );
+  });
+
+  test('URL mode (no held download) keeps the plain fetch error', () => {
+    const res = shapeDownloadResult(
+      { state: 'interrupted', status: 404, mime: 'text/html', bytes: 0, error: 'HTTP 404' },
+      { url: 'https://x.test/a.pdf' },
+      () => '/dl/x',
+    );
+    expect(res.error).toBe('HTTP 404');
+  });
+});

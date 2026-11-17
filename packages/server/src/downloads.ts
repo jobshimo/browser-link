@@ -768,8 +768,20 @@ export function shapeDownloadResult(
     path: null,
     bytes: outcome.bytes,
     ...base,
-    error: outcome.error ?? 'download did not complete',
+    error: options.expected
+      ? refetchFailedError(outcome.error ?? 'download did not complete')
+      : (outcome.error ?? 'download did not complete'),
   };
+}
+
+/** The failure text of a held Chrome download (selector mode) whose re-fetch
+ * did not complete (an HTTP error, such as a POST answer fetched with GET, or
+ * no time left): a capture failure like the others, Chrome's copy kept. */
+function refetchFailedError(why: string): string {
+  return (
+    `the capture failed: fetching the file again failed (${why}), ` +
+    `so nothing was saved here and Chrome's own download was not erased; ${USE_CHROME_COPY}`
+  );
 }
 
 /** Write the Mark-of-the-Web on the file just saved at `path`, on Windows

@@ -1809,8 +1809,11 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
       ref: 'k3x9ab:e7',
       reresolved: true,
     });
-    expect(seen.length).toBe(1);
+    // The resolve, then the aim (after the scroll) re-resolve the same ref.
+    expect(seen.length).toBe(2);
     expect(seen[0]).toContain('function resolveTarget');
+    expect(seen[1]).toContain('function resolveTarget');
+    expect(seen[1]).toContain('requestAnimationFrame');
   });
 
   test('click by a stale ref rejects with the ref-stale error naming the doc_id', async () => {
