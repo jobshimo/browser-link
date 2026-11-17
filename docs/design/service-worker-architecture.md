@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 3. Revision 1 (`5486e34`) was audited as
+Status: revision 4. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,19 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 4 (2026-11-17)
+
+Correction found by the real-Chrome e2e of slice 3b (released as 1.3.9), in
+3.4 and every place that repeated it (slice 3b, 10 and 11 rows):
+
+1. A `browser.wait_for` that expires is not a `ToolFailure`. The tool returns
+   an ordinary result `{ matched: false, reason: "timeout" }` with no
+   `isError`; the case `error.timeout` in `packages/e2e/src/run.mjs` asserts it.
+2. `sensitive_field` is not visible in the MCP result. The extension sends it
+   on the wire; the server turns it into `SensitiveFieldError`; the agent sees
+   only the ordinary error text; the marker `[sensitive field]` exists only in
+   the activity trail row.
 
 ### Revision 3 (2026-11-17)
 
@@ -576,21 +589,33 @@ export type ToolOutcome = { ok: true; result: unknown } | { ok: false; failure: 
 | Kind | Extension wire (`tool.response`) | cdp-direct (`callCdpTool`) | Source today |
 |---|---|---|---|
 | `action` | `ok: false, error: message` | `throw new Error(message)` | `handleTool` per-case `!outcome.ok`; `failureError` |
-| `sensitive` | `ok: false, error: message, sensitive_field: true` | `throw new SensitiveFieldError(message)` | `handleTool` cases `type`, `press`; `failureError` |
+| `sensitive` | `ok: false, error: message, sensitive_field: true` (the server rejects with `SensitiveFieldError`; the agent sees only `message`; the trail row stores `[sensitive field]`) | `throw new SensitiveFieldError(message)` | `handleTool` cases `type`, `press`; `ws-bridge.ts`; `failureError`; `activity/extract.ts` `buildRow` |
 | `thrown` | `ok: false, error: err.message` (or `String(err)`) | rethrown unchanged | `handleTool` `catch` |
 | `unknown-tool` | `ok: false, error: "Unknown tool: <tool>"` | today's defense-in-depth `default` text, unchanged | `handleTool` `default`; `callCdpTool` `default` |
 | `unsupported` | not reachable (the extension provides every requirement) | not reachable (the dispatcher gate refuses first); kept as a typed defense | `browser-dispatch.ts` gate |
 
-The server side of the extension transport already turns
-`sensitive_field: true` into `SensitiveFieldError` (`bridge/ws-bridge.ts`), so
-both transports reach `activity/extract.ts` with the same class. Transport
+The `sensitive` kind shows on three different surfaces. On the extension
+wire the response carries `sensitive_field: true` (`background.ts` `handleTool`,
+cases `type` and `press`). The server side of that transport turns it into
+`SensitiveFieldError` (`bridge/ws-bridge.ts`), and cdp-direct throws the same
+class (`cdp/transport.ts` `failureError`), so both transports reach
+`activity/extract.ts` (`buildRow`, the `SensitiveFieldError` check) with the
+same class. The agent does not see the marker: the MCP result is the ordinary
+error text of `action`, with no `sensitive_field`. The only place the marker
+shows is the activity trail, whose row stores `SENSITIVE_PAYLOAD_MARKER`
+(`[sensitive field]`) instead of the typed text.
+
+A `browser.wait_for` that expires is not in this taxonomy: the tool returns an
+ordinary result `{ matched: false, reason: "timeout" }` with no `isError`, so
+there is no failure to map. The e2e case `error.timeout`
+(`packages/e2e/src/run.mjs`) asserts exactly that. Transport
 failures that are not tool failures (cdp-direct gate, malformed `cdp:` id,
 connection loss; extension socket closed) stay in each transport and are not
 part of `ToolFailure`.
 
 `defineToolOutcomeMappingContract` (5.3, item 5) feeds both mappings one
 outcome per kind and asserts the table above. Error-path e2e cases (slice 3b)
-pin the real strings in Chrome before slice 10 moves the first handler, and
+pin the real strings in Chrome (and the trail row for `sensitive`) before slice 10 moves the first handler, and
 the differential records `ok: false` results with their `error` text
 unmasked.
 
@@ -925,7 +950,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 1 | e2e: page read and capture | cases for `navigate`, `state`, `ping`, `screenshot`, `canvas_screenshot`, `console`, `network`, `network_body`; fixtures in `packages/e2e/pages/` | ~350 authored | each case fails under `E2E_EXPECT_FAIL=<tool>` and passes otherwise | revert; no product code touched |
 | 2 | e2e: drag, permission, tabs, flow control | cases for `drag`, `set_permission`, `wait_for_tab`, `flow_status`, `flow_cancel` | ~350 authored | same as 1 | revert |
 | 3 | Differential harness | `E2E_EXT_DIST`, `E2E_SERVER_CLI`, `E2E_SERVER_EXTENSION_ID` overrides in `lib.mjs`; `E2E_RECORD=<file>`; per-run `HOME`; `scripts/e2e-diff.mjs` (7(b)); CI job `e2e-diff` | ~350 authored | self-diff of two runs of the same build is empty; a one-token change in a result string and in an error string are both reported | revert |
-| 3b | e2e: error paths | one case per `ToolFailure` kind reachable in Chrome (3.4): `action` (click on a missing selector), `sensitive` (type/press failure on a password field carries `sensitive_field`), `thrown` (evaluate throws), `unknown-tool` asserted through the contract suite only (no MCP path sends one), plus timeouts (`wait_for` expiry); the exact error text is asserted | ~250 authored | `E2E_EXPECT_FAIL` RED probe per case; the differential records them | revert |
+| 3b | e2e: error paths (**done**, release 1.3.9) | four cases in `packages/e2e/src/run.mjs`: `error.action` (click on a missing selector), `error.thrown` (evaluate throws), `error.timeout` (`wait_for` expiry, asserted as an ordinary result `{ matched: false, reason: "timeout" }` with no `isError`, not a failure), `error.sensitive` (type on a password field fails; the exact error text is asserted and the activity trail row stores `[sensitive field]`; the MCP result carries no `sensitive_field`); `unknown-tool` is asserted through the contract suite only (no MCP path sends one); the exact error text is asserted | ~250 authored | `E2E_EXPECT_FAIL` RED probe per case; the differential records them | revert |
 | 4 | Bundler alone | `packages/extension/build.mjs` (esbuild `0.28.2` exact, entries `background`, `popup`, `activity`, `admin`, `format: 'esm'`, `target: 'chrome118'`, `bundle: true`, no minify, `sourcemap: 'linked'`); `build` becomes `tsc --noEmit && node build.mjs && node copy-assets.mjs`; `smoke-tarball.mjs` assertions (7(c)). No source file changes. | ~120 authored | 7(c) | revert restores tsc output |
 | 5 | Core skeleton | `packages/core` (private, `0.0.0`, 2.4) with `ports/` (types only, the bottom layer, including `clock.ts` and `values.ts`, 5.2), `fitness/` with layers and cycle test and their RED fixtures, extension `fitness.test.ts` with its zones and wake-listener rules and their RED fixtures (5.3 item 3), contract functions with in-memory fakes, `scripts/sync-core.mjs` with `--check`, the specifier rewrite (2.3) and its test, server `vitest.config.ts` exclusion, explicit `build`/`test` scripts, empty mirror, budget = 4922; the extension's `tsc --noEmit` proven with one runtime import from core (2.2) | ~450 authored | fitness and mirror checks green and RED-probed | revert |
 | 5b-1 | Core purity: `Clock` | 5.1 rows `flow.ts` and `expect.ts`, in both copies and their callers in one PR (N4): sibling `clock.ts` on each side with a `drift.test.ts` section, `systemClock` adapters on each side, `FlowDeps.clock`, required `verifyExpect` `clock`, `withProbeTimeout` on `clock.after`; extension `buildFlowDeps`, server `buildCdpFlowDeps`, the three `perform*` call sites on each side; `flow-deadline.test.ts` and `expect.test.ts` on both sides moved to a fake `Clock` | ~260 authored (about 110 per side plus ~40 tests of the new files) | `drift.test.ts` and `transport-parity.test.ts` green (both copies changed identically); the timer-driven tests green on a fake `Clock`; e2e; differential equal | revert |
@@ -936,8 +961,8 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 8 | Flow engine | `flow.ts` to `core/flow/flow-engine.ts`, importing `ports/clock.ts`; `cdp/flow.ts` copy and both sibling `clock.ts` files deleted with their `drift.test.ts` sections; `flow.ts` and `clock.ts` removed from `tsconfig.purity.json` (the file stays, 5.1) | moved 1352 (rename), copy deleted 1348 | same | revert |
 | 9 | Sessions and page driver | `CdpSession`/`PageInfo` adapters both sides; `PageDriver` (3.2) from `background.ts` `cdp`, `evaluateObserverJs`, `takeObserverMark`, `settleWithChanges`, `handleObserverMessage`, `installObserver`, `dispatchKeyEvent`, `evaluateInTab`, `waitForLoad`, and the nine twins in `transport.ts` | ~330 from background, ~250 deleted from server | contract suite green on fakes, cdp-direct and in the worker; R6 conditions 1-3 green (section 8); e2e; differential | revert |
 | — | **Checkpoint A** (6.2) | | | | |
-| 10 | Registry + interaction: find, click | `ToolRegistry`, `ToolFailure` and both outcome mappings; `performFind`, `performClick`, click landing, frame watch; their entries | ~380 | outcome-mapping contract; error-path cases from 3b; the two handlers leave `transport-parity` `HANDLERS` | revert |
-| 11 | Interaction: type, press | `performType`, `performPress` and their entries (`sensitive` kind) | ~250 | RED probe: mapping `sensitive` like `action` fails the contract and the 3b case | revert |
+| 10 | Registry + interaction: find, click | `ToolRegistry`, `ToolFailure` and both outcome mappings; `performFind`, `performClick`, click landing, frame watch; their entries | ~380 | outcome-mapping contract; error-path cases from 3b (`error.action`, `error.thrown`); the two handlers leave `transport-parity` `HANDLERS` | revert |
+| 11 | Interaction: type, press | `performType`, `performPress` and their entries (`sensitive` kind) | ~250 | RED probe: mapping `sensitive` like `action` fails the contract (wire flag and `SensitiveFieldError`) and the trail assertion of the 3b case `error.sensitive` | revert |
 | 12 | `TabSession`, `TabRegistry`, `TabConnection` | aggregates from `TabState`, `tabStates`, `connectsInFlight`, debugger intake (`attachDebuggerListener`), call hold, sweep, `cleanup` | ~400 (may split in two: core aggregates, then extension `TabConnection`) | unit tests of each invariant with a fake `Clock`, including a call that throws, one longer than the TTL, and a reserve/abort race | revert |
 | 13 | wait_for | `performWaitFor` and its entry; the `network-url-mode` divergence becomes a `capture-buffers` requirement check, same behavior | ~200 | e2e; differential | revert |
 | 14 | drag | `performDrag`, `handleDrag`; requires `drag`, which cdp-direct does not provide | ~330 | e2e case from slice 2 | revert |
