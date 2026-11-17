@@ -216,10 +216,10 @@ async function call(tool, args, check, { print = true, label = tool, poll = fals
 
 /** One MCP tool call whose refusal is the expected outcome: never throws on
  * a tool error, returns `{ isError, body, text }` for the caller to judge. */
-async function attempt(tool, args, label) {
+async function attempt(tool, args, label, { poll = false } = {}) {
   let res;
   try {
-    res = await callTool(tool, args, { label });
+    res = await callTool(tool, args, { label, poll });
   } catch (e) {
     throw new StepFailure(label, e.message);
   }
@@ -1019,7 +1019,8 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   const N = json(waited).tab_id;
   let pinged;
   for (const t0 = now(); now() - t0 < 5_000; await sleep(100)) {
-    pinged = await attempt('browser.ping', { tab_id: N }, 'wait_for_tab');
+    // Polled: how many pings ran before the title landed depends on timing.
+    pinged = await attempt('browser.ping', { tab_id: N }, 'wait_for_tab', { poll: true });
     if (!pinged.isError && pinged.body?.title === 'e2e opened tab') break;
   }
   if (pinged.isError || pinged.body?.url !== opened || pinged.body?.title !== 'e2e opened tab') {
@@ -1034,7 +1035,9 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   // flow_status / flow_cancel: a detached flow clicks #tick every 200 ms;
   // its status reads running, it is cancelled, its status reads cancelled
   // with the manifest of what it did, and the counter stops moving.
-  const ticks = () => pageValue(T, "Number(document.querySelector('#ticks').textContent)");
+  // How far the counter got depends on timing, so the recorded reads answer
+  // the assertion (a boolean), never the raw count.
+  const TICKS = "Number(document.querySelector('#ticks').textContent)";
   const started = json(
     await call(
       'browser.flow',
@@ -1057,8 +1060,10 @@ async function dragPermissionTabsFlows(T, page, cdp) {
   );
   const flowId = started.flow_id;
   const ids = { tab_id: T, flow_id: flowId };
-  for (const t0 = now(); (await ticks()) < 2; await sleep(100)) {
+  // Polled: only the last read (true) is kept in the record.
+  for (const t0 = now(); (await pageValue(T, `${TICKS} >= 2`, { poll: true })) !== true;) {
     if (now() - t0 > 10_000) throw new StepFailure('flow_status', 'the flow never clicked #tick');
+    await sleep(100);
   }
   await call(
     'browser.flow_status',
@@ -1084,11 +1089,17 @@ async function dragPermissionTabsFlows(T, page, cdp) {
     quiet,
   );
   await pollUntil('browser.flow_status', ids, (b) => b?.state !== 'running', 'flow_cancel');
-  const atStop = await ticks();
-  await sleep(1_000); // five periods of the flow
-  const later = await ticks();
-  if (later !== atStop) {
-    throw new StepFailure('flow_cancel', `#tick went from ${atStop} to ${later} after the stop`);
+  // The count at the stop is kept in the page; after five periods of the
+  // flow the read answers whether it is unchanged (and the count, only when
+  // it is not, for the failure message).
+  await pageValue(T, `(window.__e2eTicksAtStop = ${TICKS}) >= 2`);
+  await sleep(1_000);
+  const still = await pageValue(
+    T,
+    `${TICKS} === window.__e2eTicksAtStop || \`\${window.__e2eTicksAtStop} -> \${${TICKS}}\``,
+  );
+  if (still !== true) {
+    throw new StepFailure('flow_cancel', `#tick moved after the stop: ${String(still)}`);
   }
   stepDone('browser.flow_cancel', t);
   await call(
@@ -1128,9 +1139,10 @@ async function renavigateInPlace(cdp, targetId) {
   }
 }
 
-async function pageValue(T, expression) {
+async function pageValue(T, expression, { poll = false } = {}) {
   const res = await call('browser.evaluate', { tab_id: T, expression }, undefined, {
     print: false,
+    poll,
   });
   const b = json(res);
   return b && typeof b === 'object' && 'value' in b ? b.value : b;

@@ -66,6 +66,47 @@ export const TIME_KEYS = [
  * condition held (2 or 3 between two runs of the same build). */
 export const TIMING_COUNTS = { 'browser.wait_for': ['checks'] };
 
+/** flow_status states whose progress is how far a detached flow got when it
+ * was observed or stopped from outside (the e2e cancels a 200 ms repeat
+ * after it has ticked at least twice): 1, 2 or 3 iterations between two runs
+ * of the same build. `completed` and every other state keep their counts. */
+export const PROGRESS_STATES = ['running', 'cancelled'];
+
+/**
+ * A flow_status body in PROGRESS_STATES: `steps_completed` and
+ * `iterations_completed` (top level and per manifest entry) become
+ * `<count>`, and each manifest entry's `iterations` keeps only its distinct
+ * iterations in first-seen order, so what each iteration did is still
+ * compared but not how many ran. Other bodies are returned unchanged.
+ */
+export function normaliseFlowProgress(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  if (!PROGRESS_STATES.includes(body.state)) return body;
+  const counts = (o) => {
+    const out = { ...o };
+    for (const k of CANCEL_PROGRESS_KEYS) if (typeof out[k] === 'number') out[k] = '<count>';
+    return out;
+  };
+  const out = counts(body);
+  if (Array.isArray(body.manifest)) {
+    out.manifest = body.manifest.map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+      const e = counts(entry);
+      if (Array.isArray(entry.iterations)) {
+        const seen = new Set();
+        e.iterations = entry.iterations.filter((it) => {
+          const key = canonical(it);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+      return e;
+    });
+  }
+  return out;
+}
+
 /** browser-link's own release number: a release bump in the base or HEAD is
  * not a behavior change. Semver values under exactly these keys become
  * `<version>`; `extension_version` (list_tabs) is the only one the runs show. */
@@ -319,6 +360,7 @@ function normaliseResult(ctx, tool, result) {
       }
       if (UNORDERED_TOOLS.includes(tool)) parsed = sortEntries(ctx, parsed);
       if (tool === 'browser.flow_cancel') parsed = normaliseCancelOutcome(parsed);
+      if (tool === 'browser.flow_status') parsed = normaliseFlowProgress(parsed);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const k of TIMING_COUNTS[tool] ?? []) {
           if (typeof parsed[k] === 'number') parsed[k] = '<count>';

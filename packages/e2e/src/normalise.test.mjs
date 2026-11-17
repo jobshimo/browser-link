@@ -411,7 +411,7 @@ test('both accepted flow_cancel outcomes normalise equal; any other state does n
     record([{ tool: 'browser.flow_status', args: {}, result: textResult(cancelled) }]),
   );
   assert.equal(bodyOf(status).state, 'cancelled');
-  assert.equal(bodyOf(status).iterations_completed, 2);
+  assert.equal(bodyOf(status).stopped_by, 'cancelled');
 });
 
 test('flow_cancel: each shape-only key is dropped, the progress counts are masked, the rest is kept', () => {
@@ -442,4 +442,60 @@ test('flow_cancel: each shape-only key is dropped, the progress counts are maske
   assert.equal(cancel({ ...running, error: 'boom' }).error, 'boom');
   assert.equal(cancel({ ...running, manifest_truncated: true }).manifest_truncated, true);
   assert.equal(cancel({ ...running, steps: 2 }).steps, 2);
+});
+
+test('flow_status of a running or cancelled flow: progress counts masked, manifest iterations deduplicated', () => {
+  const status = (body) =>
+    bodyOf(
+      normaliseRecord(
+        record([{ tool: 'browser.flow_status', args: {}, result: textResult(body) }]),
+      ),
+    );
+  const cancelledAfter = (n) => ({
+    state: 'cancelled',
+    steps: 1,
+    steps_completed: 1,
+    iterations_completed: n,
+    stopped_by: 'cancelled',
+    manifest: [
+      {
+        iterations: Array.from({ length: n }, () => [{ ok: true }]),
+        iterations_completed: n,
+        stopped_by: 'cancelled',
+      },
+    ],
+  });
+  assert.equal(canonical(status(cancelledAfter(2))), canonical(status(cancelledAfter(3))));
+  assert.deepEqual(status(cancelledAfter(2)), {
+    state: 'cancelled',
+    steps: 1,
+    steps_completed: '<count>',
+    iterations_completed: '<count>',
+    stopped_by: 'cancelled',
+    manifest: [
+      { iterations: [[{ ok: true }]], iterations_completed: '<count>', stopped_by: 'cancelled' },
+    ],
+  });
+  // A different iteration result is still a difference.
+  const failedOne = cancelledAfter(2);
+  failedOne.manifest[0].iterations[1] = [{ ok: false, error: 'boom' }];
+  assert.notEqual(canonical(status(failedOne)), canonical(status(cancelledAfter(2))));
+  // Running: live progress masked, the rest kept.
+  const running = (n) => ({
+    state: 'running',
+    steps: 1,
+    steps_completed: 0,
+    iterations_completed: n,
+  });
+  assert.equal(canonical(status(running(1))), canonical(status(running(2))));
+  assert.equal(status(running(1)).steps, 1);
+  // A flow that ran to its end has deterministic counts: kept as is.
+  const completed = { ...cancelledAfter(3), state: 'completed', stopped_by: 'max_iterations' };
+  assert.deepEqual(status(completed).iterations_completed, 3);
+  assert.equal(status(completed).manifest[0].iterations.length, 3);
+  // Another tool with the same body keeps its counts.
+  const flow = normaliseRecord(
+    record([{ tool: 'browser.flow', args: {}, result: textResult(cancelledAfter(3)) }]),
+  );
+  assert.equal(bodyOf(flow).iterations_completed, 3);
 });
