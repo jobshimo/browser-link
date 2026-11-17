@@ -519,6 +519,16 @@ focus, settle and cut rules (a click whose target first has to be scrolled into
 view included), and download attribution (a click's download captured, another
 tab's left alone), including the cases where Chrome's copy must be kept.
 
+The same run also covers the second transport,
+[cdp-direct](#cdp-direct-mode-no-extension): a second headless Chrome without
+the extension, on its own free debugging port, which the built CLI enables
+(`config set cdp-direct.enabled true`, `config set cdp-direct.port <port>`) and
+grants (`cdp allow --minutes 10`) inside the run's temp data dir and HOME.
+The server then drives that Chrome's tab directly: `list_tabs`, `navigate`,
+`snapshot`, `find`, `type`, `click`, `evaluate`, and a click on a missing
+selector with its exact error text (the `.cdp` cases in
+`packages/e2e/src/tool-cases.mjs`). They are in the differential too.
+
 A differential job (`e2e-diff`, Chrome 118) guards refactors: the current
 harness drives the build of the PR's merge-base and the PR's build, records
 every tool call (`E2E_RECORD=<file>`), normalises both records with the

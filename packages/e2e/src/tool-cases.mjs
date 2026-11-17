@@ -4,7 +4,8 @@
 // with its reason. A case name is the call label run.mjs records (the tool
 // name itself when a call has no label of its own). tool-cases.test.mjs fails
 // when a catalogue tool has neither, and when a case named here is not in
-// run.mjs.
+// run.mjs. Cases ending in `.cdp` run on a cdp-direct tab (the server's second
+// transport, run.mjs cdpDirectChecks); the others on the extension's tab.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,11 +16,11 @@ export const HARNESS_FILE = join(SRC, 'run.mjs');
 
 /** Tool -> the run.mjs cases that call it. */
 export const TOOL_CASES = {
-  'browser.list_tabs': ['browser.list_tabs'],
+  'browser.list_tabs': ['browser.list_tabs', 'browser.list_tabs.cdp'],
   'browser.activity': ['browser.activity.sensitive', 'browser.activity.error-sensitive'],
   'browser.ping': ['browser.ping', 'wait_for_tab'],
-  'browser.snapshot': ['browser.snapshot', 'browser.snapshot.cut'],
-  'browser.find': ['browser.find', 'browser.find.cut'],
+  'browser.snapshot': ['browser.snapshot', 'browser.snapshot.cut', 'browser.snapshot.cdp'],
+  'browser.find': ['browser.find', 'browser.find.cut', 'browser.find.cdp'],
   'browser.state': ['browser.state'],
   'browser.canvas_screenshot': ['browser.canvas_screenshot', 'browser.canvas_screenshot.region'],
   'browser.screenshot': ['browser.screenshot', 'browser.screenshot.viewport'],
@@ -29,7 +30,7 @@ export const TOOL_CASES = {
   'browser.wait_for': ['browser.wait_for', 'error.timeout'],
   'browser.wait_for_tab': ['browser.wait_for_tab'],
   'browser.flow_status': ['browser.flow_status', 'browser.flow_status.cancelled'],
-  'browser.navigate': ['browser.navigate'],
+  'browser.navigate': ['browser.navigate', 'browser.navigate.cdp'],
   'browser.click': [
     'browser.click',
     'browser.click.no-box',
@@ -41,8 +42,10 @@ export const TOOL_CASES = {
     'browser.click.frame-element',
     'browser.click.opens-dialog',
     'error.action',
+    'browser.click.cdp',
+    'error.action.cdp',
   ],
-  'browser.type': ['browser.type', 'browser.type.sensitive', 'error.sensitive'],
+  'browser.type': ['browser.type', 'browser.type.sensitive', 'error.sensitive', 'browser.type.cdp'],
   'browser.press': ['browser.press'],
   'browser.drag': ['browser.drag'],
   'browser.flow': ['browser.flow'],
@@ -60,7 +63,7 @@ export const TOOL_CASES = {
     'browser.download.click-failed',
     'browser.download.stress-after-scroll',
   ],
-  'browser.evaluate': ['browser.evaluate', 'error.thrown'],
+  'browser.evaluate': ['browser.evaluate', 'error.thrown', 'browser.evaluate.cdp'],
   'browser.read': ['browser.read'],
   'browser.wrap_up': ['browser.wrap_up'],
 };

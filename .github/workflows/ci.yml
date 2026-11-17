@@ -134,6 +134,8 @@ jobs:
           test -x "$path"
           echo "chrome=$path" >> "$GITHUB_OUTPUT"
 
+      # Both transports: the extension's tab, then a cdp-direct tab on a second
+      # Chrome without the extension (the `.cdp` cases, about 1 s).
       - name: End-to-end (one line per tool)
         env:
           CHROME_PATH: ${{ steps.cft.outputs.chrome }}
@@ -318,7 +320,7 @@ jobs:
           while IFS= read -r -d '' f; do
             case "$f" in
               packages/e2e/src/run.mjs | packages/e2e/src/lib.mjs | packages/e2e/src/normalise.mjs | \
-                packages/e2e/pages/* | packages/e2e/package.json)
+                packages/e2e/src/cdp-direct.mjs | packages/e2e/pages/* | packages/e2e/package.json)
                 harness=1 ;;
               *.md | *.test.* | *.spec.* | */__tests__/* | */vitest.config.*) ;;
               packages/server/src/* | packages/server/package.json | packages/server/tsconfig*.json | \
@@ -386,7 +388,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/e2e/build/e2e-base-record.json
-          key: e2e-record-${{ steps.scope.outputs.base }}-${{ hashFiles('packages/e2e/src/run.mjs', 'packages/e2e/src/lib.mjs', 'packages/e2e/src/normalise.mjs', 'packages/e2e/pages/**') }}-${{ env.CFT_CHROME }}
+          key: e2e-record-${{ steps.scope.outputs.base }}-${{ hashFiles('packages/e2e/src/run.mjs', 'packages/e2e/src/lib.mjs', 'packages/e2e/src/normalise.mjs', 'packages/e2e/src/cdp-direct.mjs', 'packages/e2e/pages/**') }}-${{ env.CFT_CHROME }}
 
       - name: Differential
         if: steps.scope.outputs.mode != 'none'

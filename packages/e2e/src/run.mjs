@@ -4,6 +4,9 @@
 // extension half of every call (background.ts perform* handlers) runs for real.
 // Then the interface language: switch EN | ES in the popup, open Activity and
 // Admin windows follow without reload, and the choice survives a reopen.
+// Last, the second transport (cdpDirectChecks, cdp-direct.mjs): a second
+// headless Chrome without the extension, enabled and granted with the built
+// CLI in the run's isolated data dir, driven by the same server.
 //
 // Isolation: free ports passed through BROWSER_LINK_WS_PORT / _IPC_PORT, a
 // patched temp copy of the extension, temp profile, data dir and HOME. The
@@ -53,6 +56,7 @@ import {
   extensionCopy,
   freePort,
   isAlive,
+  isolatedServerEnv,
   jsLiteral,
   killPid,
   launchChrome,
@@ -71,6 +75,7 @@ import {
   writeResult,
 } from './lib.mjs';
 import { uncalledCases } from './tool-cases.mjs';
+import { cdpTabOf, enableCdpDirect } from './cdp-direct.mjs';
 import { adapterCoverageSummary, uncalledAdapterFunctions } from './adapter-coverage.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
@@ -157,7 +162,16 @@ class StepFailure extends Error {
 const temps = [];
 /** Steps that failed without stopping the run (each already printed). */
 const deferredFailures = [];
-const state = { http: undefined, chrome: undefined, cdp: undefined, client: undefined };
+const state = {
+  http: undefined,
+  chrome: undefined,
+  cdp: undefined,
+  client: undefined,
+  // The second Chrome (no extension) the cdp-direct cases drive, and the
+  // harness's own CDP connection to it (used only to close it).
+  cdpChrome: undefined,
+  cdpChromeCdp: undefined,
+};
 /** The browser this run used, recorded at the end whatever the outcome. */
 const browserSeen = { jsonVersion: undefined, cdpVersion: undefined };
 let serverPid;
@@ -331,20 +345,11 @@ async function main() {
   const sw = await waitServiceWorker(cdp, extId, 15_000);
 
   // 2. The server, stdio MCP, isolated.
+  const serverEnv = isolatedServerEnv({ wsPort, ipcPort, dataDir, homeDir });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [SERVER_CLI],
-    env: {
-      ...process.env,
-      BROWSER_LINK_WS_PORT: String(wsPort),
-      BROWSER_LINK_IPC_PORT: String(ipcPort),
-      BROWSER_LINK_DATA_DIR: dataDir,
-      HOME: homeDir,
-      USERPROFILE: homeDir,
-      XDG_CONFIG_HOME: join(homeDir, '.config'),
-      XDG_DATA_HOME: join(homeDir, '.local/share'),
-      COPILOT_HOME: join(homeDir, '.copilot'),
-    },
+    env: serverEnv,
     stderr: 'pipe',
   });
   transport.stderr?.on('data', (d) => {
@@ -581,6 +586,110 @@ async function main() {
   const keylessId =
     loadedKeylessId ?? (await cdp.send('Extensions.loadUnpacked', { path: keylessDir })).id;
   await refusedExtension(cdp, swSession, page, keylessId);
+
+  await cdpDirectChecks({ chromePath, serverEnv, page });
+}
+
+/**
+ * cdp-direct, the second transport (cdp-direct.mjs): a second headless Chrome
+ * without the extension, on its own free debugging port; the built CLI enables
+ * cdp-direct on that port and records a grant in the run's isolated data dir
+ * while the server runs (the gate reads both on every call); then the same
+ * server drives the Chrome's tab directly. One case per tool the arch spec
+ * names, each asserting its effect, and the click-on-a-missing-selector error
+ * with its exact text (the extension's error.action answers the same).
+ */
+async function cdpDirectChecks({ chromePath, serverEnv, page }) {
+  const t0 = now();
+  const port = await freePort();
+  record.context.ports.push(port);
+  state.cdpChrome = launchChrome({ chromePath, port });
+  temps.push(state.cdpChrome.profile);
+  const version = await waitHttp(`http://127.0.0.1:${String(port)}/json/version`, 20_000);
+  state.cdpChromeCdp = await Cdp.open(version.webSocketDebuggerUrl);
+  try {
+    enableCdpDirect({ serverCli: SERVER_CLI, env: serverEnv, port });
+  } catch (e) {
+    throw new StepFailure('cdp.enable', String(e?.message ?? e));
+  }
+
+  // The Chrome's one page (about:blank) is listed as a cdp: tab.
+  const tl = now();
+  let tab;
+  while (!tab) {
+    const r = await call('browser.list_tabs', {}, undefined, {
+      print: false,
+      poll: true,
+      label: 'browser.list_tabs.cdp',
+    });
+    tab = cdpTabOf(json(r));
+    if (!tab && now() - tl > CALL_TIMEOUT_MS) {
+      throw new StepFailure('list_tabs.cdp', 'no cdp: tab listed after enable and grant');
+    }
+    if (!tab) await sleep(100);
+  }
+  const C = tab.tab_id;
+  const target = `${page}?cdp`;
+
+  await call(
+    'browser.navigate',
+    { tab_id: C, url: target },
+    (b) => b?.url === target || `landed on ${JSON.stringify(b?.url)}`,
+    { label: 'browser.navigate.cdp' },
+  );
+  await call(
+    'browser.snapshot',
+    { tab_id: C },
+    (_b, t) => t.includes('Add item') || 'snapshot lacks the Add item button',
+    { label: 'browser.snapshot.cdp' },
+  );
+  const found = await call(
+    'browser.find',
+    { tab_id: C, text: 'Add item', role: 'button' },
+    (_b, t) => /[a-z0-9]{1,16}:e\d+/.test(t) || 'no ref returned',
+    { label: 'browser.find.cdp' },
+  );
+  const ref = /[a-z0-9]{1,16}:e\d+/.exec(text(found))[0];
+  await call(
+    'browser.type',
+    { tab_id: C, selector: '#name', text: 'delta' },
+    (b) => b?.sensitive_field === false || `sensitive_field is ${String(b?.sensitive_field)}`,
+    { label: 'browser.type.cdp' },
+  );
+  // The typed text is in the field (the click below also submits it).
+  // A string value comes back as the text itself.
+  await call(
+    'browser.evaluate',
+    { tab_id: C, expression: "document.querySelector('#name').value" },
+    (_b, t) => t === 'delta' || `#name holds ${JSON.stringify(t)}`,
+    { print: false },
+  );
+  await call(
+    'browser.click',
+    { tab_id: C, ref, expect: { text_appears: 'Added: delta' } },
+    (_b, t) => /"met":\s*true/.test(t) || 'expect not met',
+    { label: 'browser.click.cdp' },
+  );
+  await call(
+    'browser.evaluate',
+    { tab_id: C, expression: "document.querySelector('#count').textContent" },
+    (_b, t) => t === 'Items: 1' || `#count is ${JSON.stringify(t)}`,
+    { label: 'browser.evaluate.cdp' },
+  );
+
+  // The error path: a click whose selector matches nothing.
+  const label = 'error.action.cdp';
+  const t = now();
+  const want = 'Error: Element not found: #e2e-no-such-element';
+  const r = await attempt('browser.click', { tab_id: C, selector: '#e2e-no-such-element' }, label);
+  if (!r.isError || r.text !== want) {
+    throw new StepFailure(
+      label,
+      `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+    );
+  }
+  stepDone(label, t);
+  console.log(`cdp-direct ok ${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
 }
 
 /**
@@ -2092,6 +2201,8 @@ async function teardown() {
   }
   killPid(serverPid);
   if (state.chrome) await stopChrome(state.chrome, state.cdp);
+  if (state.cdpChrome) await stopChrome(state.cdpChrome, state.cdpChromeCdp);
+  state.cdpChromeCdp?.close();
   state.cdp?.close();
   state.http?.close();
   const left = [];
