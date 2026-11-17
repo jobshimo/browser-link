@@ -516,6 +516,10 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
   // way sanitizeCdpPort does for the port.
   const idleTtlMinutes =
     cfg.idleTtlMinutes === undefined ? undefined : clampIdleTtlMinutes(cfg.idleTtlMinutes);
+  // claimTtlMinutes: same rule as idleTtlMinutes, absent stays absent and a
+  // present value is always a valid one (an invalid one reads as 10).
+  const claimTtlMinutes =
+    cfg.claimTtlMinutes === undefined ? undefined : clampClaimTtlMinutes(cfg.claimTtlMinutes);
   // Present only when strict mode is on, so `undefined` keeps meaning off.
   const peerExecutablePaths = sanitizePeerExecutablePaths(cfg.peerExecutablePaths);
   // Present only when at least one well-formed id is left.
@@ -531,6 +535,7 @@ function withDefaults(cfg: BrowserLinkConfig): BrowserLinkConfig {
     cdpDirectPort,
     cdpDirectGrantTtlMinutes,
     idleTtlMinutes,
+    claimTtlMinutes,
     instructionsAutoRefresh,
     noticeAcknowledged,
   };

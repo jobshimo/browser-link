@@ -29,6 +29,30 @@ import {
 } from './protocol.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './dispatch.js';
 import { rotateToken } from './token.js';
+import { idleTtlMinutesInEffect, loadConfig } from '../config.js';
+
+/**
+ * S2 (1.3.0): config.json alone decides the idle TTL. `config set idle-ttl`
+ * writes config.json first and then pushes, so a push only says "the value
+ * changed": the tabs get `idleTtlMinutesInEffect(loadConfig())`, never the
+ * value in the frame. While config.json cannot be read nothing idle-related
+ * is pushed (tabs keep what they have). The flow-recording pair, still
+ * editable from the popup, passes as received.
+ */
+function settingsFromConfig(pushed: SettingsPushPayload): SettingsPushPayload {
+  const { idleTtlMinutes: pushedMinutes, updatedAt: pushedAt, ...rest } = pushed;
+  if (pushedMinutes === undefined && pushedAt === undefined) return pushed;
+  try {
+    const cfg = loadConfig();
+    return {
+      ...rest,
+      idleTtlMinutes: idleTtlMinutesInEffect(cfg),
+      updatedAt: cfg.idleTtlUpdatedAt ?? pushedAt ?? 0,
+    };
+  } catch {
+    return rest;
+  }
+}
 import type { AgentCaller } from '../tools/tab-claims.js';
 
 /**
@@ -511,7 +535,7 @@ export class IpcServer {
         return;
       }
       case 'settings.push': {
-        const notified = this.options.pushSettings?.(frame.settings) ?? 0;
+        const notified = this.options.pushSettings?.(settingsFromConfig(frame.settings)) ?? 0;
         try {
           socket.write(encodeFrame({ kind: 'settings.push-ack', notified }));
         } catch {

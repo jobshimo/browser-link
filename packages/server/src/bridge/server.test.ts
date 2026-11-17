@@ -6,7 +6,14 @@ import { connect, type Socket } from 'node:net';
 import * as paths from '../map/paths.js';
 import { IPC_MAX_PREAUTH_LINE_BYTES, IpcServer } from './server.js';
 import { SERVER_INSTRUCTIONS } from '../tools/server-instructions.js';
-import { IPC_PROTOCOL_VERSION, encodeFrame, parseFrame, type Frame } from './protocol.js';
+import {
+  IPC_PROTOCOL_VERSION,
+  encodeFrame,
+  parseFrame,
+  type Frame,
+  type SettingsPushPayload,
+} from './protocol.js';
+import { saveConfig } from '../config.js';
 import { readToken } from './token.js';
 import type { DispatchDeps } from './dispatch.js';
 import type { PeerProcess } from '../auth/process-identity.js';
@@ -409,7 +416,8 @@ describe('IpcServer MCP dispatch', () => {
 
 describe('IpcServer settings.push', () => {
   test('forwards to the injected pushSettings callback and acks with its return value', async () => {
-    const received: Array<{ idleTtlMinutes: number; updatedAt: number }> = [];
+    saveConfig({ idleTtlMinutes: 45, idleTtlUpdatedAt: 1_700_000_000_000 });
+    const received: SettingsPushPayload[] = [];
     server = new IpcServer(STUB_DEPS, {
       port: 0,
       peerLookup: TEST_PEER_LOOKUP,
@@ -435,6 +443,59 @@ describe('IpcServer settings.push', () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]).toEqual({ kind: 'settings.push-ack', notified: 3 });
     expect(received).toEqual([{ idleTtlMinutes: 45, updatedAt: 1_700_000_000_000 }]);
+  });
+
+  test('S2: the idle value pushed to the tabs is the one in config.json, never the one in the frame', async () => {
+    saveConfig({ idleTtlMinutes: 15, idleTtlUpdatedAt: 1_700_000_000_000 });
+    const received: SettingsPushPayload[] = [];
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: (settings) => {
+        received.push(settings);
+        return 1;
+      },
+    });
+    await server.start();
+    const s = await dial(server.boundAddress());
+    s.write(
+      encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+    );
+    await readNFrames(s, 1);
+    s.write(encodeFrame({ kind: 'settings.push', settings: { idleTtlMinutes: 0, updatedAt: 9 } }));
+    expect(await readNFrames(s, 1, 1500)).toEqual([{ kind: 'settings.push-ack', notified: 1 }]);
+    expect(received).toEqual([{ idleTtlMinutes: 15, updatedAt: 1_700_000_000_000 }]);
+  });
+
+  test('S2: with no idle-ttl in config.json the tabs get the 30-minute default; a flow-recording push is untouched', async () => {
+    const received: SettingsPushPayload[] = [];
+    server = new IpcServer(STUB_DEPS, {
+      port: 0,
+      peerLookup: TEST_PEER_LOOKUP,
+      pushSettings: (settings) => {
+        received.push(settings);
+        return 1;
+      },
+    });
+    await server.start();
+    const s = await dial(server.boundAddress());
+    s.write(
+      encodeFrame({ kind: 'hello', version: IPC_PROTOCOL_VERSION, token: server.currentToken() }),
+    );
+    await readNFrames(s, 1);
+    s.write(encodeFrame({ kind: 'settings.push', settings: { idleTtlMinutes: 5, updatedAt: 9 } }));
+    await readNFrames(s, 1, 1500);
+    s.write(
+      encodeFrame({
+        kind: 'settings.push',
+        settings: { flowRecordingEnabled: true, flowRecordingUpdatedAt: 7 },
+      }),
+    );
+    await readNFrames(s, 1, 1500);
+    expect(received).toEqual([
+      { idleTtlMinutes: 30, updatedAt: 9 },
+      { flowRecordingEnabled: true, flowRecordingUpdatedAt: 7 },
+    ]);
   });
 
   test('acks with 0 when no pushSettings callback was configured', async () => {
