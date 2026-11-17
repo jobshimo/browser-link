@@ -6,10 +6,12 @@
  */
 import { clickTool, findTool, pressTool, typeTool } from './interaction.js';
 import { createToolRegistry, type ToolRegistry } from './registry.js';
+import { waitForTool } from './wait-for.js';
 
 export const TOOL_REGISTRY: ToolRegistry = createToolRegistry([
   findTool,
   clickTool,
   typeTool,
   pressTool,
+  waitForTool,
 ]);

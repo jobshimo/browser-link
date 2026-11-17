@@ -13,7 +13,7 @@ import {
   shouldDisconnectForIdle,
   type IdleFlowHold,
 } from '../policies/idle-rules.js';
-import type { DialogWatch, PageDriverHandle } from './page-driver.js';
+import type { CaptureWatch, DialogWatch, PageDriverHandle } from './page-driver.js';
 
 /** Console entries kept per tab; the oldest is dropped first. */
 export const CONSOLE_BUFFER_MAX = 200;
@@ -198,6 +198,19 @@ export class TabSession {
  * session `current()` returns (none: no dialog). */
 export function sessionDialogWatch(current: () => TabSession | undefined): DialogWatch {
   return { isOpen: () => current()?.pendingDialog !== undefined };
+}
+
+/** A capture watch over `session`'s network buffer: the URLs of the
+ * requests that have finished, read live on every call. */
+export function sessionCaptureWatch(session: TabSession): CaptureWatch {
+  return {
+    *finishedUrls() {
+      for (const id of session.networkOrder) {
+        const entry = session.networkBuffer.get(id);
+        if (entry?.finished_at !== undefined) yield entry.url;
+      }
+    },
+  };
 }
 
 /** The tabs one idle-sweep tick disconnects: every session whose

@@ -15,9 +15,7 @@ import {
   buildStateJs,
   buildDragProbeJs,
   buildElementRectJs,
-  buildWaitForSelectorJs,
   type SnapshotOffset,
-  type WaitForSelectorCondition,
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
   idleHoldUntil,
@@ -25,6 +23,7 @@ import {
   type IdleFlowHold,
   idleTabs,
   type NetworkEntry,
+  sessionCaptureWatch,
   sessionDialogWatch,
   TabRegistry,
   type TabReservation,
@@ -34,6 +33,7 @@ import {
   performClick,
   performFind,
   performPress,
+  performWaitFor,
   performType,
   type Requirement,
   TOOL_REGISTRY,
@@ -46,7 +46,6 @@ import {
   runScreenshot,
   type ElementRectOutcome,
   type ScreenshotMode,
-  refFailureMessage,
   runFlow,
   type ActionOutcome,
   type DragStepParams,
@@ -54,7 +53,6 @@ import {
   type FlowDeps,
   type FlowResult,
   type FlowStep,
-  type WaitForStepResult,
 } from '@browser-link/core';
 import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
@@ -763,12 +761,22 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'keyboard',
   'pointer',
   'settler',
+  'capture-buffers',
 ]);
 
 /** What the core actions and the registry handlers use on one tab. */
-function actionDeps(tabId: number): ToolDeps {
+function actionDeps(tabId: number, session?: TabSession): ToolDeps {
   const { evaluator, keyboard, pointer, settler, dialogs } = pageDriver(tabId);
-  return { evaluator, keyboard, pointer, settler, clock: systemClock, dialogs };
+  return {
+    evaluator,
+    keyboard,
+    pointer,
+    settler,
+    clock: systemClock,
+    dialogs,
+    // The tab's captured requests, for a `network_url` wait.
+    captureBuffers: session && sessionCaptureWatch(session),
+  };
 }
 
 function debuggerSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
@@ -1047,201 +1055,18 @@ function buildCanvasScreenshotJs(opts: CanvasScreenshotOpts): string {
 }
 
 /**
- * `performWaitFor` / `performDrag` — the extracted bodies of the standalone
- * `wait_for` / `drag` cases in `handleTool` below. `performFind` and
- * `performClick` (slice 10), `performType` and `performPress` (slice 11)
- * live in core's `actions/` and run through the tool registry.
+ * `performDrag` — the extracted body of the standalone `drag` case in
+ * `handleTool` below. `performFind` and `performClick` (slice 10),
+ * `performType` and `performPress` (slice 11) and `performWaitFor`
+ * (slice 13) live in core's `actions/` and run through the tool registry.
  *
- * Both the standalone `case` handlers AND `browser.flow`'s step executor
- * (`runFlow` in core's `flow/flow-engine.ts`) call these exact functions — there is one
- * implementation of each action, never a copy that can drift. Each
- * returns an `ActionOutcome<T>` (`{ok:true,result} | {ok:false,error}`)
+ * Both the standalone `case` handler AND `browser.flow`'s step executor
+ * (`runFlow` in core's `flow/flow-engine.ts`) call this exact function —
+ * there is one implementation of each action, never a copy that can drift.
+ * It returns an `ActionOutcome<T>` (`{ok:true,result} | {ok:false,error}`)
  * instead of a wire-level `tool.response`, so the two call sites can
- * unwrap it however they need to (the standalone case wraps it straight
- * into a `tool.response`; `runFlow` inspects `result` for its own
- * fail-fast rules — e.g. `wait_for`'s `matched:false` is `ok:true` here,
- * matching the standalone tool's contract, and it is `runFlow`, not this
- * function, that decides a non-match should stop the flow).
+ * unwrap it however they need to.
  */
-
-async function performWaitFor(
-  tabId: number,
-  state: TabSession,
-  params: {
-    selector?: string;
-    ref?: string;
-    expression?: string;
-    network_url?: string;
-    condition?: string;
-    timeout_ms?: number;
-    poll_interval_ms?: number;
-  },
-  /** Cancellation flag of the flow this wait belongs to, when it is a flow
-   * step (see `handleFlow`). Checked on EVERY poll tick, which is what
-   * makes the advertised worst-case cancellation latency of one step true
-   * for a step that can legitimately park for 30 seconds — without it,
-   * pressing Stop during a long `wait_for` would do nothing visible until
-   * the wait timed out on its own. Absent for the standalone
-   * `browser.wait_for` tool, which has no flow to be cancelled with. */
-  shouldCancel?: () => boolean,
-): Promise<ActionOutcome<WaitForStepResult>> {
-  try {
-    const waitSelector = params.selector;
-    const waitExpression = params.expression;
-    const waitNetworkUrl = params.network_url;
-    const waitCondition = params.condition ?? 'visible';
-    // Defensive caps mirror the dispatcher's contract and keep CodeQL
-    // happy about setTimeout durations driven by request params.
-    const MAX_WAIT_TIMEOUT_MS = 30_000;
-    const MIN_POLL_MS = 50;
-    const MAX_POLL_MS = 1_000;
-    const requestedTimeout = params.timeout_ms ?? 5_000;
-    const timeoutMs =
-      requestedTimeout < MAX_WAIT_TIMEOUT_MS ? requestedTimeout : MAX_WAIT_TIMEOUT_MS;
-    const requestedPoll = params.poll_interval_ms ?? 100;
-    const pollIntervalMs =
-      requestedPoll < MIN_POLL_MS
-        ? MIN_POLL_MS
-        : requestedPoll > MAX_POLL_MS
-          ? MAX_POLL_MS
-          : requestedPoll;
-
-    // Build the check function based on which mode the caller picked. The
-    // dispatcher already enforced "exactly one of selector / ref / expression /
-    // network_url" so we just pick the first defined one. If none are
-    // defined (shouldn't happen from a well-formed call), the check stays
-    // null and we return matched=false immediately.
-    let check: (() => Promise<boolean>) | null = null;
-    // Set when a ref probe reports that the page has no observer: the ref
-    // can never resolve, so the wait fails instead of timing out (or, for
-    // `detached` / `hidden`, matching a ref it never looked up).
-    // `stale` is set while the last probe found the ref's element gone
-    // (`visible` / `attached` only; `hidden` / `detached` count it as met);
-    // `docChanged` says the ref belongs to another document, which can never
-    // come back, so the wait fails at once instead of polling.
-    const refProbe: {
-      unavailable: boolean;
-      stale: { reason: string; doc_id?: string } | null;
-      docChanged: boolean;
-    } = { unavailable: false, stale: null, docChanged: false };
-    if (waitSelector !== undefined) {
-      const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(tabId).evaluator.evaluate(expr);
-          return Boolean(result);
-        } catch {
-          // If the page is unreachable mid-poll, count as "not yet matched".
-          return false;
-        }
-      };
-    } else if (params.ref !== undefined) {
-      const expr = buildWaitForSelectorJs(
-        { ref: params.ref },
-        waitCondition as WaitForSelectorCondition,
-      );
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(tabId).evaluator.evaluate(expr);
-          if (typeof result === 'object' && result !== null) {
-            const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
-            if (probe.reason === 'ref-stale') {
-              refProbe.stale = {
-                reason: 'ref-stale',
-                ...(typeof probe.doc_id === 'string' ? { doc_id: probe.doc_id } : {}),
-              };
-              refProbe.docChanged = probe.doc_changed === true;
-              // A node that is merely detached may be re-attached or
-              // re-rendered, which is what the wait may be for: keep polling.
-              return refProbe.docChanged;
-            }
-            refProbe.unavailable = true;
-            return true;
-          }
-          refProbe.stale = null;
-          return result === true;
-        } catch {
-          return false;
-        }
-      };
-    } else if (waitExpression !== undefined) {
-      const wrapped = `Boolean(${waitExpression})`;
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(tabId).evaluator.evaluate(wrapped);
-          return Boolean(result);
-        } catch {
-          return false;
-        }
-      };
-    } else if (waitNetworkUrl !== undefined) {
-      const needle = waitNetworkUrl.toLowerCase();
-      check = (): Promise<boolean> => {
-        for (const id of state.networkOrder) {
-          const r = state.networkBuffer.get(id);
-          if (!r) continue;
-          if (r.finished_at === undefined) continue;
-          if (r.url.toLowerCase().includes(needle)) return Promise.resolve(true);
-        }
-        return Promise.resolve(false);
-      };
-    }
-
-    const startedAt = Date.now();
-    let checks = 0;
-    let matched = false;
-    let cancelled = false;
-    while (check) {
-      if (shouldCancel?.() === true) {
-        cancelled = true;
-        break;
-      }
-      checks++;
-      if (await check()) {
-        matched = true;
-        break;
-      }
-      if (Date.now() - startedAt >= timeoutMs) break;
-      await sleep(pollIntervalMs);
-    }
-    const elapsedMs = Date.now() - startedAt;
-    if (refProbe.unavailable && params.ref !== undefined) {
-      return {
-        ok: false,
-        error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
-      };
-    }
-    // A ref of another document can never match: fail now with the owner's
-    // sentence. (A merely detached node keeps the timeout result, below.)
-    if (refProbe.stale !== null && params.ref !== undefined && refProbe.docChanged) {
-      return { ok: false, error: refFailureMessage(refProbe.stale, params.ref) ?? '' };
-    }
-    // The element the ref names was gone at the last poll: the timeout result
-    // keeps its shape and carries the sentence in `ref_gone`.
-    const refGone =
-      refProbe.stale !== null && params.ref !== undefined && !cancelled && !matched
-        ? (refFailureMessage(refProbe.stale, params.ref) ?? '').replace(/^ref-stale: /, '')
-        : '';
-
-    // 'cancelled' is deliberately distinct from 'timeout': the step
-    // executor turns a timeout into a flow FAILURE (with a recovery
-    // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
-    // Reporting a stopped wait as a timeout would invent a diagnosis for a
-    // condition that was never given its budget.
-    const result: WaitForStepResult = matched
-      ? { matched: true, elapsed_ms: elapsedMs, checks }
-      : {
-          matched: false,
-          elapsed_ms: elapsedMs,
-          checks,
-          reason: cancelled ? 'cancelled' : 'timeout',
-          ...(refGone ? { ref_gone: refGone } : {}),
-        };
-    return { ok: true, result };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
 
 async function performDrag(
   tabId: number,
@@ -1918,7 +1743,7 @@ function buildFlowDeps(
     performClick: (params) => performClick(actionDeps(tabId), params),
     performType: (params) => performType(actionDeps(tabId), params),
     performPress: (params) => performPress(actionDeps(tabId), params),
-    performWaitFor: (params) => performWaitFor(tabId, state, params, shouldCancel),
+    performWaitFor: (params) => performWaitFor(actionDeps(tabId, state), params, shouldCancel),
     performDrag: (params) => performDrag(tabId, params),
     clock: systemClock,
     buildRecoverySnapshot: () =>
@@ -2415,7 +2240,7 @@ async function handleTool(
     const outcome = await dispatchTool(
       TOOL_REGISTRY,
       EXTENSION_PROVIDES,
-      actionDeps(tabId),
+      actionDeps(tabId, state.session),
       'extension',
       msg.tool,
       msg.params,
@@ -2478,22 +2303,6 @@ async function handleTool(
         const expression = str('expression');
         const value = await pageDriver(tabId).evaluator.evaluate(expression);
         return { kind: 'tool.response', id: msg.id, ok: true, result: value };
-      }
-
-      case 'wait_for': {
-        const outcome = await performWaitFor(tabId, state.session, {
-          selector: optStr('selector'),
-          ref: optStr('ref'),
-          expression: optStr('expression'),
-          network_url: optStr('network_url'),
-          condition: optStr('condition'),
-          timeout_ms: typeof p.timeout_ms === 'number' ? p.timeout_ms : undefined,
-          poll_interval_ms: typeof p.poll_interval_ms === 'number' ? p.poll_interval_ms : undefined,
-        });
-        if (!outcome.ok) {
-          return { kind: 'tool.response', id: msg.id, ok: false, error: outcome.error };
-        }
-        return { kind: 'tool.response', id: msg.id, ok: true, result: outcome.result };
       }
 
       case 'dialog_respond':

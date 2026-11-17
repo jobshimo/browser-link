@@ -5,16 +5,17 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 /*
- * PARITY GUARD for the hand-mirrored action handlers. `performWaitFor`
- * exists twice: in the extension's
- * `background.ts` (driving a tab through `chrome.debugger`) and in
- * `cdp/transport.ts` (driving a cdp-direct target through a raw CDP
- * client). Each leaves this list when its slice moves it into core
- * (`performFind` and `performClick` left with slice 10, `performType` and
- * `performPress` with slice 11, into core's `actions/`); until then this
- * test keeps the two copies from drifting.
+ * PARITY GUARD for the hand-mirrored action handlers. Until slice 13 each
+ * `perform*` existed twice, in the extension's `background.ts` and in
+ * `cdp/transport.ts`, and this test kept the copies from drifting; each left
+ * the list when its slice moved it into core's `actions/` (`performFind` and
+ * `performClick` with slice 10, `performType` and `performPress` with slice
+ * 11, `performWaitFor` with slice 13). The list is now empty and the
+ * comparison machinery stays until slice 22 deletes this file; the guard that
+ * still has work to do is the one that no `perform*` is declared on either
+ * transport again.
  *
- * How it compares: each handler BODY (not its signature, whose first
+ * How the comparison works: each handler BODY (not its signature, whose first
  * parameter is necessarily transport-specific) is re-printed from the
  * TypeScript AST with comments removed, so formatting and comments never
  * count. The only rewrites applied are the transport seam:
@@ -32,8 +33,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const EXT_BACKGROUND = join(here, '..', '..', '..', 'extension', 'src', 'background.ts');
 const SRV_TRANSPORT = join(here, 'transport.ts');
 
-const HANDLERS = ['performWaitFor'] as const;
-type Handler = (typeof HANDLERS)[number];
+const HANDLERS: readonly string[] = [];
+type Handler = string;
 
 /** A statement block present on one side only. `start` is the exact
  * printed text that opens it; when it ends with `{` the fragment runs to
@@ -50,22 +51,7 @@ interface AllowedDivergence {
   serverOnly: Fragment[];
 }
 
-const ALLOWED_DIVERGENCES: readonly AllowedDivergence[] = [
-  {
-    handler: 'performWaitFor',
-    name: 'network-url-mode',
-    reason:
-      'cdp-direct never enables the Network domain, so the server rejects a ' +
-      '`network_url` wait up front while the extension polls its network ' +
-      'buffer (`state.networkOrder`). Open until the 1.1 shared CdpSession ' +
-      'gives both transports one network buffer.',
-    extensionOnly: [
-      { start: 'const waitNetworkUrl = params.network_url;' },
-      { start: 'else if (waitNetworkUrl !== undefined) {' },
-    ],
-    serverOnly: [{ start: 'if (params.network_url !== undefined) {' }],
-  },
-];
+const ALLOWED_DIVERGENCES: readonly AllowedDivergence[] = [];
 
 const printer = ts.createPrinter({ removeComments: true });
 
@@ -152,9 +138,29 @@ describe('perform* parity guard: extension background.ts vs server cdp/transport
     }
   });
 
+  test('no hand-mirrored perform* function is declared on either transport', () => {
+    for (const file of [EXT_BACKGROUND, SRV_TRANSPORT]) {
+      const sf = ts.createSourceFile(
+        file,
+        readFileSync(file, 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const mirrored: string[] = [];
+      sf.forEachChild((node) => {
+        if (ts.isFunctionDeclaration(node) && node.name && /^perform[A-Z]/.test(node.name.text)) {
+          mirrored.push(node.name.text);
+        }
+      });
+      // `performDrag` is extension-only (cdp-direct has no drag in v1).
+      expect(mirrored.filter((name) => name !== 'performDrag')).toEqual([]);
+    }
+  });
+
   test('the comparison is not vacuous: a one-token change is reported', () => {
-    const { server } = normalised('performWaitFor');
-    const mutated = server.map((l) => l.replace("'timeout'", "'timed-out'"));
-    expect(firstDifference(server, mutated)).toMatch(/line \d+:/);
+    const body = ['const a = 1;', "return 'timeout';"];
+    const mutated = body.map((l) => l.replace("'timeout'", "'timed-out'"));
+    expect(firstDifference(body, mutated)).toMatch(/line \d+:/);
+    expect(firstDifference(body, body)).toBeNull();
   });
 });

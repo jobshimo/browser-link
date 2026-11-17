@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.19](https://github.com/jobshimo/browser-link/compare/v1.4.18...v1.4.19) (2026-11-17)
+
+### Notes
+
+- Slice 13 of the service worker plan; no behaviour change. `browser.wait_for` now has one body, in core (`packages/core/src/actions/perform-wait-for.ts`), run by both transports through the tool registry and by a flow's wait_for step. Time goes through core's `Clock`. Every result and error text is the one before; a wait that expires is still an ordinary `{ matched: false, reason: "timeout" }` result, and a wait cut short by a flow's Stop is still `reason: "cancelled"`.
+- The `network_url` mode on cdp-direct is now a registry requirement check: a call that needs `capture-buffers` fails with the same sentence as before (`wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.`) when the transport does not provide them. The extension provides them through a read-only watch over its tab's network buffer; cdp-direct still captures nothing.
+- `performWaitFor` leaves `transport-parity.test.ts`, whose list is now empty; the file keeps its comparison machinery and a guard that no `perform*` function is declared on either transport again, until slice 22 deletes it.
+- `background.ts` shrinks by 191 lines and its line budget goes from 3724 to 3533; `cdp/transport.ts` goes from 882 to 683 lines.
+
 ## [1.4.18](https://github.com/jobshimo/browser-link/compare/v1.4.17...v1.4.18) (2026-11-17)
 
 ### Notes

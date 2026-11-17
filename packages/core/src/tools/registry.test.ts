@@ -88,8 +88,8 @@ describe('dispatchTool', () => {
     ).toThrow('tool registered twice: x');
   });
 
-  it('holds find, click, type and press, all listed', () => {
-    expect([...TOOL_REGISTRY.keys()]).toEqual(['find', 'click', 'type', 'press']);
+  it('holds find, click, type, press and wait_for, all listed', () => {
+    expect([...TOOL_REGISTRY.keys()]).toEqual(['find', 'click', 'type', 'press', 'wait_for']);
     expect([...TOOL_REGISTRY.values()].every((entry) => entry.listed)).toBe(true);
   });
 });

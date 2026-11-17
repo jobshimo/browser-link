@@ -205,3 +205,18 @@ export interface PressStepResult {
   settle?: Record<string, unknown>;
   expect?: ExpectMet;
 }
+
+export interface WaitForStepResult {
+  matched: boolean;
+  elapsed_ms: number;
+  checks: number;
+  /** `'timeout'` on a genuine non-match. `'cancelled'` when the poll loop
+   * was cut short by the flow's cancellation flag — a DIFFERENT outcome
+   * that the step executor must not report as a timeout failure, since the
+   * condition was never given its full budget. `performWaitFor` sets this. */
+  reason?: string;
+  /** Only on a timeout of a `wait_for` by ref (`visible` / `attached`) whose
+   * element was gone at the last poll: `<ref> not found in document
+   * <doc_id>: the element is gone, take a new snapshot`. */
+  ref_gone?: string;
+}
