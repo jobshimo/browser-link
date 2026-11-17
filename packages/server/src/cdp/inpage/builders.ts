@@ -1060,8 +1060,13 @@ export const CLICK_AIM_STABLE_MS = 500;
  *      the dispatch, so a click is reported only once its press was seen
  *      landing on the target (or on the element the hit test said it lands
  *      on: a pointer-events:none target, or a forced click on a cover).
- * Returns `{ ok: true, x, y, tag, hit_element?, reresolved? }` or the
- * failures of `buildClickResolveJs`.
+ * A frame element (`iframe`, `frame`, `embed`, `object`) is not watched:
+ * its press is delivered into the document inside it, so the answer carries
+ * `hit_check: 'not_verifiable'` instead. With `force`, a target whose box
+ * vanished since the resolve answers `no_box: true` (owner decision D4).
+ * Returns `{ ok: true, x, y, tag, hit_element?, reresolved?, hit_check? }`,
+ * `{ ok: true, no_box: true, tag, reresolved? }`, or the failures of
+ * `buildClickResolveJs`.
  */
 export function buildClickAimJs(opts: ClickResolveOpts): string {
   const optsJson = JSON.stringify({
@@ -1069,6 +1074,7 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
     force: opts.force,
     key: CLICK_WATCH_GLOBAL,
     stableMs: CLICK_AIM_STABLE_MS,
+    frameTags: ['iframe', 'frame', 'embed', 'object'],
   });
   return `
 (async () => {
@@ -1080,7 +1086,15 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
   if (!target.ok) return target;
   const el = target.el;
   const tag = el.tagName.toLowerCase();
-  if (!hasVisibleBox(el)) return { ok: false, reason: 'no-box' };
+  // Owner decision D4, also when the box vanished after the resolve: never
+  // a point without a box; with force, the element's own click().
+  function noBox() {
+    if (!opts.force) return { ok: false, reason: 'no-box' };
+    const programmatic = { ok: true, no_box: true, tag };
+    if (target.reresolved) programmatic.reresolved = true;
+    return programmatic;
+  }
+  if (!hasVisibleBox(el)) return noBox();
   function nextFrame() {
     return new Promise((resolve) => {
       let done = false;
@@ -1112,7 +1126,7 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
     }
   }
   const center = viewportCenterOf(el);
-  if (isEmptyRectAtOrigin(el, center)) return { ok: false, reason: 'no-box' };
+  if (isEmptyRectAtOrigin(el, center)) return noBox();
   const occlusion = checkOcclusion(el, center.localX, center.localY);
   if (!occlusion.allowed && !opts.force) {
     if (occlusion.retargeted) {
@@ -1127,6 +1141,19 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
     try {
       previous.stop();
     } catch (e) {}
+  }
+  try {
+    delete window[opts.key];
+  } catch (e) {}
+  const result = { ok: true, x: center.x, y: center.y, tag };
+  const hit = occlusion.hit || occlusion.blocker;
+  if (hit) result.hit_element = hit;
+  if (target.reresolved) result.reresolved = true;
+  // A press on a frame element is delivered into the document inside it,
+  // which a watch on this window never sees: not armed, and said so.
+  if (opts.frameTags.indexOf(tag) !== -1) {
+    result.hit_check = 'not_verifiable';
+    return result;
   }
   const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
   const watch = { el: el, expected: expected, received: null, stop: null };
@@ -1147,10 +1174,6 @@ export function buildClickAimJs(opts: ClickResolveOpts): string {
     writable: true,
     enumerable: false,
   });
-  const result = { ok: true, x: center.x, y: center.y, tag };
-  const hit = occlusion.hit || occlusion.blocker;
-  if (hit) result.hit_element = hit;
-  if (target.reresolved) result.reresolved = true;
   return result;
 })()
 `;
@@ -1214,11 +1237,39 @@ export function clickMissedMessage(
   }
   return (
     `Click on ${target} did not reach it: the mouse events were sent at ${at}, but no press ` +
-    "arrived in the target's document, so the browser delivered them elsewhere (another " +
-    'frame, possibly a cross-origin one, may have received them). The target was not clicked; ' +
-    'check the page before retrying'
+    "was seen in the target's document. Either the browser delivered them elsewhere (another " +
+    'frame, possibly a cross-origin one, may have received them), or a page listener stopped ' +
+    'the press before anything else saw it (stopImmediatePropagation at window capture). ' +
+    'Check whether the click had its effect (browser.snapshot or browser.screenshot) before retrying'
   );
 }
+
+/** Optional fields of a click result whose landing could not be checked:
+ * `hit_check: 'not_verifiable'` and `hit_check_note` saying why. */
+export interface ClickHitCheckFields {
+  hit_check?: 'not_verifiable';
+  hit_check_note?: string;
+}
+
+/** `hit_check_note`: the target is a frame element. */
+export const HIT_CHECK_FRAME_NOTE =
+  'the target is a frame element (iframe, frame, embed or object): the press is delivered into the document inside it, where it cannot be watched, so where the click landed was not verified';
+
+/** `hit_check_note`: a JavaScript dialog opened during the click. */
+export const HIT_CHECK_DIALOG_NOTE =
+  'a JavaScript dialog opened during the click and the page is paused until it is answered (browser.dialog_respond), so where the click landed was not verified';
+
+/** `hit_check_note`: the page did not answer the landing check in time. */
+export const HIT_CHECK_NO_ANSWER_NOTE =
+  'the page did not answer the landing check in time (a JavaScript dialog may have opened; see browser.events), so where the click landed was not verified';
+
+/** `hit_check_note`: the document was replaced during the click. */
+export const HIT_CHECK_REPLACED_NOTE =
+  'the document was replaced during the click (it navigated), so where the click landed was not verified';
+
+/** How long the landing check may take before the click is reported as
+ * not verifiable (a JavaScript dialog pauses the page). */
+export const HIT_CHECK_TIMEOUT_MS = 1500;
 
 /** Where `buildFrameWatchStartJs` keeps its watch on the top window. */
 export const FRAME_WATCH_GLOBAL = '__browserLinkFrameWatch';

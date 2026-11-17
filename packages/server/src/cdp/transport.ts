@@ -30,7 +30,13 @@ import {
   buildFrameWatchReadJs,
   buildFrameWatchStartJs,
   clickMissedMessage,
+  HIT_CHECK_DIALOG_NOTE,
+  HIT_CHECK_FRAME_NOTE,
+  HIT_CHECK_NO_ANSWER_NOTE,
+  HIT_CHECK_REPLACED_NOTE,
+  HIT_CHECK_TIMEOUT_MS,
   type ClickHitCheck,
+  type ClickHitCheckFields,
   buildFindJs,
   buildElementRectJs,
   buildFocusJs,
@@ -503,6 +509,74 @@ function runSettle(
 const OBSERVER_UNAVAILABLE = { ok: false, reason: 'observer-unavailable' } as const;
 const OBSERVER_DOC_CHANGED = { ok: false, reason: 'doc-changed' } as const;
 
+/** The three mouse events of a pointer click at (x, y). */
+function pointerClickEvents(x: number, y: number): Record<string, unknown>[] {
+  return [
+    { type: 'mouseMoved', x, y },
+    { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
+    { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
+  ];
+}
+
+/**
+ * Dispatch a pointer click. A JavaScript dialog opened by the click pauses
+ * the page, and the event that opened it is answered only once the dialog
+ * is closed: `dialog: true` says one opened, and the click answers then
+ * instead of waiting for someone to close it.
+ */
+async function dispatchPointerClick(
+  session: CdpClient,
+  x: number,
+  y: number,
+): Promise<{ dialog: boolean }> {
+  // cdp-direct does not track JavaScript dialogs (browser.dialog_respond is
+  // extension-only): the events are sent in order and awaited.
+  for (const event of pointerClickEvents(x, y)) {
+    await session.send('Input.dispatchMouseEvent', event);
+  }
+  return { dialog: false };
+}
+
+/**
+ * Read the hit watch of a pointer click (`buildClickHitCheckJs`), bounded by
+ * `HIT_CHECK_TIMEOUT_MS` (a JavaScript dialog pauses the page). Answers
+ * `missed` (with `landed_on` when the press reached another element) only
+ * when the watch saw the press elsewhere or saw none; otherwise `note` says
+ * why the landing could not be verified, or nothing when it landed.
+ */
+async function checkClickLanding(
+  session: CdpClient,
+  frameElement: boolean,
+): Promise<{ missed?: true; landed_on?: string; note?: string }> {
+  if (frameElement) return { note: HIT_CHECK_FRAME_NOTE };
+  // cdp-direct does not track dialogs; a paused page shows as no answer.
+  const dialogOpen = (): boolean => false;
+  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, HIT_CHECK_TIMEOUT_MS);
+  });
+  let landing: unknown;
+  try {
+    landing = await Promise.race([evaluateInTab(session, buildClickHitCheckJs()), late]);
+  } catch {
+    landing = undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (dialogOpen()) return { note: HIT_CHECK_DIALOG_NOTE };
+  if (landing === 'timeout') return { note: HIT_CHECK_NO_ANSWER_NOTE };
+  const check = landing as Partial<ClickHitCheck> | undefined;
+  if (!check || typeof check !== 'object' || check.armed !== true) {
+    return { note: HIT_CHECK_REPLACED_NOTE };
+  }
+  if ('landed' in check && check.landed === true) return {};
+  const landedOn = (check as { landed_on?: unknown }).landed_on;
+  return typeof landedOn === 'string' ? { missed: true, landed_on: landedOn } : { missed: true };
+}
+
 /**
  * Arm the frame watch with the action mark (`buildFrameWatchStartJs`): the
  * changes an action makes inside same-origin frames before the settle wait
@@ -604,7 +678,15 @@ async function dispatchKeyEvent(
 // performWaitFor function-for-function — see this module's header comment.
 
 type ClickResolveResult =
-  | { ok: true; x: number; y: number; tag: string; hit_element?: string; reresolved?: boolean }
+  | {
+      ok: true;
+      x: number;
+      y: number;
+      tag: string;
+      hit_element?: string;
+      reresolved?: boolean;
+      hit_check?: 'not_verifiable';
+    }
   | { ok: true; no_box: true; tag: string; reresolved?: boolean }
   | { ok: false; reason: 'no-box' }
   | { ok: false; reason: 'invalid-selector'; error: string }
@@ -752,6 +834,8 @@ async function performClick(
     }
     const mark = await takeObserverMark(client, settle);
     const baseline = await beginExpect(evaluate, expectSpec);
+    let hitCheckNote: string | undefined;
+    let dialogOpened = false;
     if ('no_box' in resolved) {
       const clicked = await evaluateInTab<ProgrammaticClickResult>(
         client,
@@ -768,48 +852,41 @@ async function performClick(
         };
       }
     } else {
-      await client.send('Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        x: resolved.x,
-        y: resolved.y,
-      });
-      await client.send('Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x: resolved.x,
-        y: resolved.y,
-        button: 'left',
-        clickCount: 1,
-      });
-      await client.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: resolved.x,
-        y: resolved.y,
-        button: 'left',
-        clickCount: 1,
-      });
-      // Report the click only where its press was seen (a document that was
-      // replaced meanwhile, `armed: false`, proves nothing either way).
-      let landing: ClickHitCheck;
-      try {
-        landing = await evaluateInTab<ClickHitCheck>(client, buildClickHitCheckJs());
-      } catch {
-        landing = { armed: false };
-      }
-      if (landing.armed && !landing.landed) {
-        return {
-          ok: false,
-          error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
-        };
+      // A JavaScript dialog the click opens pauses the page: the dispatch
+      // answers at once, and nothing after it can be checked.
+      dialogOpened = (await dispatchPointerClick(client, resolved.x, resolved.y)).dialog;
+      if (dialogOpened) {
+        hitCheckNote = HIT_CHECK_DIALOG_NOTE;
+      } else {
+        // Report the click only where its press was seen; when that cannot be
+        // known (a frame element, a dialog, a replaced document) say so.
+        const landing = await checkClickLanding(client, resolved.hit_check === 'not_verifiable');
+        if (landing.missed) {
+          return {
+            ok: false,
+            error: clickMissedMessage(ref ?? selector ?? '', resolved, landing.landed_on),
+          };
+        }
+        hitCheckNote = landing.note;
       }
     }
-    const settleResult = await settleWithChanges(client, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const settleResult = dialogOpened ? undefined : await settleWithChanges(client, settle, mark);
+    const verdict = dialogOpened
+      ? { ok: true as const, expect: undefined }
+      : await verifyExpect(evaluate, expectSpec, baseline, settleResult);
     if (!verdict.ok) return { ok: false, error: verdict.error };
-    const result: ClickStepResult = { clicked: ref ?? selector ?? '', tag: resolved.tag };
+    const result: ClickStepResult & ClickHitCheckFields = {
+      clicked: ref ?? selector ?? '',
+      tag: resolved.tag,
+    };
     if (ref !== undefined) result.ref = ref;
     if (resolved.reresolved === true) result.reresolved = true;
     if ('no_box' in resolved) result.programmatic_click = PROGRAMMATIC_CLICK_NOTE;
     else if (resolved.hit_element) result.hit_element = resolved.hit_element;
+    if (hitCheckNote !== undefined) {
+      result.hit_check = 'not_verifiable';
+      result.hit_check_note = hitCheckNote;
+    }
     if (settleResult) result.settle = settleResult;
     if (verdict.expect) result.expect = verdict.expect;
     return { ok: true, result };

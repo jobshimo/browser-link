@@ -27,6 +27,7 @@ import {
 import {
   PASSWORD_VALUES_HIDDEN_NOTE,
   UNOBSERVED_FRAMES_HINT,
+  buildClickHitCheckJs,
   buildFocusedFieldJs,
   buildProgrammaticClickJs,
   buildSettleJs,
@@ -1215,6 +1216,10 @@ describe('callCdpTool — page observer', () => {
           return { result: { value: answers.changes ?? CHANGES } };
         }
         if (expression === DEFAULT_SETTLE_JS) return { result: { value: QUIET } };
+        // The press was seen on the target.
+        if (expression === buildClickHitCheckJs()) {
+          return { result: { value: { armed: true, landed: true } } };
+        }
         return { result: { value: true } };
       }),
       ...answers.extra,
@@ -1786,6 +1791,9 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
           seen.push(expression);
           return { result: { value: answer } };
         }
+        if (expression === buildClickHitCheckJs()) {
+          return { result: { value: { armed: true, landed: true } } };
+        }
         return { result: { value: true } };
       },
     };
@@ -2012,12 +2020,56 @@ describe('callCdpTool — ref as a target (spec v4 §6.3)', () => {
         if (expression.includes('"selector":"#go"')) {
           return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
         }
+        if (expression === buildClickHitCheckJs()) {
+          return { result: { value: { armed: true, landed: true } } };
+        }
         return { result: { value: true } };
       },
     });
     grantAccess(port);
     const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 });
     expect(result).toEqual({ clicked: '#go', tag: 'a' });
+  });
+
+  test('a page whose landing check answers nothing usable: the click says it was not verified', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"selector":"#go"')) {
+          return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
+        }
+        if (expression === buildClickHitCheckJs()) return { result: { value: { armed: false } } };
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 });
+    expect(result).toEqual({
+      clicked: '#go',
+      tag: 'a',
+      hit_check: 'not_verifiable',
+      hit_check_note:
+        'the document was replaced during the click (it navigated), so where the click landed was not verified',
+    });
+  });
+
+  test('a press seen nowhere fails the click with the miss message', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        const expression = (params as { expression: string }).expression;
+        if (expression.includes('"selector":"#go"')) {
+          return { result: { value: { ok: true, x: 1, y: 2, tag: 'a' } } };
+        }
+        if (expression === buildClickHitCheckJs()) {
+          return { result: { value: { armed: true, landed: false } } };
+        }
+        return { result: { value: true } };
+      },
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'click', { selector: '#go', settle_ms: 0 }),
+    ).rejects.toThrow(/^Click on #go did not reach it: .*stopImmediatePropagation/);
   });
 });
 

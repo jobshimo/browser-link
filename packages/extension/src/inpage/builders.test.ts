@@ -4151,13 +4151,43 @@ describe('buildClickAimJs / buildClickHitCheckJs: a click is reported only where
     expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: false });
   });
 
+  test.each(['iframe', 'frame', 'embed', 'object'])(
+    'a click on a <%s> element is not watched: the press lands in the document inside it',
+    async (tagName) => {
+      const el = document.createElement(tagName);
+      el.id = 'f';
+      document.body.appendChild(el);
+      giveBox(el);
+      (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => el;
+      const aim = await evalExpr<Promise<Aim>>(buildClickAimJs({ selector: '#f', force: false }));
+      expect(aim).toMatchObject({ ok: true, tag: tagName, hit_check: 'not_verifiable' });
+      // Nothing armed: the check can claim nothing.
+      expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: false });
+    },
+  );
+
+  test('force, box gone since the resolve: the aim answers no_box (D4 programmatic click), not a failure', async () => {
+    const el = document.createElement('button');
+    el.id = 'gone';
+    document.body.appendChild(el);
+    // No giveBox: no client rects, as for an element that stopped rendering.
+    const forced = await evalExpr<Promise<unknown>>(
+      buildClickAimJs({ selector: '#gone', force: true }),
+    );
+    expect(forced).toEqual({ ok: true, no_box: true, tag: 'button' });
+    const plain = await evalExpr<Promise<unknown>>(
+      buildClickAimJs({ selector: '#gone', force: false }),
+    );
+    expect(plain).toEqual({ ok: false, reason: 'no-box' });
+  });
+
   test('without an armed watch (document replaced) nothing is claimed either way', () => {
     expect(evalExpr(buildClickHitCheckJs())).toEqual({ armed: false });
   });
 
-  test('clickMissedMessage says the target was not clicked, and where the press went', () => {
+  test('clickMissedMessage: a press never seen may be a miss or a swallowed press; check the effect', () => {
     expect(clickMissedMessage('#add', { x: 295.27, y: 90.4 })).toBe(
-      "Click on #add did not reach it: the mouse events were sent at (295, 90), but no press arrived in the target's document, so the browser delivered them elsewhere (another frame, possibly a cross-origin one, may have received them). The target was not clicked; check the page before retrying",
+      "Click on #add did not reach it: the mouse events were sent at (295, 90), but no press was seen in the target's document. Either the browser delivered them elsewhere (another frame, possibly a cross-origin one, may have received them), or a page listener stopped the press before anything else saw it (stopImmediatePropagation at window capture). Check whether the click had its effect (browser.snapshot or browser.screenshot) before retrying",
     );
     expect(clickMissedMessage('#add', { x: 1, y: 2 }, 'div#cover')).toContain(
       'the press at (1, 2) landed on div#cover instead',

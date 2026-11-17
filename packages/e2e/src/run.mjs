@@ -445,12 +445,14 @@ async function main() {
   await ruleChecks(T);
   // Right after the rule checks left the page scrolled: where a miss was
   // seen. Recorded, not thrown, so the steps below still run; it fails the run.
-  try {
-    await clickAfterScroll(T);
-  } catch (e) {
-    if (!(e instanceof StepFailure)) throw e;
-    console.log(`e2e: FAIL ${e.message}`);
-    deferredFailures.push(e.step);
+  for (const step of [clickAfterScroll, clickFrameElement, clickOpensDialog]) {
+    try {
+      await step(T);
+    } catch (e) {
+      if (!(e instanceof StepFailure)) throw e;
+      console.log(`e2e: FAIL ${e.message}`);
+      deferredFailures.push(e.step);
+    }
   }
   // The download steps start scrolled to the bottom, away from #dl: the
   // selector capture must scroll its target into view and still land on it.
@@ -486,6 +488,64 @@ async function main() {
  * without `expect`: each ok:true result without `hit_element` claims the
  * click hit #add, so each must add one item.
  */
+/**
+ * A click on a frame element itself (here the cross-origin iframe): the
+ * press is delivered into the child document, where the hit check cannot
+ * see it, so the click must not fail and must say it was not verified.
+ */
+async function clickFrameElement(T) {
+  const label = 'browser.click.frame-element';
+  const t = now();
+  const r = await attempt(
+    'browser.click',
+    { tab_id: T, selector: '#cross-frame', settle_ms: 0 },
+    label,
+  );
+  if (r.isError || r.body?.hit_check !== 'not_verifiable' || !r.body?.hit_check_note) {
+    throw new StepFailure('click.frame-element', `answer: ${r.text.slice(0, 400)}`);
+  }
+  stepDone(label, t);
+}
+
+/**
+ * A click that opens a native alert: the page thread freezes until the
+ * dialog is answered. The click must answer anyway, without failing, and
+ * say a dialog opened; the dialog is closed afterwards in every case.
+ */
+async function clickOpensDialog(T) {
+  const label = 'browser.click.opens-dialog';
+  const t = now();
+  const pending = attempt(
+    'browser.click',
+    { tab_id: T, selector: '#alert-btn', settle_ms: 0 },
+    label,
+  ).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  const early = await Promise.race([pending, sleep(8000).then(() => null)]);
+  const closed = await attempt('browser.dialog_respond', { tab_id: T, accept: true }, label);
+  const answer = early ?? (await Promise.race([pending, sleep(10_000).then(() => null)]));
+  const dialog = `dialog_respond: ${closed.text.slice(0, 200)}`;
+  if (early === null) {
+    throw new StepFailure(
+      'click.opens-dialog',
+      `the click did not answer within 8 s while the alert was open; after closing it: ${answer ? (answer.error?.message ?? answer.value.text.slice(0, 300)) : 'still no answer'}; ${dialog}`,
+    );
+  }
+  if (answer.error) throw answer.error;
+  const r = answer.value;
+  if (
+    r.isError ||
+    r.body?.hit_check !== 'not_verifiable' ||
+    !/dialog/i.test(String(r.body?.hit_check_note)) ||
+    closed.isError
+  ) {
+    throw new StepFailure('click.opens-dialog', `answer: ${r.text.slice(0, 400)}; ${dialog}`);
+  }
+  stepDone(label, t);
+}
+
 async function clickAfterScroll(T) {
   const label = 'browser.click.after-scroll';
   const t = now();

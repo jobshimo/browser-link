@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { HIT_CHECK_FRAME_NOTE } from './inpage/builders.js';
 import {
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
@@ -215,6 +216,44 @@ describe('runFlow — happy path', () => {
     expect(deps.performClick).toHaveBeenCalledWith(
       expect.objectContaining({ selector: '#x', force: true }),
     );
+  });
+
+  test('a click step on an iframe element says its landing was not verified', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            result: {
+              clicked: '#frame',
+              tag: 'iframe',
+              hit_check: 'not_verifiable',
+              hit_check_note: HIT_CHECK_FRAME_NOTE,
+            },
+          }) satisfies ActionOutcome<ClickStepResult>,
+      ),
+    });
+    const result = await runFlow([{ click: { selector: '#frame' } }], deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([
+      { ok: true, hit_check: 'not_verifiable', hit_check_note: HIT_CHECK_FRAME_NOTE },
+    ]);
+  });
+
+  test('a click step whose landing was verified carries no hit_check', async () => {
+    const deps = makeDeps({
+      performClick: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            result: { clicked: '#x', tag: 'button' },
+          }) satisfies ActionOutcome<ClickStepResult>,
+      ),
+    });
+    const result = await runFlow([{ click: { selector: '#x' } }], deps);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.results).toEqual([{ ok: true }]);
   });
 
   test('a click step on a target with no box fails with the standalone message (D4)', async () => {

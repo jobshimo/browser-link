@@ -158,7 +158,7 @@ describe('perform* parity guard: extension background.ts vs server cdp/transport
 
   test('the comparison is not vacuous: a one-token change is reported', () => {
     const { server } = normalised('performClick');
-    const mutated = server.map((l) => l.replace("'mousePressed'", "'mouseMoved'"));
+    const mutated = server.map((l) => l.replace("'not_verifiable'", "'verified'"));
     expect(firstDifference(server, mutated)).toMatch(/line \d+:/);
   });
 });

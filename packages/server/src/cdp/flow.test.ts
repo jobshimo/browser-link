@@ -77,6 +77,29 @@ describe('runFlow', () => {
     }
   });
 
+  test('a click step on an iframe element carries hit_check and its note (landing not verified)', async () => {
+    const note =
+      'the target is a frame element (iframe, frame, embed or object): the press is delivered into the document inside it, where it cannot be watched, so where the click landed was not verified';
+    const deps = fakeDeps({
+      performClick: vi.fn(async () => ({
+        ok: true,
+        result: {
+          clicked: '#frame',
+          tag: 'iframe',
+          hit_check: 'not_verifiable' as const,
+          hit_check_note: note,
+        },
+      })),
+    });
+    const result = await runFlow([{ click: { selector: '#frame' } }], deps);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.results).toEqual([
+        { ok: true, hit_check: 'not_verifiable', hit_check_note: note },
+      ]);
+    }
+  });
+
   test('fails fast: a failing step stops the flow and returns a recovery snapshot', async () => {
     const deps = fakeDeps({
       performClick: vi.fn(async () => ({ ok: false, error: 'Element not found: #x' })),
