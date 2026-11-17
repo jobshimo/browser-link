@@ -528,7 +528,9 @@ first differing call with both values. It runs on PRs that touch the extension
 source, `packages/core`, the server's CDP or protocol code, or the extension
 build, and adds a self-diff (two runs of the same build) when the harness, the
 table or the fixtures change. Locally: `pnpm build`, then
-`node scripts/e2e-diff.mjs origin/main` (or `--self-diff-only`).
+`node scripts/e2e-diff.mjs origin/main` (or `--self-diff-only`). A PR meant to
+change behavior carries the `behavior-change` label instead (see
+[End-to-end cases and the differential gate](#end-to-end-cases-and-the-differential-gate)).
 
 ## How it works
 
@@ -3065,6 +3067,35 @@ together with `pnpm run test`, or scope to one package with
 > done, stop `pnpm run dev` and reopen the client so it can spawn its
 > own server. `pnpm run build` (no watch) does **not** touch the port,
 > so you can always rebuild while the client is open.
+
+### End-to-end cases and the differential gate
+
+Every tool in the server's catalogue (`TOOL_CATALOGUE` in
+`packages/server/src/permissions.ts`) has an e2e case in
+`packages/e2e/src/run.mjs`, or an exemption with its reason, in
+`packages/e2e/src/tool-cases.mjs`. `pnpm run test` fails when a new tool has
+neither, or when the table names a case `run.mjs` no longer has: add the case
+(or the exemption) in the same PR as the tool.
+
+The `e2e-diff` job compares the PR's build with its merge-base's build and
+fails on any difference (see [Chrome version](#chrome-version)). The
+normalise table masks only the timing keys it lists, and only in tool results;
+recorded arguments are compared as sent, so a changed default (`timeout_ms`,
+`settle_ms`) is a difference.
+
+A PR whose purpose is to change behavior follows the behavior-change flow:
+
+1. Keep it apart from refactors: one PR for the behavior change alone.
+2. Add the `behavior-change` label. The job re-runs when the label is added
+   or removed.
+3. Name the expected difference in the PR description: the tool, the field and
+   the old and new values.
+4. The job still runs and writes the first difference to the job log and the
+   step summary, then passes. Reviewers compare it with the description. A
+   harness failure, a setup error, or a self-diff difference (two runs of the
+   same build) still fails the job.
+
+Without the label, a difference fails the job.
 
 Architecture decisions are kept in [`DECISIONS.md`](./DECISIONS.md).
 

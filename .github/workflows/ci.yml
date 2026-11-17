@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # The default types plus labeled/unlabeled, so adding or removing the
+    # `behavior-change` label re-runs the e2e-diff gate (it re-runs every job).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Top-level permissions are read-only — overridden per-job. The release
 # job below needs contents:write + id-token:write; everything else stays
@@ -252,6 +255,13 @@ jobs:
   # PRs do not trigger it: the workflow runs only on PRs to main, although the
   # script itself compares with merge-base(<target>, HEAD) and supports them.
   # Script exit codes: 1 difference, 2 harness failure, 3 setup error.
+  # Behavior-change flow: a PR whose purpose is to change behavior carries
+  # the `behavior-change` label and its description names the expected
+  # difference. With the label the job still computes the difference and
+  # writes it to the job log and the step summary, but exit 1 passes; a
+  # harness failure (2) or setup error (3) still fails. Without the label,
+  # exit 1 fails. The label is read as a boolean expression into env, never
+  # interpolated into the script.
   # The normalised base record is cached per base sha, harness hash and Chrome.
   e2e-diff:
     name: e2e differential (Chrome 118, ubuntu)
@@ -362,12 +372,15 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref }}
           BASE_RECORD: packages/e2e/build/e2e-base-record.json
+          BEHAVIOR_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'behavior-change') }}
         run: |
           set -euo pipefail
+          label=()
+          if [ "$BEHAVIOR_CHANGE" = true ]; then label=(--behavior-change); fi
           case "$MODE" in
             self) node scripts/e2e-diff.mjs --self-diff-only ;;
-            diff) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" ;;
-            diff-self) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" --self-diff ;;
+            diff) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" "${label[@]}" ;;
+            diff-self) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" --self-diff "${label[@]}" ;;
           esac
 
       - name: Save the base record
