@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.1](https://github.com/jobshimo/browser-link/compare/v1.3.0...v1.3.1) (2026-11-17)
+
+### Bug Fixes
+
+- **auth:** on Windows the peer check now identifies the process that opened the connection from the kernel's TCP table (`GetExtendedTcpTable`), its user from the process token and its path from `QueryFullProcessImageName`, in one PowerShell per check. A check takes about 0.4 s instead of about 1.5 s (measured on Windows 11), and a connection `netstat` had not listed yet is no longer refused. When that PowerShell cannot run (`Add-Type` blocked, a timeout, a reply it cannot read) the check falls back to `netstat` and CIM, as before, and the server logs one line naming the stage that failed. A refusal by the kernel-table check (another user, two owners) is final: the fallback never overrides it. No timeout changed.
+
+### Notes
+
+- With `peerExecutablePaths` (strict mode) on Windows, the path compared is the real file path the kernel reports, with junctions and symbolic links resolved. Each entry is compared as written and as it resolves on disk at the time of the check, so an entry through a junction keeps matching, and an entry naming the real file now also matches a program started through a junction. Only when the `netstat` fallback answers is the path the one the program was started with.
+- The kernel-table check reads IPv4 and IPv6 rows, so a peer connecting over IPv6 loopback is recognised.
+
 ## [1.3.0](https://github.com/jobshimo/browser-link/compare/v1.2.0...v1.3.0) (2026-11-17)
 
 After updating the server, reload the extension in `chrome://extensions` from the installed version: the extension and the server must be the same release.
