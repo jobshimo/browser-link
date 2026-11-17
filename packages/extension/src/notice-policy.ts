@@ -1,6 +1,6 @@
 /**
  * Pure decision and text-selection logic for the product notice in the
- * popup — no `chrome.*` here, same split as idle-policy.ts and
+ * popup — no `chrome.*` here, same split as idle-settings.ts and
  * flow-recording-policy.ts (popup.ts owns the storage I/O and the DOM).
  *
  * Language: the notice follows the interface language chosen with the

@@ -121,7 +121,7 @@ export interface ToolCancelMessage {
  * idle-ttl` / `config set flow-recording`). The extension compares it
  * against the timestamp it stamped on its own last LOCAL write (from the
  * popup) and only applies the incoming value when it is newer — see
- * `idle-policy.ts`'s `shouldAcceptIncomingSettings`, reused by
+ * `idle-settings.ts`'s `shouldAcceptIncomingSettings`, reused by
  * `flow-recording-policy.ts` for the second setting. Comparing raw
  * wall-clock timestamps across processes is safe here specifically
  * because the server and the browser always run on the same machine

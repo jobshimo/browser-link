@@ -124,20 +124,22 @@ import {
   type RunningFlowView,
 } from './flow-registry.js';
 import {
-  CONSOLE_IDLE_TTL_STORAGE_KEY,
   DEFAULT_IDLE_TTL_MINUTES,
   activityAfterFlowEnded,
   clampIdleTtlMinutes,
-  effectiveIdleTtlMinutes,
   idleHoldUntil,
-  parseIncomingSettings,
-  shouldAcceptIncomingSettings,
   shouldScheduleIdleSweep,
   tabsToDisconnectForIdle,
   type IdleCallInProgress,
   type IdleFlowHold,
+} from '@browser-link/core';
+import {
+  CONSOLE_IDLE_TTL_STORAGE_KEY,
+  effectiveIdleTtlMinutes,
+  parseIncomingSettings,
+  shouldAcceptIncomingSettings,
   type IncomingIdleSettings,
-} from './idle-policy.js';
+} from './idle-settings.js';
 import {
   DEFAULT_FLOW_RECORDING_ENABLED,
   FLOW_RECORDING_STORAGE_KEY,
@@ -210,7 +212,7 @@ const NETWORK_BUFFER_MAX = 200;
  *
  * The TTL has one value, owned by the console (`browser-link config set
  * idle-ttl`, 1.3.0): the server pushes it in `settings.update` and it is
- * stored under `CONSOLE_IDLE_TTL_STORAGE_KEY` (see idle-policy.ts). A value
+ * stored under `CONSOLE_IDLE_TTL_STORAGE_KEY` (see idle-settings.ts). A value
  * the popup stored before 1.3.0 is never applied. `idleTtlMinutesCache` is
  * the in-memory mirror the sweep reads on every tick: chrome.storage is
  * async, the sweep loop below is not, so the value is loaded once at
@@ -373,7 +375,7 @@ interface TabState {
   /** Last time the server talked to this tab (a tool.request landed).
    * Used by the WS-idle sweeper to disconnect tabs that have been silent
    * for longer than the user's configured `idleTtlMinutes` (see
-   * idle-policy.ts). Touched on every tool.request received AND once at
+   * core's idle-rules.ts). Touched on every tool.request received AND once at
    * connect time. */
   lastActivityAt: number;
   /** Tool calls this tab is still answering (BL-EXT-098): each holds the

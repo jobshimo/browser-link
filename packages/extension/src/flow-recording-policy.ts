@@ -1,18 +1,18 @@
 /**
  * Pure decision logic for the opt-in flow-recording setting, mirroring
- * idle-policy.ts's separation between chrome.* I/O (background.ts /
+ * idle-settings.ts's separation between chrome.* I/O (background.ts /
  * popup.ts) and the pure precedence/parsing rules tested here.
  *
  * Deliberately does NOT redefine a last-write-wins comparator — that rule
  * is generic (compare two epoch-ms timestamps, newest wins) and already
- * lives as `shouldAcceptIncomingSettings` in idle-policy.ts. A second copy
+ * lives as `shouldAcceptIncomingSettings` in idle-settings.ts. A second copy
  * here would just be a fork waiting to drift; this setting imports that one
  * function. (The idle TTL no longer uses it: since 1.3.0 the console owns that
  * value and the extension applies it unconditionally.)
  */
 
 /** chrome.storage key the setting is persisted under, in
- * `chrome.storage.local` — same storage area as idle-policy.ts's
+ * `chrome.storage.local` — same storage area as idle-settings.ts's
  * `CONSOLE_IDLE_TTL_STORAGE_KEY`, a per-device preference. */
 export const FLOW_RECORDING_STORAGE_KEY = 'flowRecordingEnabled';
 
@@ -51,7 +51,7 @@ export interface IncomingFlowRecordingSettings {
  * flow-recording pair, or both — this guard looks ONLY at the
  * flow-recording fields and returns `null` when they are absent or
  * malformed, independent of whether the idle-TTL fields parse. Mirrors
- * `parseIncomingSettings` in idle-policy.ts field-for-field.
+ * `parseIncomingSettings` in idle-settings.ts field-for-field.
  */
 export function parseIncomingFlowRecordingSettings(
   value: unknown,

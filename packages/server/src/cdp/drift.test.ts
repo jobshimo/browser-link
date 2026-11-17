@@ -34,6 +34,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 // here = packages/server/src/cdp
 const EXT_INPAGE = join(here, '..', '..', '..', 'extension', 'src', 'inpage');
 const EXT_ROOT = join(here, '..', '..', '..', 'extension', 'src');
+// The detached-flow ceiling lives in core since slice 5b-2 (flow-registry.ts re-exports it).
+const CORE_ROOT = join(here, '..', '..', '..', 'core', 'src');
 const SRV_INPAGE = join(here, 'inpage');
 const SRV_ROOT = here;
 const SRV_TOOLS = join(here, '..', 'tools');
@@ -250,14 +252,14 @@ describe('manually-synced constant drift guard: the detached-flow ceiling', () =
       read(join(SRV_TOOLS, 'browser-dispatch.ts')),
       'MAX_DETACHED_FLOW_TIMEOUT_MS',
     );
-    const extension = numericConstant(
-      read(join(EXT_ROOT, 'flow-registry.ts')),
+    const core = numericConstant(
+      read(join(CORE_ROOT, 'support', 'flow-limits.ts')),
       'MAX_DETACHED_FLOW_MS',
     );
     const cdp = numericConstant(read(join(SRV_ROOT, 'detached-flows.ts')), 'MAX_DETACHED_FLOW_MS');
 
     expect(dispatch).toBe(30 * 60_000);
-    expect(extension).toBe(dispatch);
+    expect(core).toBe(dispatch);
     expect(cdp).toBe(dispatch);
   });
 

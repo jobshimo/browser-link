@@ -247,7 +247,7 @@ export interface BrowserLinkConfig {
   allowedExtensionIds?: string[];
 }
 
-/** Safety-rail bounds mirrored from the extension's `idle-policy.ts` — kept
+/** Safety-rail bounds mirrored from core's `idle-rules.ts` — kept
  * as an independent copy (not a shared import) for the same reason
  * `messages.ts` duplicates the wire types instead of depending on
  * `@browser-link/shared`: the server publishes to npm standalone and must

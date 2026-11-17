@@ -6,7 +6,7 @@
  * `chrome.tabs.onUpdated` navigation signal, and the actual step array for
  * an in-progress recording; every DECISION about what that array should
  * contain next lives here, unit-tested without a real browser tab — same
- * separation `idle-policy.ts` and `settle.ts` already established.
+ * separation `idle-settings.ts` and `settle.ts` already established.
  *
  * PRIVACY NOTE: `toFlowStep` is the ONLY place a `type` step's `text`
  * field is ever set, and it is ALWAYS the constant `TEXT_PLACEHOLDER`
