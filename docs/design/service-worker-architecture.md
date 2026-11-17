@@ -213,9 +213,11 @@ Consequences, measured:
   guarded, by an AST comparison (`cdp/transport-parity.test.ts` `HANDLERS`).
   (Slice 10, 1.4.16, moved `performFind` and `performClick` into core
   `actions/`, run by both transports through the tool registry; slice 11,
-  1.4.17, moved `performType` and `performPress` the same way, so `HANDLERS`
-  now lists `performWaitFor` only, and the sensitive-field mapping is the
-  `sensitive` kind of 3.4.)
+  1.4.17, moved `performType` and `performPress` the same way, and the
+  sensitive-field mapping is the `sensitive` kind of 3.4; slice 13, 1.4.19,
+  moved `performWaitFor`, so `HANDLERS` is empty and the file keeps only its
+  comparison machinery and a guard that no `perform*` is declared on a
+  transport again, until slice 22 deletes it.)
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
@@ -676,6 +678,19 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   that scope (no `drag`, no `capture-buffers`), and changing it is a
   behavior-change PR (7(e)).
 - `background.ts` has no tool `case` labels after slice 18 (fitness test 3).
+- As built in slice 13 (1.4.19): `wait_for` is registered with
+  `requires: ['evaluator']` and a call-dependent requirement, `needs(params)`:
+  a `network_url` wait needs `capture-buffers` and carries the text the agent
+  reads without it. `dispatchTool` returns that text as an `action` failure
+  when the transport's provides set lacks the requirement, so cdp-direct (which
+  provides no `capture-buffers`) answers exactly what its `performWaitFor`
+  answered. `capture-buffers` is a provides-set entry, not a port: the
+  extension gives `CommonDeps.captureBuffers`, a read-only `CaptureWatch`
+  (`session/page-driver.ts`, `finishedUrls()`) over its `TabSession` network
+  buffer (`sessionCaptureWatch`), outside `ports/` as the dialog watch is. A
+  flow's wait step reaches `performWaitFor` without the registry, so the action
+  makes the same check on the absence of the watch. `CDP_DIRECT_PROVIDES` is
+  pinned by `cdp/provides.test.ts`.
 
 ### 3.4 Failure contract
 

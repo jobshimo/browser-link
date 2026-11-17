@@ -58,10 +58,11 @@ import {
   type FindStepResult,
   type PressStepResult,
   type TypeStepResult,
+  type WaitForStepResult,
 } from '../support/action-results.js';
 
 // The action vocabulary lives in `support/action-results.ts` since slice 10
-// (the actions cannot import `flow`; type and press joined in slice 11);
+// (the actions cannot import `flow`; type and press joined in slice 11, wait_for in slice 13);
 // re-exported for the modules that read it from here.
 export {
   type ActionOutcome,
@@ -69,6 +70,7 @@ export {
   type FindStepResult,
   type PressStepResult,
   type TypeStepResult,
+  type WaitForStepResult,
   PROGRAMMATIC_CLICK_NOTE,
   noBoxClickMessage,
   notClickableMessage,
@@ -144,22 +146,6 @@ export interface WaitForStepParams {
   condition?: string;
   timeout_ms?: number;
   poll_interval_ms?: number;
-}
-
-export interface WaitForStepResult {
-  matched: boolean;
-  elapsed_ms: number;
-  checks: number;
-  /** `'timeout'` on a genuine non-match. `'cancelled'` when the poll loop
-   * was cut short by the flow's cancellation flag — a DIFFERENT outcome
-   * that the step executor must not report as a timeout failure, since the
-   * condition was never given its full budget. Both perform* implementations
-   * (`background.ts`, `cdp/transport.ts`) set this. */
-  reason?: string;
-  /** Only on a timeout of a `wait_for` by ref (`visible` / `attached`) whose
-   * element was gone at the last poll: `<ref> not found in document
-   * <doc_id>: the element is gone, take a new snapshot`. */
-  ref_gone?: string;
 }
 
 /** Mirrors the standalone `browser.drag` tool's params exactly (minus

@@ -5,13 +5,12 @@
  * executes each wire-level tool directly over a raw CDP-over-WebSocket
  * connection (`./client.ts`) instead of routing through the extension.
  *
- * Mirrors `packages/extension/src/background.ts`'s `handleTool` switch and
- * its extracted `performWaitFor` helper
- * function-for-function, using the SAME in-page builder strings
+ * Mirrors `packages/extension/src/background.ts`'s `handleTool` switch
+ * case-for-case, using the SAME in-page builder strings
  * (`../generated/core/inpage/builders.ts`, the generated mirror of the core
  * module) and the SAME `browser.flow` step engine (generated from core's
  * `flow/flow-engine.ts`). `find` and `click` (slice 10), `type` and
- * `press` (slice 11) run through core's tool registry (`dispatchTool`,
+ * `press` (slice 11) and `wait_for` (slice 13) run through core's tool registry (`dispatchTool`,
  * outcome mapped by `./tool-outcome.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
@@ -29,9 +28,7 @@ import {
   withValuesHiddenNote,
   buildSnapshotJs,
   buildStateJs,
-  buildWaitForSelectorJs,
   type SnapshotOpts,
-  type WaitForSelectorCondition,
 } from '../generated/core/inpage/builders.js';
 import {
   runScreenshot,
@@ -47,6 +44,7 @@ import { performClick } from '../generated/core/actions/perform-click.js';
 import { performFind } from '../generated/core/actions/perform-find.js';
 import { performPress } from '../generated/core/actions/perform-press.js';
 import { performType } from '../generated/core/actions/perform-type.js';
+import { performWaitFor } from '../generated/core/actions/perform-wait-for.js';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { dispatchTool } from '../generated/core/tools/registry.js';
 import type { Requirement, ToolDeps } from '../generated/core/tools/requirement.js';
@@ -62,13 +60,10 @@ import {
   shouldStopDetachedFlow,
 } from './detached-flows.js';
 import {
-  refFailureMessage,
   runFlow,
-  type ActionOutcome,
   type FlowDeps,
   type FlowResult,
   type FlowStep,
-  type WaitForStepResult,
 } from '../generated/core/flow/flow-engine.js';
 
 // The declarative v1 support table lives in `./support.ts` (zero
@@ -250,8 +245,10 @@ function pageDriver(client: CdpClient): PageDriverHandle {
   return drivers.get(client) ?? newPageDriver(client);
 }
 
-/** What cdp-direct provides to the tool registry (design 3.3). */
-const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
+/** What cdp-direct provides to the tool registry (design 3.3). It does not
+ * provide `capture-buffers`: it never enables the Network domain, so a
+ * `network_url` wait is refused (v1 scope; changing it is a behavior change). */
+export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
   'keyboard',
   'pointer',
@@ -355,188 +352,6 @@ interface CdpEvaluateResult<T> {
   exceptionDetails?: { text?: string; exception?: { description?: string } };
 }
 
-// === perform* action helpers ==============================================
-// Mirror background.ts's performWaitFor (performType and performPress moved
-// to core's `actions/` in slice 11) — see this module's header comment.
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof ms === 'number' && ms > 0 && ms < 60_000) {
-      setTimeout(resolve, ms);
-    } else {
-      setTimeout(resolve, 0);
-    }
-  });
-}
-
-async function performWaitFor(
-  client: CdpClient,
-  params: {
-    selector?: string;
-    ref?: string;
-    expression?: string;
-    network_url?: string;
-    condition?: string;
-    timeout_ms?: number;
-    poll_interval_ms?: number;
-  },
-  /** Cancellation flag of the flow this wait belongs to, when it is a flow
-   * step (see the `flow` case below). Checked on EVERY poll tick, which is
-   * what makes the advertised worst-case cancellation latency of one step
-   * true for a step that can legitimately park for 30 seconds. Absent for
-   * the standalone `browser.wait_for` tool, which has no flow to be
-   * cancelled with. */
-  shouldCancel?: () => boolean,
-): Promise<ActionOutcome<WaitForStepResult>> {
-  // cdp-direct never enables the Network domain (console/network are out of
-  // v1 scope — see CDP_TOOL_SUPPORT), so a network_url wait has nothing to
-  // poll against. This is a narrow, explicitly-commented exception to the
-  // tool-level support table, not a scattered gate: every OTHER wait_for
-  // mode (selector, expression) is fully supported.
-  if (params.network_url !== undefined) {
-    return {
-      ok: false,
-      error:
-        'wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.',
-    };
-  }
-  try {
-    const waitSelector = params.selector;
-    const waitExpression = params.expression;
-    const waitCondition = params.condition ?? 'visible';
-    const MAX_WAIT_TIMEOUT_MS = 30_000;
-    const MIN_POLL_MS = 50;
-    const MAX_POLL_MS = 1_000;
-    const requestedTimeout = params.timeout_ms ?? 5_000;
-    const timeoutMs =
-      requestedTimeout < MAX_WAIT_TIMEOUT_MS ? requestedTimeout : MAX_WAIT_TIMEOUT_MS;
-    const requestedPoll = params.poll_interval_ms ?? 100;
-    const pollIntervalMs =
-      requestedPoll < MIN_POLL_MS
-        ? MIN_POLL_MS
-        : requestedPoll > MAX_POLL_MS
-          ? MAX_POLL_MS
-          : requestedPoll;
-
-    let check: (() => Promise<boolean>) | null = null;
-    // Set when a ref probe reports that the page has no observer: the ref
-    // can never resolve, so the wait fails instead of timing out (or, for
-    // `detached` / `hidden`, matching a ref it never looked up).
-    // `stale` is set while the last probe found the ref's element gone
-    // (`visible` / `attached` only; `hidden` / `detached` count it as met);
-    // `docChanged` says the ref belongs to another document, which can never
-    // come back, so the wait fails at once instead of polling.
-    const refProbe: {
-      unavailable: boolean;
-      stale: { reason: string; doc_id?: string } | null;
-      docChanged: boolean;
-    } = { unavailable: false, stale: null, docChanged: false };
-    if (waitSelector !== undefined) {
-      const expr = buildWaitForSelectorJs(waitSelector, waitCondition as WaitForSelectorCondition);
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(client).evaluator.evaluate(expr);
-          return Boolean(result);
-        } catch {
-          return false;
-        }
-      };
-    } else if (params.ref !== undefined) {
-      const expr = buildWaitForSelectorJs(
-        { ref: params.ref },
-        waitCondition as WaitForSelectorCondition,
-      );
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(client).evaluator.evaluate(expr);
-          if (typeof result === 'object' && result !== null) {
-            const probe = result as { reason?: unknown; doc_id?: unknown; doc_changed?: unknown };
-            if (probe.reason === 'ref-stale') {
-              refProbe.stale = {
-                reason: 'ref-stale',
-                ...(typeof probe.doc_id === 'string' ? { doc_id: probe.doc_id } : {}),
-              };
-              refProbe.docChanged = probe.doc_changed === true;
-              // A node that is merely detached may be re-attached or
-              // re-rendered, which is what the wait may be for: keep polling.
-              return refProbe.docChanged;
-            }
-            refProbe.unavailable = true;
-            return true;
-          }
-          refProbe.stale = null;
-          return result === true;
-        } catch {
-          return false;
-        }
-      };
-    } else if (waitExpression !== undefined) {
-      const wrapped = `Boolean(${waitExpression})`;
-      check = async (): Promise<boolean> => {
-        try {
-          const result = await pageDriver(client).evaluator.evaluate(wrapped);
-          return Boolean(result);
-        } catch {
-          return false;
-        }
-      };
-    }
-
-    const startedAt = Date.now();
-    let checks = 0;
-    let matched = false;
-    let cancelled = false;
-    while (check) {
-      if (shouldCancel?.() === true) {
-        cancelled = true;
-        break;
-      }
-      checks++;
-      if (await check()) {
-        matched = true;
-        break;
-      }
-      if (Date.now() - startedAt >= timeoutMs) break;
-      await sleep(pollIntervalMs);
-    }
-    const elapsedMs = Date.now() - startedAt;
-    if (refProbe.unavailable && params.ref !== undefined) {
-      return {
-        ok: false,
-        error: refFailureMessage({ reason: 'observer-unavailable' }, params.ref) ?? '',
-      };
-    }
-    // A ref of another document can never match: fail now with the owner's
-    // sentence. (A merely detached node keeps the timeout result, below.)
-    if (refProbe.stale !== null && params.ref !== undefined && refProbe.docChanged) {
-      return { ok: false, error: refFailureMessage(refProbe.stale, params.ref) ?? '' };
-    }
-    // The element the ref names was gone at the last poll: the timeout result
-    // keeps its shape and carries the sentence in `ref_gone`.
-    const refGone =
-      refProbe.stale !== null && params.ref !== undefined && !cancelled && !matched
-        ? (refFailureMessage(refProbe.stale, params.ref) ?? '').replace(/^ref-stale: /, '')
-        : '';
-    // 'cancelled' is deliberately distinct from 'timeout': the step
-    // executor turns a timeout into a flow FAILURE (with a recovery
-    // snapshot) and a cancellation into a clean `stopped_by: 'cancelled'`.
-    // Reporting a stopped wait as a timeout would invent a diagnosis for a
-    // condition that was never given its budget.
-    const result: WaitForStepResult = matched
-      ? { matched: true, elapsed_ms: elapsedMs, checks }
-      : {
-          matched: false,
-          elapsed_ms: elapsedMs,
-          checks,
-          reason: cancelled ? 'cancelled' : 'timeout',
-          ...(refGone ? { ref_gone: refGone } : {}),
-        };
-    return { ok: true, result };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
 /** The perform* bindings `runFlow` needs over one CDP connection, in one
  * place so the foreground run, the dry-run projection and the detached run
  * cannot drift apart — the same role `buildFlowDeps` plays in the
@@ -558,7 +373,7 @@ function buildCdpFlowDeps(
     performClick: (cp) => performClick(actionDeps(client), cp),
     performType: (tp) => performType(actionDeps(client), tp),
     performPress: (pp) => performPress(actionDeps(client), pp),
-    performWaitFor: (wp) => performWaitFor(client, wp, shouldStopWaiting),
+    performWaitFor: (wp) => performWaitFor(actionDeps(client), wp, shouldStopWaiting),
     shouldCancel,
     clock: systemClock,
     // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
@@ -715,20 +530,6 @@ export async function callCdpTool(
         throw new Error(ex.exception?.description ?? ex.text ?? 'Evaluation failed');
       }
       return res.result.value;
-    }
-
-    case 'wait_for': {
-      const outcome = await performWaitFor(client, {
-        selector: typeof p.selector === 'string' ? p.selector : undefined,
-        ref: typeof p.ref === 'string' ? p.ref : undefined,
-        expression: typeof p.expression === 'string' ? p.expression : undefined,
-        network_url: typeof p.network_url === 'string' ? p.network_url : undefined,
-        condition: typeof p.condition === 'string' ? p.condition : undefined,
-        timeout_ms: typeof p.timeout_ms === 'number' ? p.timeout_ms : undefined,
-        poll_interval_ms: typeof p.poll_interval_ms === 'number' ? p.poll_interval_ms : undefined,
-      });
-      if (!outcome.ok) throw new Error(outcome.error);
-      return outcome.result;
     }
 
     case 'flow': {

@@ -93,6 +93,15 @@ export interface DialogWatch {
   isOpen(): boolean;
 }
 
+/** The transport's view of the requests its tab has captured. Read-only and
+ * outside `ports/` (design revisions 7 and 8): the extension's watch reads
+ * its tab's `TabSession` network buffer (`session/tab-session.ts`
+ * `sessionCaptureWatch`); cdp-direct captures nothing and gives none. */
+export interface CaptureWatch {
+  /** The URLs of the captured requests that have finished, oldest first. */
+  finishedUrls(): Iterable<string>;
+}
+
 export interface PageDriverDeps {
   session: CdpSession;
   page: PageInfo;

@@ -13,6 +13,14 @@ import type { DepsFor, Requirement, ToolDeps } from './requirement.js';
  * behavior PR unifies them. */
 export type Transport = 'extension' | 'cdp-direct';
 
+/** A requirement that depends on the call's params (`wait_for` needs the
+ * capture buffers only in `network_url` mode), with the text the agent
+ * reads when the transport does not provide it. */
+export interface ParamRequirement {
+  requirement: Requirement;
+  message: string;
+}
+
 export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   /** The wire name: 'click', not 'browser.click'. */
   name: string;
@@ -21,6 +29,8 @@ export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   listed: boolean;
   /** Today's argument coercion of each transport, from the raw params. */
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => P>>;
+  /** What this call needs beyond `requires`, from its coerced params. */
+  needs?(params: P): readonly ParamRequirement[];
   handler(deps: DepsFor<R>, params: P): Promise<ToolOutcome>;
 }
 
@@ -32,6 +42,7 @@ export interface RegisteredTool {
   requires: readonly Requirement[];
   listed: boolean;
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => unknown>>;
+  needs?(params: never): readonly ParamRequirement[];
   handler(deps: ToolDeps, params: never): Promise<ToolOutcome>;
 }
 
@@ -49,7 +60,9 @@ export function createToolRegistry(entries: readonly RegisteredTool[]): ToolRegi
 
 /**
  * Run `tool` through its entry: `unknown-tool` when it is not registered,
- * `unsupported` when the transport does not provide a requirement, `thrown`
+ * `unsupported` when the transport does not provide a requirement (an
+ * `action` failure with the entry's own text when only this call's params
+ * need it), `thrown`
  * when the coercion or the handler throws; otherwise the handler's outcome.
  */
 export async function dispatchTool(
@@ -66,6 +79,10 @@ export async function dispatchTool(
   if (missing.length > 0) return { ok: false, failure: { kind: 'unsupported', tool, missing } };
   try {
     const coerced = entry.coerce[transport]((params ?? {}) as Record<string, unknown>);
+    // A requirement of this call alone is an `action` failure with the
+    // entry's own text, the one the tool reported before the registry.
+    const unmet = entry.needs?.(coerced as never).find((need) => !provided.has(need.requirement));
+    if (unmet) return { ok: false, failure: { kind: 'action', message: unmet.message } };
     return await entry.handler(deps, coerced as never);
   } catch (err) {
     return thrownFailure(err);
