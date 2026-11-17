@@ -131,3 +131,61 @@ export type ResponseBody = {
   body: string;
   base64Encoded: boolean;
 };
+
+/** A download a capture holds (`Downloads.captureAround`, slice 16), as the
+ * transport's download capture reports it; the `download` tool hands every
+ * field to the server, which fetches the bytes and settles the hold. */
+export interface CapturedDownload {
+  /** The browser's id of the held download: the server hands it back to `settle`. */
+  download_id: number;
+  /** Where the bytes actually come from (after redirects, when the browser knows). */
+  url: string;
+  original_url: string;
+  /** The browser's suggested name: the server sanitizes it to a basename. */
+  filename: string;
+  mime: string;
+  /** The browser's total size, or null when it does not know it. The server
+   * compares its re-fetch with this, the type and the URL before the
+   * browser's copy may be erased (D17). No request method is reported, so
+   * none is sent; the server reads a missing method as unknown. */
+  total_bytes: number | null;
+}
+
+/**
+ * How a capture's wait ended:
+ *   - `captured`: the tab's download, held until `settle`.
+ *   - `unattributed`: at least one download appeared in the browser during
+ *     the wait but none could be tied to the tab with certainty; all were left
+ *     alone.
+ *   - `timeout`: no download appeared in the browser during the wait.
+ */
+export type CaptureOutcome =
+  | { state: 'captured'; download: CapturedDownload }
+  | { state: 'unattributed' }
+  | { state: 'timeout' };
+
+/**
+ * What happened to the browser's own download after `Downloads.settle` (the
+ * `download_settle` result field keeps its published name, `chrome_download`,
+ * and its values):
+ *   - `removed`: cancelled and erased from the browser's list (only after the
+ *     file was saved).
+ *   - `cancelled`: cancelled, but the erase failed: the browser's list shows
+ *     it as cancelled.
+ *   - `left_in_chrome`: the capture held it and released it untouched
+ *     (nothing saved, the cancel failed, or an identical download appeared);
+ *     the browser carries on with it.
+ *   - `not_held`: the capture holds no such download (unknown id, already
+ *     settled, or its hold expired and it was released). What became of the
+ *     browser's copy is not known there. An older server reads the value as
+ *     unknown, which is the same answer.
+ */
+export type DownloadSettleOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
+
+/** What the action run inside a capture answered: a failed action ends the
+ * capture with its error text. */
+export type CaptureActOutcome = { ok: true } | { ok: false; error: string };
+
+/** A capture's answer: how its wait ended, or the failed action's error. */
+export type CaptureAroundResult =
+  { ok: true; outcome: CaptureOutcome } | { ok: false; error: string };

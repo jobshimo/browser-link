@@ -15,7 +15,9 @@
 // slice 13 the wait_for action and entry, and the capture watch it reads;
 // slice 14 the drag action and entry, and the drag input and CDP event wait;
 // slice 15 the page read and capture entries, the canvas-screenshot builder
-// and the navigator, screen capture and response bodies.
+// and the navigator, screen capture and response bodies; slice 16 the dialog,
+// permission and download entries, the dialog input, and the downloads and
+// content-settings ports.
 
 export type * from './ports/index.js';
 export * from './ports/contract/index.js';
@@ -45,6 +47,8 @@ export * from './tools/interaction.js';
 export * from './tools/wait-for.js';
 export * from './tools/drag.js';
 export * from './tools/page-read.js';
+export * from './tools/dialog-permission.js';
+export * from './tools/download.js';
 export * from './tools/catalog.js';
 export * from './tools/outcome-mapping.contract.js';
 export * from './inpage/builders.js';

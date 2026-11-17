@@ -3,7 +3,8 @@
 // describe what is used: the pointer joined with click (slice 10),
 // `insertText` with type (slice 11), the drag input and the CDP event wait
 // with drag (slice 14), the navigator, the screen capture and the response
-// bodies with navigate, screenshot and network_body (slice 15). A port may
+// bodies with navigate, screenshot and network_body (slice 15), the dialog
+// input with dialog_respond (slice 16). A port may
 // answer the page's reply to the core's own command; it never reports state
 // the transport observes on its own (design revision 9).
 
@@ -68,6 +69,14 @@ export interface Navigator {
   navigate(url: string): Promise<void>;
 }
 
+export interface DialogInput {
+  /** One `Page.handleJavaScriptDialog`: accept or dismiss the dialog the page
+   * shows, with `promptText` only when given; resolves when the page answered
+   * it, rejects with the page's error when no dialog is showing. Input only:
+   * which dialog is pending is the transport's state (`DialogWatch`). */
+  respond(accept: boolean, promptText?: string): Promise<void>;
+}
+
 export interface ScreenCapture {
   /** One `Page.getLayoutMetrics`: the page's answer, typed to the fields the
    * screenshot plan reads. A failed command rejects. */
@@ -99,6 +108,7 @@ export interface PageDriver {
   drag: DragInput;
   events: CdpEvents;
   navigator: Navigator;
+  dialog: DialogInput;
   screen: ScreenCapture;
   responses: ResponseBodies;
   settler: Settler;

@@ -47,6 +47,8 @@
  * one and shares it between the wait and the holds.
  */
 
+import type { CaptureOutcome, DownloadSettleOutcome } from '@browser-link/core';
+
 /** The `DownloadItem` fields the capture reads. */
 export interface DeterminingItem {
   id: number;
@@ -84,49 +86,9 @@ export interface TabDownloadSignals {
   subscribe(onDownloadWillBegin: (url: string) => void): () => void;
 }
 
-export interface CapturedDownload {
-  /** Chrome's id of the held download — the server hands it back to `settle`. */
-  download_id: number;
-  /** Where the bytes actually come from (after redirects when Chrome knows). */
-  url: string;
-  original_url: string;
-  /** Chrome's suggested name — the server sanitizes it to a basename. */
-  filename: string;
-  mime: string;
-  /** Chrome's total size, or null when it does not know it. The server
-   * compares its re-fetch with this, the type and the URL before Chrome's
-   * copy may be erased (D17). Chrome reports no request method, so none is
-   * sent; the server reads a missing method as unknown. */
-  total_bytes: number | null;
-}
-
-/**
- * How the wait ended:
- *   - `captured`: the tab's download, held until `settle`.
- *   - `unattributed`: at least one download appeared in Chrome during the wait
- *     but none could be tied to the tab with certainty; all were left alone.
- *   - `timeout`: no download appeared in Chrome during the wait.
- */
-export type CaptureOutcome =
-  | { state: 'captured'; download: CapturedDownload }
-  | { state: 'unattributed' }
-  | { state: 'timeout' };
-
-/**
- * What happened to Chrome's own download after `settle`:
- *   - `removed`: cancelled and erased from Chrome's list (only after the file
- *     was saved).
- *   - `cancelled`: cancelled, but the erase failed: Chrome's list shows it as
- *     cancelled.
- *   - `left_in_chrome`: this extension held it and released it untouched
- *     (nothing saved, the cancel failed, or an identical download appeared);
- *     Chrome carries on with it.
- *   - `not_held`: this extension holds no such download (unknown id, already
- *     settled, or its hold expired and it was released). What became of
- *     Chrome's copy is not known here. An older server reads the value as
- *     unknown, which is the same answer.
- */
-export type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
+/** The download, the wait's outcome and the settle answer are the
+ * `Downloads` port's values (core `ports/values.ts`, slice 16). */
+export type { CapturedDownload, CaptureOutcome, DownloadSettleOutcome } from '@browser-link/core';
 
 export interface ArmedCapture {
   result: Promise<CaptureOutcome>;
@@ -143,7 +105,7 @@ export interface ArmOptions {
 
 export interface DownloadCapture {
   arm(opts: ArmOptions): ArmedCapture;
-  settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome>;
+  settle(downloadId: number, saved: boolean): Promise<DownloadSettleOutcome>;
 }
 
 /** The URLs a Chrome download is known by. */
@@ -298,7 +260,7 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
       };
     },
 
-    async settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome> {
+    async settle(downloadId: number, saved: boolean): Promise<DownloadSettleOutcome> {
       const held = takeHold(downloadId);
       // Not held: an unknown id, one already settled, or a hold that expired
       // and was released. What became of Chrome's download is not known here,
@@ -311,7 +273,7 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
       }
       // Cancel first: a cancelled download is never prompted for. Erase only
       // after a cancel that landed; release Chrome in every case.
-      let outcome: ChromeDownloadOutcome = 'left_in_chrome';
+      let outcome: DownloadSettleOutcome = 'left_in_chrome';
       try {
         await api.cancel(downloadId);
         outcome = 'cancelled';

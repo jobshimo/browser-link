@@ -47,6 +47,8 @@ import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
 import { createChromePageInfo } from './adapters/chrome-page-info.js';
+import { createChromeContentSettings } from './adapters/chrome-content-settings.js';
+import { createChromeDownloads } from './adapters/chrome-downloads.js';
 import {
   closeTabConnection,
   debuggerIntake,
@@ -58,11 +60,7 @@ import {
   type TabConnection,
   type TabEventListener,
 } from './app/tab-connection.js';
-import {
-  captureAround,
-  createDownloadCapture,
-  type TabDownloadSignals,
-} from './download-capture.js';
+import { createDownloadCapture } from './download-capture.js';
 import {
   MAX_DETACHED_FLOW_MS,
   appendFlowHistory,
@@ -743,14 +741,27 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'response-bodies',
   'capture-buffers',
   'canvas',
+  'dialog-input',
+  'downloads',
+  'content-settings',
 ]);
 
-/** What the core actions and the registry handlers use on one tab. */
+/** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
+ * so only one `browser.download` may wait for a download at a time. */
+const downloadCapture = createDownloadCapture(chrome.downloads);
+
+/** What the core actions and the registry handlers use on one tab. Adapters
+ * built per call hold no state; state lives in what they receive (the
+ * worker-wide `downloadCapture`, the tab's page driver), so a stateful
+ * adapter is never built here (design revision 10). */
 function actionDeps(tabId: number, session?: TabSession): ToolDeps {
   const driver = pageDriver(tabId);
   const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = driver;
-  const { navigator, screen, responses } = driver;
+  const { navigator, screen, responses, dialog } = driver;
   return {
+    'dialog-input': dialog,
+    downloads: createChromeDownloads(downloadCapture, tabId),
+    'content-settings': createChromeContentSettings(),
     evaluator,
     keyboard,
     pointer,
@@ -795,54 +806,6 @@ function cdp<T = unknown>(
   return debuggerSession(tabId, NO_LISTENERS).send<T>(method, params);
 }
 
-/**
- * Mapping from the CDP permission name (the contract `browser.set_permission`
- * accepts on the wire) to the `chrome.contentSettings` setting key. Only the
- * names that actually have a contentSettings surface in MV3 are listed —
- * `Browser.setPermission` covers more, but that domain is not reachable from
- * `chrome.debugger` attached to a tab.
- */
-const CONTENT_SETTING_BY_PERMISSION: Record<string, string | undefined> = {
-  geolocation: 'location',
-  notifications: 'notifications',
-  camera: 'camera',
-  microphone: 'microphone',
-  clipboardReadWrite: 'clipboard',
-  clipboardSanitizedWrite: 'clipboard',
-  sensors: 'sensors',
-};
-
-const STATE_TO_CONTENT_SETTING: Record<string, string | undefined> = {
-  granted: 'allow',
-  denied: 'block',
-  prompt: 'ask',
-};
-
-/**
- * Apply a `chrome.contentSettings.<setting>.set({ primaryPattern, setting })`
- * call without statically referencing each key — the `contentSettings`
- * surface is dynamic at the API level. We narrow `unknown` carefully so the
- * cast is the smallest possible.
- */
-async function applyContentSetting(
-  settingKey: string,
-  primaryPattern: string,
-  setting: string,
-): Promise<void> {
-  const root = (
-    chrome as unknown as {
-      contentSettings?: Record<string, unknown>;
-    }
-  ).contentSettings;
-  if (!root) throw new Error('chrome.contentSettings not available in this build');
-  const setter = root[settingKey] as
-    { set(details: { primaryPattern: string; setting: string }): Promise<void> } | undefined;
-  if (!setter || typeof setter.set !== 'function') {
-    throw new Error(`chrome.contentSettings.${settingKey} is not exposed in this Chrome build`);
-  }
-  await setter.set({ primaryPattern, setting });
-}
-
 /** Wait `ms` on a timer. The literal range check is CodeQL's range-branch
  * sanitizer for js/resource-exhaustion: out of range it waits 0 ms. */
 function sleep(ms: number): Promise<void> {
@@ -883,15 +846,14 @@ async function reportTopDocument(
 }
 
 /**
- * `handleFlow` through `handleSetPermission` — the extracted bodies of
- * the remaining standalone tool cases in `handleTool` below, which do not
- * run through core's tool registry (the actions moved to core's `actions/`
- * in slices 10, 11, 13 and 14, the page reads and captures to core's
- * `tools/page-read.ts` in slice 15). Each takes exactly the locals its original
- * `case` block closed over (`tabId`, `state`, `msg`, the raw params `p`,
- * and/or the `str`/`optStr` readers) and returns the same wire-level
- * `tool.response` envelope the case used to build inline — pure code
- * motion, not a rewrite of tool behavior.
+ * `handleFlow` and `handleFlowStatus`: the extracted bodies of the
+ * remaining standalone tool cases in `handleTool` below, which do not run
+ * through core's tool registry (the actions moved to core's `actions/` in
+ * slices 10, 11, 13 and 14, the page reads and captures to core's
+ * `tools/page-read.ts` in slice 15, the dialog, permission and download
+ * tools to `tools/dialog-permission.ts` and `tools/download.ts` in slice
+ * 16). Each takes the locals its original `case` block closed over and
+ * returns the same wire-level `tool.response` envelope the case built.
  */
 
 async function handleFlow(
@@ -1404,176 +1366,6 @@ async function flushPendingFlowEvents(tabId: number): Promise<void> {
   }
 }
 
-async function handleDialogRespond(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-  optStr: (key: string) => string | undefined,
-): Promise<ExtensionToServer> {
-  const accept = p.accept === true;
-  const promptText = optStr('prompt_text');
-  // No probing — if there is no dialog open, CDP returns an error.
-  // We propagate it; the caller decides if "no dialog to respond to"
-  // is a problem or a race they can ignore.
-  const params: Record<string, unknown> = { accept };
-  if (promptText !== undefined) params.promptText = promptText;
-  await cdp(tabId, 'Page.handleJavaScriptDialog', params);
-  return {
-    kind: 'tool.response',
-    id: msg.id,
-    ok: true,
-    result: { accepted: accept },
-  };
-}
-
-/** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
- * so only one `browser.download` may wait for a download at a time. */
-const downloadCapture = createDownloadCapture(chrome.downloads);
-
-/** How long a captured download stays held after the wait, beyond the
- * download's own budget: the server's fetch gets what the wait left plus one
- * bridge slack (10 s), then writes and sends `download_settle`. A hold nobody
- * settles is released untouched (see `download-capture.ts`). */
-const DOWNLOAD_HOLD_SLACK_MS = 30_000;
-
-/** The clicked tab's own `Page.downloadWillBegin` reports, read from the
- * debugger session already attached to it (`Page.enable` at connect). */
-function tabDownloadSignals(tabId: number): TabDownloadSignals {
-  return {
-    subscribe(onDownloadWillBegin) {
-      const handler = (source: chrome.debugger.Debuggee, method: string, params?: object): void => {
-        if (source.tabId !== tabId || method !== 'Page.downloadWillBegin') return;
-        const url = (params as { url?: unknown } | undefined)?.url;
-        if (typeof url === 'string') onDownloadWillBegin(url);
-      };
-      chrome.debugger.onEvent.addListener(handler);
-      return () => {
-        chrome.debugger.onEvent.removeListener(handler);
-      };
-    },
-  };
-}
-
-/**
- * `browser.download`'s selector mode: arm the capture, click, and wait for
- * the download the click starts. Only a download the tab itself reported is
- * taken; it is held (never cancelled here) and its URL handed back; the
- * server fetches the bytes in the page, writes the file, then sends
- * `download_settle`. A download that cannot be tied to the tab answers
- * `state: "unattributed"` and is left alone; nothing at all answers
- * `state: "timeout"`.
- */
-async function handleDownloadCapture(
-  tabId: number,
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-): Promise<ExtensionToServer> {
-  const selector = typeof p.selector === 'string' ? p.selector : '';
-  // No local default: the server always sends a clamped budget, and a second
-  // copy of its default here would only drift.
-  if (typeof p.timeout_ms !== 'number' || !(p.timeout_ms > 0)) {
-    return { kind: 'tool.response', id: msg.id, ok: false, error: 'download: timeout_ms required' };
-  }
-  const timeoutMs = p.timeout_ms;
-  const outcome = await captureAround(
-    downloadCapture,
-    { timeoutMs, holdMs: timeoutMs + DOWNLOAD_HOLD_SLACK_MS, tab: tabDownloadSignals(tabId) },
-    // settle_ms: 0 — the thing to wait for is the download, not DOM quiet.
-    () => performClick(actionDeps(tabId), { selector, settle_ms: 0 }),
-  );
-  if (!outcome.ok) {
-    // The click itself failed (not found, covered, or its press did not
-    // reach the target): say so, not "no download started".
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: `the click that should start the download failed, so no download was captured: ${outcome.error}`,
-    };
-  }
-  const result =
-    outcome.outcome.state === 'captured'
-      ? { state: 'captured', ...outcome.outcome.download }
-      : { state: outcome.outcome.state };
-  return { kind: 'tool.response', id: msg.id, ok: true, result };
-}
-
-/** The server's word on a held download: `saved` true only when the file was
- * written. Answers what became of Chrome's own download. */
-async function handleDownloadSettle(
-  msg: ToolRequestMessage,
-  p: Record<string, unknown>,
-): Promise<ExtensionToServer> {
-  if (typeof p.download_id !== 'number' || typeof p.saved !== 'boolean') {
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: 'download_settle: download_id and saved required',
-    };
-  }
-  const chromeDownload = await downloadCapture.settle(p.download_id, p.saved);
-  return {
-    kind: 'tool.response',
-    id: msg.id,
-    ok: true,
-    result: { chrome_download: chromeDownload },
-  };
-}
-
-async function handleSetPermission(
-  msg: ToolRequestMessage,
-  str: (key: string) => string,
-): Promise<ExtensionToServer> {
-  const origin = str('origin');
-  const name = str('name');
-  const state_ = str('state');
-  // CDP `Browser.setPermission` requires a browser-level target,
-  // which `chrome.debugger.attach({ tabId })` does NOT give us in
-  // MV3. We use `chrome.contentSettings` instead — that surface IS
-  // available to extensions and covers the realistic permissions
-  // an agent needs to pre-set (geolocation, notifications, camera,
-  // microphone, clipboard, sensors).
-  const settingKey = CONTENT_SETTING_BY_PERMISSION[name];
-  if (!settingKey) {
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: `set_permission: '${name}' is not supported by chrome.contentSettings in MV3. Supported names: ${Object.keys(CONTENT_SETTING_BY_PERMISSION).join(', ')}.`,
-    };
-  }
-  const setting = STATE_TO_CONTENT_SETTING[state_];
-  if (!setting) {
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: `set_permission: unknown state '${state_}' (expected granted | denied | prompt).`,
-    };
-  }
-  // `chrome.contentSettings.<name>.set({ primaryPattern, setting })`
-  // requires a URL pattern, not a bare origin. Append `/*` so the
-  // pattern covers every path on the origin.
-  const primaryPattern = origin.endsWith('/*') ? origin : `${origin}/*`;
-  try {
-    await applyContentSetting(settingKey, primaryPattern, setting);
-  } catch (err) {
-    return {
-      kind: 'tool.response',
-      id: msg.id,
-      ok: false,
-      error: `set_permission: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  return {
-    kind: 'tool.response',
-    id: msg.id,
-    ok: true,
-    result: { origin, name, state: state_, applied_as: settingKey },
-  };
-}
-
 async function handleTool(
   state: TabConnection,
   msg: ToolRequestMessage,
@@ -1592,13 +1384,8 @@ async function handleTool(
     );
     return toolResponse(msg.id, outcome);
   }
-  // Params come over the wire as JSON: each field is unknown until we
-  // narrow it. The local helpers below give one-line, type-safe reads
-  // for the shapes we accept.
+  // Params come over the wire as JSON: each field is unknown until narrowed.
   const p = (msg.params ?? {}) as Record<string, unknown>;
-  const str = (key: string): string => (typeof p[key] === 'string' ? p[key] : String(p[key]));
-  const optStr = (key: string): string | undefined =>
-    typeof p[key] === 'string' ? p[key] : undefined;
   try {
     switch (msg.tool) {
       case 'flow':
@@ -1611,18 +1398,6 @@ async function handleTool(
         // an agent can still read a finished flow's manifest through any
         // connected tab after the flow's own tab has closed.
         return await handleFlowStatus(msg, p);
-
-      case 'dialog_respond':
-        return await handleDialogRespond(tabId, msg, p, optStr);
-
-      case 'set_permission':
-        return await handleSetPermission(msg, str);
-
-      case 'download':
-        return await handleDownloadCapture(tabId, msg, p);
-
-      case 'download_settle':
-        return await handleDownloadSettle(msg, p);
 
       default:
         return { kind: 'tool.response', id: msg.id, ok: false, error: `Unknown tool: ${msg.tool}` };

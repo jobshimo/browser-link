@@ -13,6 +13,12 @@ export {
 } from './assert.js';
 export { type CdpEventsHarness, defineCdpEventsContract } from './cdp-events.contract.js';
 export { type CdpSessionHarness, defineCdpSessionContract } from './cdp-session.contract.js';
+export {
+  type ContentSettingsHarness,
+  defineContentSettingsContract,
+} from './content-settings.contract.js';
+export { defineDialogInputContract, type DialogInputHarness } from './dialog-input.contract.js';
+export { defineDownloadsContract, type DownloadsHarness } from './downloads.contract.js';
 export { defineDragInputContract, type DragInputHarness } from './drag-input.contract.js';
 export { defineKeyboardContract, type KeyboardHarness } from './keyboard.contract.js';
 export { defineNavigatorContract, type NavigatorHarness } from './navigator.contract.js';
@@ -30,8 +36,12 @@ export {
   countingSession,
   createManualClock,
   createMemoryCdpSession,
+  createMemoryContentSettings,
+  createMemoryDownloads,
   createMemoryPageInfo,
   type ManualClock,
   type MemoryCdpSession,
+  type MemoryContentSettings,
+  type MemoryDownloads,
   type MemoryPageInfo,
 } from './fakes.js';

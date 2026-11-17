@@ -1,8 +1,10 @@
 // What cdp-direct provides to the tool registry (design 3.3). The set is v1
 // scope: it never enables the Network domain or keeps console messages, so
 // it has no capture buffers and a `network_url` wait, `browser.console` and
-// `browser.network` are refused; it does not provide `drag`, `canvas` or `response-bodies`,
-// so `browser.drag`, `browser.canvas_screenshot` and `browser.network_body`
+// `browser.network` are refused; it does not provide `drag`, `canvas`, `response-bodies`,
+// `dialog-input`, `downloads` or `content-settings`,
+// so `browser.drag`, `browser.canvas_screenshot`, `browser.network_body`,
+// `browser.dialog_respond`, `browser.set_permission` and `browser.download`
 // are refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
 import { describe, expect, test } from 'vitest';
@@ -32,6 +34,10 @@ describe('CDP_DIRECT_PROVIDES', () => {
     ['network', ['capture-buffers']],
     ['canvas_screenshot', ['canvas']],
     ['network_body', ['response-bodies']],
+    ['dialog_respond', ['dialog-input']],
+    ['set_permission', ['content-settings']],
+    ['download', ['downloads']],
+    ['download_settle', ['downloads']],
   ])(
     'browser.%s on cdp-direct is refused with the unchanged unsupported text',
     async (tool, missing) => {

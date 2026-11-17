@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.22](https://github.com/jobshimo/browser-link/compare/v1.4.21...v1.4.22) (2026-11-17)
+
+### Notes
+
+- Slice 16 of the service worker plan; no behaviour change. `browser.dialog_respond`, `browser.set_permission`, `browser.download` (selector mode) and the internal `download_settle` now have one body each, in core (`packages/core/src/tools/dialog-permission.ts`, `tools/download.ts`), run through the tool registry. Every CDP command, content-settings call, result, key order and error text is the one before.
+- The page driver gains the `DialogInput` port (`respond(accept, promptText?)`: one `Page.handleJavaScriptDialog`, with `promptText` only when given, input only; with no dialog showing it rejects with the page's error). Its contract runs on the in-memory session and, in the CI e2e job, on a real Chrome.
+- Core gains the `Downloads` port (`captureAround(wait, act)`, `settle(downloadId, saved)`; its values `CapturedDownload`, `CaptureOutcome`, `DownloadSettleOutcome` live in core's `ports/values.ts`) and gives the `ContentSettings` port its contract. The extension adapters are `adapters/chrome-downloads.ts` (over the worker-wide capture of `download-capture.ts`, which keeps the held-download state) and `adapters/chrome-content-settings.ts`; their filter and lookup live in `app/download-signals.ts` and `app/content-settings.ts`. Both contracts run on in-memory fakes and on the extension adapters over stand-ins, and the e2e adapter coverage check reaches every function of both adapters in the real service worker.
+- The registry gains three requirements, `dialog-input`, `downloads` and `content-settings`, which only the extension provides: on a `cdp:` tab the dispatcher gate still refuses the four tools first, and the registry would refuse them with the same sentence.
+- `background.ts` shrinks by 225 lines and its line budget goes from 2840 to 2615; `cdp/transport.ts` goes from 627 to 630 lines (the dialog input in its tool deps, and comments).
+
 ## [1.4.21](https://github.com/jobshimo/browser-link/compare/v1.4.20...v1.4.21) (2026-11-17)
 
 ### Notes
