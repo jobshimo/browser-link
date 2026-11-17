@@ -28,7 +28,7 @@ export type {
   CaptureOutcome,
   CaptureParams,
   CapturedDownload,
-  ChromeDownloadOutcome,
+  DownloadSettleOutcome,
   DragEventParams,
   EvaluateFn,
   KeyEvent,

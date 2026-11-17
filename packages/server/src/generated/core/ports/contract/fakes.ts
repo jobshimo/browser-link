@@ -8,7 +8,7 @@ import type { Clock } from '../clock.js';
 import type { ContentSettings } from '../content-settings.js';
 import type { Downloads } from '../downloads.js';
 import type { PageInfo } from '../page-info.js';
-import type { CaptureOutcome, CapturedDownload, LoadWait } from '../values.js';
+import type { CaptureActOutcome, CaptureOutcome, CapturedDownload, LoadWait } from '../values.js';
 
 export interface ManualClock extends Clock {
   /** Move time forward by `ms`, firing every timer that falls due, in order. */
@@ -208,10 +208,19 @@ export function createMemoryDownloads(clock: Clock): MemoryDownloads {
         waiting = null;
         finish(outcome);
       };
-      const acted = await act();
-      if (!acted.ok) {
+      const disarm = (): void => {
         cancel();
         waiting = null;
+      };
+      let acted: CaptureActOutcome;
+      try {
+        acted = await act();
+      } catch (err) {
+        disarm();
+        throw err;
+      }
+      if (!acted.ok) {
+        disarm();
         return acted;
       }
       return { ok: true, outcome: await result };

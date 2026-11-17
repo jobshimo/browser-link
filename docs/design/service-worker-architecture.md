@@ -58,9 +58,11 @@ Decisions while building slice 16 (3.1 and 3.2 code blocks and text, 3.3
 | # | Decision | Why |
 |---|---|---|
 | 1 | `DialogInput` (`respond(accept, promptText?)`) is an input-only capability of the `PageDriver` (`dialog`), the registry requirement `dialog-input`; both page drivers have it, `CDP_DIRECT_PROVIDES` lacks it (v1 scope). The pending dialog stays `TabSession` state behind `DialogWatch` | `dialog_respond` sends `Page.handleJavaScriptDialog`, which no existing port sends; it is the page's reply to the core's own command (revision 9, decision 3). `dialogs` is already the `DialogWatch` key of the handler deps |
-| 2 | `Downloads` is built per tab: `captureAround(wait: { timeoutMs, holdMs }, act)`, `settle(downloadId, saved)`; the adapter binds the tab's download reports, so `TabDownloadSignals` stays an extension type | core has no subscription to a tab's CDP events beyond the one-shot `CdpEvents.waitFor`; passing the signals in would need one. The 3.1 sketch also lacked the wait's timeout |
+| 2 | `Downloads` is built per tab: `captureAround(wait: { timeoutMs, holdMs }, act)`, `settle(downloadId, saved)`; the adapter binds the tab's download reports, so `TabDownloadSignals` stays an extension type. A failed `act` answers its error and a throwing `act` rejects, each leaving the capture disarmed (contract) | core has no subscription to a tab's CDP events beyond the one-shot `CdpEvents.waitFor`; passing the signals in would need one. The 3.1 sketch also lacked the wait's timeout. It fits the revision 8/9 rule even though `captureAround` returns what the transport observed (timeout, unattributed, captured): that observation is the answer to a command the core issues (arm, act, wait), not ambient state read on the side |
 | 3 | `downloads` and `content-settings` are optional in `ToolDeps` (`AdapterRequirement`) and read through `providedPort` | cdp-direct has no adapter for either (3.1 table), as it gives no capture watch |
 | 4 | The `ContentSettings` adapter passes `chrome.contentSettings` to `app/content-settings.ts`, which looks the setting up and fails with today's texts; the `Downloads` adapter's event filter is `app/download-signals.ts` | adapters stay free of logic (5.3 item 3) and both texts reach the wire |
+| 5 | The `ContentSettings` and `Downloads` adapters are built per tool call (`background.ts` `actionDeps`). Invariant: adapters built per call hold no state; state lives in what they receive (the worker-wide download capture, the tab's page driver). A stateful adapter is built once and handed in, never built per call by imitation | the e2e coverage starts after the worker's module code ran, so a factory called only at module load hides an uncalled function from the R6 check; building per call is safe only for a stateless adapter |
+| 6 | The settle answer's type is `DownloadSettleOutcome`, and the port values speak of "the browser", not a vendor; the published `download_settle` result field `chrome_download` and its values (`left_in_chrome` included) are unchanged | ports are typed in core's own vocabulary (section 3); the wire is behavior |
 
 ### Revision 9 (2026-11-17)
 
@@ -535,7 +537,7 @@ export type ResponseBody = { body: string; base64Encoded: boolean };
 export interface CapturedDownload { download_id: number; url: string; /* ... */ }
 export type CaptureOutcome = { state: 'captured'; download: CapturedDownload }
   | { state: 'unattributed' } | { state: 'timeout' };
-export type ChromeDownloadOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
+export type DownloadSettleOutcome = 'removed' | 'cancelled' | 'left_in_chrome' | 'not_held';
 export type CaptureActOutcome = { ok: true } | { ok: false; error: string };
 export type CaptureAroundResult = { ok: true; outcome: CaptureOutcome } | { ok: false; error: string };
 
@@ -583,7 +585,7 @@ export interface Downloads {
   /** Arm a capture for the tab, run `act`, report what Chrome downloaded. */
   captureAround(wait: { timeoutMs: number; holdMs: number },
     act: () => Promise<CaptureActOutcome>): Promise<CaptureAroundResult>;
-  settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome>;
+  settle(downloadId: number, saved: boolean): Promise<DownloadSettleOutcome>;
 }
 
 // content-settings.ts (slice 5; its contract and adapter land in slice 16)
@@ -602,7 +604,7 @@ with today's keys, so stored data keeps its format across the refactor
 (item 1 of the high-risk list is not touched); cdp-direct does not use them
 (Q4).
 
-`Downloads` returns `CaptureOutcome` and `ChromeDownloadOutcome`, which with
+`Downloads` returns `CaptureOutcome` and `DownloadSettleOutcome`, which with
 `CapturedDownload`, `CaptureActOutcome` and `CaptureAroundResult` live in
 `ports/values.ts` (slice 16; `download-capture.ts` re-exports the first three).
 The extension adapter (`adapters/chrome-downloads.ts`) wraps the worker-wide

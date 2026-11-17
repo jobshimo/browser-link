@@ -47,7 +47,7 @@
  * one and shares it between the wait and the holds.
  */
 
-import type { CaptureOutcome, ChromeDownloadOutcome } from '@browser-link/core';
+import type { CaptureOutcome, DownloadSettleOutcome } from '@browser-link/core';
 
 /** The `DownloadItem` fields the capture reads. */
 export interface DeterminingItem {
@@ -88,7 +88,7 @@ export interface TabDownloadSignals {
 
 /** The download, the wait's outcome and the settle answer are the
  * `Downloads` port's values (core `ports/values.ts`, slice 16). */
-export type { CapturedDownload, CaptureOutcome, ChromeDownloadOutcome } from '@browser-link/core';
+export type { CapturedDownload, CaptureOutcome, DownloadSettleOutcome } from '@browser-link/core';
 
 export interface ArmedCapture {
   result: Promise<CaptureOutcome>;
@@ -105,7 +105,7 @@ export interface ArmOptions {
 
 export interface DownloadCapture {
   arm(opts: ArmOptions): ArmedCapture;
-  settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome>;
+  settle(downloadId: number, saved: boolean): Promise<DownloadSettleOutcome>;
 }
 
 /** The URLs a Chrome download is known by. */
@@ -260,7 +260,7 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
       };
     },
 
-    async settle(downloadId: number, saved: boolean): Promise<ChromeDownloadOutcome> {
+    async settle(downloadId: number, saved: boolean): Promise<DownloadSettleOutcome> {
       const held = takeHold(downloadId);
       // Not held: an unknown id, one already settled, or a hold that expired
       // and was released. What became of Chrome's download is not known here,
@@ -273,7 +273,7 @@ export function createDownloadCapture(api: DownloadsApi): DownloadCapture {
       }
       // Cancel first: a cancelled download is never prompted for. Erase only
       // after a cancel that landed; release Chrome in every case.
-      let outcome: ChromeDownloadOutcome = 'left_in_chrome';
+      let outcome: DownloadSettleOutcome = 'left_in_chrome';
       try {
         await api.cancel(downloadId);
         outcome = 'cancelled';

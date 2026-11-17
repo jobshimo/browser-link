@@ -750,7 +750,10 @@ const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
  * so only one `browser.download` may wait for a download at a time. */
 const downloadCapture = createDownloadCapture(chrome.downloads);
 
-/** What the core actions and the registry handlers use on one tab. */
+/** What the core actions and the registry handlers use on one tab. Adapters
+ * built per call hold no state; state lives in what they receive (the
+ * worker-wide `downloadCapture`, the tab's page driver), so a stateful
+ * adapter is never built here (design revision 10). */
 function actionDeps(tabId: number, session?: TabSession): ToolDeps {
   const driver = pageDriver(tabId);
   const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = driver;

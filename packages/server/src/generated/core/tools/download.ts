@@ -14,7 +14,7 @@
  *   tied to the tab answers `state: "unattributed"`; nothing at all answers
  *   `state: "timeout"`.
  * - `download_settle` is the server's word on a held download (`saved` true
- *   only when the file was written); it answers what became of Chrome's own
+ *   only when the file was written); it answers what became of the browser's own
  *   download. An internal wire tool: not listed.
  */
 import { performClick } from '../actions/perform-click.js';

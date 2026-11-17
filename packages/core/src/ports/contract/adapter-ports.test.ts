@@ -107,4 +107,46 @@ describe('the ContentSettings and Downloads contracts catch a broken subject (RE
       caseNamed(cases, 'a failed action answers its error, and the next capture can arm').run(),
     ).rejects.toThrow(/another capture is waiting/);
   });
+
+  it('Downloads: a throwing action that leaves the capture armed', async () => {
+    const cases = defineDownloadsContract(() => {
+      const harness = downloadsHarness();
+      let armed = false;
+      return {
+        ...harness,
+        downloads: {
+          ...harness.downloads,
+          captureAround: async (wait, act) => {
+            if (armed) throw new Error('download: another capture is waiting');
+            armed = true;
+            await act();
+            armed = false;
+            return harness.downloads.captureAround(wait, () => Promise.resolve({ ok: true }));
+          },
+        },
+      };
+    });
+    await expect(
+      caseNamed(cases, 'a throwing action disarms the capture and its rejection propagates').run(),
+    ).rejects.toThrow(/another capture is waiting/);
+  });
+
+  it('Downloads: a throwing action whose rejection is swallowed', async () => {
+    const cases = defineDownloadsContract(() => {
+      const harness = downloadsHarness();
+      return {
+        ...harness,
+        downloads: {
+          ...harness.downloads,
+          captureAround: (wait, act) =>
+            harness.downloads.captureAround(wait, () =>
+              act().catch((err: unknown) => ({ ok: false as const, error: String(err) })),
+            ),
+        },
+      };
+    });
+    await expect(
+      caseNamed(cases, 'a throwing action disarms the capture and its rejection propagates').run(),
+    ).rejects.toThrow(/propagates unchanged/);
+  });
 });
