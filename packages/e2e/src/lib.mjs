@@ -127,6 +127,14 @@ export async function originProbe() {
   return { port: server.address().port, seen, close: () => server.close() };
 }
 
+/** Point the bridge port in a built `background.js` source at `wsPort`. esbuild
+ * emits `var` where tsc keeps `const`, so the keyword is accepted and kept. */
+export function patchBridgePort(src, wsPort) {
+  const re = /^(const|var) BRIDGE_PORT = 17529;$/m;
+  if (!re.test(src)) throw new Error('"const|var BRIDGE_PORT = 17529;" not found in background.js');
+  return src.replace(re, (_, keyword) => `${keyword} BRIDGE_PORT = ${String(wsPort)};`);
+}
+
 /** Copy the built extension to a temp dir and point its WS bridge at `wsPort`.
  * `withoutKey` drops the manifest `key`, so Chrome gives the copy another id
  * (derived from its path): an extension the bridge must refuse. */
@@ -137,13 +145,7 @@ export function extensionCopy(wsPort, { withoutKey = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'bl-e2e-ext-'));
   cpSync(EXT_DIST, dir, { recursive: true });
   const bg = join(dir, 'background.js');
-  const src = readFileSync(bg, 'utf8');
-  const out = src.replace(
-    /^const BRIDGE_PORT = 17529;$/m,
-    `const BRIDGE_PORT = ${String(wsPort)};`,
-  );
-  if (out === src) throw new Error('"const BRIDGE_PORT = 17529;" not found in background.js');
-  writeFileSync(bg, out);
+  writeFileSync(bg, patchBridgePort(readFileSync(bg, 'utf8'), wsPort));
   if (withoutKey) {
     const manifestFile = join(dir, 'manifest.json');
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
