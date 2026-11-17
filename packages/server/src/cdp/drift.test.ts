@@ -200,6 +200,17 @@ describe('cdp verbatim-copy drift guard: settle/keymap/flow (full body)', () => 
     expect(srv).toContain('export const MAX_FLOW_STEPS = 20;');
     expect(srv).toContain('export async function runFlow');
   });
+
+  // Slices 5b-1 to 8 only (design 5.1): both flow.ts copies and both
+  // expect.ts copies import `Clock` from this sibling, so the two must
+  // declare the same port. Deleted with the cdp/flow.ts copy in slice 8.
+  test('clock.ts body is byte-identical to the extension original', () => {
+    const ext = stripHeader(read(join(EXT_ROOT, 'clock.ts')));
+    const srv = stripHeader(read(join(SRV_ROOT, 'clock.ts')));
+    expect(srv).toBe(ext);
+    expect(srv).toContain('export interface Clock');
+    expect(srv).toContain('after(ms: number, fn: () => void): () => void;');
+  });
 });
 
 /*

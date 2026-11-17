@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createManualClock, type ManualClock } from '@browser-link/core';
+import { describe, expect, test, vi } from 'vitest';
 import { runFlow, type FlowDeps } from './flow.js';
 import { summarizeFlow, type FlowRegistryEntry } from './flow-registry.js';
 
@@ -9,30 +10,32 @@ import { summarizeFlow, type FlowRegistryEntry } from './flow-registry.js';
  * with nothing to show for it.
  */
 
-/** A controllable clock; each fake action advances it. */
-function makeClock(): { now: () => number; advance: (ms: number) => void } {
-  let t = 0;
-  return {
-    now: () => t,
-    advance: (ms) => {
-      t += ms;
-    },
-  };
+/** Core's fake `Clock`: time moves only when a test (or a fake action)
+ * advances it. */
+const makeClock = (): ManualClock => createManualClock(0);
+
+/** Let `runFlow` run up to its next pause, then move the clock: the
+ * pause's timer must exist before `advance` can fire it. */
+async function advanceAfterPause(clock: ManualClock, ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  await clock.advance(ms);
 }
 
 function makeDeps(
-  clock: ReturnType<typeof makeClock>,
+  clock: ManualClock,
   costPerActionMs: number,
   overrides: Partial<FlowDeps> = {},
 ): FlowDeps {
   const act = async () => {
-    clock.advance(costPerActionMs);
+    await clock.advance(costPerActionMs);
     return { ok: true as const, result: { key: 'a', modifiers: [] } };
   };
   return {
     performFind: vi.fn(async () => ({ ok: true as const, result: { matched: true } })),
     performClick: vi.fn(async () => {
-      clock.advance(costPerActionMs);
+      await clock.advance(costPerActionMs);
       return { ok: true as const, result: { clicked: '#a', tag: 'button' } };
     }) as FlowDeps['performClick'],
     performType: vi.fn(act) as unknown as FlowDeps['performType'],
@@ -43,14 +46,10 @@ function makeDeps(
     })) as FlowDeps['performWaitFor'],
     performDrag: vi.fn() as unknown as FlowDeps['performDrag'],
     buildRecoverySnapshot: vi.fn(async () => ({})),
-    now: clock.now,
+    clock,
     ...overrides,
   };
 }
-
-afterEach(() => {
-  vi.useRealTimers();
-});
 
 describe('runFlow — deadline', () => {
   test('stops at the next step boundary with stopped_by timeout and the results so far', async () => {
@@ -135,7 +134,7 @@ describe('runFlow — deadline', () => {
 
   test('a human cancel wins over a passed deadline', async () => {
     const clock = makeClock();
-    clock.advance(500);
+    await clock.advance(500);
     const deps = makeDeps(clock, 0, { deadlineAt: 100, shouldCancel: () => true });
     const result = await runFlow([{ press: { key: 'a' } }], deps);
     expect(result).toMatchObject({ ok: true, stopped_by: 'cancelled', steps_completed: 0 });
@@ -146,7 +145,7 @@ describe('runFlow — deadline', () => {
     const deps = makeDeps(clock, 0, {
       deadlineAt: 100,
       performWaitFor: vi.fn(async () => {
-        clock.advance(200);
+        await clock.advance(200);
         return {
           ok: true as const,
           result: { matched: false, elapsed_ms: 200, checks: 2, reason: 'cancelled' as const },
@@ -158,31 +157,23 @@ describe('runFlow — deadline', () => {
   });
 
   test('a sleep never outlives the deadline', async () => {
-    vi.useFakeTimers();
     const clock = makeClock();
-    const deps = makeDeps(clock, 0, {
-      deadlineAt: Date.now() + 1_000,
-      now: () => Date.now(),
-    });
+    const deps = makeDeps(clock, 0, { deadlineAt: 1_000 });
     const pending = runFlow([{ sleep: { ms: 30_000 } }, { press: { key: 'a' } }], deps);
-    await vi.advanceTimersByTimeAsync(1_000);
+    await advanceAfterPause(clock, 1_000);
     const result = await pending;
     expect(result).toMatchObject({ ok: true, stopped_by: 'timeout' });
     expect(deps.performPress).not.toHaveBeenCalled();
   });
 
   test('a repeat delay never outlives the deadline', async () => {
-    vi.useFakeTimers();
     const clock = makeClock();
-    const deps = makeDeps(clock, 0, {
-      deadlineAt: Date.now() + 1_000,
-      now: () => Date.now(),
-    });
+    const deps = makeDeps(clock, 0, { deadlineAt: 1_000 });
     const pending = runFlow(
       [{ repeat: { max_iterations: 5, delay_ms: 20_000, steps: [{ press: { key: 'a' } }] } }],
       deps,
     );
-    await vi.advanceTimersByTimeAsync(1_000);
+    await advanceAfterPause(clock, 1_000);
     const result = await pending;
     expect(result).toMatchObject({ ok: true, stopped_by: 'timeout' });
     expect(deps.performPress).toHaveBeenCalledTimes(1);

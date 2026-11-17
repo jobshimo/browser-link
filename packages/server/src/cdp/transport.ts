@@ -78,6 +78,7 @@ import {
 import { runScreenshot, type ElementRectOutcome, type ScreenshotMode } from './screenshot.js';
 import { resolveSettleParams, settleSafely, type SettleParams } from './settle.js';
 import { beginExpect, resolveExpectParams, verifyExpect, type ExpectParams } from './expect.js';
+import { systemClock } from './adapters/system-clock.js';
 import { buildKeyEventSequence, MODIFIER_BITS, modifiersToBitmask, resolveKey } from './keymap.js';
 import {
   cancelDetachedFlow,
@@ -958,7 +959,7 @@ async function performClick(
       };
     }
     const mark = await takeObserverMark(client, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     let hitCheckNote: string | undefined;
     let dialogOpened = false;
     if ('no_box' in resolved) {
@@ -1013,7 +1014,7 @@ async function performClick(
     const settleResult = dialogOpened ? undefined : await settleWithChanges(client, settle, mark);
     const verdict = dialogOpened
       ? { ok: true as const, expect: undefined }
-      : await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+      : await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return { ok: false, error: verdict.error };
     const result: ClickStepResult & ClickHitCheckFields = {
       clicked: ref ?? selector ?? '',
@@ -1090,10 +1091,10 @@ async function performType(
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await client.send('Input.insertText', { text });
     const settleResult = await settleWithChanges(client, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: TypeStepResult = { typed: text.length };
     if (selector !== undefined) result.selector = selector;
@@ -1161,10 +1162,10 @@ async function performPress(
     }
     field = await evaluate(buildFocusedFieldJs()).catch(() => undefined);
     const mark = await takeObserverMark(client, settle);
-    const baseline = await beginExpect(evaluate, expectSpec);
+    const baseline = await beginExpect(evaluate, expectSpec, systemClock);
     await dispatchKeyEvent(client, def, modifiers);
     const settleResult = await settleWithChanges(client, settle, mark);
-    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult);
+    const verdict = await verifyExpect(evaluate, expectSpec, baseline, settleResult, systemClock);
     if (!verdict.ok) return actionFailure(verdict.error, field);
     const result: PressStepResult = { key, modifiers: modifierNames };
     if (ref !== undefined) result.ref = ref;
@@ -1378,6 +1379,7 @@ function buildCdpFlowDeps(
     performPress: (pp) => performPress(client, pp),
     performWaitFor: (wp) => performWaitFor(client, wp, shouldStopWaiting),
     shouldCancel,
+    clock: systemClock,
     // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
     // false), so a flow drag step fails fast at this step with the exact
     // error the standalone browser.drag returns on a cdp: tab — naming the

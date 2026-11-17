@@ -49,6 +49,7 @@
  * fails with the same unsupported-transport error the standalone
  * `browser.drag` returns on a `cdp:` tab.
  */
+import type { Clock } from './clock.js';
 import type { ExpectMet, ExpectParams } from './expect.js';
 
 /** Structured success/failure outcome shared by every perform* function
@@ -517,7 +518,7 @@ export interface FlowDeps {
    * transport re-checks the cdp-direct gate, which is what makes
    * `browser-link cdp revoke` a real kill switch on that path. */
   shouldCancel?(): boolean;
-  /** Absolute deadline (epoch ms, per `now`) after which the runner stops
+  /** Absolute deadline (epoch ms, per `clock.now`) after which the runner stops
    * dispatching and returns what it has with `stopped_by: 'timeout'`.
    * Checked at the same boundaries as `shouldCancel`, which outranks it:
    * a human stop is reported as `cancelled` even if the deadline also
@@ -525,8 +526,9 @@ export interface FlowDeps {
    * remaining. Absent means no deadline (detached flows have their own
    * ceiling). */
   deadlineAt?: number;
-  /** Clock for `deadlineAt`; defaults to `Date.now`. Tests inject one. */
-  now?: () => number;
+  /** Time for `deadlineAt` and for pauses (`sleep`, a repeat `delay_ms`):
+   * the transport's `systemClock`; tests inject a fake one. */
+  clock: Clock;
   /** Progress sink, called immediately BEFORE each step is dispatched (and
    * before each repeat iteration), so a consumer polling it always sees
    * the step that is currently running rather than the last one that
@@ -735,7 +737,7 @@ type LeafOutcome =
  * timeout. */
 function haltReason(deps: FlowDeps): 'cancelled' | 'timeout' | null {
   if (deps.shouldCancel?.() === true) return 'cancelled';
-  if (deps.deadlineAt !== undefined && (deps.now ?? Date.now)() >= deps.deadlineAt) {
+  if (deps.deadlineAt !== undefined && deps.clock.now() >= deps.deadlineAt) {
     return 'timeout';
   }
   return null;
@@ -747,13 +749,9 @@ function haltReason(deps: FlowDeps): 'cancelled' | 'timeout' | null {
 async function pause(ms: number, deps: FlowDeps): Promise<number> {
   let waitMs = Math.min(ms, MAX_FLOW_SLEEP_MS);
   if (deps.deadlineAt !== undefined) {
-    waitMs = Math.max(0, Math.min(waitMs, deps.deadlineAt - (deps.now ?? Date.now)()));
+    waitMs = Math.max(0, Math.min(waitMs, deps.deadlineAt - deps.clock.now()));
   }
-  if (waitMs > 0) {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, waitMs);
-    });
-  }
+  if (waitMs > 0) await deps.clock.sleep(waitMs);
   return waitMs;
 }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.6](https://github.com/jobshimo/browser-link/compare/v1.4.5...v1.4.6) (2026-11-17)
+
+### Notes
+
+- Slice 5b-1 of the service worker plan; no behaviour change. Flows and expectations take an injected `Clock`: a `clock.ts` interface on each side (extension and server), byte-identical and drift-checked, and a `systemClock` adapter on each side over `Date.now` and timers. `FlowDeps.clock`, `beginExpect` and `verifyExpect` take it.
+- The timer-driven flow and expectation tests run on core's manual clock instead of real time.
+- The design document, revision 6, records that `beginExpect` takes the clock too.
+
 ## [1.4.5](https://github.com/jobshimo/browser-link/compare/v1.4.4...v1.4.5) (2026-11-17)
 
 ### Bug Fixes

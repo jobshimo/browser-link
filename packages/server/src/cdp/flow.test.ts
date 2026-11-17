@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { systemClock } from './adapters/system-clock.js';
 import { MAX_FLOW_STEPS, runFlow, type FlowDeps, type FlowStep } from './flow.js';
 
 /* Local execution coverage of the server's verbatim flow copy — sequencing,
@@ -28,6 +29,7 @@ function fakeDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
       },
     })),
     buildRecoverySnapshot: vi.fn(async () => ({ interactive: [] })),
+    clock: systemClock,
     ...overrides,
   };
 }
