@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 13. Revision 1 (`5486e34`) was audited as
+Status: revision 13, program complete with slice 22 (release 1.4.34). Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -1480,6 +1480,10 @@ That estimate never counted the settings caches (revision 13): after slice 21
 21c (events out, 536 after it) and 21d (connect, 313 after it) move what is left
 before slice 22.
 
+Final measured count (slice 22, 1.4.34): `background.ts` holds **313** lines, so
+`BACKGROUND_LINE_BUDGET` is 313, 87 under the 400 ceiling. Slice 22 changes no
+line of `background.ts`.
+
 ---
 
 ## 6. Slice plan
@@ -1530,7 +1534,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 21b | Settings (**done**, release 1.4.31) | the idle-TTL and flow-recording caches, their storage listeners and the `settings.update` apply functions to `app/settings-cache.ts`; the `chrome-settings` adapter; the contract harness's teardown on failure (revision 13) | ~250 | unit tests of the caches; the `LocalSettingsStorage` contract on the fake and in the worker; the teardown probe through the browser; e2e recording case | revert |
 | 21c | Events out (**done**, release 1.4.32) | the `EventsOut` port (`ports/events-out.ts`, `BridgeEventPayload`) with its contract and fake; `createFlowHistory` on `EventsOut`; `flowFinishedEvent` in core; `publishFlowFinished` and `reportTopDocument` to `app/events.ts`; the `ws-events-out` adapter (revision 13, decision 6) | ~300 | the `EventsOut` contract on the fake, on the adapter over fake sockets and in the worker; unit tests of `app/events.ts` and `flowFinishedEvent`; e2e detached flow; differential | revert |
 | 21d | Connect (**done**, release 1.4.33) | `connectTab`, `doConnectTab`, the page driver wiring (`newPageDriver`, `pageDriver`, `cdp`, `actionDeps`, `EXTENSION_PROVIDES`) and `handleTool` to `app/connect.ts`; both `chrome.tabs.get` calls through `TabEvents.get` (revision 13, decision 7) | ~420 moved | unit tests of `app/connect.ts` on fakes; e2e connect, tools, recording and `wait_for_tab`; differential | revert |
-| 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
+| 22 | Retire parity guards (**done**, release 1.4.34) | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only (the `perform*`-declaration guard moved into the two fitness suites with RED fixtures; every `drift.test.ts` and `config.drift.test.ts` section guards a constant or function still declared by hand on two sides, so none was a copy section and none went) | contract suite green on fakes and both adapters in the same CI run | revert |
 
 Order rationale: the safety net first (0-3b), then the build change alone
 (4), then the empty core and its rules (5), core purity and the protocol copy
@@ -1560,6 +1564,26 @@ only needs testability.
   Slices 19-21 make the extension-only application code unit-testable and
   bring `background.ts` to its final budget; if the program stops at
   checkpoint B, slice 22 runs next and the budget stays at its slice 18b value.
+
+**Program complete (slice 22, release 1.4.34).** Slices 0-22 are done. The
+contract suites run in the required jobs of one `ci.yml` run, which gates
+`release` (`needs: [ci, e2e]`): on the in-memory fakes in `ci` (`pnpm test`,
+step "Test": core `ports/contract/contract.test.ts`), on the extension adapters
+in `ci` (extension `extension-contracts.test.ts`) and again inside the real
+service worker in `e2e` (step "End-to-end", the in-worker contract run), and on
+the cdp-direct adapters on a real Chrome in `e2e` (step "cdp-direct adapter
+contract (real Chrome)", `contract.chrome.test.ts`). What remains are the
+follow-ups the revisions already record, each its own PR if the owner wants it
+(section 7 "Known places where the move invites a behavior change"): unifying
+the network buffer for cdp-direct (`network-url-mode`), enabling drag, console,
+network or downloads on cdp-direct (`CDP_DIRECT_PROVIDES`, 3.3), unifying
+argument coercion behind the per-transport `coerce` override, adopting
+`TabSession` idle rules or `FlowRun` on cdp-direct (Q4), the non-GET download
+refusal comment and the Windows `table-changed` fallback (arch's answer), and
+the open wall times and P3/P4 (Chrome 118 behavior) of "Open questions". The
+hand-declared constants and the idle-TTL clamp that the packaging constraint
+still forces to exist twice stay guarded by `cdp/drift.test.ts` and
+`config.drift.test.ts`.
 
 ### 6.3 CI cost per PR
 

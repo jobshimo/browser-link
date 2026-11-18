@@ -146,3 +146,28 @@ describe('cdp transport has no tool case', () => {
     expect(toolCaseLabels(probe, REGISTERED_TOOLS)).toEqual(["case 'navigate'"]);
   });
 });
+
+// No hand-mirrored action handler: every `perform*` lives once in core's
+// `actions/` (slices 10-14). Formerly guarded by transport-parity.test.ts,
+// retired in slice 22.
+function performDeclarations(source: string): string[] {
+  const sf = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  sf.forEachChild((node) => {
+    if (ts.isFunctionDeclaration(node) && node.name && /^perform[A-Z]/.test(node.name.text)) {
+      found.push(node.name.text);
+    }
+  });
+  return found;
+}
+
+describe('cdp transport declares no perform* action', () => {
+  test('holds for the real transport.ts', () => {
+    expect(performDeclarations(transportText)).toEqual([]);
+  });
+
+  test('RED: a perform* function declared in transport.ts fails', () => {
+    const probe = `${transportText}\nasync function performClick(client: unknown): Promise<void> {}\n`;
+    expect(performDeclarations(probe)).toEqual(['performClick']);
+  });
+});

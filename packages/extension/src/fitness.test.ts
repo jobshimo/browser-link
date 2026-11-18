@@ -16,6 +16,7 @@
 //     has a decision count of 0 (if, ?:, case, loops, catch, &&, ||; not
 //     ?? or ?.), outside ADAPTER_EXEMPTIONS (at most three).
 //   - background.ts stays within BACKGROUND_LINE_BUDGET (5.4).
+//   - background.ts declares no perform* action function (they live in core).
 //   - Wake listeners (R1): for every event of WAKE_SUBSCRIPTIONS,
 //     background.ts holds a subscription as a top-level expression
 //     statement; a mapped adapter method (resolved with the type checker) is
@@ -668,6 +669,32 @@ describe('fitness: background.ts has no tool case', () => {
         REGISTERED_TOOLS,
       ),
     ).toEqual(["case 'flow'", "case 'flow_status'"]);
+  });
+});
+
+// No hand-mirrored action handler: every `perform*` lives once in core's
+// `actions/` (slices 10-14). Formerly guarded by the server's
+// transport-parity.test.ts, retired in slice 22.
+function performDeclarations(source: string): string[] {
+  const sf = parse('probe.ts', source);
+  const found: string[] = [];
+  sf.forEachChild((node) => {
+    if (ts.isFunctionDeclaration(node) && node.name && /^perform[A-Z]/.test(node.name.text)) {
+      found.push(node.name.text);
+    }
+  });
+  return found;
+}
+
+describe('fitness: background.ts declares no perform* action', () => {
+  it('holds for the real background.ts', () => {
+    expect(performDeclarations(realSources().get('background.ts')!)).toEqual([]);
+  });
+
+  it('RED: a perform* function declared in background.ts', () => {
+    expect(
+      performDeclarations('async function performClick(tabId: number): Promise<void> {}\n'),
+    ).toEqual(['performClick']);
   });
 });
 
