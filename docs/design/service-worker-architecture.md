@@ -65,6 +65,7 @@ section 4, slice table rows 21b-21d, entry comment of
 | 4 | The in-worker contract harness (`contract/entry.ts`) calls `chrome.windows.remove`, `chrome.tabs.create` and `chrome.tabs.remove`, `chrome.debugger.attach` and `chrome.storage.local.remove` to produce the events the wake-listener adapters observe and to clean up; these test-only calls are within the mechanism of revision 12. Every window, tab and storage key a case creates is removed in a `finally`, on failure too: `openTab` answers the tab with its `close`, and the e2e first runs every creating case failing on purpose right after it created what it must remove (`browserLinkContract({ probe: true })`), then checks through the browser that the tabs, windows and contract keys are the ones it held before, and checks the same after the real run | a failing contract case must not leave a tab or window that changes later e2e cases |
 | 5 | As built in slice 21b: the adapter is `LocalSettingsStorage` (`get(key)`, `set(items)`, `onChanged(listener)`, whose listener gets the changes and the area), declared in `app/settings-cache.ts`; `SettingsCache` there extends core `IdleSettings` (`idleTtlMinutes()`) with `flowRecordingEnabled()`, holds both caches and is not an adapter. The 3.1 table rows read so | the caches hold state and decide (the `local` area, the keys, the newer `updatedAt`), which an adapter may not (5.3 item 3) |
 | 6 | Slice 21c reverses revision 12 decision 5 ("`EventsOut` stays a function of `background.ts` (`publishFlowFinished`), not a port") and the slice 19 and section 4 sentences that `EventsOut` is not a port yet: `EventsOut` (`emit(tabId, event: BridgeEventPayload): boolean`, false when the event did not go out) is a core port in `ports/events-out.ts`, `BridgeEventPayload` (`Pick<BridgeEventMessage, 'eventKind' | 'data'>` of `@browser-link/shared`) lives in `ports/values.ts`, and `createFlowHistory` takes `events: EventsOut` instead of the `publish` callback; core builds the `flow-finished` event (`flowFinishedEvent`). It comes with its contract (`ports/contract/events-out.contract.ts`, on the in-memory fake in core and on the adapter in the worker) and R6 coverage, per checkpoint B condition 5 ("if EventsOut becomes a port there, it comes with its contract and R6 coverage like the others") | arch: it is the last piece that keeps transport behaviour in the composition root, and checkpoint B condition 5 already set its terms |
+| 7 | 21d: `connectTab`, `doConnectTab` and the page driver wiring move to `app/connect.ts` (`app/tab-connection.ts` keeps `TabConnection` only). `chrome.debugger.attach` and `detach` reach it as injected functions of `background.ts`, and both `chrome.tabs.get` calls go through `TabEvents.get`, whose `TabInfo` gains the `title` the connect path reads (the adapter already answered the whole tab). The wire tools' dispatch (`handleTool`, with the per-call `FlowControl`) moves with it, because `openBridge` takes it from the connect path and it reads only the page driver wiring. No new adapter and no new port: the adapter factories (`CdpSession`, `PageInfo`, `Downloads`, `ContentSettings`) are passed in, and `Downloads` and `ContentSettings` are still built per tool call | arch's answer 3; keeping `commitConnection` (1.4.26: synchronous on success, detach on throw) unchanged |
 
 ### Revision 12 (2026-11-18)
 
@@ -105,7 +106,7 @@ Decisions while building slice 16 (3.1 and 3.2 code blocks and text, 3.3
 | 2 | `Downloads` is built per tab: `captureAround(wait: { timeoutMs, holdMs }, act)`, `settle(downloadId, saved)`; the adapter binds the tab's download reports, so `TabDownloadSignals` stays an extension type. A failed `act` answers its error and a throwing `act` rejects, each leaving the capture disarmed (contract) | core has no subscription to a tab's CDP events beyond the one-shot `CdpEvents.waitFor`; passing the signals in would need one. The 3.1 sketch also lacked the wait's timeout. It fits the revision 8/9 rule even though `captureAround` returns what the transport observed (timeout, unattributed, captured): that observation is the answer to a command the core issues (arm, act, wait), not ambient state read on the side |
 | 3 | `downloads` and `content-settings` are optional in `ToolDeps` (`AdapterRequirement`) and read through `providedPort` | cdp-direct has no adapter for either (3.1 table), as it gives no capture watch |
 | 4 | The `ContentSettings` adapter passes `chrome.contentSettings` to `app/content-settings.ts`, which looks the setting up and fails with today's texts; the `Downloads` adapter's event filter is `app/download-signals.ts` | adapters stay free of logic (5.3 item 3) and both texts reach the wire |
-| 5 | The `ContentSettings` and `Downloads` adapters are built per tool call (`background.ts` `actionDeps`). Invariant: adapters built per call hold no state; state lives in what they receive (the worker-wide download capture, the tab's page driver). A stateful adapter is built once and handed in, never built per call by imitation | the e2e coverage starts after the worker's module code ran, so a factory called only at module load hides an uncalled function from the R6 check; building per call is safe only for a stateless adapter |
+| 5 | The `ContentSettings` and `Downloads` adapters are built per tool call (`background.ts` `actionDeps`; `app/connect.ts` `createTabDrivers` since slice 21d). Invariant: adapters built per call hold no state; state lives in what they receive (the worker-wide download capture, the tab's page driver). A stateful adapter is built once and handed in, never built per call by imitation | the e2e coverage starts after the worker's module code ran, so a factory called only at module load hides an uncalled function from the R6 check; building per call is safe only for a stateless adapter |
 | 6 | The settle answer's type is `DownloadSettleOutcome`, and the port values speak of "the browser", not a vendor; the published `download_settle` result field `chrome_download` and its values (`left_in_chrome` included) are unchanged | ports are typed in core's own vocabulary (section 3); the wire is behavior |
 
 ### Revision 9 (2026-11-17)
@@ -679,7 +680,7 @@ by `app/download-signals.ts`. Core never holds the `DownloadCapture` object.
 The `ContentSettings` adapter (`adapters/chrome-content-settings.ts`) passes
 `chrome.contentSettings` to `app/content-settings.ts`, which looks the
 setting up by key and fails with a text naming a missing one. Both adapters
-are built per tool call (`background.ts` `actionDeps`): the e2e coverage
+are built per tool call (`actionDeps`, in `app/connect.ts` since slice 21d): the e2e coverage
 starts after the worker's module code ran, so a factory called only at module
 load would hide an uncalled function from the R6 check.
 
@@ -810,6 +811,16 @@ the registry it is given. `createFlowHistory` takes it once, so
 that factory run, so the in-worker contract run builds one of its own over a
 registry with stand-in sockets (nothing is created in the browser) and runs
 the `EventsOut` contract on it, and the run's detached flow reaches `emit`.
+
+As built in slice 21d (revision 13, decision 7): `app/connect.ts` holds
+`EXTENSION_PROVIDES`, `createTabDrivers` (each tab's page driver,
+`pageDriver`, the send-only `cdp` and `actionDeps`, over the adapter
+factories `background.ts` passes in) and `createConnect` (`connectTab` with
+its reservation, the tab read through `TabEvents.get`, the injected debugger
+attach, `commitConnection`, the five CDP domains, the page observer and
+`openBridge`; and `handleTool`). Both are stateless; `background.ts` builds
+them once. No adapter function was added, so the R6 check needs no new
+contract entry.
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -1466,7 +1477,8 @@ measured count, so the slack is not left as room to grow.
 
 That estimate never counted the settings caches (revision 13): after slice 21
 `background.ts` held 725 lines. Slices 21b (settings, 598 lines after it),
-21c (events out, 536 after it) and 21d (connect) move what is left before slice 22.
+21c (events out, 536 after it) and 21d (connect, 313 after it) move what is left
+before slice 22.
 
 ---
 
@@ -1517,7 +1529,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 21 | Popup router, windows, repair, tab events (**done**, release 1.4.30) | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
 | 21b | Settings (**done**, release 1.4.31) | the idle-TTL and flow-recording caches, their storage listeners and the `settings.update` apply functions to `app/settings-cache.ts`; the `chrome-settings` adapter; the contract harness's teardown on failure (revision 13) | ~250 | unit tests of the caches; the `LocalSettingsStorage` contract on the fake and in the worker; the teardown probe through the browser; e2e recording case | revert |
 | 21c | Events out (**done**, release 1.4.32) | the `EventsOut` port (`ports/events-out.ts`, `BridgeEventPayload`) with its contract and fake; `createFlowHistory` on `EventsOut`; `flowFinishedEvent` in core; `publishFlowFinished` and `reportTopDocument` to `app/events.ts`; the `ws-events-out` adapter (revision 13, decision 6) | ~300 | the `EventsOut` contract on the fake, on the adapter over fake sockets and in the worker; unit tests of `app/events.ts` and `flowFinishedEvent`; e2e detached flow; differential | revert |
-| 21d | Connect (pending) | the connect path (`connectTab`, `doConnectTab`) out of `background.ts` | specifics added by the slice | specifics added by the slice | revert |
+| 21d | Connect (**done**, release 1.4.33) | `connectTab`, `doConnectTab`, the page driver wiring (`newPageDriver`, `pageDriver`, `cdp`, `actionDeps`, `EXTENSION_PROVIDES`) and `handleTool` to `app/connect.ts`; both `chrome.tabs.get` calls through `TabEvents.get` (revision 13, decision 7) | ~420 moved | unit tests of `app/connect.ts` on fakes; e2e connect, tools, recording and `wait_for_tab`; differential | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
 
 Order rationale: the safety net first (0-3b), then the build change alone
