@@ -31,35 +31,15 @@ import {
 } from '../recording.js';
 import { workerFailure } from '../worker-messages.js';
 import { SOCKET_OPEN, send, type TabConnection } from './tab-connection.js';
-
-/** One `chrome.tabs.onUpdated` report, as `TabEvents.onUpdated` hands it on. */
-export interface TabUpdate {
-  tabId: number;
-  /** The tab's load status of the update (`complete` ends a load). */
-  status?: string;
-  /** The tab's URL after the update. */
-  url?: string;
-}
-
-/**
- * The tab events the extension uses (design 3.1 `TabEvents`, `chrome-tab-
- * events.ts`): what recording needs today, `get` and `onUpdated`. Slice 21
- * adds `onRemoved`, `onCreated` and `onDebuggerDetach` for the tab-event
- * listeners it moves.
- */
-export interface TabEvents {
-  /** The tab's current URL; rejects for a closed tab. */
-  get(tabId: number): Promise<{ url?: string }>;
-  /** Report every tab update; returns the function that stops the reports. */
-  onUpdated(listener: (update: TabUpdate) => void): () => void;
-}
+import type { TabEvents } from './tab-events.js';
 
 /** How long a save waits for the server's `flow.recorded.result`. */
 const SAVE_TIMEOUT_MS = 10_000;
 
 export interface RecordingDeps {
   tabs: TabRegistry<TabConnection>;
-  tabEvents: TabEvents;
+  /** The tab events recording uses (`app/tab-events.ts`). */
+  tabEvents: Pick<TabEvents, 'get' | 'onUpdated'>;
   clock: Clock;
   /** The flow-recording setting, read live. */
   enabled(): boolean;

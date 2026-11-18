@@ -1,9 +1,11 @@
-// The extension's `TabEvents` (design 3.1, slice 20): `chrome.tabs.get` and
-// `chrome.tabs.onUpdated`, what flow recording uses. Stateless, so one object
-// serves the worker. `onUpdated` is a transient subscription paired with its
-// own unsubscribe (not a wake listener, R1); the recording filters the
-// updates it gets (`app/recording.ts`).
-import type { TabEvents } from '../app/recording.js';
+// The extension's `TabEvents` (design 3.1, slices 20 and 21): `chrome.tabs`
+// and `chrome.debugger.onDetach`. Stateless, so one object serves the worker.
+// `onUpdated` is a transient subscription paired with its own unsubscribe
+// (not a wake listener, R1); the recording filters the updates it gets
+// (`app/recording.ts`). `onRemoved`, `onCreated` and `onDebuggerDetach` are
+// wake listeners: `background.ts` subscribes them at top level (R1); the
+// in-worker contract run (`contract/`) reaches them for the R6 coverage check.
+import type { TabEvents } from '../app/tab-events.js';
 
 export const chromeTabEvents: TabEvents = {
   get: (tabId) => chrome.tabs.get(tabId),
@@ -15,5 +17,20 @@ export const chromeTabEvents: TabEvents = {
     return () => {
       chrome.tabs.onUpdated.removeListener(onUpdated);
     };
+  },
+  onRemoved: (listener) => {
+    chrome.tabs.onRemoved.addListener((tabId) => {
+      listener(tabId);
+    });
+  },
+  onCreated: (listener) => {
+    chrome.tabs.onCreated.addListener((tab) => {
+      listener({ tabId: tab.id, openerTabId: tab.openerTabId });
+    });
+  },
+  onDebuggerDetach: (listener) => {
+    chrome.debugger.onDetach.addListener((source) => {
+      listener(source.tabId);
+    });
   },
 };

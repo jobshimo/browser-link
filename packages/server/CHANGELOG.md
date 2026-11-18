@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.30](https://github.com/jobshimo/browser-link/compare/v1.4.29...v1.4.30) (2026-11-18)
+
+### Notes
+
+- Slice 21 of the service worker plan; no behaviour change. The popup's runtime messages, the Activity and Admin windows, the repair and the tab-event listeners move from `background.ts` to `app/`: `app/popup-router.ts` (which messages are accepted and which handler answers each, at once or later), `app/windows.ts` (open once, focus when asked again, open afresh once closed), `app/activity-admin.ts` (the trail and console round trips with their timeouts), `app/repair.ts` (the version summary and the repair step) and `app/tab-events.ts` (a closed tab, the auto-connect of a tab a connected tab opened for `browser.wait_for_tab`, a debugger the browser detached). Every popup answer, window, repair outcome and `tab-created` event is the one before.
+- Two new extension adapters, `chrome-windows` (`Windows`: `open`, `focus`, `exists`, `onClosed`) and `chrome-runtime` (`Runtime`: `manifestVersion`, `pageUrl`, `onMessage`), and `chrome-tab-events` gains `onRemoved`, `onCreated` and `onDebuggerDetach`. The five wake listeners are still subscribed at the top level of `background.ts`, now through the adapters, and the wake-listener fitness rule maps each.
+- The in-worker contract run gains a contract for each new adapter (a window opened, focused and closed; the manifest version, a page URL and a message the popup page sends; a tab opened and closed with a debugger attached), each also run against an in-memory fake. The real-Chrome e2e gains a window case: the Activity and Admin windows open through the popup's messages, a second ask focuses the same window, and a closed one is opened afresh.
+- `background.ts` shrinks by 535 lines and its line budget goes from 1260 to 725.
+
 ## [1.4.29](https://github.com/jobshimo/browser-link/compare/v1.4.28...v1.4.29) (2026-11-18)
 
 ### Notes

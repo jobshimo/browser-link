@@ -4,6 +4,8 @@
 // extension half of every call (background.ts perform* handlers) runs for real.
 // Then flow recording by demonstration on a tab of its own (recordingChecks:
 // click, navigation step, Stop, Discard, the setting turned off mid-recording).
+// Then the Activity and Admin windows: opened, focused when asked again, and
+// opened afresh once closed (windowChecks).
 // Then the interface language: switch EN | ES in the popup, open Activity and
 // Admin windows follow without reload, and the choice survives a reopen.
 // Last, the second transport (cdpDirectChecks, cdp-direct.mjs): a second
@@ -597,6 +599,8 @@ async function main() {
 
   await recorded(() => recordingChecks(cdp, extId, swSession, page));
 
+  await windowChecks(cdp, extId);
+
   if (ADAPTER_COVERAGE) {
     const contract = await inWorkerContract(cdp, swSession, extDir);
     await adapterCoverage(cdp, swSession, extDir, extId, contract);
@@ -742,6 +746,57 @@ async function recordingChecks(cdp, extId, swSession, page) {
     await cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
   }
   stepDone('recording', t);
+}
+
+/**
+ * The Activity and Admin windows (slice 21), through the popup's own messages
+ * (`openActivityWindow`, `openAdminWindow`): each opens its page in a popup
+ * window, a second ask focuses that same window instead of opening another,
+ * and once it is closed the next ask opens a fresh one. No tool call is made,
+ * so the run's record is untouched; the worker's `Windows` adapter and
+ * `Runtime.pageUrl` are reached here (R6 condition 1).
+ */
+async function windowChecks(cdp, extId) {
+  const t = now();
+  const popup = await openPage(cdp, extId, 'popup.html');
+  const ask = (action) =>
+    cdp.evaluate(`chrome.runtime.sendMessage(${jsLiteral({ action })})`, popup.sessionId);
+  const close = (windowId) =>
+    cdp.evaluate(`chrome.windows.remove(${String(windowId)})`, popup.sessionId);
+  const opened = [];
+  try {
+    for (const [action, page] of [
+      ['openActivityWindow', 'activity.html'],
+      ['openAdminWindow', 'admin.html'],
+    ]) {
+      const first = await ask(action);
+      if (first?.ok !== true || !(first.windowId > 0)) {
+        throw new StepFailure('windows', `${action}: ${JSON.stringify(first)}`);
+      }
+      opened.push(first.windowId);
+      const shows = await cdp.evaluate(
+        `chrome.windows.get(${String(first.windowId)}, { populate: true }).then((w) => w.type + ' ' + (w.tabs?.[0]?.pendingUrl || w.tabs?.[0]?.url || ''))`,
+        popup.sessionId,
+      );
+      if (shows !== `popup chrome-extension://${extId}/${page}`) {
+        throw new StepFailure('windows', `${action} opened ${String(shows)}`);
+      }
+      const again = await ask(action);
+      if (again?.windowId !== first.windowId) {
+        throw new StepFailure('windows', `${action} again: ${JSON.stringify(again)}, not focus`);
+      }
+      await close(first.windowId);
+      const fresh = await ask(action);
+      if (!(fresh?.windowId > 0) || fresh.windowId === first.windowId) {
+        throw new StepFailure('windows', `${action} after close: ${JSON.stringify(fresh)}`);
+      }
+      opened.push(fresh.windowId);
+    }
+  } finally {
+    for (const windowId of opened) await close(windowId).catch(() => undefined);
+    await cdp.send('Target.closeTarget', { targetId: popup.targetId }).catch(() => undefined);
+  }
+  stepDone('windows', t);
 }
 
 /**

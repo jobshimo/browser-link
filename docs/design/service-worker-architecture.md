@@ -718,17 +718,52 @@ recording operations (`start`, `stop`, `finish`, `discard`,
 `teardownRecorder`) over the worker's `TabRegistry`. It is stateful (each
 recording tab's navigation subscription), so `background.ts` builds it once and
 hands it the CDP send, the page evaluate, the clock, a getter for the
-setting's cache and `chromeTabEvents`. `TabEvents` is declared next to its user
-in `app/recording.ts` and has the two members recording uses, `get(tabId)` and
-`onUpdated(listener)`; the listener gets a `TabUpdate` (`tabId`, `status`,
-`url`) and `onUpdated` returns the function that stops the reports.
-`adapters/chrome-tab-events.ts` is a stateless object built once, and the
-filter on the tab and on `complete` is the recording's. Slice 21 adds
-`onRemoved`, `onCreated` and `onDebuggerDetach`. The flow-recording setting's
+setting's cache and `chromeTabEvents`. Recording uses two members of
+`TabEvents`, `get(tabId)` and `onUpdated(listener)`; the listener gets a
+`TabUpdate` (`tabId`, `status`, `url`) and `onUpdated` returns the function
+that stops the reports. `adapters/chrome-tab-events.ts` is a stateless object
+built once, and the filter on the tab and on `complete` is the recording's.
+The flow-recording setting's
 cache and its `storage.onChanged` listener (a wake listener, R1) stay in
 `background.ts`; the listener calls `recording.forceStopAndDiscard`. The e2e
 reaches every adapter function with a recording on a tab of its own
 (`recordingChecks`).
+
+As built in slice 21: the popup's runtime messages, the Activity and Admin
+windows, the repair and the tab-event listeners live in `app/`.
+`app/popup-router.ts` holds `RuntimeMessage`, `isRuntimeMessage` and
+`createPopupRouter`, which answers each message from its handler, at once
+(the listener returns false) or later (it returns true), and declares
+`Runtime` (`manifestVersion()`, `pageUrl(path)`, `onMessage(listener)`,
+whose listener gets the message and a `reply` and returns whether it answers
+later). `app/windows.ts` declares `Windows` (`open(url, size)` answering the
+window id or `undefined`, `focus(windowId)`, `exists(windowId)`, which
+rejects for a window the browser no longer has, `onClosed(listener)`) and
+`createAppWindow`, the focus-if-open window that remembers its id; it is
+stateful, so `background.ts` builds the Activity and the Admin window once
+each and subscribes `Windows.onClosed` for each. `app/activity-admin.ts`
+holds the trail and console round trips, `app/repair.ts` the version summary
+(`currentVersionCheck`) and `repairConnection`, and `app/tab-events.ts`
+declares `TabEvents` with all five members (`get` answers `url` and
+`pendingUrl`; `onCreated` reports `{ tabId, openerTabId }`;
+`onDebuggerDetach` reports the tab id or `undefined`) and
+`createTabEventHandlers`: a closed tab, the auto-connect of a tab a connected
+tab opened (on `Clock`), and a debugger the browser detached. The adapters
+`chrome-windows.ts`, `chrome-runtime.ts` and `chrome-tab-events.ts` are
+stateless objects built once; `Windows.onClosed`, `Runtime.onMessage`,
+`TabEvents.onRemoved`, `onCreated` and `onDebuggerDetach` are wake
+listeners, mapped in `WAKE_SUBSCRIPTIONS` and subscribed at the top level of
+`background.ts`. The in-worker contract run holds a contract for each:
+a window opened exists and takes focus and its close reaches `onClosed`; the
+manifest version, a page URL, and a message the popup page sends on load
+reaching `onMessage`; a tab opened reaching `onCreated`, and its close with
+a debugger attached reaching `onDebuggerDetach` and `onRemoved` (a tab
+`chrome.tabs.create` opens with an `openerTabId` is reported without it, so
+the opener is proven by the e2e's `browser.wait_for_tab` case). Each
+contract also runs against an in-memory fake (`contract/memory-*.ts`). The
+e2e's window case opens the Activity and the Admin window through the
+popup's messages, asks again for the same focused window, and gets a fresh
+one after closing it (`windowChecks`).
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -1429,7 +1464,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | — | **Checkpoint B** (6.2) | | | | |
 | 19 | Connection lifecycle (**done**, release 1.4.28) | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
 | 20 | Recording (**done**, release 1.4.29) | `app/recording.ts` (lines 4328-4658 at `5ce3055`): start, navigation steps, the cap, stop, discard, save, status; the `chrome-tab-events` adapter | ~330 | existing `recording.test.ts` plus `app/recording.test.ts` on fakes; an e2e recording case on a tab of its own; manual popup check noted in PR | revert |
-| 21 | Popup router, windows, repair, tab events | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
+| 21 | Popup router, windows, repair, tab events (**done**, release 1.4.30) | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
 
 Order rationale: the safety net first (0-3b), then the build change alone
@@ -1708,7 +1743,8 @@ adds an adapter (16: `ContentSettings`, `Downloads`; 17: the two stores; 19:
 no e2e call reaches, for example `Alarms.onFire` (called at module load,
 before coverage starts) and `Alarms.set` (only after an involuntary close),
 both reached by the in-worker contract run since slice 19 (revision 12), and
-`Windows.focus` (needs an already open Activity or Admin window). Each such
+`Windows.focus` (needs an already open Activity or Admin window), reached by
+the e2e window case and the in-worker contract run since slice 21. Each such
 method gets either a new e2e case in the slice that adds the adapter, or the
 in-worker contract entry of the primary path above
 (`packages/extension/contract/`: `entry.ts` and the contracts, built by

@@ -1,8 +1,4 @@
-import type {
-  AdminRequestLanguage,
-  ExtensionToServer,
-  ToolRequestMessage,
-} from '@browser-link/shared';
+import type { ExtensionToServer, ToolRequestMessage } from '@browser-link/shared';
 import {
   DEFAULT_IDLE_TTL_MINUTES,
   clampIdleTtlMinutes,
@@ -27,8 +23,6 @@ import {
   createFlowHistory,
   createFlowRegistry,
   type DetachedFlowRecord,
-  type FlowHistoryEntry,
-  type RunningFlowView,
 } from '@browser-link/core';
 import { docInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
@@ -41,6 +35,8 @@ import { chromeDetachedFlowStore } from './adapters/chrome-detached-flow-store.j
 import { chromeTabTitle } from './adapters/chrome-tab-title.js';
 import { chromeAlarms } from './adapters/chrome-alarms.js';
 import { chromeTabEvents } from './adapters/chrome-tab-events.js';
+import { chromeRuntime } from './adapters/chrome-runtime.js';
+import { chromeWindows } from './adapters/chrome-windows.js';
 import { openWebSocket } from './adapters/web-socket.js';
 import {
   closeTabConnection,
@@ -52,23 +48,21 @@ import {
   send,
   sendBridgeEvent,
   SOCKET_OPEN,
-  type BridgeSocket,
   type TabConnection,
   type TabEventListener,
 } from './app/tab-connection.js';
 import {
-  anyOpenSocket,
   createReconnect,
   createTabIds,
-  disconnectTab,
   openBridge,
-  roundTrip,
-  tabStatus,
-  type ActivityReply,
-  type AdminReply,
   type BridgeReplies,
   type ConnectResult,
 } from './app/connection.js';
+import { createActivityAdmin } from './app/activity-admin.js';
+import { createPopupRouter } from './app/popup-router.js';
+import { currentVersionCheck, repairConnection } from './app/repair.js';
+import { createTabEventHandlers } from './app/tab-events.js';
+import { createAppWindow } from './app/windows.js';
 import { createExtensionFlowControl } from './app/flow-control.js';
 import { createRecording } from './app/recording.js';
 import { createDownloadCapture } from './download-capture.js';
@@ -88,18 +82,8 @@ import {
   type IncomingFlowRecordingSettings,
 } from './flow-recording-policy.js';
 import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
-import {
-  REPAIR_TIMEOUT_MS,
-  describeReconnectResults,
-  describeRepairReply,
-  planRepair,
-  rememberedTabIds,
-  repairOutcome,
-  type RepairOutcome,
-} from './repair-policy.js';
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
-import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
  * by plain tsc, so a runtime import of the workspace package would not
@@ -232,86 +216,6 @@ async function applyIncomingFlowRecordingSettings(
   }
 }
 
-// Runtime messages between popup.ts and this script.
-type RuntimeMessage =
-  | { action: 'connect'; tabId: number }
-  | { action: 'disconnect'; tabId: number }
-  | { action: 'status'; tabId: number }
-  | { action: 'pendingDialog'; tabId: number }
-  | { action: 'respondDialog'; tabId: number; accept: boolean; promptText?: string }
-  | { action: 'versionCheck' }
-  // Tab-independent: a repair acts on the server and on every remembered tab.
-  | { action: 'repairConnection' }
-  | { action: 'recordingStatus'; tabId: number }
-  | { action: 'startRecording'; tabId: number }
-  | { action: 'stopRecording'; tabId: number }
-  | { action: 'discardRecording'; tabId: number }
-  | { action: 'saveRecording'; tabId: number; name: string; description?: string }
-  | { action: 'flowsStatus'; tabId: number }
-  // No tabId: a flow_id already names exactly one flow on exactly one tab,
-  // and the popup must be able to stop a flow running on a tab it is not
-  // currently showing.
-  | { action: 'cancelFlow'; flowId: string }
-  // Both tabId-free for the same reason `cancelFlow` is: the Activity window
-  // shows the trail across EVERY tab and every agent, so scoping it to one
-  // would be scoping away the point of it.
-  | { action: 'openActivityWindow' }
-  // The Admin window, tab-independent like the admin actions it hosts.
-  | { action: 'openAdminWindow' }
-  | { action: 'activityQuery'; query?: Record<string, unknown> }
-  | { action: 'activityPurge'; from?: string; to?: string; dryRun?: boolean }
-  // Tab-independent: administration acts on the server, not on one tab.
-  // `language`: the Admin window's interface language, forwarded so the
-  // server answers in it (see AdminDescribeMessage).
-  | { action: 'adminDescribe'; language?: unknown }
-  | {
-      action: 'adminAction';
-      id: string;
-      value?: string | number | boolean;
-      code?: string;
-      language?: unknown;
-    };
-
-function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
-  if (typeof msg !== 'object' || msg === null) return false;
-  const m = msg as Record<string, unknown>;
-  if (m.action === 'versionCheck') return true;
-  if (m.action === 'repairConnection') return true;
-  if (m.action === 'openActivityWindow') return true;
-  if (m.action === 'openAdminWindow') return true;
-  if (m.action === 'activityQuery') return true;
-  if (m.action === 'activityPurge') return true;
-  if (m.action === 'adminDescribe') return true;
-  if (m.action === 'adminAction') {
-    const v = m.value;
-    return (
-      typeof m.id === 'string' &&
-      (v === undefined ||
-        typeof v === 'string' ||
-        typeof v === 'number' ||
-        typeof v === 'boolean') &&
-      (m.code === undefined || typeof m.code === 'string')
-    );
-  }
-  if (m.action === 'saveRecording') {
-    return typeof m.tabId === 'number' && typeof m.name === 'string';
-  }
-  if (m.action === 'cancelFlow') return typeof m.flowId === 'string';
-  if (typeof m.tabId !== 'number') return false;
-  return (
-    m.action === 'connect' ||
-    m.action === 'disconnect' ||
-    m.action === 'status' ||
-    m.action === 'pendingDialog' ||
-    m.action === 'respondDialog' ||
-    m.action === 'recordingStatus' ||
-    m.action === 'startRecording' ||
-    m.action === 'stopRecording' ||
-    m.action === 'discardRecording' ||
-    m.action === 'flowsStatus'
-  );
-}
-
 const tabConnections = new TabRegistry<TabConnection>();
 
 /** The in-flight Activity, Admin and Repair round trips, by request id
@@ -322,207 +226,34 @@ const replies: BridgeReplies = {
   repair: new PendingReplies(systemClock),
 };
 
-/** How long a trail READ waits before giving up. Short: this is a local
- * SQLite read over a loopback socket. If it has not answered in two seconds
- * the bridge is wedged, and the window should say so rather than spin. */
-const ACTIVITY_QUERY_TIMEOUT_MS = 2_000;
+/** The Activity and Admin windows' round trips to the server
+ * (`app/activity-admin.ts`); stateless, over `replies`. */
+const activityAdmin = createActivityAdmin({ tabs: tabConnections, replies });
 
-/** A purge gets far longer. Deleting rows is quick; the VACUUM that follows
- * rewrites the whole file, and on a trail that grew to hundreds of megabytes
- * — precisely the case the user is purging to fix — that is not a two-second
- * operation. Timing out early would leave the window claiming failure over
- * work that actually succeeded. */
-const ACTIVITY_PURGE_TIMEOUT_MS = 60_000;
-
-/**
- * One correlated round trip to the server over any connected tab's socket.
- *
- * The trail is server-side and global, so which tab carries the question is
- * irrelevant — but at least one tab must be connected, because the WS is the
- * only channel the extension has. That is why the window renders an explicit
- * "connect a tab" state rather than an empty list: empty and unreachable are
- * different facts and must not look the same.
- */
-async function activityRoundTrip(
-  frame: (requestId: string) => ExtensionToServer,
-  timeoutMs: number,
-): Promise<ActivityReply> {
-  const socket = anyOpenSocket(tabConnections);
-  if (!socket) {
-    return { kind: 'activity.result', request_id: '', ok: false, error: 'not-connected' };
-  }
-  return roundTrip(replies.activity, socket, frame, timeoutMs, (request_id) => ({
-    kind: 'activity.result',
-    request_id,
-    ok: false,
-    error: 'timeout',
-  }));
-}
-
-function queryActivity(query: Record<string, unknown>): Promise<ActivityReply> {
-  return activityRoundTrip(
-    (request_id) => ({ kind: 'activity.query', request_id, query }),
-    ACTIVITY_QUERY_TIMEOUT_MS,
-  );
-}
-
-function purgeActivity(input: {
-  from?: string;
-  to?: string;
-  dryRun?: boolean;
-}): Promise<ActivityReply> {
-  return activityRoundTrip(
-    (request_id) => ({
-      kind: 'activity.purge',
-      request_id,
-      ...(input.from !== undefined ? { from: input.from } : {}),
-      ...(input.to !== undefined ? { to: input.to } : {}),
-      ...(input.dryRun === true ? { dry_run: true } : {}),
-    }),
-    // A dry run only counts — no VACUUM, so it gets the short budget.
-    input.dryRun === true ? ACTIVITY_QUERY_TIMEOUT_MS : ACTIVITY_PURGE_TIMEOUT_MS,
-  );
-}
-
-/** Describing and most actions are local config reads and writes. */
-const ADMIN_TIMEOUT_MS = 5_000;
-/** `doctor` probes ports and processes server-side and is slow by nature. */
-const ADMIN_DOCTOR_TIMEOUT_MS = 20_000;
-
-/**
- * One correlated admin round trip over any connected tab's socket — the same
- * shape as `activityRoundTrip`. `onFailure` builds the reply kind the caller
- * expects, so `not-connected` and `timeout` reach the popup in the same
- * envelope a real answer would.
- */
-async function adminRoundTrip(
-  frame: (requestId: string) => ExtensionToServer,
-  timeoutMs: number,
-  onFailure: (requestId: string, error: string) => AdminReply,
-): Promise<AdminReply> {
-  const socket = anyOpenSocket(tabConnections);
-  if (!socket) return onFailure('', 'not-connected');
-  return roundTrip(replies.admin, socket, frame, timeoutMs, (requestId) =>
-    onFailure(requestId, 'timeout'),
-  );
-}
-
-/** The window's language when it is one the server speaks; otherwise
- * nothing, and the server uses its configured language. */
-function adminLanguageField(language: unknown): { language?: AdminRequestLanguage } {
-  return language === 'en' || language === 'es' ? { language } : {};
-}
-
-function adminDescribe(language: unknown): Promise<AdminReply> {
-  return adminRoundTrip(
-    (request_id) => ({ kind: 'admin.describe', request_id, ...adminLanguageField(language) }),
-    ADMIN_TIMEOUT_MS,
-    (request_id, error) => ({ kind: 'admin.state', request_id, ok: false, error }),
-  );
-}
-
-function adminAction(input: {
-  id: string;
-  value?: string | number | boolean;
-  code?: string;
-  language?: unknown;
-}): Promise<AdminReply> {
-  return adminRoundTrip(
-    (request_id) => ({
-      kind: 'admin.action',
-      request_id,
-      id: input.id,
-      ...(input.value !== undefined ? { value: input.value } : {}),
-      ...(input.code !== undefined ? { code: input.code } : {}),
-      ...adminLanguageField(input.language),
-    }),
-    input.id === 'doctor' ? ADMIN_DOCTOR_TIMEOUT_MS : ADMIN_TIMEOUT_MS,
-    (request_id, error) => ({
-      kind: 'admin.action.result',
-      request_id,
-      result: { ok: false, error },
-    }),
-  );
-}
-
-/** Chrome window geometry for the Activity panel. Wide enough for the full
- * row — time, agent, tool, target and outcome — without wrapping, which is
- * the entire reason this is not the 320px popup. */
-const ACTIVITY_WINDOW = { width: 1100, height: 760 } as const;
-
-/**
- * Open the Activity window, or focus it if it is already open.
- *
- * Focus-if-open rather than always-create: the button is in a popup the user
- * will press again out of habit, and stacking five identical windows is the
- * kind of small rudeness that makes a tool feel unfinished.
- */
-let activityWindowId: number | null = null;
-
-async function openActivityWindow(): Promise<{ ok: true; windowId: number }> {
-  if (activityWindowId !== null) {
-    try {
-      const existing = await chrome.windows.get(activityWindowId);
-      if (existing.id !== undefined) {
-        await chrome.windows.update(existing.id, { focused: true });
-        return { ok: true, windowId: existing.id };
-      }
-    } catch {
-      // Closed since we last saw it — fall through and open a fresh one.
-      activityWindowId = null;
-    }
-  }
-  // `chrome.windows.create` resolves to `undefined` when the window could not
-  // be created (the API types it optional for exactly that case). Treat it as
-  // "no window to remember" rather than assuming success.
-  const created = await chrome.windows.create({
-    url: chrome.runtime.getURL('activity.html'),
-    type: 'popup',
-    ...ACTIVITY_WINDOW,
-  });
-  activityWindowId = created?.id ?? null;
-  return { ok: true, windowId: created?.id ?? -1 };
-}
-
-chrome.windows.onRemoved.addListener((closedId) => {
-  if (closedId === activityWindowId) activityWindowId = null;
+/** The Activity and Admin windows (`app/windows.ts`): each remembers the
+ * window it opened, so each is built once. The Activity window is wide
+ * enough for the full row (time, agent, tool, target, outcome) without
+ * wrapping, which is the entire reason it is not the 320px popup; the Admin
+ * window is a form of labelled rows, narrower but tall enough for every
+ * section. */
+const pageUrl = (path: string): string => chromeRuntime.pageUrl(path);
+const activityWindow = createAppWindow({
+  windows: chromeWindows,
+  pageUrl,
+  page: 'activity.html',
+  size: { width: 1100, height: 760 },
 });
-
-/** Chrome window geometry for the Admin panel: a form of labelled rows, so
- * narrower than the Activity table but tall enough for every section. */
-const ADMIN_WINDOW = { width: 560, height: 720 } as const;
-
-/**
- * Open the Admin window, or focus it if it is already open. Same contract as
- * `openActivityWindow`: a dedicated window rather than a section of the popup,
- * which closes the moment it loses focus and is too narrow for the form.
- */
-let adminWindowId: number | null = null;
-
-async function openAdminWindow(): Promise<{ ok: true; windowId: number }> {
-  if (adminWindowId !== null) {
-    try {
-      const existing = await chrome.windows.get(adminWindowId);
-      if (existing.id !== undefined) {
-        await chrome.windows.update(existing.id, { focused: true });
-        return { ok: true, windowId: existing.id };
-      }
-    } catch {
-      // Closed since we last saw it — fall through and open a fresh one.
-      adminWindowId = null;
-    }
-  }
-  const created = await chrome.windows.create({
-    url: chrome.runtime.getURL('admin.html'),
-    type: 'popup',
-    ...ADMIN_WINDOW,
-  });
-  adminWindowId = created?.id ?? null;
-  return { ok: true, windowId: created?.id ?? -1 };
-}
-
-chrome.windows.onRemoved.addListener((closedId) => {
-  if (closedId === adminWindowId) adminWindowId = null;
+const adminWindow = createAppWindow({
+  windows: chromeWindows,
+  pageUrl,
+  page: 'admin.html',
+  size: { width: 560, height: 720 },
+});
+chromeWindows.onClosed((windowId) => {
+  activityWindow.closed(windowId);
+});
+chromeWindows.onClosed((windowId) => {
+  adminWindow.closed(windowId);
 });
 
 /** Every `browser.flow` running in this worker (core `FlowRegistry`): the
@@ -540,17 +271,6 @@ const flowHistory = createFlowHistory({
     console.warn('browser-link: detached-flow terminal record not persisted', flowId);
   },
 });
-
-/** Answer the popup's Flows panel: everything running (across ALL tabs —
- * the Stop button has to reach a flow on a tab the user is not looking at)
- * plus the completed history of the ONE tab the popup is showing. */
-async function getFlowsStatus(
-  tabId: number,
-): Promise<{ running: RunningFlowView[]; history: FlowHistoryEntry[] }> {
-  const running = flowRegistry.listRunning(Date.now());
-  // Session storage unavailable: the running half rather than no panel.
-  return { running, history: await flowHistory.entries(tabId) };
-}
 
 /** Flow recording by demonstration (`app/recording.ts`), over the worker's
  * tabs; stateful (each recording tab's navigation subscription), so built
@@ -656,18 +376,6 @@ function cdp<T = unknown>(
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return debuggerSession(tabId, NO_LISTENERS).send<T>(method, params);
-}
-
-/** Wait `ms` on a timer. The literal range check is CodeQL's range-branch
- * sanitizer for js/resource-exhaustion: out of range it waits 0 ms. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof ms === 'number' && ms > 0 && ms < 60_000) {
-      setTimeout(resolve, ms);
-    } else {
-      setTimeout(resolve, 0);
-    }
-  });
 }
 
 /**
@@ -902,7 +610,7 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
       url: tab.url,
       title: tab.title,
       previousTabId,
-      extensionVersion: chrome.runtime.getManifest().version,
+      extensionVersion: chromeRuntime.manifestVersion(),
     },
     tabIds,
     scheduler: reconnect.scheduler,
@@ -927,300 +635,57 @@ function applySettings(pushed: unknown): void {
   if (flowRecordingSettings) void applyIncomingFlowRecordingSettings(flowRecordingSettings);
 }
 
-/**
- * Compute the version-mismatch summary for the popup. Picks the
- * `serverVersion` reported by ANY currently-connected tab — they all come
- * from the same primary, so the first one is enough. When no tab has
- * registered yet (e.g. user just installed and hasn't pressed Connect),
- * `server` stays null and the popup hides the banner.
- */
-function getVersionCheck(): VersionCheck {
-  const extension = chrome.runtime.getManifest().version;
-  let server: string | null = null;
-  let installed: string | null = null;
-  for (const s of tabConnections.values()) {
-    if (typeof s.serverVersion === 'string' && s.serverVersion.length > 0) {
-      server = s.serverVersion;
-      installed =
-        typeof s.installedVersion === 'string' && s.installedVersion.length > 0
-          ? s.installedVersion
-          : null;
-      break;
-    }
-  }
-  return computeVersionCheck({ extension, server, installed });
-}
-
-/* "Repair connection" (popup button). The decision lives in repair-policy.ts;
- * this is the thin wiring that gathers its inputs and carries out the step. */
-
-async function readRememberedTabIds(): Promise<number[]> {
-  try {
-    return rememberedTabIds(await chrome.storage.session.get(null));
-  } catch {
-    return [];
-  }
-}
-
-/** Send `bridge.repair` on one open socket and wait for the answer. On
- * success the server drops every socket uncleanly and the existing
- * auto-reconnect scheduler brings the tabs back; nothing else to do here. */
-function askServerRestart(socket: BridgeSocket): Promise<RepairOutcome> {
-  return roundTrip(
-    replies.repair,
-    socket,
-    (request_id) => ({ kind: 'bridge.repair', request_id }),
-    REPAIR_TIMEOUT_MS,
-    () => 'timeout' as const,
-  ).then(describeRepairReply);
-}
-
-async function repairConnection(): Promise<RepairOutcome> {
-  const socket = anyOpenSocket(tabConnections);
-  const plan = planRepair({
-    connected: socket !== undefined,
-    serverVersion: getVersionCheck().server,
-    rememberedTabIds: await readRememberedTabIds(),
-  });
-  switch (plan.step) {
-    case 'ask-server-restart':
-      // `planRepair` only picks this step when a socket is open.
-      return socket
-        ? askServerRestart(socket)
-        : repairOutcome(false, { code: 'server-not-connected' });
-    case 'reconnect-only': {
-      // Same path as the popup's Connect: an explicit attempt replaces any
-      // pending auto-reconnect for the tab, and connectTab's per-tab lock
-      // turns a race with an in-flight retry into a benign result.
-      const results = await Promise.all(
-        plan.tabIds.map(async (tabId) => {
-          reconnect.scheduler.cancel(tabId);
-          try {
-            return await connectTab(tabId);
-          } catch {
-            return { ok: false };
-          }
-        }),
-      );
-      return describeReconnectResults(results);
-    }
-    case 'manual': {
-      const { step: _step, reason: _reason, ...outcome } = plan;
-      return { ok: false, ...outcome };
-    }
-  }
-}
-
-async function respondToDialogFromPopup(
-  tabId: number,
-  accept: boolean,
-  promptText: string | undefined,
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const params: Record<string, unknown> = { accept };
-    if (promptText !== undefined) params.promptText = promptText;
-    await cdp(tabId, 'Page.handleJavaScriptDialog', params);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
-  if (!isRuntimeMessage(msg)) return false;
-  if (msg.action === 'connect') {
-    // An explicit Connect cancels any FUTURE auto-reconnect retries for
-    // this tab. If a scheduled attempt is already mid-flight (cancel
-    // cannot abort it), connectTab's per-tab in-flight lock turns this
-    // call into a benign "already in progress" result instead of a
-    // second concurrent connect.
-    reconnect.scheduler.cancel(msg.tabId);
-    void connectTab(msg.tabId).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'disconnect') {
-    void disconnectTab(msg.tabId, { scheduler: reconnect.scheduler, cleanup, tabIds }).then(
-      sendResponse,
-    );
-    return true;
-  }
-  if (msg.action === 'pendingDialog') {
-    const state = tabConnections.get(msg.tabId);
-    sendResponse({ pending: state?.session.pendingDialog ?? null });
-    return false;
-  }
-  if (msg.action === 'respondDialog') {
-    void respondToDialogFromPopup(msg.tabId, msg.accept, msg.promptText).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'versionCheck') {
-    sendResponse(getVersionCheck());
-    return false;
-  }
-  if (msg.action === 'repairConnection') {
-    void repairConnection().then(sendResponse, (err: unknown) => {
-      sendResponse({ ok: false, message: err instanceof Error ? err.message : String(err) });
-    });
-    return true;
-  }
-  if (msg.action === 'openActivityWindow') {
-    void openActivityWindow().then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'openAdminWindow') {
-    void openAdminWindow().then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'activityQuery') {
-    void queryActivity(msg.query ?? {}).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'activityPurge') {
-    void purgeActivity(msg).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'adminDescribe') {
-    void adminDescribe(msg.language).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'adminAction') {
-    void adminAction(msg).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'recordingStatus') {
-    sendResponse(recording.status(msg.tabId));
-    return false;
-  }
-  if (msg.action === 'startRecording') {
-    void recording.start(msg.tabId).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'stopRecording') {
-    void recording.stop(msg.tabId).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'discardRecording') {
-    void recording.discard(msg.tabId).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'saveRecording') {
-    void recording.save(msg.tabId, msg.name, msg.description).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'flowsStatus') {
-    void getFlowsStatus(msg.tabId).then(sendResponse);
-    return true;
-  }
-  if (msg.action === 'cancelFlow') {
-    // Synchronous and unconditional: one boolean flip, then the runner
-    // stops at its next check. `cancelled` reports whether THIS call is
-    // what stopped it, so the popup can distinguish "stopping…" from an
-    // id that had already finished — never an error either way.
-    sendResponse({ cancelled: flowRegistry.cancel(msg.flowId) });
-    return false;
-  }
-  // 'status'
-  sendResponse(tabStatus(tabConnections, reconnect.scheduler, msg.tabId));
-  return false;
+/** The popup's messages (`app/popup-router.ts`), with the repair and the
+ * version summary they answer (`app/repair.ts`). */
+const popupRouter = createPopupRouter({
+  tabs: tabConnections,
+  scheduler: reconnect.scheduler,
+  tabIds,
+  clock: systemClock,
+  connect: connectTab,
+  cleanup,
+  cdp,
+  versionCheck: () => currentVersionCheck(tabConnections, chromeRuntime.manifestVersion()),
+  repairConnection: () =>
+    repairConnection({
+      tabs: tabConnections,
+      storage: chrome.storage.session,
+      replies: replies.repair,
+      scheduler: reconnect.scheduler,
+      connect: connectTab,
+      extensionVersion: () => chromeRuntime.manifestVersion(),
+    }),
+  openActivityWindow: () => activityWindow.open(),
+  openAdminWindow: () => adminWindow.open(),
+  activityAdmin,
+  recording,
+  flows: flowRegistry,
+  history: flowHistory,
 });
+chromeRuntime.onMessage((message, reply) => popupRouter(message, reply));
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  // No tab, no reconnect — abort any pending retry cycle for it.
-  reconnect.scheduler.cancel(tabId);
-  void cleanup(tabId).catch(() => {
-    // Best effort.
-  });
-  // The Chrome tab is gone — drop any cached browser-link id for it.
-  void tabIds.forget(tabId);
-  // …and its flow history. Chrome reuses tab ids within a session, so a
-  // stale key would eventually show one tab's flows under another's;
-  // `cleanup` above only ASKS the tab's flows to stop, so the drop also
-  // keeps them from writing it back (`FlowHistory.dropTab`).
-  flowHistory.dropTab(tabId);
+/** A closed tab, a tab a connected tab opened, a debugger the browser
+ * detached (`app/tab-events.ts`). */
+const tabEvents = createTabEventHandlers({
+  tabs: tabConnections,
+  tabEvents: chromeTabEvents,
+  clock: systemClock,
+  scheduler: reconnect.scheduler,
+  tabIds,
+  connect: connectTab,
+  cleanup,
+  dropFlowHistory: (tabId) => {
+    flowHistory.dropTab(tabId);
+  },
 });
-
-/* Auto-connect tabs spawned by a connected tab.
- *
- * When a tab the user has connected via the popup opens a new tab
- * (window.open, target="_blank", a click handler doing window.open, etc.),
- * Chrome reports it via tabs.onCreated with `openerTabId` pointing at the
- * source. We use that link to:
- *   1. Wait for the new tab to settle on a real URL (the first onCreated
- *      callback often reports `about:blank` even when a destination is set).
- *   2. Auto-connect the new tab through the same flow as the popup
- *      "Connect" button — attach debugger, register with the server.
- *   3. Emit a `tab-created` bridge.event tagged with `opened_from = the
- *      opener's server tab id`. The MCP `browser.wait_for_tab` tool reads
- *      that event and auto-claims the new tab for the waiting agent.
- *
- * If the opener is not connected (regular browsing), we do nothing —
- * background tabs the user opens for themselves stay out of the bridge.
- */
-chrome.tabs.onCreated.addListener((tab) => {
-  const newTabId = tab.id;
-  const openerTabId = tab.openerTabId;
-  if (typeof newTabId !== 'number') return;
-  if (typeof openerTabId !== 'number') return;
-  const openerState = tabConnections.get(openerTabId);
-  if (!openerState) return;
-  const openedFrom = openerState.serverTabId;
-  if (!openedFrom) return;
-
-  void (async () => {
-    // Wait until chrome.tabs.get returns a real `url`. `pendingUrl` alone
-    // is NOT enough — connectTab's guard short-circuits on `!tab.url`.
-    // Bound at 5 s so a never-navigating tab doesn't park us forever.
-    const deadline = Date.now() + 5_000;
-    let ready = false;
-    while (Date.now() < deadline) {
-      try {
-        const t = await chrome.tabs.get(newTabId);
-        if (t.url && t.url.length > 0) {
-          ready = true;
-          break;
-        }
-      } catch {
-        return;
-      }
-      await sleep(50);
-    }
-    if (!ready) return;
-
-    try {
-      const result = await connectTab(newTabId);
-      if (!result.ok || !result.serverTabId) return;
-      const newState = tabConnections.get(newTabId);
-      if (!newState?.ws || newState.ws.readyState !== SOCKET_OPEN) return;
-      let resolvedUrl = '';
-      try {
-        const settled = await chrome.tabs.get(newTabId);
-        resolvedUrl = settled.url ?? settled.pendingUrl ?? '';
-      } catch {
-        // Tab vanished between attach and read.
-      }
-      send(newState.ws, {
-        kind: 'bridge.event',
-        eventKind: 'tab-created',
-        tabId: newState.serverTabId,
-        data: {
-          opened_from: openedFrom,
-          url: resolvedUrl,
-        },
-      });
-    } catch {
-      // Auto-connect is best-effort.
-    }
-  })();
+chromeTabEvents.onRemoved((tabId) => {
+  tabEvents.removed(tabId);
 });
-
-chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId === undefined) return;
-  const state = tabConnections.get(source.tabId);
-  if (!state) return;
-  state.debuggerAttached = false;
-  void cleanup(source.tabId).catch(() => {
-    // Best effort.
-  });
+chromeTabEvents.onCreated((tab) => {
+  tabEvents.created(tab);
+});
+chromeTabEvents.onDebuggerDetach((tabId) => {
+  tabEvents.debuggerDetached(tabId);
 });
 
 /* WS-idle sweeper.

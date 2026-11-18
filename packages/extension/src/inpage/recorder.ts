@@ -1,11 +1,12 @@
 /**
  * In-page flow recorder — injected via CDP `Runtime.evaluate` ONLY while a
- * recording is active (see `background.ts`'s `startRecording`/
- * `stopRecording`). Never present on a page unless the user opted in via
+ * recording is active (see `app/recording.ts`'s `start`/`stop`). Never
+ * present on a page unless the user opted in via
  * the popup toggle AND pressed Record on that specific tab.
  *
- * Communicates with background.ts over a CDP binding (`Runtime.addBinding`
- * / `Runtime.bindingCalled`, wired in background.ts) rather than a WS/fetch
+ * Communicates with the service worker over a CDP binding
+ * (`Runtime.addBinding` in `app/recording.ts`, `Runtime.bindingCalled` read by
+ * `app/tab-connection.ts` `debuggerIntake`) rather than a WS/fetch
  * call — the binding is the one channel CDP gives an in-page script to
  * reach the extension without any page-visible network traffic. Each
  * captured user action is emitted as ONE compact JSON string:
@@ -19,9 +20,9 @@
  * XSS). Two layered defenses keep hostile page scripts from fabricating
  * steps or using the channel for exfiltration:
  *
- *  1. PER-SESSION NONCE: background.ts generates a random nonce for each
+ *  1. PER-SESSION NONCE: the worker generates a random nonce for each
  *     recording session and interpolates it into this script at injection
- *     time. Every emitted payload carries it, and background.ts REJECTS any
+ *     time. Every emitted payload carries it, and `debuggerIntake` REJECTS any
  *     binding call whose nonce does not match the active session — a page
  *     script calling the binding blind produces zero recorded steps,
  *     because it cannot know the nonce (it lives only inside this closure
@@ -64,13 +65,13 @@
  * anywhere in this file.
  *
  * Idempotent: re-running this expression on a document that already has
- * the recorder installed is a no-op — matters because `background.ts`
+ * the recorder installed is a no-op — matters because `app/recording.ts`
  * re-injects after every navigation detected while recording, and the two
  * injections could in principle race on the same document. All three
  * page-visible globals (the binding function, the active flag, the stop
  * function) derive from the per-session binding name, so none of them is a
  * stable, guessable fingerprinting surface. `buildStopRecorderJs()` builds
- * the companion teardown expression background.ts evaluates on
+ * the companion teardown expression `app/recording.ts` evaluates on
  * stop/disconnect/navigation-away.
  */
 import { DEEP_QUERY_JS, DOM_HELPERS_JS } from '@browser-link/core';
@@ -85,7 +86,7 @@ import { DEEP_QUERY_JS, DOM_HELPERS_JS } from '@browser-link/core';
  * recording is active — every recorder global looks like an ordinary
  * random page global. */
 export interface RecorderInjectionOptions {
-  /** Name of the CDP binding this session calls — background.ts passes the
+  /** Name of the CDP binding this session calls — `app/recording.ts` passes the
    * same name to `Runtime.addBinding` and matches it on every
    * `Runtime.bindingCalled` event. Bare random identifier, no shared affix. */
   bindingName: string;
@@ -95,7 +96,7 @@ export interface RecorderInjectionOptions {
    * is given this same value so its expression can call it. */
   stopFn: string;
   /** Secret the page scripts cannot know — carried in every payload,
-   * checked by background.ts before a payload is parsed at all. */
+   * checked by `debuggerIntake` before a payload is parsed at all. */
   nonce: string;
 }
 
@@ -365,7 +366,7 @@ export function buildRecorderJs(opts: RecorderInjectionOptions): string {
  * `stopFn` global) when present, no-op otherwise (e.g. the tab already
  * navigated away and the recorder was never re-injected into the new
  * document — in that case there is nothing to tear down, which is itself
- * the desired end state). background.ts evaluates this on Stop, on
+ * the desired end state). `app/recording.ts` evaluates this on Stop, on
  * Discard-while-recording, on tab disconnect/removal/idle-sweep cleanup,
  * and when the flow-recording setting flips off mid-recording —
  * teardown-on-every-exit-path is part of the documented privacy contract,
