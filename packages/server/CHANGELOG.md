@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.26](https://github.com/jobshimo/browser-link/compare/v1.4.25...v1.4.26) (2026-11-18)
+
+### Bug Fixes
+
+- Hardening of the connect path, not a live leak: `TabRegistry.commit` ran after `chrome.debugger.attach` and outside the `try` that holds the cleanup, so a `commit` that threw would have left the debugger attached with no registry entry for the teardown to find. It cannot throw today (the reservation and the `has` check exclude it). `commitConnection` (`app/tab-connection.ts`) now wraps it: on a throw it detaches the debugger (best effort) and the connect answers `debugger-attach-failed` with the error text as `detail`, an existing code and message. The normal path is unchanged (the commit is still synchronous, in the same order), so there is no behaviour change on the wire; a test drives it with a registry whose reservation is closed and a recording detach.
+- The five `*.enable` calls after the attach run from one loop, in the same order; this keeps `background.ts` within its 2050-line budget.
+
 ## [1.4.25](https://github.com/jobshimo/browser-link/compare/v1.4.24...v1.4.25) (2026-11-18)
 
 ### Notes

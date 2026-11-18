@@ -10,6 +10,7 @@ import {
 } from '@browser-link/core';
 import {
   closeTabConnection,
+  commitConnection,
   debuggerIntake,
   deliverCdpEvent,
   newTabConnection,
@@ -260,5 +261,44 @@ describe('TabConnection: teardown', () => {
     const failing = deps([]);
     failing.detachDebugger = () => Promise.reject(new Error('detach'));
     await expect(closeTabConnection(live(conn), 7, failing)).resolves.toBeUndefined();
+  });
+});
+
+describe('commitConnection', () => {
+  test('commits the connection and detaches nothing', () => {
+    const { conn } = connection();
+    const tabs = new TabRegistry<TabConnection>();
+    const reservation = tabs.reserve(7)!;
+    const detach = vi.fn(async () => undefined);
+    expect(commitConnection(tabs, reservation, conn, detach)).toBeNull();
+    expect(tabs.get(7)).toBe(conn);
+    expect(detach).not.toHaveBeenCalled();
+  });
+
+  test('a commit that throws releases the debugger and answers an attach failure', async () => {
+    const { conn } = connection();
+    const tabs = new TabRegistry<TabConnection>();
+    const reservation = tabs.reserve(7)!;
+    tabs.release(reservation); // a closed reservation: commit throws
+    const detach = vi.fn(async () => undefined);
+    const failed = commitConnection(tabs, reservation, conn, detach);
+    expect(failed).not.toBeNull();
+    const result = await failed;
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'debugger-attach-failed',
+      values: { detail: 'TabRegistry: commit of a reservation that is not open' },
+    });
+    expect(detach).toHaveBeenCalledExactlyOnceWith(7);
+    expect(tabs.has(7)).toBe(false);
+  });
+
+  test('a failing detach does not change the answer', async () => {
+    const { conn } = connection();
+    const tabs = new TabRegistry<TabConnection>();
+    const reservation = tabs.reserve(7)!;
+    tabs.release(reservation);
+    const failed = commitConnection(tabs, reservation, conn, () => Promise.reject(new Error('x')));
+    await expect(failed).resolves.toMatchObject({ ok: false, code: 'debugger-attach-failed' });
   });
 });
