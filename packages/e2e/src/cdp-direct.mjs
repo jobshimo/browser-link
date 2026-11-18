@@ -7,6 +7,11 @@
 // the run's isolated environment (lib.mjs isolatedServerEnv), so the grant
 // lands in the temp data dir and never in the owner's.
 import { execFileSync } from 'node:child_process';
+import { errorText } from './lib.mjs';
+
+/** How long one CLI call may run before the harness stops it and fails with
+ * a clear message: the commands only write a config file or a grant. */
+export const CLI_TIMEOUT_MS = 30_000;
 
 /** Lifetime of the run's grant: far longer than the run, and not `never`. */
 export const CDP_GRANT_MINUTES = 10;
@@ -25,7 +30,13 @@ export function cdpDirectCommands(port) {
  * `serverCli` in `env` (`run` is execFileSync, replaceable in tests).
  * Returns each command's stdout; throws naming the command, with its stderr,
  * when one exits non-zero. */
-export function enableCdpDirect({ serverCli, env, port, run = execFileSync }) {
+export function enableCdpDirect({
+  serverCli,
+  env,
+  port,
+  run = execFileSync,
+  timeoutMs = CLI_TIMEOUT_MS,
+}) {
   return cdpDirectCommands(port).map((args) => {
     try {
       return String(
@@ -33,12 +44,16 @@ export function enableCdpDirect({ serverCli, env, port, run = execFileSync }) {
           env,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs,
         }),
       );
     } catch (e) {
       const stderr = String(e?.stderr ?? '').trim();
+      // execFileSync on a timeout kills the child and throws ETIMEDOUT.
+      const why =
+        e?.code === 'ETIMEDOUT' ? `timed out after ${String(timeoutMs)} ms` : errorText(e);
       throw new Error(
-        `browser-link ${args.join(' ')} failed: ${String(e?.message ?? e)}${stderr ? `\n${stderr}` : ''}`,
+        `browser-link ${args.join(' ')} failed: ${why}${stderr ? `\n${stderr}` : ''}`,
       );
     }
   });

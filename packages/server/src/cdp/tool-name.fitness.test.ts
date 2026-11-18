@@ -3,6 +3,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, test } from 'vitest';
+import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 
 /*
  * FITNESS: cdp-direct decides nothing by a tool's name (design revision 9).
@@ -88,5 +89,60 @@ describe('cdp-direct makes no tool-name checks (slice 15)', () => {
     expect(toolNameChecks([{ file: 'x.ts', text: probe }])).toEqual([
       "x.ts: 'screenshot' !== msg.tool",
     ]);
+  });
+});
+
+/** `case` labels of a source that name a registered tool: every wire tool
+ * runs through the registry (`dispatchTool`), so a tool `case` in the cdp
+ * transport is tool logic left in the adapter. Same rule as the extension's
+ * check on background.ts (slice 18b), applied to the server side. */
+function toolCaseLabels(source: string, tools: ReadonlySet<string>): string[] {
+  const sf = ts.createSourceFile('transport.ts', source, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCaseClause(node) &&
+      (ts.isStringLiteral(node.expression) ||
+        ts.isNoSubstitutionTemplateLiteral(node.expression)) &&
+      tools.has(node.expression.text)
+    ) {
+      found.push(`case '${node.expression.text}'`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+const REGISTERED_TOOLS: ReadonlySet<string> = new Set(TOOL_REGISTRY.keys());
+
+describe('cdp transport has no tool case', () => {
+  test('holds for the real transport.ts, against every registered tool', () => {
+    expect(REGISTERED_TOOLS.has('flow')).toBe(true);
+    expect(REGISTERED_TOOLS.has('evaluate')).toBe(true);
+    expect(toolCaseLabels(transportText, REGISTERED_TOOLS)).toEqual([]);
+  });
+
+  test('a case that does not name a registered tool does not count', () => {
+    expect(
+      toolCaseLabels(
+        "switch (failure.kind) {\n  case 'action':\n    break;\n}\n",
+        REGISTERED_TOOLS,
+      ),
+    ).toEqual([]);
+  });
+
+  test('RED: a `switch (tool)` with tool cases fails', () => {
+    expect(
+      toolCaseLabels(
+        "switch (tool) {\n  case 'evaluate':\n    break;\n  case `flow`:\n    break;\n}\n",
+        REGISTERED_TOOLS,
+      ),
+    ).toEqual(["case 'evaluate'", "case 'flow'"]);
+  });
+
+  test('RED: a tool case appended to the real transport.ts fails', () => {
+    const probe = `${transportText}\nexport function leak(tool: string): void {\n  switch (tool) {\n    case 'navigate':\n      break;\n  }\n}\n`;
+    expect(toolCaseLabels(probe, REGISTERED_TOOLS)).toEqual(["case 'navigate'"]);
   });
 });

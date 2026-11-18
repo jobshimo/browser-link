@@ -2,8 +2,80 @@
 // how they run in the isolated environment, and how the cdp: tab is picked
 // out of a list_tabs answer.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
-import { CDP_GRANT_MINUTES, cdpDirectCommands, cdpTabOf, enableCdpDirect } from './cdp-direct.mjs';
+import {
+  CDP_GRANT_MINUTES,
+  CLI_TIMEOUT_MS,
+  cdpDirectCommands,
+  cdpTabOf,
+  enableCdpDirect,
+} from './cdp-direct.mjs';
+
+test('each CLI call runs under its own timeout', () => {
+  const seen = [];
+  enableCdpDirect({
+    serverCli: 'cli.js',
+    env: {},
+    port: 1,
+    timeoutMs: 1234,
+    run: (_cmd, _args, opts) => {
+      seen.push(opts.timeout);
+      return '';
+    },
+  });
+  assert.deepEqual(seen, [1234, 1234, 1234]);
+  assert.ok(CLI_TIMEOUT_MS > 0 && Number.isFinite(CLI_TIMEOUT_MS));
+});
+
+test('a CLI call that times out fails naming the command and the limit', () => {
+  assert.throws(
+    () =>
+      enableCdpDirect({
+        serverCli: 'cli.js',
+        env: {},
+        port: 4321,
+        timeoutMs: 50,
+        run: () => {
+          const e = new Error('spawnSync node ETIMEDOUT');
+          e.code = 'ETIMEDOUT';
+          throw e;
+        },
+      }),
+    { message: 'browser-link config set cdp-direct.enabled true failed: timed out after 50 ms' },
+  );
+});
+
+test('a CLI failure without a message is still reported with text', () => {
+  assert.throws(
+    () =>
+      enableCdpDirect({
+        serverCli: 'cli.js',
+        env: {},
+        port: 4321,
+        run: () => {
+          throw new Error('');
+        },
+      }),
+    (e) => /failed: unknown error \(no message\)/.test(e.message),
+  );
+});
+
+test('a hanging child is really stopped at the timeout', () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      enableCdpDirect({
+        serverCli: 'unused',
+        env: {},
+        port: 1,
+        timeoutMs: 300,
+        run: (cmd, _args, opts) => execFileSync(cmd, ['-e', 'setTimeout(() => {}, 60000)'], opts),
+      }),
+    { message: /failed: timed out after 300 ms/ },
+  );
+  assert.ok(Date.now() - started < 10_000);
+});
 
 test('enables cdp-direct on the given port, then records a time-boxed grant', () => {
   assert.deepEqual(cdpDirectCommands(9333), [
