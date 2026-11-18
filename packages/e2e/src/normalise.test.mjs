@@ -324,6 +324,36 @@ test("wait_for's poll count becomes <count>; the same key in another tool does n
   assert.deepEqual(bodyOf(r, 1), { checks: 3 });
 });
 
+test('activity: trail positions become <count>; the record content is compared as is', () => {
+  const activity = (id, payload) =>
+    textResult({
+      records: [{ id, tool: 'browser.type', payload, outcome: 'error' }],
+      latest_id: id,
+      total: 6,
+      agents: [{ agent: 'primary', count: id }],
+    });
+  const norm = (id, payload) =>
+    bodyOf(
+      normaliseRecord(
+        record([{ tool: 'browser.activity', args: {}, result: activity(id, payload) }]),
+      ),
+    );
+  assert.deepEqual(norm(269, '[sensitive field]'), norm(272, '[sensitive field]'));
+  assert.deepEqual(norm(269, 'x').records[0], {
+    id: '<count>',
+    tool: 'browser.type',
+    payload: 'x',
+    outcome: 'error',
+  });
+  assert.equal(norm(269, 'x').total, 6);
+  assert.notDeepEqual(norm(269, '[sensitive field]'), norm(269, 'e2e-secret'));
+  // The same key in another tool is untouched.
+  const other = normaliseRecord(
+    record([{ tool: 'browser.find', args: {}, result: textResult({ latest_id: 5 }) }]),
+  );
+  assert.deepEqual(bodyOf(other), { latest_id: 5 });
+});
+
 test("browser-link's own release number becomes <version>; other values do not", () => {
   const r = normaliseRecord(
     record([

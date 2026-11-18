@@ -70,6 +70,28 @@ export const TIME_KEYS = [
  * condition held (2 or 3 between two runs of the same build). */
 export const TIMING_COUNTS = { 'browser.wait_for': ['checks'] };
 
+/** A browser.activity body: where a record sits in the trail (`id`,
+ * `latest_id`, the per-agent `count`) is how many calls the server recorded
+ * before it, and polled calls (list_tabs while a tab is awaited) repeat a
+ * timing-dependent number of times. Those positions become `<count>`; the
+ * record's content (tool, payload, outcome, error, flag) is compared as is. */
+export function normaliseActivityPositions(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const out = { ...body };
+  if (typeof out.latest_id === 'number') out.latest_id = '<count>';
+  if (Array.isArray(out.records)) {
+    out.records = out.records.map((r) =>
+      r && typeof r === 'object' && typeof r.id === 'number' ? { ...r, id: '<count>' } : r,
+    );
+  }
+  if (Array.isArray(out.agents)) {
+    out.agents = out.agents.map((a) =>
+      a && typeof a === 'object' && typeof a.count === 'number' ? { ...a, count: '<count>' } : a,
+    );
+  }
+  return out;
+}
+
 /** flow_status states whose progress is how far a detached flow got when it
  * was observed or stopped from outside (the e2e cancels a 200 ms repeat
  * after it has ticked at least twice): 1, 2 or 3 iterations between two runs
@@ -366,6 +388,7 @@ function normaliseResult(ctx, tool, result) {
       if (UNORDERED_TOOLS.includes(tool)) parsed = sortEntries(ctx, parsed);
       if (tool === 'browser.flow_cancel') parsed = normaliseCancelOutcome(parsed);
       if (tool === 'browser.flow_status') parsed = normaliseFlowProgress(parsed);
+      if (tool === 'browser.activity') parsed = normaliseActivityPositions(parsed);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const k of TIMING_COUNTS[tool] ?? []) {
           if (typeof parsed[k] === 'number') parsed[k] = '<count>';
