@@ -53,8 +53,9 @@ swapped).
 ### Revision 13 (2026-11-18)
 
 Arch's answer on the composition-root budget after slice 21 (5.4, 3.1 "As
-built in slice 21b", slice table rows 21b-21d, entry comment of
-`packages/extension/contract/`), and the shape slice 21b built:
+built in slice 21b" and "As built in slice 21c", the 3.1 ports and tables,
+section 4, slice table rows 21b-21d, entry comment of
+`packages/extension/contract/`), and the shapes slices 21b and 21c built:
 
 | # | Decision | Why |
 |---|---|---|
@@ -63,6 +64,7 @@ built in slice 21b", slice table rows 21b-21d, entry comment of
 | 3 | Each of 21b-21d lowers `BACKGROUND_LINE_BUDGET` to its measured count; imports count, and are never folded or reformatted to reach a number | the budget measures the file as written |
 | 4 | The in-worker contract harness (`contract/entry.ts`) calls `chrome.windows.remove`, `chrome.tabs.create` and `chrome.tabs.remove`, `chrome.debugger.attach` and `chrome.storage.local.remove` to produce the events the wake-listener adapters observe and to clean up; these test-only calls are within the mechanism of revision 12. Every window, tab and storage key a case creates is removed in a `finally`, on failure too: `openTab` answers the tab with its `close`, and the e2e first runs every creating case failing on purpose right after it created what it must remove (`browserLinkContract({ probe: true })`), then checks through the browser that the tabs, windows and contract keys are the ones it held before, and checks the same after the real run | a failing contract case must not leave a tab or window that changes later e2e cases |
 | 5 | As built in slice 21b: the adapter is `LocalSettingsStorage` (`get(key)`, `set(items)`, `onChanged(listener)`, whose listener gets the changes and the area), declared in `app/settings-cache.ts`; `SettingsCache` there extends core `IdleSettings` (`idleTtlMinutes()`) with `flowRecordingEnabled()`, holds both caches and is not an adapter. The 3.1 table rows read so | the caches hold state and decide (the `local` area, the keys, the newer `updatedAt`), which an adapter may not (5.3 item 3) |
+| 6 | Slice 21c reverses revision 12 decision 5 ("`EventsOut` stays a function of `background.ts` (`publishFlowFinished`), not a port") and the slice 19 and section 4 sentences that `EventsOut` is not a port yet: `EventsOut` (`emit(tabId, event: BridgeEventPayload): boolean`, false when the event did not go out) is a core port in `ports/events-out.ts`, `BridgeEventPayload` (`Pick<BridgeEventMessage, 'eventKind' | 'data'>` of `@browser-link/shared`) lives in `ports/values.ts`, and `createFlowHistory` takes `events: EventsOut` instead of the `publish` callback; core builds the `flow-finished` event (`flowFinishedEvent`). It comes with its contract (`ports/contract/events-out.contract.ts`, on the in-memory fake in core and on the adapter in the worker) and R6 coverage, per checkpoint B condition 5 ("if EventsOut becomes a port there, it comes with its contract and R6 coverage like the others") | arch: it is the last piece that keeps transport behaviour in the composition root, and checkpoint B condition 5 already set its terms |
 
 ### Revision 12 (2026-11-18)
 
@@ -627,6 +629,8 @@ export interface DetachedFlowStore {
 export interface EventsOut {
   emit(tabId: number, event: BridgeEventPayload): boolean; // false: not delivered
 }
+// As built in slice 21c (revision 13): BridgeEventPayload is
+// Pick<BridgeEventMessage, 'eventKind' | 'data'> of @browser-link/shared.
 
 // downloads.ts: returns data; the stateful capture stays behind the adapter.
 // As built in slice 16 (revision 10): one per tab, the tab bound by the adapter.
@@ -702,7 +706,7 @@ says why).
 | `PageInfo` | `adapters/chrome-page-info.ts`: `chrome.tabs.get`, `onUpdated` status complete through core `session/load-wait.ts` `armLoadWait` and `tabLoadSignal` | `cdp/adapters/cdp-page-info.ts`: `Target.getTargetInfo`, `Page.loadEventFired` through the same `armLoadWait` |
 | `IdleSettings` | `app/settings-cache.ts` `SettingsCache`, over `chrome-settings.ts` | not used by cdp-direct (Q4) |
 | `FlowHistoryStore`, `DetachedFlowStore` | `chrome.storage.session` | not used by cdp-direct (Q4) |
-| `EventsOut` | `send(connection.ws, ...)` | the `BridgeEventLog` sink of `detached-flows.ts` |
+| `EventsOut` | `adapters/ws-events-out.ts`: the frame on the tab's socket through `app/events.ts` `emitBridgeEvent` (slice 21c) | the `BridgeEventLog` sink of `detached-flows.ts` |
 | `Downloads` | `createDownloadCapture(chrome.downloads)` | none |
 | `ContentSettings` | `chrome.contentSettings` | none |
 
@@ -723,8 +727,8 @@ popup's disconnect and status, and the round trips over any open socket
 objects built once; `background.ts` passes `chrome.storage.session` as the
 `SessionStorage`, as it passes `chrome.downloads` to the download capture,
 and subscribes `chromeAlarms.onFire` at top level (the wake-listener rule maps
-`alarms.onAlarm` to `Alarms.onFire`). `EventsOut` is not a port yet: the
-`flow-finished` event is still `background.ts` `publishFlowFinished`.
+`alarms.onAlarm` to `Alarms.onFire`). `EventsOut` became a port in slice 21c
+(revision 13).
 
 As built in slice 20: `createRecording` (`app/recording.ts`) holds the
 recording operations (`start`, `stop`, `finish`, `discard`,
@@ -791,6 +795,21 @@ stateless object; the wake-listener rule maps `storage.onChanged` to
 `LocalSettingsStorage.onChanged`. The in-worker contract: a value set reads
 back through `get`, and its change reaches `onChanged` as a `local` change
 carrying the new value; the key is removed in a `finally`.
+
+As built in slice 21c (revision 13, decision 6): core `ports/events-out.ts`
+holds `EventsOut`, and `createFlowHistory` emits `flowFinishedEvent(record)`
+through it, deferring the event onto the record when `emit` answers false.
+`app/events.ts` holds `emitBridgeEvent` (the `bridge.event` frame on the
+tab's open socket, with the server tab id once registered; false without an
+open socket) and `reportTopDocument` (the page observer's `tab-doc-info` and
+`tab-navigated` events, which are the extension's, not the core's, so they
+do not go through `EventsOut`). `adapters/ws-events-out.ts`
+(`createWsEventsOut(tabs)`) is logic-free and stateless: the sockets live in
+the registry it is given. `createFlowHistory` takes it once, so
+`background.ts` builds it once at module load; the e2e's coverage cannot see
+that factory run, so the in-worker contract run builds one of its own over a
+registry with stand-in sockets (nothing is created in the browser) and runs
+the `EventsOut` contract on it, and the run's detached flow reaches `emit`.
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -1193,10 +1212,10 @@ run's data (`flow-run.ts`, the former `FlowRegistryEntry`) with
 reading of a result; `createFlowRegistry(clock)` holds the runs and the
 foreground deadlines (`register({ foregroundDeadlineAt })`, dropped at
 `finish`) and answers the idle sweep's `idleHolds()`; `createFlowHistory`
-takes both stores, the `Clock` and two functions of `background.ts`:
-`publish` (the `flow-finished` event on the tab's socket; `EventsOut` is
-not a port yet) and `onRecordLost` (the warning when even the minimal
-terminal record is refused). Each invariant above is unit-tested on the
+takes both stores, the `Clock`, the `EventsOut` port for the
+`flow-finished` event (since slice 21c, revision 13 decision 6; until then a
+`publish` function of `background.ts`) and `onRecordLost` (the warning when
+even the minimal terminal record is refused). Each invariant above is unit-tested on the
 in-memory stores (`flow/flow-registry.test.ts`, `flow/flow-history.test.ts`).
 
 ### `PendingReplies<T>` (core/session/pending-replies.ts)
@@ -1447,7 +1466,7 @@ measured count, so the slack is not left as room to grow.
 
 That estimate never counted the settings caches (revision 13): after slice 21
 `background.ts` held 725 lines. Slices 21b (settings, 598 lines after it),
-21c (events out) and 21d (connect) move what is left before slice 22.
+21c (events out, 536 after it) and 21d (connect) move what is left before slice 22.
 
 ---
 
@@ -1497,7 +1516,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 20 | Recording (**done**, release 1.4.29) | `app/recording.ts` (lines 4328-4658 at `5ce3055`): start, navigation steps, the cap, stop, discard, save, status; the `chrome-tab-events` adapter | ~330 | existing `recording.test.ts` plus `app/recording.test.ts` on fakes; an e2e recording case on a tab of its own; manual popup check noted in PR | revert |
 | 21 | Popup router, windows, repair, tab events (**done**, release 1.4.30) | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
 | 21b | Settings (**done**, release 1.4.31) | the idle-TTL and flow-recording caches, their storage listeners and the `settings.update` apply functions to `app/settings-cache.ts`; the `chrome-settings` adapter; the contract harness's teardown on failure (revision 13) | ~250 | unit tests of the caches; the `LocalSettingsStorage` contract on the fake and in the worker; the teardown probe through the browser; e2e recording case | revert |
-| 21c | Events out (pending) | the `flow-finished` and top-document bridge events (`publishFlowFinished`, `reportTopDocument`) out of `background.ts` | specifics added by the slice | specifics added by the slice | revert |
+| 21c | Events out (**done**, release 1.4.32) | the `EventsOut` port (`ports/events-out.ts`, `BridgeEventPayload`) with its contract and fake; `createFlowHistory` on `EventsOut`; `flowFinishedEvent` in core; `publishFlowFinished` and `reportTopDocument` to `app/events.ts`; the `ws-events-out` adapter (revision 13, decision 6) | ~300 | the `EventsOut` contract on the fake, on the adapter over fake sockets and in the worker; unit tests of `app/events.ts` and `flowFinishedEvent`; e2e detached flow; differential | revert |
 | 21d | Connect (pending) | the connect path (`connectTab`, `doConnectTab`) out of `background.ts` | specifics added by the slice | specifics added by the slice | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
 

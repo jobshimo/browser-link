@@ -1,11 +1,11 @@
-// The ports: core's vocabulary, the bottom layer (5.2). Types only. The
-// events-out port lands with the slice that moves the event it carries.
+// The ports: core's vocabulary, the bottom layer (5.2). Types only.
 
 export type { Clock } from './clock.js';
 export type { CdpSession } from './cdp-session.js';
 export type { ContentSettings } from './content-settings.js';
 export type { DetachedFlowStore } from './detached-flow-store.js';
 export type { Downloads } from './downloads.js';
+export type { EventsOut } from './events-out.js';
 export type { FlowHistoryStore } from './flow-history-store.js';
 export type {
   CdpEvents,
@@ -23,6 +23,7 @@ export type {
 export type { PageInfo } from './page-info.js';
 export type { IdleSettings } from './settings.js';
 export type {
+  BridgeEventPayload,
   CaptureActOutcome,
   CaptureAroundResult,
   CaptureOutcome,

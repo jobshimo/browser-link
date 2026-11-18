@@ -18,6 +18,7 @@ export {
 } from './content-settings.contract.js';
 export { defineDialogInputContract, type DialogInputHarness } from './dialog-input.contract.js';
 export { defineDownloadsContract, type DownloadsHarness } from './downloads.contract.js';
+export { defineEventsOutContract, type EventsOutHarness } from './events-out.contract.js';
 export {
   defineDetachedFlowStoreContract,
   defineFlowHistoryStoreContract,
@@ -44,6 +45,7 @@ export {
   createMemoryContentSettings,
   createMemoryDetachedFlowStore,
   createMemoryDownloads,
+  createMemoryEventsOut,
   createMemoryFlowHistoryStore,
   createMemoryPageInfo,
   type ManualClock,
@@ -51,6 +53,7 @@ export {
   type MemoryContentSettings,
   type MemoryDetachedFlowStore,
   type MemoryDownloads,
+  type MemoryEventsOut,
   type MemoryFlowHistoryStore,
   type MemoryPageInfo,
 } from './fakes.js';

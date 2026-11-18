@@ -28,8 +28,9 @@
 
 import type { Clock } from '../ports/clock.js';
 import type { DetachedFlowStore } from '../ports/detached-flow-store.js';
+import type { EventsOut } from '../ports/events-out.js';
 import type { FlowHistoryStore } from '../ports/flow-history-store.js';
-import type { DetachedFlowRecord, FlowHistoryEntry } from '../ports/values.js';
+import type { BridgeEventPayload, DetachedFlowRecord, FlowHistoryEntry } from '../ports/values.js';
 import {
   detachedFlowRecordsToEvict,
   finishedDetachedFlowRecord,
@@ -146,13 +147,35 @@ export function terminatedFlowHistoryEntry(record: DetachedFlowRecord): FlowHist
   };
 }
 
+/** The one-per-flow summary event of a detached flow. Counts and enums
+ * only: the manifest itself is addressable by `flow_id` through
+ * `browser.flow_status` and has no business in a 200-entry ring buffer. */
+export function flowFinishedEvent(record: DetachedFlowRecord): BridgeEventPayload {
+  return {
+    eventKind: 'flow-finished',
+    data: {
+      flow_id: record.flowId,
+      state: record.state,
+      detached: true,
+      steps: record.steps,
+      steps_completed: record.stepsCompleted,
+      ...(record.iterationsCompleted === undefined
+        ? {}
+        : { iterations_completed: record.iterationsCompleted }),
+      duration_ms: Math.max(0, (record.endedAt ?? record.startedAt) - record.startedAt),
+      ...(record.stoppedBy === undefined ? {} : { stopped_by: record.stoppedBy }),
+      manifest_available: record.manifest !== undefined,
+    },
+  };
+}
+
 export interface FlowHistoryDeps {
   history: FlowHistoryStore;
   detached: DetachedFlowStore;
   clock: Clock;
-  /** Push the one-per-flow `flow-finished` event of a detached flow toward
-   * the server; false when it did not go out (the tab's socket is closed). */
-  publish: (tabId: number, record: DetachedFlowRecord) => boolean;
+  /** Where the one-per-flow `flow-finished` event of a detached flow goes
+   * (`flowFinishedEvent`); `emit` answers false when it did not go out. */
+  events: EventsOut;
   /** Told when a terminal record could not be stored even without its
    * manifest. */
   onRecordLost: (flowId: string) => void;
@@ -323,7 +346,7 @@ export function createFlowHistory(deps: FlowHistoryDeps): FlowHistory {
       // would silently evict every other event in the log, which is the
       // opposite of an audit trail. If the socket is already gone the event
       // is deferred onto the record and flushed when the tab next registers.
-      if (!deps.publish(run.tabId, record)) record.eventPending = true;
+      if (!deps.events.emit(run.tabId, flowFinishedEvent(record))) record.eventPending = true;
       void persistTerminal(record);
     },
 
@@ -367,7 +390,7 @@ export function createFlowHistory(deps: FlowHistoryDeps): FlowHistory {
         if (record.tabId !== tabId || record.eventPending !== true) continue;
         if (flushing.has(record.flowId)) continue;
         flushing.add(record.flowId);
-        if (!deps.publish(tabId, record)) {
+        if (!deps.events.emit(tabId, flowFinishedEvent(record))) {
           flushing.delete(record.flowId);
           return;
         }

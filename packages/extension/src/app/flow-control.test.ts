@@ -21,7 +21,7 @@ function harness(title: Promise<string | undefined> = Promise.resolve('Shop')) {
     history: createMemoryFlowHistoryStore(),
     detached,
     clock,
-    publish: () => true,
+    events: { emit: () => true },
     onRecordLost: () => undefined,
   });
   const ended: [number, number][] = [];
