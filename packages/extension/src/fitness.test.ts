@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_REGISTRY } from '@browser-link/core';
 
 /** Lowered by every slice that moves code out; never raised without arch sign-off. */
-const BACKGROUND_LINE_BUDGET = 1260;
+const BACKGROUND_LINE_BUDGET = 725;
 
 /** Scripts of the three HTML pages, and the module only they import. */
 const UI_ZONE = ['popup.ts', 'activity.ts', 'admin.ts', 'ui-language.ts'];
@@ -64,13 +64,13 @@ const wake = (event: string, adapterMethods: readonly AdapterMethod[] = []): Wak
 /** The ten permanent registrations of section 1: eight distinct events. */
 const WAKE_SUBSCRIPTIONS: readonly WakeSubscription[] = [
   wake('storage.onChanged'),
-  wake('windows.onRemoved'),
+  wake('windows.onRemoved', [{ iface: 'Windows', method: 'onClosed' }]),
   wake('debugger.onEvent'),
   wake('alarms.onAlarm', [{ iface: 'Alarms', method: 'onFire' }]),
-  wake('runtime.onMessage'),
-  wake('tabs.onRemoved'),
-  wake('tabs.onCreated'),
-  wake('debugger.onDetach'),
+  wake('runtime.onMessage', [{ iface: 'Runtime', method: 'onMessage' }]),
+  wake('tabs.onRemoved', [{ iface: 'TabEvents', method: 'onRemoved' }]),
+  wake('tabs.onCreated', [{ iface: 'TabEvents', method: 'onCreated' }]),
+  wake('debugger.onDetach', [{ iface: 'TabEvents', method: 'onDebuggerDetach' }]),
 ];
 
 type Sources = ReadonlyMap<string, string>;

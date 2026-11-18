@@ -1,7 +1,8 @@
 // The ContentSettings and Downloads contracts (design 5.3, item 5; slice 16)
 // and the two flow store contracts (slice 17) against the extension adapters,
 // over stand-ins for `chrome.contentSettings`, `chrome.downloads`,
-// `chrome.debugger.onEvent` and `chrome.storage.session`. In the real
+// `chrome.debugger.onEvent` and `chrome.storage.session`, and the Windows,
+// Runtime and TabEvents adapters (slice 21) over stand-ins of their APIs. In the real
 // service worker the e2e reaches every adapter function (R6, condition 1).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +22,8 @@ import { createChromeDownloads } from './chrome-downloads.js';
 import { chromeDetachedFlowStore } from './chrome-detached-flow-store.js';
 import { chromeFlowHistoryStore } from './chrome-flow-history-store.js';
 import { chromeTabEvents } from './chrome-tab-events.js';
+import { chromeRuntime } from './chrome-runtime.js';
+import { chromeWindows } from './chrome-windows.js';
 
 const values = new Map<string, string>();
 
@@ -252,5 +255,101 @@ describe('TabEvents: the chrome.tabs adapter', () => {
     stopA();
     updated(7, { status: 'complete' }, { url: 'u' });
     expect([a.length, b.length]).toEqual([0, 1]);
+  });
+});
+
+/** A `chrome.*.onX` stand-in that keeps its listeners; `fire` calls them. */
+function event<A extends unknown[]>() {
+  const listeners: ((...args: A) => unknown)[] = [];
+  return {
+    listeners,
+    addListener: (l: (...args: A) => unknown) => listeners.push(l),
+    fire: (...args: A) => listeners.map((l) => l(...args)),
+  };
+}
+
+describe('Windows: the chrome.windows adapter', () => {
+  it('opens a popup window of the size, focuses it, and maps get to exists', async () => {
+    const calls: unknown[] = [];
+    const onRemoved = event<[number]>();
+    vi.stubGlobal('chrome', {
+      windows: {
+        create: (opts: unknown) => {
+          calls.push(['create', opts]);
+          return Promise.resolve({ id: 5 });
+        },
+        update: (id: number, opts: unknown) => {
+          calls.push(['update', id, opts]);
+          return Promise.resolve({});
+        },
+        get: (id: number) =>
+          id === 5 ? Promise.resolve({ id }) : Promise.reject(new Error('No window')),
+        onRemoved,
+      },
+    });
+    expect(await chromeWindows.open('u', { width: 1, height: 2 })).toBe(5);
+    await chromeWindows.focus(5);
+    expect(calls).toEqual([
+      ['create', { url: 'u', type: 'popup', width: 1, height: 2 }],
+      ['update', 5, { focused: true }],
+    ]);
+    expect(await chromeWindows.exists(5)).toBe(true);
+    await expect(chromeWindows.exists(6)).rejects.toThrow('No window');
+    const closed: number[] = [];
+    chromeWindows.onClosed((id) => closed.push(id));
+    onRemoved.fire(5);
+    expect(closed).toEqual([5]);
+  });
+
+  it('a window the browser did not create answers undefined', async () => {
+    vi.stubGlobal('chrome', { windows: { create: () => Promise.resolve(undefined) } });
+    expect(await chromeWindows.open('u', { width: 1, height: 2 })).toBeUndefined();
+  });
+});
+
+describe('Runtime: the chrome.runtime adapter', () => {
+  it('reads the manifest version and page URLs, and hands messages and replies on', () => {
+    const onMessage = event<[unknown, unknown, (answer: unknown) => void]>();
+    vi.stubGlobal('chrome', {
+      runtime: {
+        getManifest: () => ({ version: '9.9.9' }),
+        getURL: (path: string) => `chrome-extension://id/${path}`,
+        onMessage,
+      },
+    });
+    expect(chromeRuntime.manifestVersion()).toBe('9.9.9');
+    expect(chromeRuntime.pageUrl('admin.html')).toBe('chrome-extension://id/admin.html');
+    const answers: unknown[] = [];
+    chromeRuntime.onMessage((message, reply) => {
+      reply({ echo: message });
+      return true;
+    });
+    expect(onMessage.fire({ action: 'x' }, {}, (a) => answers.push(a))).toEqual([true]);
+    expect(answers).toEqual([{ echo: { action: 'x' } }]);
+  });
+});
+
+describe('TabEvents: the wake listeners', () => {
+  it('hands on removed tabs, created tabs with their opener, and detached debuggees', () => {
+    const onRemoved = event<[number, unknown]>();
+    const onCreated = event<[{ id?: number; openerTabId?: number; url?: string }]>();
+    const onDetach = event<[{ tabId?: number }, string]>();
+    vi.stubGlobal('chrome', { tabs: { onRemoved, onCreated }, debugger: { onDetach } });
+    const seen: unknown[] = [];
+    chromeTabEvents.onRemoved((tabId) => seen.push(['removed', tabId]));
+    chromeTabEvents.onCreated((tab) => seen.push(['created', tab]));
+    chromeTabEvents.onDebuggerDetach((tabId) => seen.push(['detached', tabId]));
+    onRemoved.fire(3, { windowId: 1 });
+    onCreated.fire({ id: 4, openerTabId: 3, url: 'x' });
+    onCreated.fire({ id: 5 });
+    onDetach.fire({ tabId: 4 }, 'target_closed');
+    onDetach.fire({}, 'target_closed');
+    expect(seen).toEqual([
+      ['removed', 3],
+      ['created', { tabId: 4, openerTabId: 3 }],
+      ['created', { tabId: 5, openerTabId: undefined }],
+      ['detached', 4],
+      ['detached', undefined],
+    ]);
   });
 });

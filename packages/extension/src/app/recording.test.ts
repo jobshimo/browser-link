@@ -18,7 +18,8 @@ import {
   newTabConnection,
   type TabConnection,
 } from './tab-connection.js';
-import { createRecording, type TabEvents, type TabUpdate } from './recording.js';
+import { createRecording } from './recording.js';
+import type { TabEvents, TabUpdate } from './tab-events.js';
 
 const TAB = 7;
 const START_URL = 'https://shop.example/cart?x=1';
@@ -30,7 +31,7 @@ function harness({ enabled = true, tabUrl = START_URL, connect = true } = {}) {
   const evaluated: string[] = [];
   const failures = { cdp: new Set<string>(), evaluate: false, tabGet: false };
   const updateListeners = new Set<(update: TabUpdate) => void>();
-  const tabEvents: TabEvents = {
+  const tabEvents: Pick<TabEvents, 'get' | 'onUpdated'> = {
     get: () =>
       failures.tabGet ? Promise.reject(new Error('No tab')) : Promise.resolve({ url: tabUrl }),
     onUpdated: (listener) => {

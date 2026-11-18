@@ -1,5 +1,5 @@
 /**
- * "Repair connection" (popup button) decision logic. Pure: background.ts
+ * "Repair connection" (popup button) decision logic. Pure: `app/repair.ts`
  * gathers the facts (is a socket open, which version the server reported,
  * which tabs were connected) and carries out the step this module picks.
  *
