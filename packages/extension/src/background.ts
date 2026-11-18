@@ -1,22 +1,8 @@
-import type { ExtensionToServer, ToolRequestMessage } from '@browser-link/shared';
 import {
   shouldScheduleIdleSweep,
   idleTabs,
-  sessionCaptureWatch,
-  sessionDialogWatch,
   PendingReplies,
   TabRegistry,
-  type TabReservation,
-  TabSession,
-  createPageDriver,
-  dispatchTool,
-  type Requirement,
-  TOOL_REGISTRY,
-  type ToolDeps,
-  toolResponse,
-  type CdpSession,
-  type PageDriverHandle,
-  type FlowControl,
   createFlowHistory,
   createFlowRegistry,
 } from '@browser-link/core';
@@ -35,34 +21,22 @@ import { chromeWindows } from './adapters/chrome-windows.js';
 import { chromeSettings } from './adapters/chrome-settings.js';
 import { openWebSocket } from './adapters/web-socket.js';
 import { createWsEventsOut } from './adapters/ws-events-out.js';
-import {
-  closeTabConnection,
-  commitConnection,
-  debuggerIntake,
-  deliverCdpEvent,
-  newTabConnection,
-  type TabConnection,
-  type TabEventListener,
-} from './app/tab-connection.js';
+import { closeTabConnection, deliverCdpEvent, type TabConnection } from './app/tab-connection.js';
 import {
   createReconnect,
   createTabIds,
-  openBridge,
   type BridgeReplies,
   type ConnectResult,
 } from './app/connection.js';
 import { createActivityAdmin } from './app/activity-admin.js';
-import { reportTopDocument } from './app/events.js';
+import { CDP_VERSION, createConnect, createTabDrivers } from './app/connect.js';
 import { createPopupRouter } from './app/popup-router.js';
 import { currentVersionCheck, repairConnection } from './app/repair.js';
 import { createTabEventHandlers } from './app/tab-events.js';
 import { createAppWindow } from './app/windows.js';
-import { createExtensionFlowControl } from './app/flow-control.js';
 import { createRecording } from './app/recording.js';
 import { createSettingsCache } from './app/settings-cache.js';
 import { createDownloadCapture } from './download-capture.js';
-import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
-import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -71,12 +45,26 @@ import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagno
 const BRIDGE_PORT = 17529;
 const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
 const HANDSHAKE_CHECK_URL = `http://127.0.0.1:${BRIDGE_PORT}${HANDSHAKE_CHECK_PATH}`;
-const CDP_VERSION = '1.3';
 
 /** How often the idle sweep below walks the connected tabs. */
 const WS_IDLE_SWEEP_MS = 60 * 1000;
 
 const tabConnections = new TabRegistry<TabConnection>();
+
+/** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
+ * so only one `browser.download` may wait for a download at a time. */
+const downloadCapture = createDownloadCapture(chrome.downloads);
+
+/** Each tab's page driver and what the tools use on it (`app/connect.ts`);
+ * the adapters it builds per tool call hold no state (design revision 10). */
+const drivers = createTabDrivers({
+  tabs: tabConnections,
+  clock: systemClock,
+  cdpSession: createChromeCdpSession,
+  pageInfo: createChromePageInfo,
+  downloads: (tabId) => createChromeDownloads(downloadCapture, tabId),
+  contentSettings: createChromeContentSettings,
+});
 
 /** The idle TTL and the flow-recording toggle, mirrored from local storage
  * (`app/settings-cache.ts`); stateful, so built once. The toggle going off
@@ -156,140 +144,9 @@ const recording = createRecording({
   tabEvents: chromeTabEvents,
   clock: systemClock,
   enabled: () => settings.flowRecordingEnabled(),
-  cdp,
-  evaluate: (tabId, expression) => pageDriver(tabId).evaluator.evaluate(expression),
+  cdp: drivers.cdp,
+  evaluate: (tabId, expression) => drivers.pageDriver(tabId).evaluator.evaluate(expression),
 });
-
-/** A page driver over a tab's `chrome.debugger` session, whose events come
- * from `listeners`. */
-function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDriverHandle {
-  return createPageDriver({
-    session: debuggerSession(tabId, listeners),
-    page: createChromePageInfo(tabId, systemClock),
-    clock: systemClock,
-    // The pending dialog of the tab's `TabSession` (its debugger intake), read live.
-    dialogs: sessionDialogWatch(() => tabConnections.get(tabId)?.session),
-  });
-}
-
-/** What the extension provides to the tool registry: every requirement but
- * `flow-cancel`, since it cancels a flow through the `tool.cancel` frame and
- * never receives a `flow_cancel` request (design revision 11). */
-const EXTENSION_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
-  'evaluator',
-  'keyboard',
-  'pointer',
-  'settler',
-  'drag',
-  'cdp-events',
-  'page',
-  'navigator',
-  'screen-capture',
-  'response-bodies',
-  'capture-buffers',
-  'canvas',
-  'dialog-input',
-  'downloads',
-  'content-settings',
-  'flows',
-]);
-
-/** One worker-wide capture: `chrome.downloads` events are not tied to a tab,
- * so only one `browser.download` may wait for a download at a time. */
-const downloadCapture = createDownloadCapture(chrome.downloads);
-
-/** What the core actions and the registry handlers use on one tab. Adapters
- * built per call hold no state; state lives in what they receive (the
- * worker-wide `downloadCapture`, the tab's page driver), so a stateful
- * adapter is never built here (design revision 10). */
-function actionDeps(tabId: number, session?: TabSession): ToolDeps {
-  const driver = pageDriver(tabId);
-  const { evaluator, keyboard, pointer, drag, events, settler, page, dialogs } = driver;
-  const { navigator, screen, responses, dialog } = driver;
-  return {
-    'dialog-input': dialog,
-    downloads: createChromeDownloads(downloadCapture, tabId),
-    'content-settings': createChromeContentSettings(),
-    evaluator,
-    keyboard,
-    pointer,
-    drag,
-    'cdp-events': events,
-    settler,
-    page,
-    navigator,
-    'screen-capture': screen,
-    'response-bodies': responses,
-    clock: systemClock,
-    dialogs,
-    // The tab's captured console messages and requests.
-    captureBuffers: session && sessionCaptureWatch(session),
-  };
-}
-
-function debuggerSession(tabId: number, listeners: Set<TabEventListener>): CdpSession {
-  return createChromeCdpSession(tabId, (listener) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  });
-}
-
-/** The connected tab's page driver; for a tab with no connection (a call
- * racing its cleanup) a fresh one, whose commands fail as `chrome.debugger`
- * does and whose observer is not installed, as before slice 9. */
-function pageDriver(tabId: number): PageDriverHandle {
-  return tabConnections.get(tabId)?.session.driver ?? newPageDriver(tabId, new Set());
-}
-
-/** `cdp` only sends; nothing subscribes through it. */
-const NO_LISTENERS = new Set<TabEventListener>();
-
-function cdp<T = unknown>(
-  tabId: number,
-  method: string,
-  params: Record<string, unknown> = {},
-): Promise<T> {
-  return debuggerSession(tabId, NO_LISTENERS).send<T>(method, params);
-}
-
-/** The flow tools' `FlowControl` on one tab (`app/flow-control.ts`), over
- * the worker's flow registry and history; built per call, it holds no state. */
-function flowControl(tabId: number, session: TabSession): FlowControl {
-  return createExtensionFlowControl({
-    tabId,
-    registry: flowRegistry,
-    history: flowHistory,
-    clock: systemClock,
-    tabTitle: chromeTabTitle,
-    stepDeps: () => actionDeps(tabId),
-    waitDeps: () => actionDeps(tabId, session),
-    driver: () => pageDriver(tabId),
-    flowEnded: (id, endedAt) => {
-      tabConnections.get(id)?.session.flowEnded(endedAt);
-    },
-  });
-}
-
-/** Every wire tool runs through core's registry (design 3.3) and maps its
- * outcome to the wire once (3.4); an unregistered one answers
- * `Unknown tool: <name>`. */
-async function handleTool(
-  state: TabConnection,
-  msg: ToolRequestMessage,
-): Promise<ExtensionToServer> {
-  const tabId = state.tabId;
-  const outcome = await dispatchTool(
-    TOOL_REGISTRY,
-    EXTENSION_PROVIDES,
-    { ...actionDeps(tabId, state.session), flows: flowControl(tabId, state.session) },
-    'extension',
-    msg.tool,
-    msg.params,
-  );
-  return toolResponse(msg.id, outcome);
-}
 
 const detachDebugger = (id: number) => chrome.debugger.detach({ tabId: id });
 /** Tear the tab's connection down (`app/tab-connection.ts` `closeTabConnection`). */
@@ -319,9 +176,37 @@ const reconnect = createReconnect({
   alarms: chromeAlarms,
   clock: systemClock,
   tabs: tabConnections,
-  tabExists: (tabId) => chrome.tabs.get(tabId),
-  connect: (tabId) => connectTab(tabId),
+  tabExists: (tabId) => chromeTabEvents.get(tabId),
+  connect: (tabId) => connect.connectTab(tabId),
 });
+
+/** Connecting a tab and running its wire tools (`app/connect.ts`). */
+const connect = createConnect({
+  tabs: tabConnections,
+  clock: systemClock,
+  drivers,
+  tabEvents: chromeTabEvents,
+  attachDebugger: (tabId) => chrome.debugger.attach({ tabId }, CDP_VERSION),
+  detachDebugger,
+  tabIds,
+  flows: flowRegistry,
+  history: flowHistory,
+  tabTitle: chromeTabTitle,
+  recordingCapped: (id) => void recording.finish(id),
+  cleanup,
+  bridge: {
+    openSocket: openWebSocket,
+    url: WS_URL,
+    replies,
+    applySettings: (pushed) => {
+      settings.applyPushed(pushed);
+    },
+    scheduler: reconnect.scheduler,
+    extensionVersion: () => chromeRuntime.manifestVersion(),
+    diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
+  },
+});
+const connectTab = (tabId: number): Promise<ConnectResult> => connect.connectTab(tabId);
 
 // Resume the reconnect cycles a killed service worker left behind: once per
 // worker start.
@@ -337,114 +222,6 @@ chromeAlarms.onFire((name) => {
 // flow the dead worker was running (`FlowHistory.recover`).
 void flowHistory.recover();
 
-/** Connect a tab. The `has` check inside `doConnectTab` alone cannot prevent
- * two concurrent connects — the connection lands only after three awaited
- * chrome.* calls — so the registry's SYNCHRONOUS reservation is the real
- * per-tab reentrancy guard, held for the whole attempt. */
-async function connectTab(tabId: number): Promise<ConnectResult> {
-  const reservation = tabConnections.reserve(tabId);
-  if (!reservation) {
-    // A concurrent connect (popup Connect racing a scheduled reconnect
-    // attempt, or vice versa) — the in-flight attempt owns the tab.
-    // Answer benignly instead of letting a second attempt fail its
-    // debugger attach with a confusing error; the popup renders this
-    // exact message as the "Reconnecting" card, not an error.
-    return { ok: false, error: CONNECT_IN_PROGRESS_ERROR };
-  }
-  try {
-    return await doConnectTab(reservation);
-  } finally {
-    tabConnections.release(reservation);
-  }
-}
-
-/** Body of `connectTab` — call only through the wrapper above, which holds
- * the tab's reservation for the full duration of the attempt. */
-async function doConnectTab(reservation: TabReservation): Promise<ConnectResult> {
-  const { tabId } = reservation;
-  if (tabConnections.has(tabId)) {
-    return workerFailure({ code: 'tab-already-connected' });
-  }
-
-  // Whatever tab holds this Chrome id now, it is not the closed one whose
-  // history was dropped — so its own flows are free to write history again.
-  flowHistory.tabConnected(tabId);
-
-  const tab = await chrome.tabs.get(tabId);
-  if (!tab.url || !tab.title) {
-    return workerFailure({ code: 'tab-no-url' });
-  }
-
-  const previousTabId = await tabIds.previous(tabId);
-
-  try {
-    await chrome.debugger.attach({ tabId }, CDP_VERSION);
-  } catch (err) {
-    return workerFailure({
-      code: 'debugger-attach-failed',
-      values: { detail: err instanceof Error ? err.message : String(err) },
-    });
-  }
-
-  const eventListeners = new Set<TabEventListener>();
-  const driver = newPageDriver(tabId, eventListeners);
-  const state = newTabConnection(
-    tabId,
-    new TabSession({ clock: systemClock, driver }),
-    eventListeners,
-  );
-  const failed = commitConnection(tabConnections, reservation, state, detachDebugger);
-  if (failed) return failed;
-  state.debuggerListener = debuggerIntake(state, {
-    clock: systemClock,
-    onRecordingCapped: (id) => void recording.finish(id),
-  });
-
-  try {
-    for (const domain of ['Page', 'Runtime', 'Log', 'Network', 'DOM'])
-      await cdp(tabId, `${domain}.enable`);
-  } catch (err) {
-    await cleanup(tabId);
-    return workerFailure({
-      code: 'cdp-enable-failed',
-      values: { detail: err instanceof Error ? err.message : String(err) },
-    });
-  }
-
-  // The page observer: non-fatal. On failure the tab connects as before and
-  // actions report `settle.changes: null` with `observer-unavailable`.
-  const installed = await state.session.driver.install({
-    enableRuntime: false,
-    onTopDocument: (outcome) => reportTopDocument(state, outcome),
-  });
-  if (!installed.ok) console.warn('browser-link: page observer not installed', installed.error);
-
-  return openBridge({
-    tabs: tabConnections,
-    state,
-    openSocket: openWebSocket,
-    url: WS_URL,
-    // Captured now that they were null-checked above.
-    register: {
-      url: tab.url,
-      title: tab.title,
-      previousTabId,
-      extensionVersion: chromeRuntime.manifestVersion(),
-    },
-    tabIds,
-    scheduler: reconnect.scheduler,
-    replies,
-    flushPendingEvents: (id) => void flowHistory.flushPendingEvents(id),
-    applySettings: (pushed) => {
-      settings.applyPushed(pushed);
-    },
-    handleTool: (msg) => handleTool(state, msg),
-    cancelFlow: (flowId, reason) => flowRegistry.cancel(flowId, reason),
-    cleanup,
-    diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
-  });
-}
-
 /** The popup's messages (`app/popup-router.ts`), with the repair and the
  * version summary they answer (`app/repair.ts`). */
 const popupRouter = createPopupRouter({
@@ -454,7 +231,7 @@ const popupRouter = createPopupRouter({
   clock: systemClock,
   connect: connectTab,
   cleanup,
-  cdp,
+  cdp: drivers.cdp,
   versionCheck: () => currentVersionCheck(tabConnections, chromeRuntime.manifestVersion()),
   repairConnection: () =>
     repairConnection({

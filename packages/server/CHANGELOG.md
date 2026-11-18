@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.33](https://github.com/jobshimo/browser-link/compare/v1.4.32...v1.4.33) (2026-11-18)
+
+### Notes
+
+- Slice 21d of the service worker plan; no behaviour change. Connecting a tab moves from `background.ts` to `app/connect.ts`: the per-tab reservation and its "already in progress" answer, the tab read, the debugger attach, the hardened commit of 1.4.26 (synchronous on success, detach on throw), the five CDP domains, the page observer and the bridge socket. Each tab's page driver, the tool deps built per call and the wire tools' dispatch move with it. Every connect answer, failure code and frame is the one before.
+- No new adapter: `background.ts` passes in the existing adapter factories and the debugger attach and detach, and both reads of a tab go through the `TabEvents` adapter, whose answer now includes the tab's title.
+- `app/connect.ts` runs in unit tests on in-memory CDP sessions, fake tab events and a fake socket: the full connect and registration, the concurrent connect, a tab without a URL or title, a failed attach, a domain that fails to enable, and the page driver wiring.
+- `background.ts` shrinks by 223 lines and its line budget goes from 536 to 313, under the 400 ceiling.
+
 ## [1.4.32](https://github.com/jobshimo/browser-link/compare/v1.4.31...v1.4.32) (2026-11-18)
 
 ### Notes

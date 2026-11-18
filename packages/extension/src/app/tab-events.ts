@@ -28,6 +28,7 @@ export interface CreatedTab {
 export interface TabInfo {
   url?: string;
   pendingUrl?: string;
+  title?: string;
 }
 
 /**
@@ -38,7 +39,7 @@ export interface TabInfo {
  * `background.ts` (R1).
  */
 export interface TabEvents {
-  /** The tab's current URLs; rejects for a closed tab. */
+  /** The tab's current URLs and title; rejects for a closed tab. */
   get(tabId: number): Promise<TabInfo>;
   /** Report every tab update; returns the function that stops the reports. */
   onUpdated(listener: (update: TabUpdate) => void): () => void;
