@@ -16,10 +16,10 @@ import { HANDSHAKE_CHECK_PATH, HANDSHAKE_REFUSAL_REASONS } from './bridge/handsh
  * DRIFT GUARD for the idle-TTL clamp — `config.ts`'s `clampIdleTtlMinutes`
  * (and its `MIN`/`MAX`/`DEFAULT_IDLE_TTL_MINUTES` constants) is a
  * hand-duplicate of `packages/core/src/policies/idle-rules.ts`'s function of
- * the same name, for the same npm-publish-isolation reason `cdp/drift.test.ts`'s
- * siblings are duplicated (see that file's header comment).
+ * the same name, for the npm-publish-isolation reason: the published server
+ * cannot import the workspace core at runtime.
  *
- * Unlike the `cdp/` copies, the two `clampIdleTtlMinutes` signatures
+ * The two `clampIdleTtlMinutes` signatures
  * intentionally differ — `(value: number)` here vs `(value: unknown)` on
  * the extension, which also fields raw `chrome.storage` reads and incoming
  * WS payloads — so a byte-for-byte text comparison would always fail on
@@ -31,8 +31,7 @@ import { HANDSHAKE_CHECK_PATH, HANDSHAKE_REFUSAL_REASONS } from './bridge/handsh
  *     TS-only syntax inside it) as a sandboxed function via `new Function`,
  *     and runs it against a probe set of values alongside this package's
  *     real, imported `clampIdleTtlMinutes` — any behavioral drift between
- *     the two copies fails the build, exactly like the cdp/ byte-identity
- *     guards do for their own copies.
+ *     the two copies fails the build.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));

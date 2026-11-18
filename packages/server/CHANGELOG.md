@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.34](https://github.com/jobshimo/browser-link/compare/v1.4.33...v1.4.34) (2026-11-18)
+
+### Notes
+
+- Slice 22 of the service worker plan, the last one; no behaviour change and no shipped code touched. `cdp/transport-parity.test.ts` is deleted: its comparison list had been empty since slice 13, and its one remaining guard, that no `perform*` function is declared on either transport, moves into the two fitness suites (`fitness.test.ts` for `background.ts`, `cdp/tool-name.fitness.test.ts` for `transport.ts`), each with a RED fixture.
+- `cdp/drift.test.ts` and `config.drift.test.ts` stay whole: every section left compares a constant or a function that is still declared by hand on both sides (the detached-flow ceiling, manifest byte ceiling and record cap, the bridge port, the handshake path and refusal reasons, the idle-TTL clamp), so none is a copy of a module.
+- `background.ts` holds 313 lines and its line budget stays at that measured count, under the 400 ceiling.
+
 ## [1.4.33](https://github.com/jobshimo/browser-link/compare/v1.4.32...v1.4.33) (2026-11-18)
 
 ### Notes
