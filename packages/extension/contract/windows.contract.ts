@@ -4,7 +4,8 @@
 // under vitest (`src/app/extension-contracts.test.ts`) and against the real
 // `chrome.windows` adapter inside the service worker (`entry.ts`, run by the
 // e2e; R6). The window is not one the product opened, so the product's own
-// `onClosed` listeners ignore it.
+// `onClosed` listeners ignore it. The window is closed in a `finally`, on
+// failure too.
 
 import { type ContractCase, equal } from '@browser-link/core';
 import type { Windows } from '../src/app/windows.js';
@@ -41,18 +42,26 @@ export function defineWindowsContract(make: () => WindowsHarness): ContractCase[
         });
         opened = await windows.open(url, { width: 400, height: 300 });
         if (opened === undefined) throw new Error('open answered no window');
-        equal(await windows.exists(opened), true, 'exists after open');
-        await windows.focus(opened);
-        await close(opened);
-        await until(done, CONTRACT_WINDOW_TIMEOUT_MS);
-        equal(closed, [opened], 'closed windows');
-        let rejected = false;
+        const windowId = opened;
+        let closedHere = false;
         try {
-          await windows.exists(opened);
-        } catch {
-          rejected = true;
+          equal(await windows.exists(windowId), true, 'exists after open');
+          await windows.focus(windowId);
+          closedHere = true;
+          await close(windowId);
+          await until(done, CONTRACT_WINDOW_TIMEOUT_MS);
+          equal(closed, [windowId], 'closed windows');
+          let rejected = false;
+          try {
+            await windows.exists(windowId);
+          } catch {
+            rejected = true;
+          }
+          equal(rejected, true, 'exists rejects for a closed window');
+        } finally {
+          // On failure too: the window this case opened never outlives it.
+          if (!closedHere) await close(windowId);
         }
-        equal(rejected, true, 'exists rejects for a closed window');
       },
     },
   ];

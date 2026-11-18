@@ -2,7 +2,8 @@
 // and the two flow store contracts (slice 17) against the extension adapters,
 // over stand-ins for `chrome.contentSettings`, `chrome.downloads`,
 // `chrome.debugger.onEvent` and `chrome.storage.session`, and the Windows,
-// Runtime and TabEvents adapters (slice 21) over stand-ins of their APIs. In the real
+// Runtime and TabEvents adapters (slice 21) and the LocalSettingsStorage adapter
+// (slice 21b) over stand-ins of their APIs. In the real
 // service worker the e2e reaches every adapter function (R6, condition 1).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -24,6 +25,7 @@ import { chromeFlowHistoryStore } from './chrome-flow-history-store.js';
 import { chromeTabEvents } from './chrome-tab-events.js';
 import { chromeRuntime } from './chrome-runtime.js';
 import { chromeWindows } from './chrome-windows.js';
+import { chromeSettings } from './chrome-settings.js';
 
 const values = new Map<string, string>();
 
@@ -350,6 +352,42 @@ describe('TabEvents: the wake listeners', () => {
       ['created', { tabId: 5, openerTabId: undefined }],
       ['detached', 4],
       ['detached', undefined],
+    ]);
+  });
+});
+
+describe('LocalSettingsStorage: the chrome.storage.local adapter', () => {
+  it('gets and sets local values, and hands every change on with its area', async () => {
+    const calls: unknown[] = [];
+    const onChanged = event<[Record<string, { newValue?: unknown }>, string]>();
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: (key: string) => {
+            calls.push(['get', key]);
+            return Promise.resolve({ [key]: 1 });
+          },
+          set: (items: unknown) => {
+            calls.push(['set', items]);
+            return Promise.resolve();
+          },
+        },
+        onChanged,
+      },
+    });
+    expect(await chromeSettings.get('k')).toEqual({ k: 1 });
+    await chromeSettings.set({ k: 2 });
+    expect(calls).toEqual([
+      ['get', 'k'],
+      ['set', { k: 2 }],
+    ]);
+    const seen: unknown[] = [];
+    chromeSettings.onChanged((changes, area) => seen.push([changes, area]));
+    onChanged.fire({ k: { newValue: 2 } }, 'local');
+    onChanged.fire({ s: {} }, 'session');
+    expect(seen).toEqual([
+      [{ k: { newValue: 2 } }, 'local'],
+      [{ s: {} }, 'session'],
     ]);
   });
 });

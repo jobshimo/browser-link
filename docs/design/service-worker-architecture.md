@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 12. Revision 1 (`5486e34`) was audited as
+Status: revision 13. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,20 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 13 (2026-11-18)
+
+Arch's answer on the composition-root budget after slice 21 (5.4, 3.1 "As
+built in slice 21b", slice table rows 21b-21d, entry comment of
+`packages/extension/contract/`), and the shape slice 21b built:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | The 5.4 estimate of about 200 lines never counted the settings caches: the idle-TTL and flow-recording caches, their two `storage.onChanged` listeners and their `settings.update` apply functions (about 120 lines at 1.4.30) were in no line of it. Three extra slices follow slice 21, each one PR with the usual guarantees, then slice 22 as written: 21b settings, 21c events out, 21d connect. The ceiling stays 400 | after slice 21 `background.ts` held 725 lines, over the ceiling, and slice 22 only deletes |
+| 2 | 21b: the `chrome-settings` adapter and `SettingsCache` in `app/`; the two `storage.onChanged` registrations stay top-level statements of `background.ts` (R1), proven by the in-worker contract (revision 12, decision 1) and by the in-memory fake | the wake-listener rule maps `storage.onChanged` to the adapter's method like the other wake events |
+| 3 | Each of 21b-21d lowers `BACKGROUND_LINE_BUDGET` to its measured count; imports count, and are never folded or reformatted to reach a number | the budget measures the file as written |
+| 4 | The in-worker contract harness (`contract/entry.ts`) calls `chrome.windows.remove`, `chrome.tabs.create` and `chrome.tabs.remove`, `chrome.debugger.attach` and `chrome.storage.local.remove` to produce the events the wake-listener adapters observe and to clean up; these test-only calls are within the mechanism of revision 12. Every window, tab and storage key a case creates is removed in a `finally`, on failure too: `openTab` answers the tab with its `close`, and the e2e first runs every creating case failing on purpose right after it created what it must remove (`browserLinkContract({ probe: true })`), then checks through the browser that the tabs, windows and contract keys are the ones it held before, and checks the same after the real run | a failing contract case must not leave a tab or window that changes later e2e cases |
+| 5 | As built in slice 21b: the adapter is `LocalSettingsStorage` (`get(key)`, `set(items)`, `onChanged(listener)`, whose listener gets the changes and the area), declared in `app/settings-cache.ts`; `SettingsCache` there extends core `IdleSettings` (`idleTtlMinutes()`) with `flowRecordingEnabled()`, holds both caches and is not an adapter. The 3.1 table rows read so | the caches hold state and decide (the `local` area, the keys, the newer `updatedAt`), which an adapter may not (5.3 item 3) |
 
 ### Revision 12 (2026-11-18)
 
@@ -679,14 +693,14 @@ says why).
 | `Runtime` (`manifestVersion`, `pageUrl`, `onMessage`) | `chrome-runtime.ts` | `chrome.runtime.getManifest/getURL/onMessage` |
 | `TabEvents` (`get`, `onUpdated`, `onRemoved`, `onCreated`, `onDebuggerDetach`) | `chrome-tab-events.ts` | `chrome.tabs.*`, `chrome.debugger.onDetach` |
 | `SocketFactory` | `web-socket.ts` | `new WebSocket(...)` in the connection code |
-| `SettingsCache` (adds `flowRecordingEnabled`) | `chrome-settings.ts` | `storage.local` + `storage.onChanged` caches |
+| `LocalSettingsStorage` (`get`, `set`, `onChanged`), under `SettingsCache` (core `IdleSettings` plus `flowRecordingEnabled`) | `chrome-settings.ts` | `storage.local` + `storage.onChanged` caches |
 
 | Core port | Extension adapter | cdp-direct adapter |
 |---|---|---|
 | `Clock` | `adapters/system-clock.ts` over `Date.now`, `setTimeout` | `cdp/adapters/system-clock.ts`, same globals |
 | `CdpSession` | `adapters/chrome-cdp-session.ts`: `chrome.debugger.sendCommand`; `onEvent` is the tab-filtered subscribe function of `background.ts` (since slice 9) | `cdp/adapters/cdp-client-session.ts` over `cdp/client.ts` `CdpClient` (`send`, `onAny`) |
 | `PageInfo` | `adapters/chrome-page-info.ts`: `chrome.tabs.get`, `onUpdated` status complete through core `session/load-wait.ts` `armLoadWait` and `tabLoadSignal` | `cdp/adapters/cdp-page-info.ts`: `Target.getTargetInfo`, `Page.loadEventFired` through the same `armLoadWait` |
-| `IdleSettings` | `chrome-settings.ts` | not used by cdp-direct (Q4) |
+| `IdleSettings` | `app/settings-cache.ts` `SettingsCache`, over `chrome-settings.ts` | not used by cdp-direct (Q4) |
 | `FlowHistoryStore`, `DetachedFlowStore` | `chrome.storage.session` | not used by cdp-direct (Q4) |
 | `EventsOut` | `send(connection.ws, ...)` | the `BridgeEventLog` sink of `detached-flows.ts` |
 | `Downloads` | `createDownloadCapture(chrome.downloads)` | none |
@@ -764,6 +778,19 @@ contract also runs against an in-memory fake (`contract/memory-*.ts`). The
 e2e's window case opens the Activity and the Admin window through the
 popup's messages, asks again for the same focused window, and gets a fresh
 one after closing it (`windowChecks`).
+
+As built in slice 21b (revision 13): `app/settings-cache.ts` holds
+`createSettingsCache`: the idle-TTL and flow-recording caches, their load at
+worker start, the change handlers `idleTtlChanged` and
+`flowRecordingChanged` (the toggle going off discards the recording of every
+connected tab), and `applyPushed`, which validates a `settings.update` push
+and writes it. It is stateful, so `background.ts` builds it once, calls
+`load()` once and subscribes `chromeSettings.onChanged` twice at top level,
+one statement per cache, as before. `adapters/chrome-settings.ts` is a
+stateless object; the wake-listener rule maps `storage.onChanged` to
+`LocalSettingsStorage.onChanged`. The in-worker contract: a value set reads
+back through `get`, and its change reaches `onChanged` as a `local` change
+carrying the new value; the key is removed in a `finally`.
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -1418,6 +1445,10 @@ one-line delegations plus the interval (~25), three startup calls and
 200 lines**. The ceiling stays **400**; slice 22 sets the constant to the
 measured count, so the slack is not left as room to grow.
 
+That estimate never counted the settings caches (revision 13): after slice 21
+`background.ts` held 725 lines. Slices 21b (settings, 598 lines after it),
+21c (events out) and 21d (connect) move what is left before slice 22.
+
 ---
 
 ## 6. Slice plan
@@ -1465,6 +1496,9 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 19 | Connection lifecycle (**done**, release 1.4.28) | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
 | 20 | Recording (**done**, release 1.4.29) | `app/recording.ts` (lines 4328-4658 at `5ce3055`): start, navigation steps, the cap, stop, discard, save, status; the `chrome-tab-events` adapter | ~330 | existing `recording.test.ts` plus `app/recording.test.ts` on fakes; an e2e recording case on a tab of its own; manual popup check noted in PR | revert |
 | 21 | Popup router, windows, repair, tab events (**done**, release 1.4.30) | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
+| 21b | Settings (**done**, release 1.4.31) | the idle-TTL and flow-recording caches, their storage listeners and the `settings.update` apply functions to `app/settings-cache.ts`; the `chrome-settings` adapter; the contract harness's teardown on failure (revision 13) | ~250 | unit tests of the caches; the `LocalSettingsStorage` contract on the fake and in the worker; the teardown probe through the browser; e2e recording case | revert |
+| 21c | Events out (pending) | the `flow-finished` and top-document bridge events (`publishFlowFinished`, `reportTopDocument`) out of `background.ts` | specifics added by the slice | specifics added by the slice | revert |
+| 21d | Connect (pending) | the connect path (`connectTab`, `doConnectTab`) out of `background.ts` | specifics added by the slice | specifics added by the slice | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
 
 Order rationale: the safety net first (0-3b), then the build change alone
