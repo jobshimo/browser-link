@@ -8,17 +8,23 @@
 // (`src/app/extension-contracts.test.ts`) and against the real adapter inside
 // the service worker (`entry.ts`, run by the e2e; R6). The product's own
 // listeners ignore the tab: it has no opener and no connection to tear down.
+// The tab is closed in a `finally`, on failure too.
 
 import { type ContractCase, equal } from '@browser-link/core';
 import type { CreatedTab, TabEvents } from '../src/app/tab-events.js';
 
+/** A tab the harness opened, and its closer; closing twice closes once. */
+export interface OpenedTab {
+  tabId: number;
+  close(): Promise<void>;
+}
+
 export interface TabEventsHarness {
   tabEvents: TabEvents;
-  /** Open a background tab; answers its id. */
-  openTab(): Promise<number>;
+  /** Open a background tab. */
+  openTab(): Promise<OpenedTab>;
   /** Attach a debugger session to the tab. */
   attachDebugger(tabId: number): Promise<void>;
-  closeTab(tabId: number): Promise<void>;
   /** Let time pass until `done` resolves; reject when it has not after `timeoutMs`. */
   until(done: Promise<void>, timeoutMs: number): Promise<void>;
 }
@@ -31,7 +37,7 @@ export function defineTabEventsContract(make: () => TabEventsHarness): ContractC
     {
       name: 'a tab opened reaches onCreated; its close reaches onDebuggerDetach and onRemoved',
       run: async () => {
-        const { tabEvents, openTab, attachDebugger, closeTab, until } = make();
+        const { tabEvents, openTab, attachDebugger, until } = make();
         const created: CreatedTab[] = [];
         const removed: number[] = [];
         const detached: (number | undefined)[] = [];
@@ -61,17 +67,23 @@ export function defineTabEventsContract(make: () => TabEventsHarness): ContractC
           detached.push(tabId);
           check();
         });
-        tab = await openTab();
-        await attachDebugger(tab);
-        await closeTab(tab);
-        await until(done, CONTRACT_TAB_TIMEOUT_MS);
-        equal(
-          created.filter((t) => t.tabId === tab).map((t) => t.tabId),
-          [tab],
-          'created reports of the tab',
-        );
-        equal(detached, [tab], 'debugger detach reports');
-        equal(removed, [tab], 'removed reports');
+        const opened = await openTab();
+        tab = opened.tabId;
+        try {
+          await attachDebugger(tab);
+          await opened.close();
+          await until(done, CONTRACT_TAB_TIMEOUT_MS);
+          equal(
+            created.filter((t) => t.tabId === tab).map((t) => t.tabId),
+            [tab],
+            'created reports of the tab',
+          );
+          equal(detached, [tab], 'debugger detach reports');
+          equal(removed, [tab], 'removed reports');
+        } finally {
+          // On failure too: the tab this case opened never outlives it.
+          await opened.close();
+        }
       },
     },
   ];

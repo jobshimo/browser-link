@@ -1,7 +1,5 @@
 import type { ExtensionToServer, ToolRequestMessage } from '@browser-link/shared';
 import {
-  DEFAULT_IDLE_TTL_MINUTES,
-  clampIdleTtlMinutes,
   shouldScheduleIdleSweep,
   idleTabs,
   sessionCaptureWatch,
@@ -37,6 +35,7 @@ import { chromeAlarms } from './adapters/chrome-alarms.js';
 import { chromeTabEvents } from './adapters/chrome-tab-events.js';
 import { chromeRuntime } from './adapters/chrome-runtime.js';
 import { chromeWindows } from './adapters/chrome-windows.js';
+import { chromeSettings } from './adapters/chrome-settings.js';
 import { openWebSocket } from './adapters/web-socket.js';
 import {
   closeTabConnection,
@@ -65,22 +64,8 @@ import { createTabEventHandlers } from './app/tab-events.js';
 import { createAppWindow } from './app/windows.js';
 import { createExtensionFlowControl } from './app/flow-control.js';
 import { createRecording } from './app/recording.js';
+import { createSettingsCache } from './app/settings-cache.js';
 import { createDownloadCapture } from './download-capture.js';
-import {
-  CONSOLE_IDLE_TTL_STORAGE_KEY,
-  effectiveIdleTtlMinutes,
-  parseIncomingSettings,
-  shouldAcceptIncomingSettings,
-  type IncomingIdleSettings,
-} from './idle-settings.js';
-import {
-  DEFAULT_FLOW_RECORDING_ENABLED,
-  FLOW_RECORDING_STORAGE_KEY,
-  FLOW_RECORDING_UPDATED_AT_STORAGE_KEY,
-  normalizeFlowRecordingEnabled,
-  parseIncomingFlowRecordingSettings,
-  type IncomingFlowRecordingSettings,
-} from './flow-recording-policy.js';
 import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
@@ -93,130 +78,26 @@ const WS_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
 const HANDSHAKE_CHECK_URL = `http://127.0.0.1:${BRIDGE_PORT}${HANDSHAKE_CHECK_PATH}`;
 const CDP_VERSION = '1.3';
 
-/* Idle TTL for a tab's WebSocket bridge.
- *
- * After this many minutes without a tool.request from the server, the
- * extension closes its side of the WS and detaches the debugger. The
- * popup then shows "Not connected" again and the user explicitly
- * re-presses Connect when they want to reactivate — unless the console
- * set "never", in which case the sweep never fires.
- *
- * This replaces the previous behaviour where the bridge implicitly
- * died together with the MCP server subprocess (parent_death_guard,
- * removed in v0.9.0). Lifecycle is now client-side: agent activity
- * keeps the tab warm, silence eventually parks it (or never does, if
- * the user opted out).
- *
- * The TTL has one value, owned by the console (`browser-link config set
- * idle-ttl`, 1.3.0): the server pushes it in `settings.update` and it is
- * stored under `CONSOLE_IDLE_TTL_STORAGE_KEY` (see idle-settings.ts). A value
- * the popup stored before 1.3.0 is never applied. `idleTtlMinutesCache` is
- * the in-memory mirror the sweep reads on every tick: chrome.storage is
- * async, the sweep loop below is not, so the value is loaded once at
- * startup and kept current via `chrome.storage.onChanged` instead of being
- * awaited inside the interval callback. */
+/** How often the idle sweep below walks the connected tabs. */
 const WS_IDLE_SWEEP_MS = 60 * 1000;
-let idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
-
-async function loadIdleTtlMinutes(): Promise<void> {
-  try {
-    const data = await chrome.storage.local.get(CONSOLE_IDLE_TTL_STORAGE_KEY);
-    idleTtlMinutesCache = effectiveIdleTtlMinutes(data);
-  } catch {
-    idleTtlMinutesCache = DEFAULT_IDLE_TTL_MINUTES;
-  }
-}
-
-void loadIdleTtlMinutes();
-
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') return;
-  if (!(CONSOLE_IDLE_TTL_STORAGE_KEY in changes)) return;
-  idleTtlMinutesCache = effectiveIdleTtlMinutes({
-    [CONSOLE_IDLE_TTL_STORAGE_KEY]: changes[CONSOLE_IDLE_TTL_STORAGE_KEY].newValue,
-  });
-});
-
-/**
- * Apply an incoming `settings.update` push from the server (see
- * the server-message switch of `app/connection.ts` `openBridge`).
- * The server sends this both right after `tab.registered` (when
- * `browser-link config set idle-ttl` was run at least once) AND on demand
- * when the CLI pushes a change to an already-connected tab.
- *
- * The console owns the value (1.3.0, S2): it is applied whatever its
- * `updatedAt` says, and whatever the popup stored before 1.3.0. Writing
- * through `chrome.storage.local.set` here is enough to take effect: the
- * `onChanged` listener above keeps `idleTtlMinutesCache` current, and the
- * popup re-reads storage on its own refresh interval.
- */
-async function applyIncomingSettings(settings: IncomingIdleSettings): Promise<void> {
-  try {
-    await chrome.storage.local.set({
-      [CONSOLE_IDLE_TTL_STORAGE_KEY]: clampIdleTtlMinutes(settings.idleTtlMinutes),
-    });
-  } catch {
-    // Best effort — a failed sync just leaves the local value as-is; the
-    // next settings.update (or a popup edit) can still apply it.
-  }
-}
-
-/* Opt-in flow-recording toggle — mirrors the idle-ttl cache/apply pair
- * above exactly, independent storage keys, independent updatedAt. The
- * recorder is gated behind `flowRecordingEnabledCache`: `Recording.start`
- * refuses when it is false, and turning it off WHILE a recording is in
- * progress force-stops and DISCARDS it immediately (see the
- * chrome.storage.onChanged listener below) — "nothing records when the
- * popup toggle is off" is enforced the instant the toggle flips, not just
- * for recordings started afterward. */
-let flowRecordingEnabledCache = DEFAULT_FLOW_RECORDING_ENABLED;
-
-async function loadFlowRecordingEnabled(): Promise<void> {
-  try {
-    const data = await chrome.storage.local.get(FLOW_RECORDING_STORAGE_KEY);
-    flowRecordingEnabledCache = normalizeFlowRecordingEnabled(data[FLOW_RECORDING_STORAGE_KEY]);
-  } catch {
-    flowRecordingEnabledCache = DEFAULT_FLOW_RECORDING_ENABLED;
-  }
-}
-
-void loadFlowRecordingEnabled();
-
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') return;
-  if (!(FLOW_RECORDING_STORAGE_KEY in changes)) return;
-  flowRecordingEnabledCache = normalizeFlowRecordingEnabled(
-    changes[FLOW_RECORDING_STORAGE_KEY].newValue,
-  );
-  if (flowRecordingEnabledCache) return;
-  // Turned off (popup toggle, or a losing settings.update — either way the
-  // new effective value is false): stop AND discard every in-progress
-  // recording right now, across every connected tab (`app/recording.ts`).
-  for (const tabId of tabConnections.keys()) {
-    void recording.forceStopAndDiscard(tabId).catch(() => {
-      // Best effort — the tab may already be mid-teardown.
-    });
-  }
-});
-
-async function applyIncomingFlowRecordingSettings(
-  settings: IncomingFlowRecordingSettings,
-): Promise<void> {
-  try {
-    const data = await chrome.storage.local.get(FLOW_RECORDING_UPDATED_AT_STORAGE_KEY);
-    const rawLocalUpdatedAt = data[FLOW_RECORDING_UPDATED_AT_STORAGE_KEY];
-    const localUpdatedAt = typeof rawLocalUpdatedAt === 'number' ? rawLocalUpdatedAt : undefined;
-    if (!shouldAcceptIncomingSettings(localUpdatedAt, settings.updatedAt)) return;
-    await chrome.storage.local.set({
-      [FLOW_RECORDING_STORAGE_KEY]: settings.flowRecordingEnabled,
-      [FLOW_RECORDING_UPDATED_AT_STORAGE_KEY]: settings.updatedAt,
-    });
-  } catch {
-    // Best effort — same degrade-gracefully rule as applyIncomingSettings.
-  }
-}
 
 const tabConnections = new TabRegistry<TabConnection>();
+
+/** The idle TTL and the flow-recording toggle, mirrored from local storage
+ * (`app/settings-cache.ts`); stateful, so built once. The toggle going off
+ * discards every recording in progress at once. */
+const settings = createSettingsCache({
+  storage: chromeSettings,
+  tabIds: () => tabConnections.keys(),
+  discardRecording: (tabId) => recording.forceStopAndDiscard(tabId),
+});
+void settings.load();
+chromeSettings.onChanged((changes, area) => {
+  settings.idleTtlChanged(changes, area);
+});
+chromeSettings.onChanged((changes, area) => {
+  settings.flowRecordingChanged(changes, area);
+});
 
 /** The in-flight Activity, Admin and Repair round trips, by request id
  * (core `PendingReplies`; `app/connection.ts` `BridgeReplies`). */
@@ -279,7 +160,7 @@ const recording = createRecording({
   tabs: tabConnections,
   tabEvents: chromeTabEvents,
   clock: systemClock,
-  enabled: () => flowRecordingEnabledCache,
+  enabled: () => settings.flowRecordingEnabled(),
   cdp,
   evaluate: (tabId, expression) => pageDriver(tabId).evaluator.evaluate(expression),
 });
@@ -616,23 +497,14 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
     scheduler: reconnect.scheduler,
     replies,
     flushPendingEvents: (id) => void flowHistory.flushPendingEvents(id),
-    applySettings,
+    applySettings: (pushed) => {
+      settings.applyPushed(pushed);
+    },
     handleTool: (msg) => handleTool(state, msg),
     cancelFlow: (flowId, reason) => flowRegistry.cancel(flowId, reason),
     cleanup,
     diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
   });
-}
-
-/** A `settings.update` push. The frame is only cast (`app/connection.ts`), so
- * each payload is validated at the wire boundary (same rigor the IPC
- * settings.push frame gets in the server's protocol.ts): a malformed push
- * is dropped here instead of throwing inside the apply path. */
-function applySettings(pushed: unknown): void {
-  const settings = parseIncomingSettings(pushed);
-  if (settings) void applyIncomingSettings(settings);
-  const flowRecordingSettings = parseIncomingFlowRecordingSettings(pushed);
-  if (flowRecordingSettings) void applyIncomingFlowRecordingSettings(flowRecordingSettings);
 }
 
 /** The popup's messages (`app/popup-router.ts`), with the repair and the
@@ -698,7 +570,7 @@ chromeTabEvents.onDebuggerDetach((tabId) => {
  * flow's last step counts as its last activity (owner decision D1); the
  * same holds for a single call still running (BL-EXT-098).
  *
- * When the console set "never" (idleTtlMinutesCache === 0),
+ * When the console set "never" (`settings.idleTtlMinutes()` is 0),
  * `shouldScheduleIdleSweep` short-circuits the tick before it walks
  * `tabConnections` — the interval itself keeps ticking (cancelling/rearming a
  * service-worker timer from a storage listener is more moving parts than
@@ -709,7 +581,8 @@ chromeTabEvents.onDebuggerDetach((tabId) => {
  * the entire MCP server on stdio close — now the server stays alive and
  * the bridge is parked tab-by-tab from the client side. */
 setInterval(() => {
-  if (!shouldScheduleIdleSweep(idleTtlMinutesCache)) return;
+  const idleTtlMinutes = settings.idleTtlMinutes();
+  if (!shouldScheduleIdleSweep(idleTtlMinutes)) return;
   const now = Date.now();
   // Owner decision D1: a tab with a flow running is not idle. Its steps run
   // here in the worker and never arrive as tool.request, so the registry is
@@ -717,7 +590,7 @@ setInterval(() => {
   const holds = flowRegistry.idleHolds();
   // BL-EXT-098: a call still running holds its tab too (`TabSession.idleCandidate`).
   const sessions = [...tabConnections].map(([tabId, conn]) => [tabId, conn.session] as const);
-  for (const tabId of idleTabs(sessions, holds, now, idleTtlMinutesCache)) {
+  for (const tabId of idleTabs(sessions, holds, now, idleTtlMinutes)) {
     void cleanup(tabId).catch(() => {
       // Best effort.
     });

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.31](https://github.com/jobshimo/browser-link/compare/v1.4.30...v1.4.31) (2026-11-18)
+
+### Notes
+
+- Slice 21b of the service worker plan; no behaviour change. The extension's settings caches move from `background.ts` to `app/settings-cache.ts`: the idle TTL the sweep reads and the flow-recording toggle recording reads, both loaded at worker start and kept current by the storage change listeners, and the `settings.update` pushes that write them (the console's idle TTL applied whatever its timestamp, the toggle only when newer). Turning the toggle off still discards every recording in progress at once.
+- One new extension adapter, `chrome-settings` (`LocalSettingsStorage`: `get`, `set`, `onChanged`). The two storage listeners are still subscribed at the top level of `background.ts`, now through the adapter, and the wake-listener fitness rule maps `storage.onChanged` to it.
+- The in-worker contract run gains a `LocalSettingsStorage` contract (a value set reads back and its change arrives as a local change), also run against an in-memory fake. Every window, tab and storage key a contract case creates is now removed in a `finally`, on failure too, and the e2e proves it: it first runs each creating case failing on purpose, then checks through the browser that no tab, window or contract key was left behind, and checks the same after the real run.
+- `background.ts` shrinks by 127 lines and its line budget goes from 725 to 598.
+
 ## [1.4.30](https://github.com/jobshimo/browser-link/compare/v1.4.29...v1.4.30) (2026-11-18)
 
 ### Notes

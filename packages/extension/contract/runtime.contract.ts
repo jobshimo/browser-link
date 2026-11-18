@@ -16,7 +16,8 @@ export interface RuntimeHarness {
   runtime: Runtime;
   /** The manifest's version, read without the subject. */
   version: string;
-  /** Open an extension page at `url` in the background; answers its closer. */
+  /** Open an extension page at `url` in the background; answers its closer,
+   * which the case calls in a `finally`, on failure too. */
   openPage(url: string): Promise<() => Promise<void>>;
   /** Let time pass until `done` resolves; reject when it has not after `timeoutMs`. */
   until(done: Promise<void>, timeoutMs: number): Promise<void>;

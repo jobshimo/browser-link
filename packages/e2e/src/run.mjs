@@ -948,8 +948,12 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
  * The in-worker contract run (design section 8, R6, primary path): the
  * adapters' contracts, bundled from the same sources with the same esbuild
  * options as background.js (checked on the embedded sources), evaluated in
- * the extension's service worker while coverage runs. Returns the evaluated
- * text, which the coverage step maps like the shipped bundle.
+ * the extension's service worker while coverage runs. First a teardown probe
+ * (every case that creates a window, a tab, a page or a storage key fails on
+ * purpose right after creating it), then the real run; after each, the
+ * browser must hold exactly the tabs, windows and contract keys it held
+ * before. Returns the evaluated text, which the coverage step maps like the
+ * shipped bundle.
  */
 async function inWorkerContract(cdp, swSession, extDir) {
   const t = now();
@@ -968,22 +972,61 @@ async function inWorkerContract(cdp, swSession, extDir) {
   if (loaded.exceptionDetails) {
     throw new StepFailure('contract.load', loaded.exceptionDetails.text);
   }
-  let timer;
-  const results = await Promise.race([
-    cdp.evaluate('globalThis.browserLinkContract()', swSession),
-    new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        reject(
-          new StepFailure('contract.in-worker', `no answer in ${String(CONTRACT_TIMEOUT_MS)} ms`),
-        );
-      }, CONTRACT_TIMEOUT_MS);
-    }),
-  ]).finally(() => clearTimeout(timer));
+  const run = (options) => {
+    let timer;
+    return Promise.race([
+      cdp.evaluate(`globalThis.browserLinkContract(${jsLiteral(options)})`, swSession),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new StepFailure('contract.in-worker', `no answer in ${String(CONTRACT_TIMEOUT_MS)} ms`),
+          );
+        }, CONTRACT_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
+  // What the browser holds that a contract case may create: every tab, every
+  // window, and the contract's storage keys.
+  const held = `Promise.all([chrome.tabs.query({}), chrome.windows.getAll(), chrome.storage.local.get(null)]).then(([tabs, windows, stored]) => JSON.stringify({ tabs: tabs.map((x) => x.id).sort(), windows: windows.map((x) => x.id).sort(), keys: Object.keys(stored).filter((k) => k.startsWith('browser-link-contract:')) }))`;
+  const leftNothing = async (step, before) => {
+    try {
+      await evaluateUntil(
+        cdp,
+        `${held}.then((now) => now === ${jsLiteral(before)})`,
+        swSession,
+        5_000,
+      );
+    } catch {
+      const after = await cdp.evaluate(held, swSession);
+      throw new StepFailure(step, `left behind: before ${before}, after ${after}`);
+    }
+  };
+
+  // Teardown probe: each case that creates a window, a tab, a page or a key
+  // fails on purpose right after creating it; the browser must hold exactly
+  // what it held before.
+  const beforeProbe = await cdp.evaluate(held, swSession);
+  const probed = await run({ probe: true });
+  const unforced = probed.filter((r) => r.ok || !String(r.error).includes('forced failure'));
+  if (probed.length === 0 || unforced.length > 0) {
+    throw new StepFailure(
+      'contract.teardown',
+      JSON.stringify(unforced.length > 0 ? unforced : probed),
+    );
+  }
+  await leftNothing('contract.teardown', beforeProbe);
+  console.log(
+    `contract.teardown ok ${String(probed.length)} failing cases left no tab, window or key behind`,
+  );
+
+  const before = await cdp.evaluate(held, swSession);
+  const results = await run({});
   const failed = results.filter((r) => !r.ok);
   if (results.length === 0 || failed.length > 0) {
     const list = failed.map((r) => `${r.name}: ${r.error}`).join('; ');
     throw new StepFailure('contract.in-worker', list || 'no contract case ran');
   }
+  await leftNothing('contract.in-worker', before);
   const cases = results.map((r) => `${r.name} (${String(r.ms)} ms)`).join(', ');
   console.log(`contract.in-worker ok ${String(Math.round(now() - t))} ms: ${cases}`);
   return bundle;

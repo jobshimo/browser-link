@@ -92,7 +92,7 @@ export interface IncomingIdleSettings {
 /**
  * Runtime shape guard for the `settings` field of an incoming
  * `settings.update` WS message. The message arrives as untrusted JSON —
- * background.ts's `safeParse` is only a cast, not a validation — so a
+ * `app/connection.ts` only casts the frame, it does not validate it — so a
  * malformed payload (missing or mistyped fields) must be rejected HERE, at
  * the wire boundary, instead of throwing inside the async apply path where
  * the error would be silently swallowed as a dropped sync. Mirrors the
