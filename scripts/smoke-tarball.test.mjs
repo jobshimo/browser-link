@@ -2,7 +2,12 @@
 // synthetic tarball entries (no pack, no install).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EXTENSION_ENTRIES, extensionFailures, hasTopLevelAwait } from './smoke-tarball.mjs';
+import {
+  EXTENSION_ENTRIES,
+  contractFailures,
+  extensionFailures,
+  hasTopLevelAwait,
+} from './smoke-tarball.mjs';
 
 const P = 'package/dist/extension/';
 const manifest = (version, worker = 'background.js') =>
@@ -89,4 +94,30 @@ test('hasTopLevelAwait looks at the parsed module, not at the text', () => {
   assert.equal(hasTopLevelAwait('const f = async () => { for await (const v of xs) {} };'), false);
   assert.equal(hasTopLevelAwait('class C { async m() { await x; } }'), false);
   assert.equal(hasTopLevelAwait('const s = "await x"; // await y'), false);
+});
+
+test('the expected pack holds no in-worker contract run', () => {
+  assert.deepEqual(contractFailures(goodEntries()), []);
+});
+
+test('RED: the contract source, its bundle or its global in the pack fails', () => {
+  const entries = goodEntries();
+  entries.set('package/dist/extension/contract.js', Buffer.from('(() => {})();'));
+  entries.set('package/dist/contract.js.map', Buffer.from('{}'));
+  entries.set('package/extension/contract/entry.ts', Buffer.from(''));
+  entries.set(`${P}background.js`, Buffer.from('globalThis.browserLinkContract = f;'));
+  entries.set('package/dist/x.js', Buffer.from('//# sourceURL=browser-link-contract.js'));
+  assert.deepEqual(contractFailures(entries), [
+    `contract run marker in ${P}background.js`,
+    'contract run shipped: package/dist/extension/contract.js',
+    'contract run shipped: package/dist/contract.js.map',
+    'contract run shipped: package/extension/contract/entry.ts',
+    'contract run marker in package/dist/x.js',
+  ]);
+});
+
+test('core contract modules of the server mirror are not the extension contract run', () => {
+  const entries = goodEntries();
+  entries.set('package/dist/generated/core/ports/contract/assert.js', Buffer.from('export {};'));
+  assert.deepEqual(contractFailures(entries), []);
 });

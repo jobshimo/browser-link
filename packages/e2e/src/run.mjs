@@ -26,6 +26,8 @@
 // (lib.mjs buildPaths). E2E_ADAPTER_COVERAGE=0 skips the adapter coverage
 // check (R6 condition 1, adapter-coverage.mjs), which is on by default;
 // scripts/e2e-diff.mjs turns it off, since a base build may predate it.
+// With it, the in-worker contract run (packages/extension/contract/) reaches
+// the adapter methods the calls cannot (R6 primary path, slice 19).
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
 import {
@@ -78,7 +80,12 @@ import {
 } from './lib.mjs';
 import { uncalledCases } from './tool-cases.mjs';
 import { cdpTabOf, enableCdpDirect } from './cdp-direct.mjs';
-import { adapterCoverageSummary, uncalledAdapterFunctions } from './adapter-coverage.mjs';
+import {
+  adapterCoverageSummary,
+  adapterSourceMismatches,
+  uncalledAdapterFunctions,
+} from './adapter-coverage.mjs';
+import { buildContract, CONTRACT_SOURCE_URL } from '../../extension/contract/build.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
 const TOTAL_TIMEOUT_MS = 300_000;
@@ -92,6 +99,8 @@ const ATTACHMENTS = {
 };
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
 const ADAPTER_COVERAGE = process.env.E2E_ADAPTER_COVERAGE !== '0';
+/** The in-worker contract run's own budget: its alarm round trip included. */
+const CONTRACT_TIMEOUT_MS = 120_000;
 const FRAME_FILE = join(E2E_DIR, 'pages/frame.html');
 /** The exact body /data.json answers (non-ASCII included): network_body must
  * return it unchanged. */
@@ -584,7 +593,10 @@ async function main() {
 
   await dragPermissionTabsFlows(T, page, cdp);
 
-  if (ADAPTER_COVERAGE) await adapterCoverage(cdp, swSession, extDir, extId);
+  if (ADAPTER_COVERAGE) {
+    const contract = await inWorkerContract(cdp, swSession, extDir);
+    await adapterCoverage(cdp, swSession, extDir, extId, contract);
+  }
 
   // Since 1.0.0 the bridge accepts only an Origin exactly equal to
   // chrome-extension://<pinned id> (or a configured id; none here), so the
@@ -750,23 +762,75 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
 }
 
 /**
- * R6 condition 1: every function of every extension adapter was called by
- * the run so far (V8 coverage of the worker, adapter-coverage.mjs). A
- * function with zero calls fails the run, naming it.
+ * The in-worker contract run (design section 8, R6, primary path): the
+ * adapters' contracts, bundled from the same sources with the same esbuild
+ * options as background.js (checked on the embedded sources), evaluated in
+ * the extension's service worker while coverage runs. Returns the evaluated
+ * text, which the coverage step maps like the shipped bundle.
  */
-async function adapterCoverage(cdp, swSession, extDir, extId) {
+async function inWorkerContract(cdp, swSession, extDir) {
+  const t = now();
+  const dir = mkdtempSync(join(tmpdir(), 'bl-e2e-contract-'));
+  temps.push(dir);
+  const { script, map } = await buildContract(dir);
+  const mismatches = adapterSourceMismatches(
+    JSON.parse(readFileSync(join(extDir, 'background.js.map'), 'utf8')),
+    JSON.parse(readFileSync(map, 'utf8')),
+  );
+  if (mismatches.length > 0) throw new StepFailure('contract.sources', mismatches.join('; '));
+  const bundle = `${readFileSync(script, 'utf8')}
+//# sourceURL=${CONTRACT_SOURCE_URL}
+`;
+  const loaded = await cdp.send('Runtime.evaluate', { expression: bundle }, swSession);
+  if (loaded.exceptionDetails) {
+    throw new StepFailure('contract.load', loaded.exceptionDetails.text);
+  }
+  let timer;
+  const results = await Promise.race([
+    cdp.evaluate('globalThis.browserLinkContract()', swSession),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new StepFailure('contract.in-worker', `no answer in ${String(CONTRACT_TIMEOUT_MS)} ms`),
+        );
+      }, CONTRACT_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  const failed = results.filter((r) => !r.ok);
+  if (results.length === 0 || failed.length > 0) {
+    const list = failed.map((r) => `${r.name}: ${r.error}`).join('; ');
+    throw new StepFailure('contract.in-worker', list || 'no contract case ran');
+  }
+  const cases = results.map((r) => `${r.name} (${String(r.ms)} ms)`).join(', ');
+  console.log(`contract.in-worker ok ${String(Math.round(now() - t))} ms: ${cases}`);
+  return bundle;
+}
+
+/**
+ * R6 condition 1: every function of every extension adapter was called by
+ * the run so far, or by the in-worker contract run (V8 coverage of the
+ * worker, adapter-coverage.mjs). A function with zero calls fails the run,
+ * naming it.
+ */
+async function adapterCoverage(cdp, swSession, extDir, extId, contractBundle) {
   const { result } = await cdp.send('Profiler.takePreciseCoverage', {}, swSession);
   await cdp.send('Profiler.stopPreciseCoverage', {}, swSession);
   const url = `chrome-extension://${extId}/background.js`;
   const script = result.find((entry) => entry.url === url);
   if (!script) throw new StepFailure('adapter.coverage', `no coverage for ${url}`);
+  const contractScript = result.find((entry) => entry.url === CONTRACT_SOURCE_URL);
+  if (!contractScript) {
+    throw new StepFailure('adapter.coverage', `no coverage for ${CONTRACT_SOURCE_URL}`);
+  }
+  const contract = { bundle: contractBundle, functions: contractScript.functions };
   const bundle = readFileSync(join(extDir, 'background.js'), 'utf8');
-  const uncalled = uncalledAdapterFunctions(bundle, script.functions);
+  const uncalled = uncalledAdapterFunctions(bundle, script.functions, contract);
   if (uncalled.length > 0) {
     const list = uncalled.map((u) => `${u.file}:${String(u.line)} ${u.name}`).join(', ');
     throw new StepFailure('adapter.coverage', `adapter functions never called: ${list}`);
   }
-  console.log(`adapter.coverage ok ${adapterCoverageSummary(bundle, script.functions).join(', ')}`);
+  const summary = adapterCoverageSummary(bundle, script.functions, contract);
+  console.log(`adapter.coverage ok ${summary.join(', ')}`);
 }
 
 /**

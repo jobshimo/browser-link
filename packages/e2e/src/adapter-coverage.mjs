@@ -16,10 +16,22 @@
 // so an uncalled one is simply missing from the report. Each coverage entry
 // belongs to the innermost listed function that contains its start; a listed
 // function with no entry, or whose entry has zero calls, fails.
+//
+// The in-worker contract run (design section 8, R6, primary path; slice 19)
+// reaches what the e2e cannot (`Alarms.set`, and `Alarms.onFire`, which
+// background.ts calls at module load, before coverage starts): the e2e
+// evaluates a test-only IIFE bundle of the adapters' contracts
+// (packages/extension/contract/) in the worker. That bundle is built with the
+// same esbuild options from the same adapter sources (`adapterSourceMismatches`
+// checks the sources both source maps embed), so its adapter regions list the
+// same functions in the same order; a shipped function counts as reached
+// when it, or its counterpart in the contract bundle, was called. This proves
+// that the same source compiled the same way ran, not the shipped bytes.
 
 import ts from 'typescript';
 
-const MODULE_MARKER = /^\/\/ ((?:\.\.\/)*[\w./-]+\.[cm]?[jt]sx?)$/gm;
+// An IIFE bundle (the contract run) indents its module markers by two spaces.
+const MODULE_MARKER = /^(?: {2})?\/\/ ((?:\.\.\/)*[\w./-]+\.[cm]?[jt]sx?)$/gm;
 const ADAPTER_FILE = /^src\/adapters\/[\w.-]+\.ts$/;
 
 /** The adapter modules of a bundle: `{ file, start, end }`, `end` exclusive,
@@ -102,27 +114,103 @@ function callsPerFunction(bundle, region, functions) {
 }
 
 /**
- * The adapter functions never called: missing from the coverage, or reported
- * with zero calls. `functions` is the `functions` array of the bundle's
- * entry in `Profiler.takePreciseCoverage`. Each problem is
- * `{ file, name, line, calls }` (`calls` 0); an empty list passes.
+ * Each adapter region of the shipped bundle with its functions, each marked
+ * `byRun` (called while the e2e ran) and `byContract` (its counterpart in the
+ * contract bundle was called). `contract` is `{ bundle, functions }` of the
+ * contract run, or undefined. A region whose contract counterpart lists
+ * other functions (by count or name) is reported in `shapeErrors`.
  */
-export function uncalledAdapterFunctions(bundle, functions) {
+function reach(bundle, functions, contract) {
+  const contractRegions = new Map(
+    contract
+      ? adapterRegions(contract.bundle).map((region) => [
+          region.file,
+          callsPerFunction(contract.bundle, region, contract.functions),
+        ])
+      : [],
+  );
+  const shapeErrors = [];
+  const regions = adapterRegions(bundle).map((region) => {
+    const statics = callsPerFunction(bundle, region, functions);
+    const counterpart = contractRegions.get(region.file);
+    const sameShape =
+      counterpart !== undefined &&
+      counterpart.length === statics.length &&
+      counterpart.every((f, i) => f.name === statics[i].name);
+    if (counterpart !== undefined && !sameShape) shapeErrors.push(region.file);
+    const fns = statics.map((f, i) => ({
+      ...f,
+      byRun: (f.calls ?? 0) > 0,
+      byContract: sameShape && (counterpart[i].calls ?? 0) > 0,
+    }));
+    return { region, fns };
+  });
+  return { regions, shapeErrors };
+}
+
+/**
+ * The adapter functions never called: missing from the coverage, or reported
+ * with zero calls, by the run and by the contract run. `functions` is the
+ * `functions` array of the bundle's entry in `Profiler.takePreciseCoverage`;
+ * `contract`, optional, is `{ bundle, functions }` of the contract script.
+ * Each problem is `{ file, name, line, calls }` (`calls` 0); an empty list
+ * passes. A contract region whose functions differ from the shipped one's is
+ * one problem named `(contract bundle lists other functions)`.
+ */
+export function uncalledAdapterFunctions(bundle, functions, contract) {
   const problems = [];
-  for (const region of adapterRegions(bundle)) {
-    for (const f of callsPerFunction(bundle, region, functions)) {
-      if ((f.calls ?? 0) > 0) continue;
+  const { regions, shapeErrors } = reach(bundle, functions, contract);
+  for (const { region, fns } of regions) {
+    if (shapeErrors.includes(region.file)) {
+      const name = '(contract bundle lists other functions)';
+      problems.push({ file: region.file, name, line: lineAt(bundle, region.start), calls: 0 });
+    }
+    for (const f of fns) {
+      if (f.byRun || f.byContract) continue;
       problems.push({ file: region.file, name: f.name, line: lineAt(bundle, f.start), calls: 0 });
     }
   }
   return problems;
 }
 
-/** One summary line per adapter: functions reached of functions found. */
-export function adapterCoverageSummary(bundle, functions) {
-  return adapterRegions(bundle).map((region) => {
-    const statics = callsPerFunction(bundle, region, functions);
-    const called = statics.filter((f) => (f.calls ?? 0) > 0).length;
-    return `${region.file} ${String(called)}/${String(statics.length)}`;
+/** One summary line per adapter: functions reached of functions found, and
+ * the ones only the contract run reached. */
+export function adapterCoverageSummary(bundle, functions, contract) {
+  return reach(bundle, functions, contract).regions.map(({ region, fns }) => {
+    const called = fns.filter((f) => f.byRun || f.byContract).length;
+    const onlyContract = fns.filter((f) => !f.byRun && f.byContract).map((f) => f.name);
+    const note = onlyContract.length > 0 ? ` (in-worker contract: ${onlyContract.join(' ')})` : '';
+    return `${region.file} ${String(called)}/${String(fns.length)}${note}`;
   });
+}
+
+const ADAPTER_SOURCE = /(?:^|\/)(src\/adapters\/[\w.-]+\.ts)$/;
+
+/** `src/adapters/<name>.ts` -> the source a source map embeds for it. */
+function adapterSources(map) {
+  const sources = new Map();
+  (map.sources ?? []).forEach((source, i) => {
+    const m = ADAPTER_SOURCE.exec(source.replaceAll('\\', '/'));
+    if (m) sources.set(m[1], map.sourcesContent?.[i]);
+  });
+  return sources;
+}
+
+/**
+ * Every adapter source the contract bundle compiled is the one the shipped
+ * bundle compiled, byte for byte, as each source map embeds it
+ * (`sourcesContent`). Returns one message per mismatch; a contract bundle
+ * that compiled no adapter is one too.
+ */
+export function adapterSourceMismatches(shippedMap, contractMap) {
+  const shipped = adapterSources(shippedMap);
+  const contract = adapterSources(contractMap);
+  if (contract.size === 0) return ['the contract bundle compiled no adapter source'];
+  const problems = [];
+  for (const [file, text] of contract) {
+    if (typeof text !== 'string') problems.push(`${file}: no embedded source in the contract map`);
+    else if (!shipped.has(file)) problems.push(`${file}: not in the shipped bundle`);
+    else if (shipped.get(file) !== text) problems.push(`${file}: differs from the shipped source`);
+  }
+  return problems;
 }

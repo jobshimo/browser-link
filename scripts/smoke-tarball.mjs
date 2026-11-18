@@ -14,7 +14,10 @@
 //     to packages/extension; no .d.ts, and no top-level `await` in the
 //     service worker the manifest names (a module service worker refuses
 //     one; the HTML pages' modules may use it, popup.ts does), checked on
-//     the parsed output.
+//     the parsed output. The test-only in-worker contract run
+//     (packages/extension/contract/, design section 8, R6) is nowhere in
+//     the pack: no entry under a contract/ directory of the extension, no
+//     contract.js or its map, no file holding the contract's global.
 //  3) Install the tarball into a temp prefix and run the installed
 //     `browser-link version` binary; its stdout must equal the version.
 // Every failed assertion prints one `FAIL:` line; the exit code is 1 if
@@ -106,6 +109,27 @@ export function extensionFailures(entries, sourceFiles = extensionSourceFiles())
   const workerCode = entries.get(`${prefix}background.js`);
   if (workerCode && hasTopLevelAwait(workerCode.toString('utf8'))) {
     found.push(`${prefix}background.js (the service worker) has a top-level await`);
+  }
+  return found;
+}
+
+/** What only the test-only contract run holds: its global, its sourceURL. */
+const CONTRACT_MARKERS = ['browserLinkContract', 'browser-link-contract.js'];
+
+/**
+ * The in-worker contract run is never shipped: no entry anywhere in the
+ * pack is its source (`extension/contract/`), its output (`contract.js`,
+ * `contract.js.map`) or holds its markers. Returns one message per entry.
+ */
+export function contractFailures(entries) {
+  const found = [];
+  for (const [entry, bytes] of entries) {
+    const name = entry.split('/').at(-1);
+    if (/(^|\/)extension\/contract\//.test(entry) || /^contract\.js(\.map)?$/.test(name)) {
+      found.push(`contract run shipped: ${entry}`);
+    } else if (CONTRACT_MARKERS.some((marker) => bytes.includes(marker))) {
+      found.push(`contract run marker in ${entry}`);
+    }
   }
   return found;
 }
@@ -232,6 +256,7 @@ function main() {
       `${testFiles.length} compiled test files shipped (first: ${testFiles[0]})`,
     );
     failures.push(...extensionFailures(entries));
+    failures.push(...contractFailures(entries));
 
     // 3) Install and run the binary (only when the package looks complete,
     // otherwise the install error would hide the precise failures above).
