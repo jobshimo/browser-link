@@ -7,9 +7,11 @@ import type { Clock } from '../clock.js';
 import type { ContentSettings } from '../content-settings.js';
 import type { DetachedFlowStore } from '../detached-flow-store.js';
 import type { Downloads } from '../downloads.js';
+import type { EventsOut } from '../events-out.js';
 import type { FlowHistoryStore } from '../flow-history-store.js';
 import type { PageInfo } from '../page-info.js';
 import type {
+  BridgeEventPayload,
   CaptureActOutcome,
   CaptureOutcome,
   CapturedDownload,
@@ -302,4 +304,32 @@ export function createMemoryDetachedFlowStore(): MemoryDetachedFlowStore {
     },
   };
   return store;
+}
+
+export interface MemoryEventsOut extends EventsOut {
+  /** Open (or close) the channel of `tabId`. */
+  setOpen(tabId: number, open: boolean): void;
+  /** What reached `tabId`, in order. */
+  received(tabId: number): BridgeEventPayload[];
+}
+
+/** `EventsOut` over per-tab lists; a tab's channel is closed until opened. */
+export function createMemoryEventsOut(): MemoryEventsOut {
+  const open = new Set<number>();
+  const sent = new Map<number, BridgeEventPayload[]>();
+  return {
+    emit(tabId, event) {
+      if (!open.has(tabId)) return false;
+      sent.set(tabId, [
+        ...(sent.get(tabId) ?? []),
+        JSON.parse(JSON.stringify(event)) as BridgeEventPayload,
+      ]);
+      return true;
+    },
+    setOpen(tabId, value) {
+      if (value) open.add(tabId);
+      else open.delete(tabId);
+    },
+    received: (tabId) => sent.get(tabId) ?? [],
+  };
 }

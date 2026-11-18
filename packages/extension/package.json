@@ -1,6 +1,6 @@
 {
   "name": "@browser-link/extension",
-  "version": "1.4.31",
+  "version": "1.4.32",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node build.mjs && node copy-assets.mjs",

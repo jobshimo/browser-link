@@ -15,14 +15,11 @@ import {
   type ToolDeps,
   toolResponse,
   type CdpSession,
-  type ObserverMessageOutcome,
   type PageDriverHandle,
   type FlowControl,
   createFlowHistory,
   createFlowRegistry,
-  type DetachedFlowRecord,
 } from '@browser-link/core';
-import { docInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
 import { createChromePageInfo } from './adapters/chrome-page-info.js';
@@ -37,16 +34,13 @@ import { chromeRuntime } from './adapters/chrome-runtime.js';
 import { chromeWindows } from './adapters/chrome-windows.js';
 import { chromeSettings } from './adapters/chrome-settings.js';
 import { openWebSocket } from './adapters/web-socket.js';
+import { createWsEventsOut } from './adapters/ws-events-out.js';
 import {
   closeTabConnection,
   commitConnection,
   debuggerIntake,
   deliverCdpEvent,
   newTabConnection,
-  registeredSocket,
-  send,
-  sendBridgeEvent,
-  SOCKET_OPEN,
   type TabConnection,
   type TabEventListener,
 } from './app/tab-connection.js';
@@ -58,6 +52,7 @@ import {
   type ConnectResult,
 } from './app/connection.js';
 import { createActivityAdmin } from './app/activity-admin.js';
+import { reportTopDocument } from './app/events.js';
 import { createPopupRouter } from './app/popup-router.js';
 import { currentVersionCheck, repairConnection } from './app/repair.js';
 import { createTabEventHandlers } from './app/tab-events.js';
@@ -147,7 +142,7 @@ const flowHistory = createFlowHistory({
   history: chromeFlowHistoryStore,
   detached: chromeDetachedFlowStore,
   clock: systemClock,
-  publish: publishFlowFinished,
+  events: createWsEventsOut(tabConnections),
   onRecordLost: (flowId) => {
     console.warn('browser-link: detached-flow terminal record not persisted', flowId);
   },
@@ -257,63 +252,6 @@ function cdp<T = unknown>(
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return debuggerSession(tabId, NO_LISTENERS).send<T>(method, params);
-}
-
-/**
- * Report a top-document page-observer message the page driver applied: a
- * `doc_info` as a `tab-doc-info` bridge event (build fingerprint and view
- * signature; before registration the mirror keeps it and the
- * `tab.registered` handler delivers it), a `doc_start` / `nav` as a
- * `tab-navigated` bridge event so the server keeps the tab's URL and title
- * current.
- */
-async function reportTopDocument(
-  state: TabConnection,
-  outcome: ObserverMessageOutcome,
-): Promise<void> {
-  if (outcome.kind === 'doc_info') {
-    const open = registeredSocket(state);
-    if (open) send(open.ws, docInfoEvent(open.serverTabId, outcome));
-    return;
-  }
-  if (outcome.kind !== 'doc_start' && outcome.kind !== 'nav') return;
-  let title = '';
-  try {
-    title = (await state.session.driver.page.info()).title;
-  } catch {
-    // Best effort — the tab may be closing; the URL is still worth sending.
-  }
-  sendBridgeEvent(state, 'tab-navigated', { url: outcome.url, title });
-}
-
-/** Push the one-per-flow summary `bridge.event`. Returns whether it
- * actually went out — the caller defers it onto the record when it did
- * not, so an audit trail is never quietly dropped just because the tab's
- * socket happened to be closed. Counts and enums only: the manifest itself
- * is addressable by `flow_id` through `browser.flow_status` and has no
- * business in a 200-entry ring buffer. */
-function publishFlowFinished(tabId: number, record: DetachedFlowRecord): boolean {
-  const state = tabConnections.get(tabId);
-  if (!state?.ws || state.ws.readyState !== SOCKET_OPEN) return false;
-  send(state.ws, {
-    kind: 'bridge.event',
-    eventKind: 'flow-finished',
-    ...(state.serverTabId === undefined ? {} : { tabId: state.serverTabId }),
-    data: {
-      flow_id: record.flowId,
-      state: record.state,
-      detached: true,
-      steps: record.steps,
-      steps_completed: record.stepsCompleted,
-      ...(record.iterationsCompleted === undefined
-        ? {}
-        : { iterations_completed: record.iterationsCompleted }),
-      duration_ms: Math.max(0, (record.endedAt ?? record.startedAt) - record.startedAt),
-      ...(record.stoppedBy === undefined ? {} : { stopped_by: record.stoppedBy }),
-      manifest_available: record.manifest !== undefined,
-    },
-  });
-  return true;
 }
 
 /** The flow tools' `FlowControl` on one tab (`app/flow-control.ts`), over

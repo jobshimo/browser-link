@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.32](https://github.com/jobshimo/browser-link/compare/v1.4.31...v1.4.32) (2026-11-18)
+
+### Notes
+
+- Slice 21c of the service worker plan; no behaviour change. The core gets an `EventsOut` port (`emit(tabId, event)`, false when the event did not go out), and `FlowHistory` sends a detached flow's one `flow-finished` event through it instead of a callback of `background.ts`; core now builds that event (`flowFinishedEvent`), with the same fields and values as before. An event that cannot go out is still deferred onto the flow's record and sent when the tab registers again.
+- The extension's side moves to `app/events.ts`: the `bridge.event` frame on the tab's open socket (with the server tab id once registered), and the page observer's `tab-doc-info` and `tab-navigated` reports. One new extension adapter, `ws-events-out` (`EventsOut` over the tab's socket).
+- The `EventsOut` contract (events reach an open tab in order and unchanged; a tab with no open channel gets nothing and `emit` answers false) runs on core's in-memory fake, on the adapter over fake sockets, and inside the real service worker in the e2e, which reaches every function of the new adapter.
+- `background.ts` shrinks by 62 lines and its line budget goes from 598 to 536.
+
 ## [1.4.31](https://github.com/jobshimo/browser-link/compare/v1.4.30...v1.4.31) (2026-11-18)
 
 ### Notes

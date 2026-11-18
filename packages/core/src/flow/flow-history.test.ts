@@ -8,10 +8,15 @@ import {
   type MemoryDetachedFlowStore,
   type MemoryFlowHistoryStore,
 } from '../ports/contract/fakes.js';
-import type { DetachedFlowRecord } from '../ports/values.js';
+import type { BridgeEventPayload, DetachedFlowRecord } from '../ports/values.js';
 import { MAX_DETACHED_FLOW_RECORDS } from './detached-flows.js';
 import type { FlowResult } from './flow-engine.js';
-import { createFlowHistory, MAX_FLOW_HISTORY_PER_TAB, type FlowHistory } from './flow-history.js';
+import {
+  createFlowHistory,
+  flowFinishedEvent,
+  MAX_FLOW_HISTORY_PER_TAB,
+  type FlowHistory,
+} from './flow-history.js';
 import type { FlowRun } from './flow-run.js';
 
 const COMPLETED: FlowResult = { ok: true, steps_completed: 1, results: [{ ok: true }] };
@@ -42,9 +47,9 @@ interface Subject {
   history: FlowHistory;
   historyStore: MemoryFlowHistoryStore;
   detachedStore: MemoryDetachedFlowStore;
-  published: { tabId: number; record: DetachedFlowRecord }[];
+  published: { tabId: number; event: BridgeEventPayload }[];
   lost: string[];
-  /** Whether `publish` delivers (the tab's socket is open). */
+  /** Whether `emit` delivers (the tab's socket is open). */
   socketOpen: { value: boolean };
   clock: ReturnType<typeof createManualClock>;
 }
@@ -60,10 +65,12 @@ function subject(): Subject {
     history: historyStore,
     detached: detachedStore,
     clock,
-    publish: (tabId, record) => {
-      if (!socketOpen.value) return false;
-      published.push({ tabId, record: { ...record } });
-      return true;
+    events: {
+      emit: (tabId, event) => {
+        if (!socketOpen.value) return false;
+        published.push({ tabId, event });
+        return true;
+      },
     },
     onRecordLost: (flowId) => lost.push(flowId),
   });
@@ -159,6 +166,59 @@ describe('FlowHistory: no resurrection', () => {
   });
 });
 
+describe('flowFinishedEvent: the flow-finished event of 1.4.31', () => {
+  const record: DetachedFlowRecord = {
+    flowId: 'f1',
+    tabId: 7,
+    state: 'stopped',
+    startedAt: 1_000,
+    endedAt: 1_250,
+    steps: 4,
+    stepsCompleted: 2,
+    detached: true,
+  } as DetachedFlowRecord;
+
+  it('carries counts and enums only, the optional fields when present', () => {
+    expect(
+      flowFinishedEvent({
+        ...record,
+        iterationsCompleted: 3,
+        stoppedBy: 'user',
+        manifest: {} as never,
+      } as DetachedFlowRecord),
+    ).toEqual({
+      eventKind: 'flow-finished',
+      data: {
+        flow_id: 'f1',
+        state: 'stopped',
+        detached: true,
+        steps: 4,
+        steps_completed: 2,
+        iterations_completed: 3,
+        duration_ms: 250,
+        stopped_by: 'user',
+        manifest_available: true,
+      },
+    });
+  });
+
+  it('leaves out absent optional fields; no end time is a zero duration', () => {
+    const { endedAt: _end, ...running } = record;
+    const event = flowFinishedEvent(running as DetachedFlowRecord);
+    expect(Object.keys(event.data)).toEqual([
+      'flow_id',
+      'state',
+      'detached',
+      'steps',
+      'steps_completed',
+      'duration_ms',
+      'manifest_available',
+    ]);
+    expect(event.data.duration_ms).toBe(0);
+    expect(event.data.manifest_available).toBe(false);
+  });
+});
+
 describe('FlowHistory: one terminal record and one flow-finished event per detached flow', () => {
   it('publishes the event once and stores the terminal record', async () => {
     const { history, published } = subject();
@@ -166,7 +226,7 @@ describe('FlowHistory: one terminal record and one flow-finished event per detac
     await history.persistLaunch(r);
     history.recordFinished(r, COMPLETED, 2_000);
     await drain();
-    expect(published.map((p) => p.record.flowId)).toEqual(['d']);
+    expect(published.map((p) => p.event.data.flow_id)).toEqual(['d']);
     expect(await history.record('d')).toMatchObject({ state: 'completed', endedAt: 2_000 });
     // A synchronous run gets neither.
     history.recordFinished(run('fg'), COMPLETED, 2_000);
@@ -188,7 +248,7 @@ describe('FlowHistory: one terminal record and one flow-finished event per detac
     await drain();
     await history.flushPendingEvents(7);
     await drain();
-    expect(published.map((p) => p.record.flowId)).toEqual(['d']);
+    expect(published.map((p) => p.event.data.flow_id)).toEqual(['d']);
     expect((await history.record('d'))?.eventPending).toBeUndefined();
   });
 
@@ -214,7 +274,7 @@ describe('FlowHistory: worker restart', () => {
       history: before.historyStore,
       detached: before.detachedStore,
       clock: createManualClock(20_000),
-      publish: () => true,
+      events: { emit: () => true },
       onRecordLost: () => undefined,
     });
     await after.recover();

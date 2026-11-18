@@ -6,7 +6,7 @@
 // `support/` at these. Slice 9 added the values the page driver and
 // `PageInfo` speak (design revision 7), below `ObserverMark`.
 
-import type { SettleChanges } from '../../shared/index.js';
+import type { BridgeEventMessage, SettleChanges } from '../../shared/index.js';
 
 export interface SettleParams {
   settleMs: number;
@@ -280,3 +280,8 @@ export interface DetachedFlowRecord {
    * on that tab's next registration. */
   eventPending?: true;
 }
+
+/** One event the core emits (`EventsOut`): the shared protocol's
+ * `bridge.event` frame without its `kind` and its server tab id, which the
+ * transport adds (slice 21c). */
+export type BridgeEventPayload = Pick<BridgeEventMessage, 'eventKind' | 'data'>;

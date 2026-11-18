@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_REGISTRY } from '@browser-link/core';
 
 /** Lowered by every slice that moves code out; never raised without arch sign-off. */
-const BACKGROUND_LINE_BUDGET = 598;
+const BACKGROUND_LINE_BUDGET = 536;
 
 /** Scripts of the three HTML pages, and the module only they import. */
 const UI_ZONE = ['popup.ts', 'activity.ts', 'admin.ts', 'ui-language.ts'];

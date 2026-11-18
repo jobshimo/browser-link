@@ -188,7 +188,7 @@ describe('flow storage format: the same keys and values as 1.4.22', () => {
       history: chromeFlowHistoryStore,
       detached: chromeDetachedFlowStore,
       clock,
-      publish: () => true,
+      events: { emit: () => true },
       onRecordLost: () => undefined,
     });
     session.set('flow-history:7', [historyAsStored[1]]);

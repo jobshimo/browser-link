@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest';
 import {
   createManualClock,
   createMemoryCdpSession,
+  createMemoryEventsOut,
   createMemoryPageInfo,
   defineCdpSessionContract,
+  defineEventsOutContract,
   definePageInfoContract,
   type CdpSessionHarness,
+  type EventsOutHarness,
   type ContractCase,
   type PageInfoHarness,
 } from './index.js';
@@ -66,6 +69,46 @@ describe('CdpSession contract: in-memory fake', () => {
 
 describe('PageInfo contract: in-memory fake', () => {
   run(definePageInfoContract(fakePage));
+});
+
+function fakeEventsOut(
+  wrap: (e: EventsOutHarness['events']) => EventsOutHarness['events'] = (e) => e,
+): EventsOutHarness {
+  const events = createMemoryEventsOut();
+  let next = 0;
+  const tab = (open: boolean) => {
+    const tabId = ++next;
+    events.setOpen(tabId, open);
+    return { tabId, received: () => events.received(tabId) };
+  };
+  return { events: wrap(events), openTab: () => tab(true), closedTab: () => tab(false) };
+}
+
+describe('EventsOut contract: in-memory fake', () => {
+  run(defineEventsOutContract(() => fakeEventsOut()));
+});
+
+describe('EventsOut contract: RED probes', () => {
+  it('fails a subject that answers true for a closed tab', async () => {
+    const [, contractCase] = defineEventsOutContract(() =>
+      fakeEventsOut((e) => ({ emit: (tabId, ev) => (e.emit(tabId, ev), true) })),
+    );
+    await expect(contractCase!.run()).rejects.toThrow(/emit answer/);
+  });
+
+  it('fails a subject that drops the data of an event', async () => {
+    const [contractCase] = defineEventsOutContract(() =>
+      fakeEventsOut((e) => ({ emit: (tabId, ev) => e.emit(tabId, { ...ev, data: {} }) })),
+    );
+    await expect(contractCase!.run()).rejects.toThrow(/events received/);
+  });
+
+  it('fails a subject that reports a delivered event as not sent', async () => {
+    const [contractCase] = defineEventsOutContract(() =>
+      fakeEventsOut((e) => ({ emit: (tabId, ev) => (e.emit(tabId, ev), false) })),
+    );
+    await expect(contractCase!.run()).rejects.toThrow(/emit answers/);
+  });
 });
 
 describe('the contracts catch a broken subject (RED probes)', () => {

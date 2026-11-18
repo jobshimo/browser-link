@@ -12,13 +12,23 @@
 // `chrome.storage.local.remove` (design revision 13); every window, tab and
 // key a case creates is removed in a `finally`, on failure too, which
 // `browserLinkContract({ probe: true })` lets the e2e check.
+// The `EventsOut` contract (core, slice 21c) runs against
+// `adapters/ws-events-out.ts` over a registry of the run's own with stand-in
+// sockets; it creates nothing in the browser.
 
 import { chromeAlarms } from '../src/adapters/chrome-alarms.js';
 import { chromeRuntime } from '../src/adapters/chrome-runtime.js';
 import { chromeTabEvents } from '../src/adapters/chrome-tab-events.js';
 import { chromeWindows } from '../src/adapters/chrome-windows.js';
 import { chromeSettings } from '../src/adapters/chrome-settings.js';
-import type { ContractCase } from '@browser-link/core';
+import {
+  defineEventsOutContract,
+  TabRegistry,
+  type BridgeEventPayload,
+  type ContractCase,
+} from '@browser-link/core';
+import { createWsEventsOut } from '../src/adapters/ws-events-out.js';
+import type { BridgeSocket, TabConnection } from '../src/app/tab-connection.js';
 import { defineAlarmsContract } from './alarms.contract.js';
 import { defineRuntimeContract } from './runtime.contract.js';
 import { defineSettingsContract } from './settings.contract.js';
@@ -62,6 +72,37 @@ async function openTab(url: string): Promise<OpenedTab> {
   };
 }
 
+/** `EventsOut` over a registry of this run's own: each tab's socket is a
+ * stand-in that keeps the frames sent on it (`readyState` 1 open, 3 closed),
+ * so nothing is created in the browser and nothing needs removing. */
+function eventsOutHarness() {
+  const tabs = new TabRegistry<TabConnection>();
+  let next = 0;
+  const tab = (readyState: number) => {
+    const tabId = --next;
+    const frames: { eventKind: string; data: Record<string, unknown> }[] = [];
+    const ws = {
+      readyState,
+      send: (data: string) => {
+        frames.push(JSON.parse(data) as { eventKind: string; data: Record<string, unknown> });
+      },
+    } as unknown as BridgeSocket;
+    const reservation = tabs.reserve(tabId);
+    if (!reservation) throw new Error(`tab ${String(tabId)} already reserved`);
+    tabs.commit(reservation, { tabId, ws, serverTabId: 'contract' } as unknown as TabConnection);
+    return {
+      tabId,
+      received: (): BridgeEventPayload[] =>
+        frames.map((f) => ({ eventKind: f.eventKind, data: f.data })),
+    };
+  };
+  return {
+    events: createWsEventsOut(tabs),
+    openTab: () => tab(1),
+    closedTab: () => tab(3),
+  };
+}
+
 /** The error a teardown probe forces right after a case created what it must remove. */
 const PROBE_FAILURE = 'teardown probe: forced failure';
 
@@ -101,6 +142,7 @@ function contractCases(probe: boolean): ContractCase[] {
       attachDebugger: probe ? forcedFailure : (tabId) => chrome.debugger.attach({ tabId }, '1.3'),
       until: until('tab reports'),
     })),
+    ...(probe ? [] : defineEventsOutContract(eventsOutHarness)),
     ...defineSettingsContract(() => ({
       storage: chromeSettings,
       runId: () => crypto.randomUUID(),
