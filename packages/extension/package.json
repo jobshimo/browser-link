@@ -1,10 +1,11 @@
 {
   "name": "@browser-link/extension",
-  "version": "1.4.27",
+  "version": "1.4.28",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node build.mjs && node copy-assets.mjs",
-    "typecheck": "tsc --noEmit",
+    "build:contract": "node contract/build.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p contract",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "generate:icons": "node scripts/generate-icons.mjs",
     "test": "vitest run",

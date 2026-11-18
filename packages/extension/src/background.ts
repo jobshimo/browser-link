@@ -1,12 +1,6 @@
 import type {
-  ActivityPurgeResultMessage,
-  AdminActionResultMessage,
   AdminRequestLanguage,
-  AdminStateMessage,
-  ActivityResultMessage,
-  BridgeRepairResultMessage,
   ExtensionToServer,
-  ServerToExtension,
   ToolRequestMessage,
 } from '@browser-link/shared';
 import {
@@ -16,6 +10,7 @@ import {
   idleTabs,
   sessionCaptureWatch,
   sessionDialogWatch,
+  PendingReplies,
   TabRegistry,
   type TabReservation,
   TabSession,
@@ -36,7 +31,7 @@ import {
   type FlowHistoryEntry,
   type RunningFlowView,
 } from '@browser-link/core';
-import { docInfoEvent, pendingDocInfoEvent } from './doc-info-event.js';
+import { docInfoEvent } from './doc-info-event.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createChromeCdpSession } from './adapters/chrome-cdp-session.js';
 import { createChromePageInfo } from './adapters/chrome-page-info.js';
@@ -45,6 +40,8 @@ import { createChromeDownloads } from './adapters/chrome-downloads.js';
 import { chromeFlowHistoryStore } from './adapters/chrome-flow-history-store.js';
 import { chromeDetachedFlowStore } from './adapters/chrome-detached-flow-store.js';
 import { chromeTabTitle } from './adapters/chrome-tab-title.js';
+import { chromeAlarms } from './adapters/chrome-alarms.js';
+import { openWebSocket } from './adapters/web-socket.js';
 import {
   closeTabConnection,
   commitConnection,
@@ -54,9 +51,24 @@ import {
   registeredSocket,
   send,
   sendBridgeEvent,
+  SOCKET_OPEN,
+  type BridgeSocket,
   type TabConnection,
   type TabEventListener,
 } from './app/tab-connection.js';
+import {
+  anyOpenSocket,
+  createReconnect,
+  createTabIds,
+  disconnectTab,
+  openBridge,
+  roundTrip,
+  tabStatus,
+  type ActivityReply,
+  type AdminReply,
+  type BridgeReplies,
+  type ConnectResult,
+} from './app/connection.js';
 import { createExtensionFlowControl } from './app/flow-control.js';
 import { createDownloadCapture } from './download-capture.js';
 import {
@@ -84,28 +96,18 @@ import {
   isNavigationForRecording,
   isSameRecordingSession,
 } from './recording.js';
-import {
-  ALARM_MIN_DELAY_MS,
-  CONNECT_IN_PROGRESS_ERROR,
-  createReconnectScheduler,
-  isInvoluntaryClose,
-  planResume,
-  reconnectStorageKey,
-  tabIdFromReconnectKey,
-} from './reconnect-policy.js';
+import { CONNECT_IN_PROGRESS_ERROR } from './reconnect-policy.js';
 import {
   REPAIR_TIMEOUT_MS,
   describeReconnectResults,
   describeRepairReply,
   planRepair,
-  prevTabIdKey,
   rememberedTabIds,
   repairOutcome,
   type RepairOutcome,
 } from './repair-policy.js';
 import { workerFailure } from './worker-messages.js';
 import { diagnoseConnectFailure, HANDSHAKE_CHECK_PATH } from './handshake-diagnosis.js';
-import { createConnectFailureTracker } from './connect-failure-policy.js';
 import { computeVersionCheck, type VersionCheck } from './version-status.js';
 
 /** Copy of `@browser-link/shared`'s BRIDGE_PORT: the extension is compiled
@@ -162,7 +164,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 /**
  * Apply an incoming `settings.update` push from the server (see
- * `handleTool`'s caller — the WS message listener in `connectTab` below).
+ * the server-message switch of `app/connection.ts` `openBridge`).
  * The server sends this both right after `tab.registered` (when
  * `browser-link config set idle-ttl` was run at least once) AND on demand
  * when the CLI pushes a change to an already-connected tab.
@@ -240,21 +242,6 @@ async function applyIncomingFlowRecordingSettings(
   } catch {
     // Best effort — same degrade-gracefully rule as applyIncomingSettings.
   }
-}
-
-interface ConnectResult {
-  ok: boolean;
-  error?: string;
-  serverTabId?: string;
-}
-
-interface StatusResult {
-  connected: boolean;
-  serverTabId?: string;
-  /** Present (true) only while the auto-reconnect scheduler has a retry
-   * pending for this tab — lets the popup show "Reconnecting" instead of
-   * a flat "Not connected" that would misrepresent the in-flight retry. */
-  reconnecting?: boolean;
 }
 
 // Runtime messages between popup.ts and this script.
@@ -339,38 +326,13 @@ function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
 
 const tabConnections = new TabRegistry<TabConnection>();
 
-/**
- * In-flight `activity.query` frames, keyed by request id.
- *
- * The Activity window can have several reads outstanding — an initial page, a
- * tail poll, a filter change the user made while the tail was in the air — so
- * unlike `saveRecording`'s single slot these must be correlated. A reply whose
- * id is no longer here is a superseded or timed-out query and is dropped.
- */
-type ActivityReply = ActivityResultMessage | ActivityPurgeResultMessage;
-
-const pendingActivityQueries = new Map<string, (result: ActivityReply) => void>();
-
-/**
- * Hand a reply to whichever caller is waiting on it, and free the slot.
- *
- * `requestId` arrives off the socket, so this validates before dispatching.
- * A `Map` lookup is already prototype-safe — unlike a plain-object lookup it
- * returns ONLY what this module stored, so an id of `__proto__` or `toString`
- * resolves to `undefined` rather than to a built-in method — but the explicit
- * `typeof` check is what makes "we never call something we did not put here"
- * a property of the code rather than a property of the reader's memory.
- *
- * An id that is no longer in the map is a superseded or timed-out request.
- * Dropping it is correct: its promise already settled with a timeout, and
- * resolving it twice would be worse than ignoring the late arrival.
- */
-function settleActivityRequest(requestId: string, reply: ActivityReply): void {
-  const pending = pendingActivityQueries.get(requestId);
-  if (typeof pending !== 'function') return;
-  pendingActivityQueries.delete(requestId);
-  pending(reply);
-}
+/** The in-flight Activity, Admin and Repair round trips, by request id
+ * (core `PendingReplies`; `app/connection.ts` `BridgeReplies`). */
+const replies: BridgeReplies = {
+  activity: new PendingReplies(systemClock),
+  admin: new PendingReplies(systemClock),
+  repair: new PendingReplies(systemClock),
+};
 
 /** How long a trail READ waits before giving up. Short: this is a local
  * SQLite read over a loopback socket. If it has not answered in two seconds
@@ -397,26 +359,16 @@ async function activityRoundTrip(
   frame: (requestId: string) => ExtensionToServer,
   timeoutMs: number,
 ): Promise<ActivityReply> {
-  // Narrow to the socket itself rather than the state that holds it, so the
-  // send below needs no non-null assertion to prove what the find already did.
-  const socket = [...tabConnections.values()]
-    .map((s) => s.ws)
-    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  const socket = anyOpenSocket(tabConnections);
   if (!socket) {
     return { kind: 'activity.result', request_id: '', ok: false, error: 'not-connected' };
   }
-  const requestId = crypto.randomUUID();
-  return new Promise<ActivityReply>((resolve) => {
-    const timer = setTimeout(() => {
-      pendingActivityQueries.delete(requestId);
-      resolve({ kind: 'activity.result', request_id: requestId, ok: false, error: 'timeout' });
-    }, timeoutMs);
-    pendingActivityQueries.set(requestId, (result) => {
-      clearTimeout(timer);
-      resolve(result);
-    });
-    send(socket, frame(requestId));
-  });
+  return roundTrip(replies.activity, socket, frame, timeoutMs, (request_id) => ({
+    kind: 'activity.result',
+    request_id,
+    ok: false,
+    error: 'timeout',
+  }));
 }
 
 function queryActivity(query: Record<string, unknown>): Promise<ActivityReply> {
@@ -444,24 +396,6 @@ function purgeActivity(input: {
   );
 }
 
-/**
- * In-flight `admin.describe` / `admin.action` frames, keyed by request id.
- * Same correlation as the activity trail: the popup re-describes after every
- * applied action, so a late reply to a superseded request must be droppable.
- */
-type AdminReply = AdminStateMessage | AdminActionResultMessage;
-
-const pendingAdminRequests = new Map<string, (reply: AdminReply) => void>();
-
-/** Settle one admin reply; an unknown or timed-out id is dropped (see
- * `settleActivityRequest` for why). */
-function settleAdminRequest(requestId: string, reply: AdminReply): void {
-  const pending = pendingAdminRequests.get(requestId);
-  if (typeof pending !== 'function') return;
-  pendingAdminRequests.delete(requestId);
-  pending(reply);
-}
-
 /** Describing and most actions are local config reads and writes. */
 const ADMIN_TIMEOUT_MS = 5_000;
 /** `doctor` probes ports and processes server-side and is slow by nature. */
@@ -478,22 +412,11 @@ async function adminRoundTrip(
   timeoutMs: number,
   onFailure: (requestId: string, error: string) => AdminReply,
 ): Promise<AdminReply> {
-  const socket = [...tabConnections.values()]
-    .map((s) => s.ws)
-    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  const socket = anyOpenSocket(tabConnections);
   if (!socket) return onFailure('', 'not-connected');
-  const requestId = crypto.randomUUID();
-  return new Promise<AdminReply>((resolve) => {
-    const timer = setTimeout(() => {
-      pendingAdminRequests.delete(requestId);
-      resolve(onFailure(requestId, 'timeout'));
-    }, timeoutMs);
-    pendingAdminRequests.set(requestId, (reply) => {
-      clearTimeout(timer);
-      resolve(reply);
-    });
-    send(socket, frame(requestId));
-  });
+  return roundTrip(replies.admin, socket, frame, timeoutMs, (requestId) =>
+    onFailure(requestId, 'timeout'),
+  );
 }
 
 /** The window's language when it is one the server speaks; otherwise
@@ -655,14 +578,6 @@ const recordingNavListeners = new Map<
   Parameters<typeof chrome.tabs.onUpdated.addListener>[0]
 >();
 
-function safeParse(raw: string): ServerToExtension | null {
-  try {
-    return JSON.parse(raw) as ServerToExtension;
-  } catch {
-    return null;
-  }
-}
-
 /** A page driver over a tab's `chrome.debugger` session, whose events come
  * from `listeners`. */
 function newPageDriver(tabId: number, listeners: Set<TabEventListener>): PageDriverHandle {
@@ -804,7 +719,7 @@ async function reportTopDocument(
  * business in a 200-entry ring buffer. */
 function publishFlowFinished(tabId: number, record: DetachedFlowRecord): boolean {
   const state = tabConnections.get(tabId);
-  if (!state?.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+  if (!state?.ws || state.ws.readyState !== SOCKET_OPEN) return false;
   send(state.ws, {
     kind: 'bridge.event',
     eventKind: 'flow-finished',
@@ -879,163 +794,27 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   deliverCdpEvent(tabConnections.get(source.tabId), method, params);
 });
 
-/**
- * Look up the previous browser-link tab_id this Chrome tab had, if any.
- * Stored in chrome.storage.session (cleared when the browser restarts).
- * Used to ask the primary to keep the same tab_id across primary swaps
- * — a key piece of the v0.4 multi-agent UX so the agent does not see
- * stale tab_ids after a re-election.
- */
-async function readPreviousTabId(chromeTabId: number): Promise<string | undefined> {
-  const key = prevTabIdKey(chromeTabId);
-  try {
-    const data = await chrome.storage.session.get(key);
-    const v = data[key];
-    return typeof v === 'string' ? v : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/** The browser-link tab_id each Chrome tab had (`app/connection.ts` `TabIds`). */
+const tabIds = createTabIds(chrome.storage.session);
 
-async function storeTabId(chromeTabId: number, serverTabId: string): Promise<void> {
-  const key = prevTabIdKey(chromeTabId);
-  try {
-    await chrome.storage.session.set({ [key]: serverTabId });
-  } catch {
-    /* storage failure is non-fatal — worst case the next reconnect gets a fresh id */
-  }
-}
-
-async function forgetTabId(chromeTabId: number): Promise<void> {
-  const key = prevTabIdKey(chromeTabId);
-  try {
-    await chrome.storage.session.remove(key);
-  } catch {
-    /* ignore */
-  }
-}
-
-/* Auto-reconnect after an involuntary WS close (retried for up to 10 minutes).
- *
- * When a REGISTERED tab's WebSocket dies under us (unclean close — the
- * primary MCP server crashed or restarted), the scheduler below retries
- * `connectTab` with per-tab backoff (see RECONNECT_DELAYS_MS in
- * reconnect-policy.ts), reusing the preserved `prevTabId:*` id so the new
- * primary can keep the same tab_id (or emit `tab-renamed` if it can't —
- * existing contract, nothing new on the wire). Every EXTENSION-initiated
- * teardown (explicit disconnect, tab removal, idle park, debugger detach)
- * runs `cleanup` BEFORE the close event dispatches, so the close handler
- * sees an untracked socket and never schedules; a CLEAN close from the
- * server (browser.reset) is a deliberate goodbye and never schedules
- * either — the popup Connect button stays the fallback for both, as today.
- *
- * MV3 durability: each scheduled attempt is mirrored into
- * `chrome.storage.session` (`pendingReconnect:*`, right next to the
- * `prevTabId:*` keys). Plain timers cover the common case — the backoff
- * span sits inside the service worker's idle grace, and every attempt
- * touches chrome.* APIs which resets the idle clock — but if the worker is
- * killed anyway, `resumePendingReconnects` below picks the budget back up
- * on the next wake, and entries older than RECONNECT_STATE_TTL_MS are
- * discarded rather than surprising the user long after they moved on. A
- * `chrome.alarms` safety net (same key) wakes the worker for the long 30s
- * steps, and a resumed attempt waits only the time that was left. */
-async function storeReconnectState(tabId: number, attempt: number, delayMs: number): Promise<void> {
-  const now = Date.now();
-  const dueAt = now + delayMs;
-  try {
-    await chrome.storage.session.set({
-      [reconnectStorageKey(tabId)]: { attempt, updatedAt: now, dueAt },
-    });
-  } catch {
-    /* non-fatal — worst case a killed service worker cannot resume this retry */
-  }
-  // Safety net for the 30s plateau: Chrome may tear the worker down between
-  // attempts, and a plain timer dies with it. The alarm (keyed like the
-  // storage entry) wakes the worker, which resumes from storage. Re-creating
-  // an alarm with the same name replaces it, so each arm moves it forward.
-  try {
-    await chrome.alarms.create(reconnectStorageKey(tabId), {
-      when: Math.max(dueAt, now + ALARM_MIN_DELAY_MS),
-    });
-  } catch {
-    /* non-fatal — the in-worker timer still runs while the worker lives */
-  }
-}
-
-async function clearReconnectState(tabId: number): Promise<void> {
-  try {
-    await chrome.storage.session.remove(reconnectStorageKey(tabId));
-  } catch {
-    /* ignore */
-  }
-  try {
-    await chrome.alarms.clear(reconnectStorageKey(tabId));
-  } catch {
-    /* ignore */
-  }
-}
-
-const reconnectScheduler = createReconnectScheduler({
-  attempt: async (tabId) => {
-    try {
-      await chrome.tabs.get(tabId);
-    } catch {
-      // The Chrome tab itself is gone — nothing left to reconnect.
-      return 'stop';
-    }
-    const existing = tabConnections.get(tabId);
-    if (existing) {
-      // A live bridge already exists (e.g. the user pressed Connect while
-      // a retry was pending) — done. A state whose socket is not OPEN yet
-      // belongs to a connect attempt still mid-flight (cleanup deletes
-      // state synchronously, so it never lingers here); keep the backoff
-      // going instead of declaring victory early.
-      return existing.ws?.readyState === WebSocket.OPEN ? 'connected' : 'retry';
-    }
-    try {
-      const result = await connectTab(tabId);
-      return result.ok ? 'connected' : 'retry';
-    } catch {
-      return 'retry';
-    }
-  },
-  onStateChange: (tabId, state) => {
-    if (state) void storeReconnectState(tabId, state.attempt, state.delayMs);
-    else void clearReconnectState(tabId);
-  },
+/** The reconnect scheduler, its persisted state and the alarm safety net
+ * (`app/connection.ts` `createReconnect`). */
+const reconnect = createReconnect({
+  storage: chrome.storage.session,
+  alarms: chromeAlarms,
+  clock: systemClock,
+  tabs: tabConnections,
+  tabExists: (tabId) => chrome.tabs.get(tabId),
+  connect: (tabId) => connectTab(tabId),
 });
 
-/** Resume reconnect cycles a killed service worker left behind. Runs once
- * per worker start (top-level call below) — `chrome.storage.session`
- * survives worker restarts but not browser restarts, which is exactly the
- * lifetime the retry budget should have. */
-async function resumePendingReconnects(): Promise<void> {
-  // Take the cancellation epoch BEFORE the async read: a disconnect / manual
-  // Connect / tab removal landing while the get is in flight leaves the
-  // snapshot holding a stale entry, and planResume skips any tab cancelled
-  // since (see ReconnectScheduler.cancel, which also always clears storage).
-  const epoch = reconnectScheduler.epoch();
-  let stored: Record<string, unknown>;
-  try {
-    stored = await chrome.storage.session.get(null);
-  } catch {
-    return;
-  }
-  const plan = planResume(stored, Date.now(), {
-    isLive: (tabId) => tabConnections.has(tabId),
-    cancelledSince: (tabId) => reconnectScheduler.wasCancelledSince(tabId, epoch),
-  });
-  // Wait only what was left of the pending step (0 = due already).
-  for (const r of plan.resume) reconnectScheduler.schedule(r.tabId, r.attempt, r.delayMs);
-  for (const tabId of plan.discard) void clearReconnectState(tabId);
-}
-
-void resumePendingReconnects();
+// Resume the reconnect cycles a killed service worker left behind: once per
+// worker start.
+void reconnect.resume();
 // The alarm that wakes a sleeping worker mid-window. Registered at top level
-// (MV3 requires listeners to be added synchronously on worker start). Tabs
-// whose cycle is already live in this worker are skipped by `schedule`.
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (tabIdFromReconnectKey(alarm.name) !== null) void resumePendingReconnects();
+// (MV3 requires listeners to be added synchronously on worker start).
+chromeAlarms.onFire((name) => {
+  reconnect.onAlarm(name);
 });
 // Same worker-start slot, same rationale: `chrome.storage.session` outlives
 // the service worker but not the browser, which is exactly the lifetime a
@@ -1081,7 +860,7 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
     return workerFailure({ code: 'tab-no-url' });
   }
 
-  const previousTabId = await readPreviousTabId(tabId);
+  const previousTabId = await tabIds.previous(tabId);
 
   try {
     await chrome.debugger.attach({ tabId }, CDP_VERSION);
@@ -1125,229 +904,39 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
   });
   if (!installed.ok) console.warn('browser-link: page observer not installed', installed.error);
 
-  const ws = new WebSocket(WS_URL);
-  state.ws = ws;
-
-  // Capture the fields we'll send over the wire NOW that we've already
-  // null-checked them above. This avoids `!` non-null assertions in the
-  // event handler closure where TS can't re-prove the narrowing.
-  const registerUrl = tab.url;
-  const registerTitle = tab.title;
-
-  return new Promise<ConnectResult>((resolve) => {
-    let settled = false;
-    const settle = (result: ConnectResult): void => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-
-    ws.addEventListener('open', () => {
-      send(ws, {
-        kind: 'tab.register',
-        payload: {
-          url: registerUrl,
-          title: registerTitle,
-          previousTabId,
-          extensionVersion: chrome.runtime.getManifest().version,
-        },
-      });
-    });
-
-    ws.addEventListener('message', (ev: MessageEvent) => {
-      void (async () => {
-        const msg = safeParse(typeof ev.data === 'string' ? ev.data : '');
-        if (!msg) return;
-        // Exhaustive routing over ServerToExtension. The `default` branch
-        // pins `msg` to `never`, so adding a fourth message kind to the
-        // union fails to COMPILE here instead of silently misrouting the
-        // new kind into the tool.request handler.
-        switch (msg.kind) {
-          case 'tab.registered': {
-            // A successful registration ends any reconnect cycle for this
-            // tab. Covers the resume path re-arming a tab the user just
-            // connected manually (resumePendingReconnects's tabConnections
-            // check races connectTab); when the SCHEDULER drove this very
-            // connect, its in-flight guard makes this cancel a clean,
-            // notify-once end of the cycle.
-            reconnectScheduler.cancel(tabId);
-            state.serverTabId = msg.payload.tabId;
-            // serverVersion is optional on the wire so older servers that
-            // predate the field still parse — narrow on `typeof string`.
-            if (typeof msg.payload.serverVersion === 'string') {
-              state.serverVersion = msg.payload.serverVersion;
-            }
-            // Same narrowing for the 0.41.0 fields.
-            if (typeof msg.payload.installedVersion === 'string') {
-              state.installedVersion = msg.payload.installedVersion;
-            }
-            if (typeof msg.payload.serverPid === 'number') {
-              state.serverPid = msg.payload.serverPid;
-            }
-            // Remember this id so the next reconnect (after a primary swap)
-            // asks the new primary to honour it. The primary emits
-            // `tab-renamed` in the bridge event log if it can't.
-            void storeTabId(tabId, msg.payload.tabId);
-            // First moment there is a socket to send them on: deliver the
-            // summary events of any detached flow that ended while this
-            // tab was disconnected, including everything the worker was
-            // killed under.
-            void flowHistory.flushPendingEvents(tabId);
-            // A fingerprint the observer pushed before this registration.
-            const docInfo = pendingDocInfoEvent(state.session.driver.observer, msg.payload.tabId);
-            if (docInfo) send(ws, docInfo);
-            settle({ ok: true, serverTabId: msg.payload.tabId });
-            return;
-          }
-          case 'settings.update': {
-            // Housekeeping, not agent activity — deliberately does NOT touch
-            // the session's activity. Counting a server-pushed settings sync as
-            // "activity" would let it silently keep an otherwise-idle tab
-            // connected forever, defeating the idle TTL it is updating.
-            //
-            // `safeParse` is only a cast — validate the payload shape at the
-            // wire boundary (same rigor the IPC settings.push frame gets in
-            // the server's protocol.ts) so a malformed push is dropped here
-            // instead of throwing inside the apply path.
-            const settings = parseIncomingSettings(msg.settings);
-            if (settings) void applyIncomingSettings(settings);
-            const flowRecordingSettings = parseIncomingFlowRecordingSettings(msg.settings);
-            if (flowRecordingSettings)
-              void applyIncomingFlowRecordingSettings(flowRecordingSettings);
-            return;
-          }
-          case 'flow.recorded.result': {
-            // Not agent/tool activity either — same rationale as
-            // settings.update just above.
-            const pending = state.pendingFlowSave;
-            if (!pending) return;
-            if (msg.ok) pending({ ok: true });
-            else pending({ ok: false, error: msg.error });
-            return;
-          }
-          case 'tool.request': {
-            // The request is activity, the call holds the idle clock while it
-            // runs, and its reply is activity too (BL-EXT-098).
-            const response = await state.session.runCall(() => handleTool(state, msg));
-            if (ws.readyState === WebSocket.OPEN) send(ws, response);
-            return;
-          }
-          case 'tool.cancel': {
-            // Deliberately answered with SILENCE: the cancelled flow is
-            // still parked in its own tool.request and replies there,
-            // cleanly, with stopped_by:'cancelled' and its partial
-            // results. An unknown or already-finished flow_id is a no-op —
-            // the caller wanted the flow not running, and it is not.
-            //
-            // Counts as activity: an agent reaching for the kill switch is
-            // very much using this tab, and letting the idle sweeper close
-            // the bridge underneath it would be perverse.
-            state.session.touch();
-            flowRegistry.cancel(msg.flow_id, msg.reason === 'expired' ? 'expired' : undefined);
-            return;
-          }
-          // Both activity replies settle the same way — a purge is just a
-          // request that happens to change something. Deliberately NOT counted
-          // as tab activity: the human reading the trail is not using the tab,
-          // and refreshing a panel must never be what keeps an idle bridge
-          // alive.
-          case 'activity.purge.result':
-          case 'activity.result': {
-            settleActivityRequest(msg.request_id, msg);
-            return;
-          }
-          // Not tab activity either: only the popup's Admin section waits on it.
-          case 'admin.state':
-          case 'admin.action.result': {
-            settleAdminRequest(msg.request_id, msg);
-            return;
-          }
-          case 'bridge.repair.result': {
-            // Not tab activity: the popup's Repair button is waiting on it.
-            settleRepairRequest(msg);
-            return;
-          }
-          default: {
-            // Compile-time exhaustiveness check; at runtime an unknown kind
-            // (newer server, older extension) is ignored defensively.
-            const _exhaustive: never = msg;
-            return;
-          }
-        }
-      })();
-    });
-
-    // A WebSocket 'error' is always followed by a 'close', so teardown
-    // lives in the close handler alone; settling a pre-registration connect
-    // failure (with the bridge's diagnosis after an error) is
-    // connect-failure-policy.ts's.
-    const connectFailure = createConnectFailureTracker({
-      isSettled: () => settled,
-      settle: (message) => {
-        settle(workerFailure(message));
-      },
-      diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
-    });
-    ws.addEventListener('error', () => {
-      connectFailure.onError();
-    });
-
-    ws.addEventListener('close', (ev: CloseEvent) => {
-      const current = tabConnections.get(tabId);
-      if (current !== undefined && current.ws !== ws) {
-        // A newer connection already owns this tab — this close belongs to
-        // a superseded socket, and tearing state down here would kill the
-        // NEW bridge rather than the one that just died.
-        settle(workerFailure({ code: 'ws-closed-before-registration' }));
-        return;
-      }
-      // Decide BEFORE cleanup wipes the evidence: an unclean close of a
-      // still-tracked, registered connection means the server died under
-      // us — the one case the auto-reconnect scheduler exists for. See
-      // the reconnect section doc above storeReconnectState for why every
-      // other close (explicit disconnect, tab removal, idle park,
-      // browser.reset's clean goodbye) falls out of this predicate.
-      const involuntary = isInvoluntaryClose({
-        tracked: current?.ws === ws,
-        registered: current?.serverTabId !== undefined,
-        wasClean: ev.wasClean,
-      });
-      void cleanup(tabId).catch(() => {
-        // Best effort — already-detached state is fine.
-      });
-      connectFailure.onClose();
-      if (involuntary) reconnectScheduler.schedule(tabId);
-    });
+  return openBridge({
+    tabs: tabConnections,
+    state,
+    openSocket: openWebSocket,
+    url: WS_URL,
+    // Captured now that they were null-checked above.
+    register: {
+      url: tab.url,
+      title: tab.title,
+      previousTabId,
+      extensionVersion: chrome.runtime.getManifest().version,
+    },
+    tabIds,
+    scheduler: reconnect.scheduler,
+    replies,
+    flushPendingEvents: (id) => void flowHistory.flushPendingEvents(id),
+    applySettings,
+    handleTool: (msg) => handleTool(state, msg),
+    cancelFlow: (flowId, reason) => flowRegistry.cancel(flowId, reason),
+    cleanup,
+    diagnose: () => diagnoseConnectFailure(HANDSHAKE_CHECK_URL),
   });
 }
 
-async function disconnectTab(tabId: number): Promise<{ ok: boolean }> {
-  // Explicit user intent beats any pending auto-reconnect — cancel it
-  // first so a scheduled retry cannot resurrect the bridge right after
-  // the user asked for it to go away.
-  reconnectScheduler.cancel(tabId);
-  await cleanup(tabId);
-  // Explicit user-driven disconnect → forget the previous tab id so the
-  // next "Connect" starts from a clean slate (vs. an involuntary
-  // reconnect where we WANT to keep the id for continuity).
-  await forgetTabId(tabId);
-  return { ok: true };
-}
-
-function getTabStatus(tabId: number): StatusResult {
-  const state = tabConnections.get(tabId);
-  if (!state) {
-    // Keep the popup truthful while auto-reconnect is working: "not
-    // connected, but actively retrying" rather than a flat idle state.
-    // The registry's reservation covers the short gap inside a live attempt
-    // before its connection lands — without it the popup's poll could
-    // misread that gap as idle and freeze the card there.
-    if (reconnectScheduler.isPending(tabId) || tabConnections.isReservedOrLive(tabId)) {
-      return { connected: false, reconnecting: true };
-    }
-    return { connected: false };
-  }
-  return { connected: true, serverTabId: state.serverTabId };
+/** A `settings.update` push. The frame is only cast (`app/connection.ts`), so
+ * each payload is validated at the wire boundary (same rigor the IPC
+ * settings.push frame gets in the server's protocol.ts): a malformed push
+ * is dropped here instead of throwing inside the apply path. */
+function applySettings(pushed: unknown): void {
+  const settings = parseIncomingSettings(pushed);
+  if (settings) void applyIncomingSettings(settings);
+  const flowRecordingSettings = parseIncomingFlowRecordingSettings(pushed);
+  if (flowRecordingSettings) void applyIncomingFlowRecordingSettings(flowRecordingSettings);
 }
 
 /**
@@ -1377,17 +966,6 @@ function getVersionCheck(): VersionCheck {
 /* "Repair connection" (popup button). The decision lives in repair-policy.ts;
  * this is the thin wiring that gathers its inputs and carries out the step. */
 
-/** The one in-flight `bridge.repair`, keyed by request id. A late or unknown
- * reply is dropped, same rule as `settleActivityRequest`. */
-const pendingRepairs = new Map<string, (reply: BridgeRepairResultMessage) => void>();
-
-function settleRepairRequest(reply: BridgeRepairResultMessage): void {
-  const pending = pendingRepairs.get(reply.request_id);
-  if (typeof pending !== 'function') return;
-  pendingRepairs.delete(reply.request_id);
-  pending(reply);
-}
-
 async function readRememberedTabIds(): Promise<number[]> {
   try {
     return rememberedTabIds(await chrome.storage.session.get(null));
@@ -1399,25 +977,18 @@ async function readRememberedTabIds(): Promise<number[]> {
 /** Send `bridge.repair` on one open socket and wait for the answer. On
  * success the server drops every socket uncleanly and the existing
  * auto-reconnect scheduler brings the tabs back; nothing else to do here. */
-function askServerRestart(socket: WebSocket): Promise<RepairOutcome> {
-  const requestId = crypto.randomUUID();
-  return new Promise<RepairOutcome>((resolve) => {
-    const timer = setTimeout(() => {
-      pendingRepairs.delete(requestId);
-      resolve(describeRepairReply('timeout'));
-    }, REPAIR_TIMEOUT_MS);
-    pendingRepairs.set(requestId, (reply) => {
-      clearTimeout(timer);
-      resolve(describeRepairReply(reply));
-    });
-    send(socket, { kind: 'bridge.repair', request_id: requestId });
-  });
+function askServerRestart(socket: BridgeSocket): Promise<RepairOutcome> {
+  return roundTrip(
+    replies.repair,
+    socket,
+    (request_id) => ({ kind: 'bridge.repair', request_id }),
+    REPAIR_TIMEOUT_MS,
+    () => 'timeout' as const,
+  ).then(describeRepairReply);
 }
 
 async function repairConnection(): Promise<RepairOutcome> {
-  const socket = [...tabConnections.values()]
-    .map((s) => s.ws)
-    .find((ws): ws is WebSocket => ws !== undefined && ws.readyState === WebSocket.OPEN);
+  const socket = anyOpenSocket(tabConnections);
   const plan = planRepair({
     connected: socket !== undefined,
     serverVersion: getVersionCheck().server,
@@ -1435,7 +1006,7 @@ async function repairConnection(): Promise<RepairOutcome> {
       // turns a race with an in-flight retry into a benign result.
       const results = await Promise.all(
         plan.tabIds.map(async (tabId) => {
-          reconnectScheduler.cancel(tabId);
+          reconnect.scheduler.cancel(tabId);
           try {
             return await connectTab(tabId);
           } catch {
@@ -1741,7 +1312,7 @@ async function saveRecording(
   if (!state || !recording || recording.status !== 'reviewing') {
     return workerFailure({ code: 'no-reviewed-recording' });
   }
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.serverTabId) {
+  if (!state.ws || state.ws.readyState !== SOCKET_OPEN || !state.serverTabId) {
     return workerFailure({ code: 'server-not-connected' });
   }
   const trimmedName = name.trim();
@@ -1826,12 +1397,14 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     // cannot abort it), connectTab's per-tab in-flight lock turns this
     // call into a benign "already in progress" result instead of a
     // second concurrent connect.
-    reconnectScheduler.cancel(msg.tabId);
+    reconnect.scheduler.cancel(msg.tabId);
     void connectTab(msg.tabId).then(sendResponse);
     return true;
   }
   if (msg.action === 'disconnect') {
-    void disconnectTab(msg.tabId).then(sendResponse);
+    void disconnectTab(msg.tabId, { scheduler: reconnect.scheduler, cleanup, tabIds }).then(
+      sendResponse,
+    );
     return true;
   }
   if (msg.action === 'pendingDialog') {
@@ -1910,18 +1483,18 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
     return false;
   }
   // 'status'
-  sendResponse(getTabStatus(msg.tabId));
+  sendResponse(tabStatus(tabConnections, reconnect.scheduler, msg.tabId));
   return false;
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   // No tab, no reconnect — abort any pending retry cycle for it.
-  reconnectScheduler.cancel(tabId);
+  reconnect.scheduler.cancel(tabId);
   void cleanup(tabId).catch(() => {
     // Best effort.
   });
   // The Chrome tab is gone — drop any cached browser-link id for it.
-  void forgetTabId(tabId);
+  void tabIds.forget(tabId);
   // …and its flow history. Chrome reuses tab ids within a session, so a
   // stale key would eventually show one tab's flows under another's;
   // `cleanup` above only ASKS the tab's flows to stop, so the drop also
@@ -1980,7 +1553,7 @@ chrome.tabs.onCreated.addListener((tab) => {
       const result = await connectTab(newTabId);
       if (!result.ok || !result.serverTabId) return;
       const newState = tabConnections.get(newTabId);
-      if (!newState?.ws || newState.ws.readyState !== WebSocket.OPEN) return;
+      if (!newState?.ws || newState.ws.readyState !== SOCKET_OPEN) return;
       let resolvedUrl = '';
       try {
         const settled = await chrome.tabs.get(newTabId);

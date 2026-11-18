@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   adapterCoverageSummary,
   adapterRegions,
+  adapterSourceMismatches,
   uncalledAdapterFunctions,
 } from './adapter-coverage.mjs';
 
@@ -151,5 +152,116 @@ test('RED: an inner closure never called fails, though its method ran', () => {
   ];
   assert.deepEqual(uncalledAdapterFunctions(STORE_BUNDLE, coverage), [
     { file: 'src/adapters/chrome-store.ts', name: '(anonymous)', line: 5, calls: 0 },
+  ]);
+});
+
+// The shipped bundle (ESM) and the in-worker contract bundle (IIFE, markers
+// indented): `set` and `onFire` run only in the contract.
+const ALARMS_SOURCE = [
+  'var chromeAlarms = {',
+  '  set: async (name, when) => { await chrome.alarms.create(name, { when }); },',
+  '  clear: async (name) => { await chrome.alarms.clear(name); },',
+  '  onFire: (listener) => { chrome.alarms.onAlarm.addListener((alarm) => { listener(alarm.name); }); },',
+  '};',
+];
+const SHIPPED = [
+  '// src/adapters/chrome-alarms.ts',
+  ...ALARMS_SOURCE,
+  '// src/background.ts',
+  'chromeAlarms.onFire(() => {});',
+  '',
+].join('\n');
+const CONTRACT = [
+  '(() => {',
+  '  // src/adapters/chrome-alarms.ts',
+  ...ALARMS_SOURCE.map((line) => `  ${line}`),
+  '  // contract/entry.ts',
+  '  globalThis.run = () => {};',
+  '})();',
+  '',
+].join('\n');
+
+const covered = (bundle, calls) =>
+  Object.entries(calls).map(([snippet, count]) => {
+    const i = bundle.indexOf(snippet);
+    assert.ok(i >= 0, snippet);
+    return { functionName: '', ranges: [{ startOffset: i, endOffset: i + 1, count }] };
+  });
+
+const SHIPPED_RUN = covered(SHIPPED, { 'async (name) =>': 1 });
+const CONTRACT_RUN = covered(CONTRACT, {
+  'async (name, when)': 1,
+  'async (name) =>': 1,
+  '(listener) =>': 1,
+  '(alarm) =>': 2,
+});
+
+test('an indented module marker (IIFE bundle) opens a region too', () => {
+  assert.deepEqual(
+    adapterRegions(CONTRACT).map((r) => r.file),
+    ['src/adapters/chrome-alarms.ts'],
+  );
+});
+
+test('a function reached only by the in-worker contract run counts, and the summary names it', () => {
+  assert.equal(uncalledAdapterFunctions(SHIPPED, SHIPPED_RUN).length, 3);
+  const contract = { bundle: CONTRACT, functions: CONTRACT_RUN };
+  assert.deepEqual(uncalledAdapterFunctions(SHIPPED, SHIPPED_RUN, contract), []);
+  assert.deepEqual(adapterCoverageSummary(SHIPPED, SHIPPED_RUN, contract), [
+    'src/adapters/chrome-alarms.ts 4/4 (in-worker contract: set onFire (anonymous))',
+  ]);
+});
+
+test('RED: a function neither the run nor the contract called fails', () => {
+  const contract = {
+    bundle: CONTRACT,
+    functions: covered(CONTRACT, { 'async (name, when)': 1, '(listener) =>': 1 }),
+  };
+  assert.deepEqual(uncalledAdapterFunctions(SHIPPED, SHIPPED_RUN, contract), [
+    { file: 'src/adapters/chrome-alarms.ts', name: '(anonymous)', line: 5, calls: 0 },
+  ]);
+});
+
+test('RED: a contract region listing other functions credits nothing', () => {
+  const other = CONTRACT.replace(
+    '  clear: async (name) => { await chrome.alarms.clear(name); },\n',
+    '',
+  );
+  const contract = {
+    bundle: other,
+    functions: covered(other, { 'async (name, when)': 1, '(listener) =>': 1, '(alarm) =>': 1 }),
+  };
+  const problems = uncalledAdapterFunctions(SHIPPED, SHIPPED_RUN, contract);
+  assert.deepEqual(
+    problems.map((p) => p.name),
+    ['(contract bundle lists other functions)', 'set', 'onFire', '(anonymous)'],
+  );
+});
+
+const map = (sources) => ({
+  sources: Object.keys(sources),
+  sourcesContent: Object.values(sources),
+});
+
+test('the contract compiled the same adapter sources as the shipped bundle', () => {
+  const shipped = map({ '../src/adapters/chrome-alarms.ts': 'A', '../src/background.ts': 'B' });
+  const contract = map({ '../../repo/packages/extension/src/adapters/chrome-alarms.ts': 'A' });
+  assert.deepEqual(adapterSourceMismatches(shipped, contract), []);
+});
+
+test('RED: an adapter source that differs, is missing from the shipped bundle, or no adapter at all', () => {
+  const shipped = map({ '../src/adapters/chrome-alarms.ts': 'A' });
+  assert.deepEqual(
+    adapterSourceMismatches(
+      shipped,
+      map({ 'src/adapters/chrome-alarms.ts': 'A2', 'src/adapters/web-socket.ts': 'W' }),
+    ),
+    [
+      'src/adapters/chrome-alarms.ts: differs from the shipped source',
+      'src/adapters/web-socket.ts: not in the shipped bundle',
+    ],
+  );
+  assert.deepEqual(adapterSourceMismatches(shipped, map({ 'contract/entry.ts': 'E' })), [
+    'the contract bundle compiled no adapter source',
   ]);
 });

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.28](https://github.com/jobshimo/browser-link/compare/v1.4.27...v1.4.28) (2026-11-18)
+
+### Notes
+
+- Slice 19 of the service worker plan; no behaviour change on the wire. The extension's connection lifecycle moves from `background.ts` to `app/connection.ts`: the tab ids kept across reconnects, the reconnect wiring (scheduler, persisted state, the alarm safety net, the resume after a worker restart), the tab's socket with its server-message switch, the popup's disconnect and status, and the round trips over any open socket. The handshake, the Origin refusal, the reconnect timing and backoff, the tab ids and every frame are the ones before.
+- The Activity, Admin and Repair round trips correlate their replies through core's `PendingReplies` (`session/pending-replies.ts`): a reply settles its request at most once, a reply for an unknown or timed-out id is dropped, and a request still ends at its timeout. A disconnect settles nothing, as before.
+- Two new extension adapters: `chrome-alarms` (`Alarms`: `set`, `clear`, `onFire`, the reconnect safety net; `onFire` is still subscribed at the top level of `background.ts`) and `web-socket` (`SocketFactory`), so the connection code runs in unit tests on a fake socket, fake alarms and in-memory session storage.
+- The real-Chrome e2e runs a test-only contract bundle inside the extension's service worker (`packages/extension/contract/`, built with the extension's esbuild options): an alarm set through `Alarms` fires through `onFire` and a cleared one never fires. The adapter coverage check credits the methods only that run reaches (`Alarms.set`, `Alarms.onFire`) after checking that both bundles compiled the same adapter sources. The tarball smoke test fails if the contract run is ever packed. The step adds about 1.3 s to the e2e on Chrome 118.
+- `background.ts` shrinks by 427 lines and its line budget goes from 2050 to 1623.
+
 ## [1.4.27](https://github.com/jobshimo/browser-link/compare/v1.4.26...v1.4.27) (2026-11-18)
 
 ### Tests

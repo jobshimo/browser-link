@@ -23,6 +23,25 @@ import { workerFailure } from '../worker-messages.js';
 
 export type TabEventListener = (method: string, params: unknown) => void;
 
+/** `readyState` of an open socket and of a closed one (the WebSocket API's
+ * `OPEN` and `CLOSED`). */
+export const SOCKET_OPEN = 1;
+export const SOCKET_CLOSED = 3;
+
+/**
+ * The tab's link to the bridge: the members of the WebSocket API the
+ * extension uses (`adapters/web-socket.ts` opens a real one), so the
+ * connection code runs in tests on a fake socket.
+ */
+export interface BridgeSocket {
+  readonly readyState: number;
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: 'open' | 'error', listener: () => void): void;
+  addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+  addEventListener(type: 'close', listener: (event: { wasClean: boolean }) => void): void;
+}
+
 /**
  * State for one tab's demonstration recording, see the "Flow recording by
  * demonstration" section of `background.ts` for the full lifecycle
@@ -82,7 +101,7 @@ export interface TabConnection {
   installedVersion?: string;
   /** Pid of the server that registered this tab (servers from 0.41.0). */
   serverPid?: number;
-  ws?: WebSocket;
+  ws?: BridgeSocket;
   debuggerAttached: boolean;
   /** The tab's debugger intake (`debuggerIntake`). */
   debuggerListener?: TabEventListener;
@@ -110,15 +129,15 @@ export function newTabConnection(
   return { tabId, session, debuggerAttached: true, eventListeners };
 }
 
-export function send(ws: WebSocket, msg: ExtensionToServer): void {
+export function send(ws: BridgeSocket, msg: ExtensionToServer): void {
   ws.send(JSON.stringify(msg));
 }
 
 /** The tab's socket when it is open and the tab is registered. */
 export function registeredSocket(
   conn: TabConnection,
-): { ws: WebSocket; serverTabId: string } | undefined {
-  if (conn.ws && conn.ws.readyState === WebSocket.OPEN && conn.serverTabId)
+): { ws: BridgeSocket; serverTabId: string } | undefined {
+  if (conn.ws && conn.ws.readyState === SOCKET_OPEN && conn.serverTabId)
     return { ws: conn.ws, serverTabId: conn.serverTabId };
   return undefined;
 }
@@ -406,7 +425,7 @@ export async function closeTabConnection(
   if (conn.recording) {
     await deps.teardownRecorder(tabId, conn.recording.stopFn);
   }
-  if (conn.ws && conn.ws.readyState !== WebSocket.CLOSED) {
+  if (conn.ws && conn.ws.readyState !== SOCKET_CLOSED) {
     try {
       conn.ws.close();
     } catch {

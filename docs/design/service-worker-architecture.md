@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 11. Revision 1 (`5486e34`) was audited as
+Status: revision 12. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -49,6 +49,19 @@ minutes per PR in 6.3, slice 4 assertions in 7(c)). One ordering defect found
 while verifying this revision is fixed: `settle.ts` and `expect.ts` import
 `inpage/builders.ts`, so the in-page code now moves before them (slices 6 and 7
 swapped).
+
+### Revision 12 (2026-11-18)
+
+Arch's decisions on slice 19 (3.1 tables and "As built in slice 19", 4
+`TabConnection` and `PendingReplies<T>`, 8 R6, slice table row 19):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | R6 takes its primary path for the adapter methods no e2e call reaches: a test-only contract entry (`packages/extension/contract/entry.ts`, outside `src/`), bundled as an IIFE by `contract/build.mjs` with the options of `build.mjs` (`BUNDLE_OPTIONS`), is evaluated in the real worker through `Runtime.evaluate` and runs the `Alarms` contract on `adapters/chrome-alarms.ts`: an alarm set with a name `tabIdFromReconnectKey` rejects fires through `onFire`, and a cleared one never fires. The bundle holds the adapters and the contracts only, never `background.ts`, so its `onFire` is a second listener in a test script | `Alarms.onFire` is called at module load, before coverage starts, and V8 reports a function that ran only then as absent; `Alarms.set` runs only after an involuntary close, which no e2e case causes |
+| 2 | The coverage check maps the contract script's own adapter regions and counts a shipped function reached when it or its counterpart in the contract bundle was called; the e2e first checks that every adapter source the contract bundle compiled is the one `background.js.map` embeds. This proves the same source compiled the same way ran, not the shipped bytes. The contract run never ships (`scripts/smoke-tarball.mjs` `contractFailures`), runs in the required `e2e` job on Chrome 118 under its own 120 s budget, and its contract also runs against the in-memory fake | conditions (a)-(f) of arch's answer |
+| 3 | Options 1 (restarting the worker under coverage) and 4 (`onAlarm` left in `background.ts`) are rejected; if the in-worker run is not stable, option 2 (wake-listener exemptions) is proposed in a PR, never taken silently | arch |
+| 4 | `PendingReplies<T>` has no `rejectAll`, and nothing settles a waiter on disconnect: a waiter ends at its reply or its timeout, as before | settling on disconnect would be a behavior change (7(e)) |
+| 5 | `Alarms` is `set(name, when)`, `clear(name)`, `onFire(listener: (name) => void)`; `SocketFactory` is `(url) => BridgeSocket`, where `BridgeSocket` (`app/tab-connection.ts`) holds the members of the WebSocket API the extension uses. `EventsOut` stays a function of `background.ts` (`publishFlowFinished`), not a port | ports describe what is used; nothing in core emits events yet |
 
 ### Revision 11 (2026-11-18)
 
@@ -477,6 +490,9 @@ packages/extension/src/
                     idle-settings.ts flow-labels.ts (both from slice 5b-2)
                     clock.ts (slices 5b-1 to 8 only, see 5.1)
 
+packages/extension/contract/   entry.ts build.mjs and the adapters' contracts:
+                    the test-only in-worker contract run (R6, slice 19)
+
 packages/server/src/cdp/
   transport.ts      cdp-direct adapter: connections, gate, outcome -> wire
   adapters/         cdp-client-session.ts cdp-page-info.ts
@@ -680,6 +696,21 @@ Not ports, on purpose: dialog observation (CDP events on `CdpSession`; the
 pending dialog is `TabSession` state, read through the `DialogWatch` outside
 `ports/`) and the tab registry (a core class, section 4). Answering a dialog
 is the page driver's input-only `DialogInput` (3.2, revision 10).
+
+As built in slice 19 (revision 12): `Alarms` (`set(name, when)`,
+`clear(name)`, `onFire(listener)`), `SocketFactory` (`(url) =>
+BridgeSocket`) and `SessionStorage` live in `app/connection.ts`, with the
+tab ids (`createTabIds`), the reconnect wiring (`createReconnect`: the
+scheduler, the persisted state, the alarm listener, the resume after a worker
+restart), the tab's socket and its server-message switch (`openBridge`), the
+popup's disconnect and status, and the round trips over any open socket
+(`anyOpenSocket`, `roundTrip` on core `PendingReplies`).
+`adapters/chrome-alarms.ts` and `adapters/web-socket.ts` are stateless
+objects built once; `background.ts` passes `chrome.storage.session` as the
+`SessionStorage`, as it passes `chrome.downloads` to the download capture,
+and subscribes `chromeAlarms.onFire` at top level (the wake-listener rule maps
+`alarms.onAlarm` to `Alarms.onFire`). `EventsOut` is not a port yet: the
+`flow-finished` event is still `background.ts` `publishFlowFinished`.
 
 ### 3.2 `PageDriver`: narrow page capabilities
 
@@ -1050,8 +1081,9 @@ As built in slice 12 (1.4.18), for the extension only:
   session, the dialog bridge events, the recorder's binding calls), the
   fan-out of the permanent `debugger.onEvent` listener (`deliverCdpEvent`)
   and the teardown (`closeTabConnection`, which `background.ts` `cleanup`
-  calls with the Chrome calls as functions). Its tests use a fake socket
-  object; the `SocketFactory` interface joins with slice 19.
+  calls with the Chrome calls as functions). Its socket is a
+  `BridgeSocket`, opened by the `SocketFactory` (slice 19), so its tests
+  and those of `app/connection.ts` use a fake socket.
 - cdp-direct does not use `TabRegistry`: its cache is keyed by target id, a
   concurrent call joins the dial in flight instead of being refused, and a
   closed entry is replaced, so adopting the registry would change its
@@ -1089,12 +1121,16 @@ in-memory stores (`flow/flow-registry.test.ts`, `flow/flow-history.test.ts`).
 
 ### `PendingReplies<T>` (core/session/pending-replies.ts)
 
-Replaces the three request/reply Maps of `background.ts`:
-`pendingActivityQueries`, `pendingAdminRequests`, `pendingRepairs`.
-Invariants: an id resolves at most once; a reply for an unknown id is
-ignored; `expire(id)` and `rejectAll(reason)` (on disconnect) settle every
-waiter so none leaks. It needs nothing from Chrome, so it sits in core's
-session layer and is unit-tested there; only the extension uses it today.
+Replaced the three request/reply Maps of `background.ts`
+(`pendingActivityQueries`, `pendingAdminRequests`, `pendingRepairs`) in
+slice 19: `wait(id, timeoutMs, onTimeout)` and `settle(id, reply)`, on a
+`Clock`. Invariants: an id settles at most once, by its reply or by its
+timeout; a reply for an unknown id is ignored; the timeout settles the waiter
+with `onTimeout()` and forgets the id, so none outlives its timeout. A
+disconnect settles nothing: the waiter still ends at its timeout (revision
+12). It needs nothing from Chrome, so it sits in core's session layer and is
+unit-tested there; only the extension uses it today, one per round trip
+(`app/connection.ts` `BridgeReplies`).
 
 Claims stay with the server (`server/src/bridge/dispatch.ts`); held downloads
 stay in `DownloadCapture` (`download-capture.ts`, already tested).
@@ -1373,7 +1409,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 18a | Derived support table (**done**, release 1.4.24) | `CDP_TOOL_SUPPORT` derived from the registry (`cdpToolSupport`) plus four declared rows, `CDP_DIRECT_PROVIDES` moved to `cdp/support.ts` (3.3, revision 11) | ~100 authored | snapshot test against the 1.4.23 table, RED-probed by declaring `drag`; e2e; differential | revert |
 | 18b | Flow tools (**done**, release 1.4.25) | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases behind `FlowControl` and `FlowCancel`; the five transitional tool cases and the three declared flow rows removed; `CDP_DIRECT_PROVIDES` gains `flows` and `flow-cancel`; the no-tool-`case` fitness rule (revision 11) | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; the support snapshot still equals the 1.4.23 table; the no-tool-`case` rule RED-probed | revert |
 | — | **Checkpoint B** (6.2) | | | | |
-| 19 | Connection lifecycle | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
+| 19 | Connection lifecycle (**done**, release 1.4.28) | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
 | 20 | Recording | `app/recording.ts` (lines 4328-4658) | ~330 | existing `recording.test.ts` plus new unit tests; manual popup check noted in PR | revert |
 | 21 | Popup router, windows, repair, tab events | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
@@ -1650,12 +1686,17 @@ the adapters that exist then (`CdpSession`, `PageInfo`, `system-clock`), and
 from slice 9 on the coverage check runs in every PR, so each later slice that
 adds an adapter (16: `ContentSettings`, `Downloads`; 17: the two stores; 19:
 `chrome-alarms`, `web-socket`; 21: `chrome-windows`, `chrome-runtime`,
-`chrome-tab-events`) merges only with all its methods reached. Reaching some
-of them from e2e is not yet proven, for example `Alarms.onFire` (the
-reconnect safety net only fires after the alarm's period) and
+`chrome-tab-events`) merges only with all its methods reached. Some of them
+no e2e call reaches, for example `Alarms.onFire` (called at module load,
+before coverage starts) and `Alarms.set` (only after an involuntary close),
+both reached by the in-worker contract run since slice 19 (revision 12), and
 `Windows.focus` (needs an already open Activity or Admin window). Each such
 method gets either a new e2e case in the slice that adds the adapter, or the
-in-worker contract entry of the primary path above; it is never exempted
+in-worker contract entry of the primary path above
+(`packages/extension/contract/`: `entry.ts` and the contracts, built by
+`contract/build.mjs`, run by the e2e before the coverage check, which
+credits a shipped function whose contract-bundle counterpart was called);
+it is never exempted
 silently: if neither is possible, the PR lists the method with its reason
 and arch decides, as with the logic-free exemptions (5.3 item 3).
 

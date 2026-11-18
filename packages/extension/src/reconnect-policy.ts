@@ -3,8 +3,8 @@
  * WebSocket bridge after an INVOLUNTARY close (the primary MCP server died
  * or restarted under us).
  *
- * Deliberately kept free of chrome.* — background.ts owns the WebSocket
- * lifecycle, the `chrome.storage.session` persistence, and the actual
+ * Deliberately kept free of chrome.* — app/connection.ts owns the WebSocket
+ * lifecycle and the session-storage persistence, background.ts the actual
  * `connectTab` call; this module owns WHEN to retry and at what pace, so
  * the backoff behavior is unit-tested without mocking sockets or storage.
  * Same separation idle-settings.ts already established for the WS-idle sweep.
@@ -39,7 +39,7 @@ const RECONNECT_RAMP_MS: readonly number[] = [1000, 2000, 4000, 8000, 15_000];
 
 /**
  * chrome.alarms' minimum delay (Chrome 120+). Used for the safety-net
- * alarm that wakes a sleeping MV3 service worker (see background.ts).
+ * alarm that wakes a sleeping MV3 service worker (see app/connection.ts).
  */
 export const ALARM_MIN_DELAY_MS = 30_000;
 
@@ -74,10 +74,10 @@ export function buildReconnectDelays(
  *
  * MV3 durability: plain timers cover the fast ramp (each fire touches
  * chrome.* APIs, which resets the worker's ~30s idle clock), but the 30s
- * plateau lets Chrome tear the worker down between attempts. background.ts
+ * plateau lets Chrome tear the worker down between attempts. app/connection.ts
  * therefore mirrors every armed attempt into `pendingReconnect:*` storage
  * AND a `chrome.alarms` safety net; the alarm wakes the worker, which
- * resumes from storage (see resumePendingReconnects).
+ * resumes from storage (see createReconnect).
  */
 export const RECONNECT_DELAYS_MS: readonly number[] = buildReconnectDelays();
 
@@ -128,7 +128,7 @@ export function reconnectDelayMs(
 }
 
 /**
- * What background.ts's WS close handler knows about a close, reduced to the
+ * What the WS close handler (app/connection.ts) knows about a close, reduced to the
  * three facts that decide whether auto-reconnect should kick in.
  */
 export interface CloseContext {
@@ -254,7 +254,7 @@ export interface ReconnectSchedulerOptions {
   clearTimer?: (handle: unknown) => void;
   /** Persistence hook: called with the newly-armed attempt on every
    * schedule, and with `null` whenever the cycle ends for any reason
-   * (success, stop, cancel, exhaustion) — background.ts mirrors this into
+   * (success, stop, cancel, exhaustion) — app/connection.ts mirrors this into
    * `chrome.storage.session` so a killed service worker can resume. */
   onStateChange?(tabId: number, state: { attempt: number; delayMs: number } | null): void;
 }
