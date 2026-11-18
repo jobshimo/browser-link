@@ -14,10 +14,12 @@ import {
   type FlowStep,
   type PendingDialogInfo,
   type TabRegistry,
+  type TabReservation,
   type TabSession,
 } from '@browser-link/core';
 import { normalizeConsoleLevel } from '../console-level.js';
 import { appendRecordingStep, parseRecordedPayload, toFlowStep } from '../recording.js';
+import { workerFailure } from '../worker-messages.js';
 
 export type TabEventListener = (method: string, params: unknown) => void;
 
@@ -418,5 +420,31 @@ export async function closeTabConnection(
     } catch {
       // Best effort — the resource may already be detached/closed.
     }
+  }
+}
+
+/**
+ * Make `conn` the tab's live connection right after the debugger attached.
+ * Returns `null` when it is live (synchronously: nothing may run between the
+ * commit and the intake being wired). `commit` cannot throw today (the
+ * reservation and the `has` check exclude it), but when it does no registry
+ * entry exists for `closeTabConnection` to tear down, so the attached
+ * debugger is released here and the failure answered like an attach failure.
+ */
+export function commitConnection(
+  tabs: TabRegistry<TabConnection>,
+  reservation: TabReservation,
+  conn: TabConnection,
+  detachDebugger: (tabId: number) => Promise<void>,
+): Promise<ReturnType<typeof workerFailure>> | null {
+  try {
+    tabs.commit(reservation, conn);
+    return null;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return Promise.resolve()
+      .then(() => detachDebugger(reservation.tabId))
+      .catch(() => undefined)
+      .then(() => workerFailure({ code: 'debugger-attach-failed', values: { detail } }));
   }
 }

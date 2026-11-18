@@ -47,6 +47,7 @@ import { chromeDetachedFlowStore } from './adapters/chrome-detached-flow-store.j
 import { chromeTabTitle } from './adapters/chrome-tab-title.js';
 import {
   closeTabConnection,
+  commitConnection,
   debuggerIntake,
   deliverCdpEvent,
   newTabConnection,
@@ -862,13 +863,14 @@ async function handleTool(
   return toolResponse(msg.id, outcome);
 }
 
+const detachDebugger = (id: number) => chrome.debugger.detach({ tabId: id });
 /** Tear the tab's connection down (`app/tab-connection.ts` `closeTabConnection`). */
 function cleanup(tabId: number): Promise<void> {
   return closeTabConnection(tabConnections, tabId, {
     cancelFlows: (id) => flowRegistry.cancelForTab(id),
     removeRecordingNavListener,
     teardownRecorder: teardownRecorderInPage,
-    detachDebugger: (id) => chrome.debugger.detach({ tabId: id }),
+    detachDebugger,
   });
 }
 
@@ -1097,18 +1099,16 @@ async function doConnectTab(reservation: TabReservation): Promise<ConnectResult>
     new TabSession({ clock: systemClock, driver }),
     eventListeners,
   );
-  tabConnections.commit(reservation, state);
+  const failed = commitConnection(tabConnections, reservation, state, detachDebugger);
+  if (failed) return failed;
   state.debuggerListener = debuggerIntake(state, {
     clock: systemClock,
     onRecordingCapped: (id) => void finishRecording(id),
   });
 
   try {
-    await cdp(tabId, 'Page.enable');
-    await cdp(tabId, 'Runtime.enable');
-    await cdp(tabId, 'Log.enable');
-    await cdp(tabId, 'Network.enable');
-    await cdp(tabId, 'DOM.enable');
+    for (const domain of ['Page', 'Runtime', 'Log', 'Network', 'DOM'])
+      await cdp(tabId, `${domain}.enable`);
   } catch (err) {
     await cleanup(tabId);
     return workerFailure({
