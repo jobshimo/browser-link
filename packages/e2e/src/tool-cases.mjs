@@ -17,7 +17,11 @@ export const HARNESS_FILE = join(SRC, 'run.mjs');
 /** Tool -> the run.mjs cases that call it. */
 export const TOOL_CASES = {
   'browser.list_tabs': ['browser.list_tabs', 'browser.list_tabs.cdp'],
-  'browser.activity': ['browser.activity.sensitive', 'browser.activity.error-sensitive'],
+  'browser.activity': [
+    'browser.activity.sensitive',
+    'browser.activity.error-sensitive',
+    'browser.activity.error-sensitive.cdp',
+  ],
   'browser.ping': ['browser.ping', 'wait_for_tab'],
   'browser.snapshot': ['browser.snapshot', 'browser.snapshot.cut', 'browser.snapshot.cdp'],
   'browser.find': ['browser.find', 'browser.find.cut', 'browser.find.cdp'],
@@ -27,7 +31,12 @@ export const TOOL_CASES = {
   'browser.console': ['browser.console', 'browser.console.error', 'browser.console.warn'],
   'browser.network': ['browser.network'],
   'browser.network_body': ['browser.network_body'],
-  'browser.wait_for': ['browser.wait_for', 'error.timeout'],
+  'browser.wait_for': [
+    'browser.wait_for',
+    'error.timeout',
+    'browser.wait_for.network',
+    'error.wait-for-network.cdp',
+  ],
   'browser.wait_for_tab': ['browser.wait_for_tab'],
   'browser.flow_status': [
     'browser.flow_status',
@@ -49,7 +58,13 @@ export const TOOL_CASES = {
     'browser.click.cdp',
     'error.action.cdp',
   ],
-  'browser.type': ['browser.type', 'browser.type.sensitive', 'error.sensitive', 'browser.type.cdp'],
+  'browser.type': [
+    'browser.type',
+    'browser.type.sensitive',
+    'error.sensitive',
+    'browser.type.cdp',
+    'error.sensitive.cdp',
+  ],
   'browser.press': ['browser.press'],
   'browser.drag': ['browser.drag'],
   'browser.flow': ['browser.flow'],
@@ -67,7 +82,12 @@ export const TOOL_CASES = {
     'browser.download.click-failed',
     'browser.download.stress-after-scroll',
   ],
-  'browser.evaluate': ['browser.evaluate', 'error.thrown', 'browser.evaluate.cdp'],
+  'browser.evaluate': [
+    'browser.evaluate',
+    'error.thrown',
+    'browser.evaluate.cdp',
+    'browser.evaluate.value.cdp',
+  ],
   'browser.read': ['browser.read'],
   'browser.wrap_up': ['browser.wrap_up'],
 };

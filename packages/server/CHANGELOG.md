@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.27](https://github.com/jobshimo/browser-link/compare/v1.4.26...v1.4.27) (2026-11-18)
+
+### Tests
+
+- Test-only change; no product code changes. The real-Chrome e2e gains two cases for `browser.wait_for` in `network_url` mode: on the extension, the page fetches a URL nobody has fetched yet and the wait ends on it (`browser.wait_for.network`); on cdp-direct, the call is refused with the exact sentence about no network buffering (`error.wait-for-network.cdp`).
+- The e2e gains the sensitive path on cdp-direct (`error.sensitive.cdp`, `browser.activity.error-sensitive.cdp`): a `browser.type` into the password field whose expectation fails answers the executor's exact error text, and the trail stores `[sensitive field]`, never the typed text, as on the extension.
+- Follow-ups of the cdp-direct e2e review: the unlabelled cdp `evaluate` call has its own case (`browser.evaluate.value.cdp`), the element-ref pattern has one definition (`refOf` in `lib.mjs`), the harness never builds an error text from an undefined message (`errorText`), and the harness's CLI calls (`config set ...`, `cdp allow ...`) run under a 30 second timeout that fails with the command and the limit.
+- The differential's normalise table masks a trail record's position in `browser.activity` results (`id`, `latest_id`, the per-agent `count`), which depends on how many polled calls ran before it; the record's content is still compared.
+- A new fitness rule fails when `cdp/transport.ts` has a `case` label naming a registered tool, with its own RED fixtures; it is the server-side twin of the rule on `background.ts`.
+
 ## [1.4.26](https://github.com/jobshimo/browser-link/compare/v1.4.25...v1.4.26) (2026-11-18)
 
 ### Bug Fixes

@@ -57,6 +57,7 @@ import {
   freePort,
   isAlive,
   isolatedServerEnv,
+  errorText,
   jsLiteral,
   killPid,
   launchChrome,
@@ -64,6 +65,7 @@ import {
   originProbe,
   pinnedExtensionId,
   portOwners,
+  refOf,
   removeDir,
   resolveChrome,
   sleep,
@@ -198,7 +200,7 @@ async function callTool(tool, args, { label, poll = false } = {}) {
     if (entry) entry.result = res;
     return res;
   } catch (e) {
-    if (entry) entry.thrown = String(e?.message ?? e);
+    if (entry) entry.thrown = errorText(e);
     throw e;
   }
 }
@@ -227,7 +229,7 @@ async function call(tool, args, check, { print = true, label = tool, poll = fals
   try {
     res = await callTool(tool, args, { label, poll });
   } catch (e) {
-    throw new StepFailure(short, e.message);
+    throw new StepFailure(short, errorText(e));
   }
   const ms = Math.round(now() - t);
   if (res.isError) throw new StepFailure(short, `tool error: ${text(res).slice(0, 300)}`);
@@ -245,7 +247,7 @@ async function attempt(tool, args, label, { poll = false } = {}) {
   try {
     res = await callTool(tool, args, { label, poll });
   } catch (e) {
-    throw new StepFailure(label, e.message);
+    throw new StepFailure(label, errorText(e));
   }
   return { isError: res.isError === true, body: json(res), text: text(res) };
 }
@@ -474,9 +476,9 @@ async function main() {
   const found = await call(
     'browser.find',
     { tab_id: T, text: 'Add item', role: 'button' },
-    (_b, t) => /[a-z0-9]{1,16}:e\d+/.test(t) || 'no ref returned',
+    (_b, t) => refOf(t) !== undefined || 'no ref returned',
   );
-  const ref = /[a-z0-9]{1,16}:e\d+/.exec(text(found))[0];
+  const ref = refOf(text(found));
   await call(
     'browser.type',
     { tab_id: T, selector: '#name', text: 'alpha' },
@@ -561,7 +563,7 @@ async function main() {
       await step(T);
     } catch (e) {
       if (!(e instanceof StepFailure)) throw e;
-      console.log(`e2e: FAIL ${e.message}`);
+      console.log(`e2e: FAIL ${errorText(e)}`);
       deferredFailures.push(e.step);
     }
   }
@@ -622,7 +624,7 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
   try {
     enableCdpDirect({ serverCli: SERVER_CLI, env: serverEnv, port });
   } catch (e) {
-    throw new StepFailure('cdp.enable', String(e?.message ?? e));
+    throw new StepFailure('cdp.enable', errorText(e));
   }
 
   // The Chrome's one page (about:blank) is listed as a cdp: tab.
@@ -658,10 +660,10 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
   const found = await call(
     'browser.find',
     { tab_id: C, text: 'Add item', role: 'button' },
-    (_b, t) => /[a-z0-9]{1,16}:e\d+/.test(t) || 'no ref returned',
+    (_b, t) => refOf(t) !== undefined || 'no ref returned',
     { label: 'browser.find.cdp' },
   );
-  const ref = /[a-z0-9]{1,16}:e\d+/.exec(text(found))[0];
+  const ref = refOf(text(found));
   await call(
     'browser.type',
     { tab_id: C, selector: '#name', text: 'delta' },
@@ -674,7 +676,7 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     'browser.evaluate',
     { tab_id: C, expression: "document.querySelector('#name').value" },
     (_b, t) => t === 'delta' || `#name holds ${JSON.stringify(t)}`,
-    { print: false },
+    { label: 'browser.evaluate.value.cdp' },
   );
   await call(
     'browser.click',
@@ -689,19 +691,62 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     { label: 'browser.evaluate.cdp' },
   );
 
+  // An error case: the call must fail with exactly `want`.
+  const expectCdpError = async (label, tool, args, want) => {
+    const t = now();
+    const r = await attempt(tool, args, label);
+    if (!r.isError || r.text !== want) {
+      throw new StepFailure(
+        label,
+        `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+      );
+    }
+    stepDone(label, t);
+  };
+
   // The error path: a click whose selector matches nothing.
-  const label = 'error.action.cdp';
-  const t = now();
-  const want = 'Error: Element not found: #e2e-no-such-element';
-  const r = await attempt('browser.click', { tab_id: C, selector: '#e2e-no-such-element' }, label);
-  if (!r.isError || r.text !== want) {
-    throw new StepFailure(
-      label,
-      `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
-    );
-  }
-  stepDone(label, t);
-  console.log(`cdp-direct ok ${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
+  await expectCdpError(
+    'error.action.cdp',
+    'browser.click',
+    { tab_id: C, selector: '#e2e-no-such-element' },
+    'Error: Element not found: #e2e-no-such-element',
+  );
+
+  // wait_for in network_url mode is refused on cdp-direct (no capture buffers):
+  // an action failure with the core's exact sentence, not a timeout.
+  await expectCdpError(
+    'error.wait-for-network.cdp',
+    'browser.wait_for',
+    { tab_id: C, network_url: '/api', timeout_ms: 300 },
+    'Error: wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.',
+  );
+
+  // The sensitive path on cdp-direct: the type into the password field reads
+  // the focused field first, then its failing expectation is tagged
+  // `sensitive`; the error is the executor's text, and the trail stores the
+  // marker, never the typed text (the extension's error.sensitive, same text).
+  await expectCdpError(
+    'error.sensitive.cdp',
+    'browser.type',
+    {
+      tab_id: C,
+      selector: '#pw',
+      text: 'e2e-secret-cdp',
+      clear: true,
+      settle_ms: 0,
+      expect: { selector_appears: '#pw' },
+    },
+    'Error: expectation not met: selector_appears "#pw" was already present before the action',
+  );
+  await call(
+    'browser.activity',
+    { tool: 'browser.type', limit: 1 },
+    (b, tx) =>
+      (b?.records?.[0]?.payload === '[sensitive field]' && !tx.includes('e2e-secret-cdp')) ||
+      `stored payload is ${JSON.stringify(b?.records?.[0]?.payload)}`,
+    { label: 'browser.activity.error-sensitive.cdp' },
+  );
+  console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
 }
 
 /**
@@ -887,7 +932,7 @@ function pngOf(b, res) {
   try {
     return { img: decodePng(bytes), bytes, mimeType: block?.mimeType };
   } catch (e) {
-    return { error: `image does not decode: ${e.message}` };
+    return { error: `image does not decode: ${errorText(e)}` };
   }
 }
 
@@ -1060,6 +1105,22 @@ async function pageReadAndCapture(T, page) {
     (b) =>
       (b?.body === DATA_BODY && b?.base64Encoded === false) ||
       `body ${describe(b)}, expected ${DATA_BODY}`,
+  );
+
+  // wait_for in network_url mode: the page fetches a URL nobody has fetched
+  // yet (one setup evaluate schedules it 300 ms out, so the wait starts first,
+  // and no evaluate is polled), and the wait ends when that finished request's
+  // URL contains the needle.
+  const needle = 'e2e-wait-net';
+  await pageValue(
+    T,
+    `setTimeout(() => { fetch('/data.json?${needle}=1', { cache: 'no-store' }); }, 300); 'scheduled'`,
+  );
+  await call(
+    'browser.wait_for',
+    { tab_id: T, network_url: needle, timeout_ms: 5000 },
+    (b) => b?.matched === true || `network_url wait answered ${describe(b)}`,
+    { label: 'browser.wait_for.network' },
   );
 
   // console level "warn" (the value the tool's enum offers) must return the
@@ -1308,7 +1369,7 @@ async function recorded(step) {
     await step();
   } catch (e) {
     if (!(e instanceof StepFailure)) throw e;
-    console.log(`e2e: FAIL ${e.message}`);
+    console.log(`e2e: FAIL ${errorText(e)}`);
     deferredFailures.push(e.step);
   }
 }
@@ -1612,7 +1673,7 @@ function markOfTheWebProblems(b) {
     const zone = readFileSync(`${String(b?.path)}:Zone.Identifier`, 'utf8');
     if (!/^ZoneId=3\r?$/m.test(zone)) wrong.push(`Zone.Identifier lacks ZoneId=3: ${zone}`);
   } catch (e) {
-    wrong.push(`no Zone.Identifier stream on ${String(b?.path)}: ${e.message}`);
+    wrong.push(`no Zone.Identifier stream on ${String(b?.path)}: ${errorText(e)}`);
   }
   return wrong;
 }
@@ -1675,7 +1736,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
   } catch (e) {
     if (e instanceof StepFailure) throw e;
     console.log(
-      `${label} note: Chrome's download list unreadable (${e.message}); erase not verified`,
+      `${label} note: Chrome's download list unreadable (${errorText(e)}); erase not verified`,
     );
   }
   stepDone(label, t);
@@ -1720,7 +1781,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
     await waiting;
     throw new StepFailure(
       'download.unrelated',
-      `harness: could not open the second tab: ${e.message}`,
+      `harness: could not open the second tab: ${errorText(e)}`,
     );
   }
   const answered = await waiting;
@@ -1768,7 +1829,7 @@ async function downloadChecks({ T, origin, downloadsDir, cdp, swSession }) {
     }
     chromeNote = item ? `Chrome kept it (${item.state})` : 'not listed by Chrome';
   } catch (e) {
-    chromeNote = `Chrome list unreadable (${e.message}), not verified`;
+    chromeNote = `Chrome list unreadable (${errorText(e)}), not verified`;
   }
   try {
     await cdp.send('Target.closeTarget', { targetId: otherTarget });

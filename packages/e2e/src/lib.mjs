@@ -565,3 +565,20 @@ export function decodePng(buf) {
 export function colorNear(got, want, tolerance = 8) {
   return want.every((v, i) => Math.abs(got[i] - v) <= tolerance);
 }
+
+/** The text of anything a `catch` can receive: an Error's message, else the
+ * value itself, always a string (never "undefined" from a thrown non-Error or
+ * an Error without a message). */
+export function errorText(e) {
+  const text = String(e?.message ?? e ?? '');
+  return text === '' ? 'unknown error (no message)' : text;
+}
+
+/** An element ref as `browser.find` and `browser.snapshot` print it:
+ * `<doc>:e<n>`. The one definition the harness uses. */
+export const REF_PATTERN = /[a-z0-9]{1,16}:e\d+/;
+
+/** The first element ref in `text`, or undefined when it holds none. */
+export function refOf(text) {
+  return REF_PATTERN.exec(String(text ?? ''))?.[0];
+}
