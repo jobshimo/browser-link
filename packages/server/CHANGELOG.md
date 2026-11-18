@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.29](https://github.com/jobshimo/browser-link/compare/v1.4.28...v1.4.29) (2026-11-18)
+
+### Notes
+
+- Slice 20 of the service worker plan; no behaviour change. Flow recording by demonstration moves from `background.ts` to `app/recording.ts`: start with its refusals and the rollback of a failed injection, the navigation steps, the 20-step cap, stop, discard, the setting turned off mid-recording, the save round trip and its 10 second timeout. The popup's messages, the captured steps, the saved flow format and every answer are the ones before; the pure helpers stay in `recording.ts`.
+- One new extension adapter, `chrome-tab-events` (`TabEvents`: `get` and `onUpdated`, which returns its unsubscribe), so the recording runs in unit tests on fake tab events, a fake CDP send and a fake socket. `onUpdated` is a transient subscription removed when the recording stops, not a wake listener; the storage listener that discards a recording when the setting goes off stays at the top level of `background.ts`.
+- The real-Chrome e2e gains a recording case on a tab of its own: Record is refused while the setting is off, a real click and a real navigation are captured as two steps, Stop and Discard answer and clear them, and turning the setting off during a recording discards it. The case reaches every function of the new adapter in the coverage check.
+- `background.ts` shrinks by 363 lines and its line budget goes from 1623 to 1260.
+
 ## [1.4.28](https://github.com/jobshimo/browser-link/compare/v1.4.27...v1.4.28) (2026-11-18)
 
 ### Notes

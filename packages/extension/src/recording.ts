@@ -2,7 +2,7 @@
  * Pure, chrome.*-free logic for turning captured in-page recorder events
  * (see `inpage/recorder.ts`) into `browser.flow`-grammar steps (see
  * `flow.ts`'s `FlowStep`), enforcing the 20-step cap, and building the
- * navigation `wait_for` hint. background.ts owns the CDP binding, the
+ * navigation `wait_for` hint. `app/recording.ts` owns the CDP binding, the
  * `chrome.tabs.onUpdated` navigation signal, and the actual step array for
  * an in-progress recording; every DECISION about what that array should
  * contain next lives here, unit-tested without a real browser tab — same
@@ -92,11 +92,11 @@ export function generateRecordingSession(): RecordingSession {
 }
 
 /**
- * Synthetic failure `background.ts`'s `clearRecording` hands to an in-flight
- * `saveRecording` call's pending resolver when Discard (or any other
+ * Synthetic failure `app/recording.ts`'s `clear` hands to an in-flight
+ * `save` call's pending resolver when Discard (or any other
  * teardown path — force-stop, disconnect, idle sweep) fires before the
  * server's real `flow.recorded.result` arrives. Exported as a constant so
- * background.ts and its tests share the exact same string rather than
+ * the recording and its tests share the exact same string rather than
  * duplicating the literal.
  *
  * HONEST LIMITATION: this only reflects the EXTENSION's bookkeeping. If the
@@ -109,18 +109,18 @@ export function generateRecordingSession(): RecordingSession {
 export const DISCARDED_WHILE_SAVING: WorkerMessage = { code: 'recording-discarded-while-saving' };
 
 /**
- * Pure guard for `saveRecording`'s success continuation: true only when
+ * Pure guard for `save`'s success continuation: true only when
  * `liveSessionNonce` (the tab's CURRENT `RecordingState.nonce`, or
  * `undefined` if nothing is recording right now) still identifies the SAME
- * session `saveRecording` captured before awaiting the server round trip.
+ * session `save` captured before awaiting the server round trip.
  *
  * Needed because `state.recording` can change out from under an in-flight
  * save in more ways than a plain "was it cleared" check would catch: a
  * Discard clears it to `undefined`, but the user can then immediately start
- * a BRAND NEW recording on the same tab (`startRecording` only refuses when
+ * a BRAND NEW recording on the same tab (`start` only refuses when
  * `state.recording` is set) — at which point `state.recording` is defined
  * again, just for a different session. Without this guard, a late save
- * response for the OLD session would run `clearRecording` and wipe the NEW
+ * response for the OLD session would run `clear` and wipe the NEW
  * session's in-progress or under-review steps.
  */
 export function isSameRecordingSession(
@@ -218,7 +218,7 @@ export function parseRecordedPayload(raw: string, expectedNonce: string): Record
  * The payload's `ambiguous` flag is deliberately NOT embedded in the step
  * itself: `browser.flow`'s JSON schema sets `additionalProperties: false`
  * on every step body, so an extra key would make the recipe fail schema
- * validation at REPLAY time. Instead, background.ts tracks which step
+ * validation at REPLAY time. Instead, `app/recording.ts` tracks which step
  * indices were ambiguous (`RecordingState.ambiguousStepIndices`), the
  * popup surfaces a per-step warning in the review list, and
  * `buildAmbiguousNote` below folds the same information into the saved
@@ -256,7 +256,7 @@ export function buildAmbiguousNote(indices: readonly number[]): string | null {
 
 /** Result of appending a step to an in-progress recording. `capped: true`
  * means the 20-step ceiling was already reached BEFORE this call — the
- * step was NOT appended, and background.ts should auto-stop the
+ * step was NOT appended, and `app/recording.ts` should auto-stop the
  * recording and surface the cap notice to the popup. */
 export interface AppendResult {
   steps: FlowStep[];
@@ -265,7 +265,7 @@ export interface AppendResult {
 
 /** Append one already-converted `FlowStep` to a recording's step list,
  * enforcing `MAX_RECORDING_STEPS`. Pure — returns a NEW array, never
- * mutates `steps`, so background.ts can keep using the previous array if
+ * mutates `steps`, so `app/recording.ts` can keep using the previous array if
  * `capped` comes back true. */
 export function appendRecordingStep(steps: readonly FlowStep[], step: FlowStep): AppendResult {
   if (steps.length >= MAX_RECORDING_STEPS) {
@@ -278,7 +278,7 @@ export function appendRecordingStep(steps: readonly FlowStep[], step: FlowStep):
  * Decide whether a newly-observed tab URL represents a navigation that
  * happened WHILE recording (vs. e.g. a same-document hash change or a
  * redundant `chrome.tabs.onUpdated` "complete" event for the URL already
- * being recorded). Pure string comparison — background.ts is responsible
+ * being recorded). Pure string comparison — `app/recording.ts` is responsible
  * for tracking `lastRecordedUrl` and calling this on every "complete"
  * update for the recording tab.
  *

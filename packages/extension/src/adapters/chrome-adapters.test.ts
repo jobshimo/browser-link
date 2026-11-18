@@ -20,6 +20,7 @@ import { createChromeContentSettings } from './chrome-content-settings.js';
 import { createChromeDownloads } from './chrome-downloads.js';
 import { chromeDetachedFlowStore } from './chrome-detached-flow-store.js';
 import { chromeFlowHistoryStore } from './chrome-flow-history-store.js';
+import { chromeTabEvents } from './chrome-tab-events.js';
 
 const values = new Map<string, string>();
 
@@ -57,13 +58,32 @@ const downloadsApi: DownloadsApi = {
   erase: () => Promise.resolve([]),
 };
 
+/** `chrome.tabs`: `get` answers one fixed tab; `onUpdated` keeps its listeners, `updated` fires them. */
+const tabListeners = new Set<(tabId: number, info: unknown, tab: unknown) => void>();
+const tabsApi = {
+  get: (tabId: number) =>
+    tabId === 7
+      ? Promise.resolve({ id: 7, url: 'https://a.example/' })
+      : Promise.reject(new Error('No tab')),
+  onUpdated: {
+    addListener: (l: (tabId: number, info: unknown, tab: unknown) => void) => tabListeners.add(l),
+    removeListener: (l: (tabId: number, info: unknown, tab: unknown) => void) =>
+      tabListeners.delete(l),
+  },
+};
+const updated = (tabId: number, info: unknown, tab: unknown): void => {
+  for (const l of [...tabListeners]) l(tabId, info, tab);
+};
+
 beforeEach(() => {
+  tabListeners.clear();
   values.clear();
   session.clear();
   vi.stubGlobal('chrome', {
     contentSettings: { location: contentSetting('location') },
     debugger: { onEvent: { addListener: () => undefined, removeListener: () => undefined } },
     storage: { session: sessionArea },
+    tabs: tabsApi,
   });
 });
 
@@ -199,5 +219,38 @@ describe('flow storage format: the same keys and values as 1.4.22', () => {
     expect(session.get('detached-flow:flow_b')).toEqual(recordAsStored);
     expect(session.get('flow-history:7')).toEqual(historyAsStored);
     expect([...session.keys()].sort()).toEqual(['detached-flow:flow_b', 'flow-history:7']);
+  });
+});
+
+describe('TabEvents: the chrome.tabs adapter', () => {
+  it('get answers the tab and rejects for a closed one, as chrome.tabs.get does', async () => {
+    expect(await chromeTabEvents.get(7)).toMatchObject({ url: 'https://a.example/' });
+    await expect(chromeTabEvents.get(8)).rejects.toThrow('No tab');
+  });
+
+  it('onUpdated hands on tab, status and url of every update until it is unsubscribed', () => {
+    const seen: unknown[] = [];
+    const stop = chromeTabEvents.onUpdated((u) => seen.push(u));
+    updated(7, { status: 'complete' }, { url: 'https://a.example/b' });
+    updated(9, {}, {});
+    expect(seen).toEqual([
+      { tabId: 7, status: 'complete', url: 'https://a.example/b' },
+      { tabId: 9, status: undefined, url: undefined },
+    ]);
+    expect(tabListeners.size).toBe(1);
+    stop();
+    expect(tabListeners.size).toBe(0);
+    updated(7, { status: 'complete' }, { url: 'x' });
+    expect(seen).toHaveLength(2);
+  });
+
+  it('two subscriptions are independent', () => {
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const stopA = chromeTabEvents.onUpdated((u) => a.push(u));
+    chromeTabEvents.onUpdated((u) => b.push(u));
+    stopA();
+    updated(7, { status: 'complete' }, { url: 'u' });
+    expect([a.length, b.length]).toEqual([0, 1]);
   });
 });

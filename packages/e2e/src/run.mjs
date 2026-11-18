@@ -2,6 +2,8 @@
 // isolated headless Chrome, the BUILT server over MCP stdio, a tab connected
 // without a human, and tool calls whose effects are asserted, so the
 // extension half of every call (background.ts perform* handlers) runs for real.
+// Then flow recording by demonstration on a tab of its own (recordingChecks:
+// click, navigation step, Stop, Discard, the setting turned off mid-recording).
 // Then the interface language: switch EN | ES in the popup, open Activity and
 // Admin windows follow without reload, and the choice survives a reopen.
 // Last, the second transport (cdpDirectChecks, cdp-direct.mjs): a second
@@ -593,6 +595,8 @@ async function main() {
 
   await dragPermissionTabsFlows(T, page, cdp);
 
+  await recorded(() => recordingChecks(cdp, extId, swSession, page));
+
   if (ADAPTER_COVERAGE) {
     const contract = await inWorkerContract(cdp, swSession, extDir);
     await adapterCoverage(cdp, swSession, extDir, extId, contract);
@@ -614,6 +618,130 @@ async function main() {
   await refusedExtension(cdp, swSession, page, keylessId);
 
   await cdpDirectChecks({ chromePath, serverEnv, page });
+}
+
+/**
+ * Flow recording by demonstration (slice 20), on a tab of its own: the
+ * popup's own messages (`startRecording`, `recordingStatus`, `stopRecording`,
+ * `discardRecording`) over a tab connected for the purpose. A real click is
+ * captured, a real navigation adds its `wait_for` step and re-installs the
+ * recorder, Stop keeps both steps for review, Discard clears them, and
+ * turning the setting off during a recording discards it at once. No tool
+ * call is made, so the run's record is untouched; the worker's adapter for
+ * tab events is reached here (R6 condition 1).
+ */
+async function recordingChecks(cdp, extId, swSession, page) {
+  const t = now();
+  const url = new URL(`interact.html?rec=${String(Date.now())}`, page).href;
+  const { targetId } = await cdp.send('Target.createTarget', { url });
+  const { sessionId: tabSession } = await cdp.send('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  await evaluateUntil(cdp, `document.readyState === 'complete'`, tabSession, 15_000);
+  const tabId = await evaluateUntil(
+    cdp,
+    `chrome.tabs.query({}).then(ts => (ts.find(t => t.url === ${jsLiteral(url)} && t.status === 'complete') || {}).id ?? null)`,
+    swSession,
+    15_000,
+  );
+  const popup = await openPage(cdp, extId, 'popup.html');
+  const ask = (message) =>
+    cdp.evaluate(
+      `chrome.runtime.sendMessage(${jsLiteral({ ...message, tabId })})`,
+      popup.sessionId,
+    );
+  const statusIs = (what, want) =>
+    evaluateUntil(
+      cdp,
+      `chrome.runtime.sendMessage(${jsLiteral({ action: 'recordingStatus', tabId })}).then((s) => (${want}) ? s : null)`,
+      popup.sessionId,
+      10_000,
+    ).catch(() => {
+      throw new StepFailure('recording', `the recording never reached: ${what}`);
+    });
+  const setting = (on) =>
+    cdp.evaluate(
+      `chrome.storage.local.set({ flowRecordingEnabled: ${String(on)} })`,
+      popup.sessionId,
+    );
+  try {
+    // The tab may already be connecting by itself (a tab Chrome opens is picked
+    // up by the extension); either way it ends up connected.
+    await ask({ action: 'connect' });
+    await evaluateUntil(
+      cdp,
+      `chrome.runtime.sendMessage(${jsLiteral({ action: 'status', tabId })}).then((s) => s.connected)`,
+      popup.sessionId,
+      15_000,
+    );
+
+    // The setting is off by default: Record is refused until it is turned on.
+    const refused = await ask({ action: 'startRecording' });
+    if (refused?.ok !== false || refused.code !== 'recording-disabled') {
+      throw new StepFailure('recording', `start with the setting off: ${JSON.stringify(refused)}`);
+    }
+    await setting(true);
+    let started;
+    for (let i = 0; i < 50 && !started?.ok; i++) {
+      started = await ask({ action: 'startRecording' });
+      if (!started.ok) await sleep(100);
+    }
+    if (!started?.ok) throw new StepFailure('recording', `start: ${JSON.stringify(started)}`);
+    const again = await ask({ action: 'startRecording' });
+    if (again?.code !== 'recording-in-progress') {
+      throw new StepFailure('recording', `a second start: ${JSON.stringify(again)}`);
+    }
+
+    // A real (trusted) click on #tick is captured as one step.
+    const at = await cdp.evaluate(
+      `(() => { const r = document.querySelector('#tick').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      tabSession,
+    );
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send(
+        'Input.dispatchMouseEvent',
+        { type, x: at.x, y: at.y, button: 'left', clickCount: 1 },
+        tabSession,
+      );
+    }
+    await statusIs('one captured step', 's.active && s.stepCount === 1');
+
+    // A navigation adds its wait_for step; the recorder is installed again.
+    await cdp.send('Page.navigate', { url: new URL('opened.html', page).href }, tabSession);
+    await statusIs('a navigation step', 's.active && s.stepCount === 2');
+
+    const stopped = await ask({ action: 'stopRecording' });
+    const want = [
+      { click: { selector: '#tick' } },
+      { wait_for: { expression: "document.readyState === 'complete'" } },
+    ];
+    if (JSON.stringify(stopped) !== JSON.stringify({ ok: true, steps: want, capped: false })) {
+      throw new StepFailure('recording', `stop answered ${JSON.stringify(stopped)}`);
+    }
+    const review = await statusIs('review', 's.reviewing && !s.active');
+    if (review.stepCount !== 2 || JSON.stringify(review.steps) !== JSON.stringify(want)) {
+      throw new StepFailure('recording', `review shows ${JSON.stringify(review)}`);
+    }
+    const discarded = await ask({ action: 'discardRecording' });
+    if (!discarded?.ok) throw new StepFailure('recording', `discard: ${JSON.stringify(discarded)}`);
+    await statusIs('nothing left after Discard', '!s.active && !s.reviewing && s.stepCount === 0');
+
+    // Turning the setting off WHILE recording discards the recording at once.
+    const second = await ask({ action: 'startRecording' });
+    if (!second?.ok) throw new StepFailure('recording', `second start: ${JSON.stringify(second)}`);
+    await statusIs('an active second recording', 's.active');
+    await setting(false);
+    await statusIs('nothing left after the setting went off', '!s.active && !s.reviewing');
+  } finally {
+    await cdp
+      .evaluate(`chrome.storage.local.remove('flowRecordingEnabled')`, popup.sessionId)
+      .catch(() => undefined);
+    await ask({ action: 'disconnect' }).catch(() => undefined);
+    await cdp.send('Target.closeTarget', { targetId: popup.targetId }).catch(() => undefined);
+    await cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
+  }
+  stepDone('recording', t);
 }
 
 /**

@@ -43,10 +43,8 @@ export interface BridgeSocket {
 }
 
 /**
- * State for one tab's demonstration recording, see the "Flow recording by
- * demonstration" section of `background.ts` for the full lifecycle
- * (`startRecording` -> `handleRecordingNavigation`* -> `stopRecording` ->
- * `saveRecording` | `discardRecording`).
+ * State for one tab's demonstration recording, see `app/recording.ts` for the
+ * full lifecycle (`start` -> navigation steps* -> `stop` -> `save` | `discard`).
  */
 export interface RecordingState {
   /** 'recording': the in-page recorder is installed and capturing.
@@ -55,7 +53,7 @@ export interface RecordingState {
   status: 'recording' | 'reviewing';
   steps: FlowStep[];
   /** The tab's URL the last time recording state observed it — the
-   * baseline `handleRecordingNavigation` diffs `chrome.tabs.onUpdated`
+   * baseline the recording's navigation step diffs `tabs.onUpdated`
    * against to detect a REAL navigation (vs. a redundant "complete" event
    * for the same document). Doubles as the origin source at save time. */
   lastUrl: string;
@@ -105,7 +103,7 @@ export interface TabConnection {
   debuggerAttached: boolean;
   /** The tab's debugger intake (`debuggerIntake`). */
   debuggerListener?: TabEventListener;
-  /** Present from `startRecording` through save/discard. `undefined` means
+  /** Present from `Recording.start` through save/discard. `undefined` means
    * "not recording and nothing to review" — the common case, and what
    * every tab starts as regardless of the flow-recording setting. */
   recording?: RecordingState;
@@ -240,7 +238,7 @@ export function stringifyConsoleArg(v: unknown): string {
 
 export interface DebuggerIntakeDeps {
   clock: Clock;
-  /** The recording reached its step cap: stop it (`finishRecording`). */
+  /** The recording reached its step cap: stop it (`Recording.finish`). */
   onRecordingCapped(tabId: number): void;
 }
 

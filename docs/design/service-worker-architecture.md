@@ -712,6 +712,24 @@ and subscribes `chromeAlarms.onFire` at top level (the wake-listener rule maps
 `alarms.onAlarm` to `Alarms.onFire`). `EventsOut` is not a port yet: the
 `flow-finished` event is still `background.ts` `publishFlowFinished`.
 
+As built in slice 20: `createRecording` (`app/recording.ts`) holds the
+recording operations (`start`, `stop`, `finish`, `discard`,
+`forceStopAndDiscard`, `save`, `status`, `removeNavListener`,
+`teardownRecorder`) over the worker's `TabRegistry`. It is stateful (each
+recording tab's navigation subscription), so `background.ts` builds it once and
+hands it the CDP send, the page evaluate, the clock, a getter for the
+setting's cache and `chromeTabEvents`. `TabEvents` is declared next to its user
+in `app/recording.ts` and has the two members recording uses, `get(tabId)` and
+`onUpdated(listener)`; the listener gets a `TabUpdate` (`tabId`, `status`,
+`url`) and `onUpdated` returns the function that stops the reports.
+`adapters/chrome-tab-events.ts` is a stateless object built once, and the
+filter on the tab and on `complete` is the recording's. Slice 21 adds
+`onRemoved`, `onCreated` and `onDebuggerDetach`. The flow-recording setting's
+cache and its `storage.onChanged` listener (a wake listener, R1) stay in
+`background.ts`; the listener calls `recording.forceStopAndDiscard`. The e2e
+reaches every adapter function with a recording on a tab of its own
+(`recordingChecks`).
+
 ### 3.2 `PageDriver`: narrow page capabilities
 
 Revision 1's `cdp-glue.ts` was a bag of nine functions. It becomes a
@@ -1410,7 +1428,7 @@ Refactor commits and any behavior fix never share a commit (guarantee e).
 | 18b | Flow tools (**done**, release 1.4.25) | `handleFlow`, `handleFlowStatus`, `buildFlowDeps`, server flow cases behind `FlowControl` and `FlowCancel`; the five transitional tool cases and the three declared flow rows removed; `CDP_DIRECT_PROVIDES` gains `flows` and `flow-cancel`; the no-tool-`case` fitness rule (revision 11) | ~250 + ~190 server | e2e `flow`, `flow_status`, `flow_cancel`; the support snapshot still equals the 1.4.23 table; the no-tool-`case` rule RED-probed | revert |
 | — | **Checkpoint B** (6.2) | | | | |
 | 19 | Connection lifecycle (**done**, release 1.4.28) | `app/connection.ts` (tab ids, reconnect wiring, WebSocket switch); `PendingReplies<T>`; `chrome-alarms`, `web-socket` adapters | ~450 | unit tests with a fake socket and alarms; e2e handshake and Origin cases | revert |
-| 20 | Recording | `app/recording.ts` (lines 4328-4658) | ~330 | existing `recording.test.ts` plus new unit tests; manual popup check noted in PR | revert |
+| 20 | Recording (**done**, release 1.4.29) | `app/recording.ts` (lines 4328-4658 at `5ce3055`): start, navigation steps, the cap, stop, discard, save, status; the `chrome-tab-events` adapter | ~330 | existing `recording.test.ts` plus `app/recording.test.ts` on fakes; an e2e recording case on a tab of its own; manual popup check noted in PR | revert |
 | 21 | Popup router, windows, repair, tab events | lines 633-900 (`chrome-windows`), 4234-4327, `chrome.runtime.onMessage` and tab events (`chrome-runtime`, `chrome-tab-events`) to `app/` | ~460 (may split in two) | unit tests of the router; e2e i18n and Admin cases; `wait_for_tab` case | revert |
 | 22 | Retire parity guards | delete `transport-parity.test.ts` and the remaining copy sections of `drift.test.ts` and `config.drift.test.ts`; budget set to the measured count (5.4) | deletions only | contract suite green on fakes and both adapters in the same CI run | revert |
 
