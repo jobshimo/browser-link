@@ -32,6 +32,12 @@
 // scripts/e2e-diff.mjs turns it off, since a base build may predate it.
 // With it, the in-worker contract run (packages/extension/contract/) reaches
 // the adapter methods the calls cannot (R6 primary path, slice 19).
+// E2E_RECORD_ONLY=<entries> (comma-separated labels or label prefixes,
+// expected-labels.mjs) is set only by scripts/e2e-diff.mjs, on the base run
+// of a behavior-change PR whose description lists `Expected labels:`: a case
+// with a listed label is recorded but not asserted (recordOnly below), every
+// other case still asserts, and the tool-to-case check is off. Never set it
+// by hand: the differential deletes it from the inherited env.
 // Exit 0 only when every call passes; 1 names the failing tool.
 // Shape and numbers: packages/plan/lab/2026-11-09-e2e-net/README.md.
 import {
@@ -83,6 +89,7 @@ import {
   writeResult,
 } from './lib.mjs';
 import { uncalledCases } from './tool-cases.mjs';
+import { parseLabelList, recordOnlyRunner } from './expected-labels.mjs';
 import { cdpTabOf, enableCdpDirect } from './cdp-direct.mjs';
 import {
   adapterCoverageSummary,
@@ -103,6 +110,12 @@ const ATTACHMENTS = {
 };
 const EXPECT_FAIL = (process.env.E2E_EXPECT_FAIL ?? '').replace(/^browser\./, '');
 const ADAPTER_COVERAGE = process.env.E2E_ADAPTER_COVERAGE !== '0';
+/** E2E_RECORD_ONLY: the labels the base run records without asserting. */
+const RECORD_ONLY = (() => {
+  const { entries, error } = parseLabelList(process.env.E2E_RECORD_ONLY);
+  if (error) throw new Error(`E2E_RECORD_ONLY: ${error}`);
+  return entries;
+})();
 /** The in-worker contract run's own budget: its alarm round trip included. */
 const CONTRACT_TIMEOUT_MS = 120_000;
 const FRAME_FILE = join(E2E_DIR, 'pages/frame.html');
@@ -177,6 +190,24 @@ class StepFailure extends Error {
 const temps = [];
 /** Steps that failed without stopping the run (each already printed). */
 const deferredFailures = [];
+/** Listed cases (E2E_RECORD_ONLY) whose assertion failed on this run: printed,
+ * never counted as a failure. */
+const recordOnlyFailures = [];
+
+/** Runs one case. When its label is listed in E2E_RECORD_ONLY, a failure of
+ * the case (a StepFailure) is printed and swallowed: the call stays in the
+ * record, the run goes on, and the exit is not touched. Any other label, or
+ * any other error, passes through unchanged. Every `call` goes through it; a
+ * case that asserts by hand (attempt, then its own StepFailure) wraps itself
+ * in it to be listable, as expectCdpError does. */
+const recordOnly = recordOnlyRunner({
+  entries: RECORD_ONLY,
+  isFailure: (e) => e instanceof StepFailure,
+  onListedFailure: (label, e) => {
+    console.log(`e2e: listed, record-only (not asserted): ${errorText(e)}`);
+    recordOnlyFailures.push(label);
+  },
+});
 const state = {
   http: undefined,
   chrome: undefined,
@@ -236,6 +267,10 @@ function json(res) {
  * (or a string saying what is wrong). Prints `tool ok ms`, or `label ok ms`
  * when a second check of the same tool needs its own name. */
 async function call(tool, args, check, { print = true, label = tool, poll = false } = {}) {
+  return recordOnly(label, () => assertedCall(tool, args, check, { print, label, poll }));
+}
+
+async function assertedCall(tool, args, check, { print, label, poll }) {
   const short = label.replace(/^browser\./, '');
   const t = now();
   let res;
@@ -887,17 +922,18 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
   );
 
   // An error case: the call must fail with exactly `want`.
-  const expectCdpError = async (label, tool, args, want) => {
-    const t = now();
-    const r = await attempt(tool, args, label);
-    if (!r.isError || r.text !== want) {
-      throw new StepFailure(
-        label,
-        `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
-      );
-    }
-    stepDone(label, t);
-  };
+  const expectCdpError = (label, tool, args, want) =>
+    recordOnly(label, async () => {
+      const t = now();
+      const r = await attempt(tool, args, label);
+      if (!r.isError || r.text !== want) {
+        throw new StepFailure(
+          label,
+          `expected isError with exactly ${JSON.stringify(want)}; isError=${String(r.isError)} answer: ${JSON.stringify(r.text.slice(0, 400))}`,
+        );
+      }
+      stepDone(label, t);
+    });
 
   // The error path: a click whose selector matches nothing.
   await expectCdpError(
@@ -2620,8 +2656,13 @@ try {
       );
     }),
   ]);
+  if (recordOnlyFailures.length) {
+    console.log(
+      `e2e: ${String(recordOnlyFailures.length)} listed case(s) failed, record-only: ${recordOnlyFailures.join(', ')}`,
+    );
+  }
   if (deferredFailures.length) exitCode = 1;
-  else {
+  else if (RECORD_ONLY.length === 0) {
     // A run that passed must have called every mapped tool under its case.
     const missing = uncalledCases(calledCases);
     if (missing.length) {

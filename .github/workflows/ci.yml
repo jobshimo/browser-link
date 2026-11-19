@@ -7,6 +7,9 @@ on:
     branches: [main]
     # The default types plus labeled/unlabeled, so adding or removing the
     # `behavior-change` label re-runs the e2e-diff gate (it re-runs every job).
+    # The description's `Expected labels:` line is read at the event that ran
+    # the job (push, label added or removed): changing the list needs a push
+    # or a label toggle; editing the description alone re-runs nothing.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Top-level permissions are read-only — overridden per-job. The release
@@ -268,13 +271,25 @@ jobs:
   # Script exit codes: 1 difference, 2 harness failure, 3 setup error.
   # Behavior-change flow: a PR whose purpose is to change behavior carries
   # the `behavior-change` label and its description names the expected
-  # difference. With the label the job still computes the difference and
-  # writes it to the job log and the step summary, but exit 1 passes; a
-  # harness failure (2) or setup error (3) still fails. Without the label,
-  # exit 1 fails. The label is read as a boolean expression into env, never
+  # difference. With the label and an `Expected labels:` line (below), a
+  # difference passes only when it matches the list; with the label and no
+  # line, equal builds pass (a change only unit tests see) and a difference
+  # fails, the step summary asking for the line. A harness failure (2) or
+  # setup error (3) always fails. Without the label, exit 1 fails. The label is read as a boolean expression into env, never
   # interpolated into the script. scripts/behavior-change-check.mjs fails a
   # labelled PR whose description has no `Expected difference:` line, or whose
   # title starts with `refactor:` or `refactor(core)`.
+  # Expected labels (design 7(b), revision 14): a labelled PR may also list,
+  # on one `Expected labels:` line of its description, the call labels whose
+  # base run is expected to fail because the PR adds e2e cases for the new
+  # behavior. behavior-change-check.mjs alone parses and validates the line
+  # ([A-Za-z0-9._-]+ per entry) and writes the list to its step output; the
+  # Differential step gets it as an env value and passes it as an argument,
+  # never interpolated into the script. The base run then records those cases
+  # without asserting them, each listed label must differ, and any differing
+  # label outside the list fails; a record-only base record is never cached.
+  # The line is read at the event that ran the job (push, label added or
+  # removed); changing it needs a push or a label toggle.
   # The normalised base record is cached per base sha, harness hash and Chrome.
   e2e-diff:
     name: e2e differential (Chrome 118, ubuntu)
@@ -294,6 +309,7 @@ jobs:
       # the description and never goes on a refactor. Title and body reach the
       # script only as environment variables.
       - name: Check the behavior-change label
+        id: behavior
         env:
           BEHAVIOR_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'behavior-change') }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -317,7 +333,8 @@ jobs:
           while IFS= read -r -d '' f; do
             case "$f" in
               packages/e2e/src/run.mjs | packages/e2e/src/lib.mjs | packages/e2e/src/normalise.mjs | \
-                packages/e2e/src/cdp-direct.mjs | packages/e2e/pages/* | packages/e2e/package.json)
+                packages/e2e/src/cdp-direct.mjs | packages/e2e/src/expected-labels.mjs | \
+                packages/e2e/pages/* | packages/e2e/package.json)
                 harness=1 ;;
               *.md | *.test.* | *.spec.* | */__tests__/* | */vitest.config.*) ;;
               packages/server/src/* | packages/server/package.json | packages/server/tsconfig*.json | \
@@ -385,7 +402,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/e2e/build/e2e-base-record.json
-          key: e2e-record-${{ steps.scope.outputs.base }}-${{ hashFiles('packages/e2e/src/run.mjs', 'packages/e2e/src/lib.mjs', 'packages/e2e/src/normalise.mjs', 'packages/e2e/src/cdp-direct.mjs', 'packages/e2e/pages/**') }}-${{ env.CFT_CHROME }}
+          key: e2e-record-${{ steps.scope.outputs.base }}-${{ hashFiles('packages/e2e/src/run.mjs', 'packages/e2e/src/lib.mjs', 'packages/e2e/src/normalise.mjs', 'packages/e2e/src/cdp-direct.mjs', 'packages/e2e/src/expected-labels.mjs', 'packages/e2e/pages/**') }}-${{ env.CFT_CHROME }}
 
       - name: Differential
         if: steps.scope.outputs.mode != 'none'
@@ -396,10 +413,14 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           BASE_RECORD: packages/e2e/build/e2e-base-record.json
           BEHAVIOR_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'behavior-change') }}
+          # Validated by the check step; empty without the label or the line.
+          EXPECTED_LABELS: ${{ steps.behavior.outputs.expected_labels }}
         run: |
           set -euo pipefail
           label=()
-          if [ "$BEHAVIOR_CHANGE" = true ]; then label=(--behavior-change); fi
+          if [ "$BEHAVIOR_CHANGE" = true ]; then
+            label=(--behavior-change --expected-labels "$EXPECTED_LABELS")
+          fi
           case "$MODE" in
             self) node scripts/e2e-diff.mjs --self-diff-only ;;
             diff) node scripts/e2e-diff.mjs "origin/$BASE_REF" --base-record "$BASE_RECORD" "${label[@]}" ;;
