@@ -50,12 +50,17 @@ test('parseLabelList: a list longer than MAX_ENTRIES is refused', () => {
   assert.equal(parseLabelList(enough).entries.length, MAX_ENTRIES);
 });
 
-test('labelMatches: the label itself, or a prefix of two or more segments at a dot', () => {
+test('labelMatches: the label itself, or a prefix of three or more segments at a dot', () => {
   assert.ok(labelMatches('browser.drag.cdp', 'browser.drag.cdp'));
-  assert.ok(labelMatches('browser.drag.cdp', 'browser.drag'));
-  assert.ok(!labelMatches('browser.dragger', 'browser.drag'));
+  assert.ok(labelMatches('browser.drag.cdp.html5', 'browser.drag.cdp'));
+  assert.ok(!labelMatches('browser.drag.cdpx', 'browser.drag.cdp'));
   assert.ok(!labelMatches('browser.drag', 'browser.drag.cdp'));
-  // One segment covers only that exact label, never a namespace.
+  // Fewer than three segments: only that exact label. A default label is the
+  // tool name, so `browser.click` is valid but never covers `browser.click.cdp`.
+  assert.ok(labelMatches('browser.click', 'browser.click'));
+  assert.ok(!labelMatches('browser.click.cdp', 'browser.click'));
+  assert.ok(!labelMatches('browser.drag.cdp', 'browser.drag'));
+  assert.ok(!labelMatches('error.timeout.x', 'error.timeout'));
   assert.ok(!labelMatches('browser.drag.cdp', 'browser'));
   assert.ok(labelMatches('make-closed', 'make-closed'));
   assert.ok(!labelMatches(undefined, 'a.b'));

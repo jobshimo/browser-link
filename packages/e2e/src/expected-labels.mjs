@@ -6,11 +6,12 @@
 // (scripts/e2e-diff.mjs) and the harness's record-only base run (run.mjs,
 // E2E_RECORD_ONLY), so the three never disagree on what an entry covers.
 //
-// An entry is a label (`browser.canvas_screenshot.cdp`) or a label prefix of
-// at least two dot-separated segments (`browser.drag` covers
-// `browser.drag.cdp`, never `browser.dragger`). A one-segment entry
-// (`browser`, `make-closed`) matches only that exact label, so no entry can
-// cover a whole namespace.
+// An entry of three or more dot-separated segments is a label or a label
+// prefix (`browser.drag.flow` covers `browser.drag.flow.cdp`, never
+// `browser.drag.flowx`). An entry of fewer segments matches only that exact
+// label: a call's default label is its tool name, so `browser.click` stays a
+// valid exact label but never covers `browser.click.cdp`, and no entry can
+// cover a tool's or a namespace's cases.
 
 /** What one entry may contain; anything else is refused, never escaped. */
 export const ENTRY = /^[A-Za-z0-9._-]+$/;
@@ -38,12 +39,15 @@ export function parseLabelList(text) {
   return { entries };
 }
 
-/** true when `entry` covers `label`: equal, or a prefix of two or more
+/** Segments an entry needs to act as a prefix. */
+export const PREFIX_SEGMENTS = 3;
+
+/** true when `entry` covers `label`: equal, or a prefix of three or more
  * segments followed by a dot. */
 export function labelMatches(label, entry) {
   if (typeof label !== 'string') return false;
   if (label === entry) return true;
-  return entry.split('.').length >= 2 && label.startsWith(`${entry}.`);
+  return entry.split('.').length >= PREFIX_SEGMENTS && label.startsWith(`${entry}.`);
 }
 
 /** The entries that cover `label` (empty when it is not listed). */

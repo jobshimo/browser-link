@@ -14,11 +14,13 @@
 //   node scripts/e2e-diff.mjs --self-diff-only   two HEAD runs, no base
 //     --ignore-scripts       pass --ignore-scripts to the base install (local
 //                            Windows without the toolchain for native builds)
-//     --behavior-change      the PR carries the `behavior-change` label: a
-//                            difference is still computed and printed, but
-//                            exits 0; a harness (2) or setup (3) failure
-//                            still fails. The PR description names the
-//                            expected difference.
+//     --behavior-change      the PR carries the `behavior-change` label. With
+//                            --expected-labels, a difference passes only
+//                            when it matches the list (below). Without a
+//                            list there is no excuse: equal builds pass (a
+//                            change only unit tests see), a difference fails
+//                            and the summary asks for the line. A harness
+//                            (2) or setup (3) failure always fails.
 //     --expected-labels <list>   with --behavior-change only (ignored
 //                            without it): comma-separated call labels or
 //                            label prefixes (packages/e2e/src/
@@ -127,9 +129,14 @@ export function callsByLabel(record) {
  * list (design 7(b), revision 14). Each label's calls are compared as a
  * group on both sides.
  * - `listed`: one row per entry with the labels it covers, their calls on
- *   each side and whether any of them differs. An entry whose calls are
- *   equal (or that covers no call at all) is in `equalEntries`: the list
- *   names a change that did not happen.
+ *   each side and whether any of them differs. Calls are paired by position
+ *   within a label; a pair counts as a difference only when the base call
+ *   has a result (a tool result or an isError tool error) or threw a tool's
+ *   own MCP error (thrownKind). A base call that threw transport noise (a
+ *   timeout, a lost connection) never satisfies an entry and goes to
+ *   `noise`. An entry with no counting difference (equal, noise only, or no
+ *   call at all) is in `equalEntries`: the list names a change that did not
+ *   happen.
  * - `unexpected`: the labels outside the list whose calls differ.
  * - `residual`: with every listed call removed, the first difference left
  *   (an unlisted call moved, added or dropped, or the runs' `ok`), else null.
@@ -140,12 +147,24 @@ export function expectedLabelsVerdict(base, head, entries) {
   const b = callsByLabel(head);
   const labels = [...new Set([...a.keys(), ...b.keys()])].sort();
   const differs = (label) => canonical(a.get(label) ?? []) !== canonical(b.get(label) ?? []);
+  const noise = [];
+  /** Whether a listed label differs through a base call that counts. */
+  const listedDiffers = (label) => {
+    const [ba, hb] = [a.get(label) ?? [], b.get(label) ?? []];
+    let found = false;
+    for (let i = 0; i < Math.max(ba.length, hb.length); i++) {
+      if (canonical(ba[i]) === canonical(hb[i])) continue;
+      if (baseCallCounts(ba[i])) found = true;
+      else if (ba[i]?.thrown !== undefined) noise.push({ label, thrown: ba[i].thrown });
+    }
+    return found;
+  };
   const listed = entries.map((entry) => {
     const covered = labels.filter((l) => entriesFor(l, [entry]).length > 0);
     return {
       entry,
       labels: covered,
-      differs: covered.some(differs),
+      differs: covered.map(listedDiffers).some(Boolean),
       base: covered.flatMap((l) => a.get(l) ?? []),
       head: covered.flatMap((l) => b.get(l) ?? []),
     };
@@ -158,7 +177,30 @@ export function expectedLabelsVerdict(base, head, entries) {
   });
   const residual = firstDifference(keep(base), keep(head));
   const ok = equalEntries.length === 0 && unexpected.length === 0 && residual === null;
-  return { ok, listed, equalEntries, unexpected, residual };
+  return { ok, listed, equalEntries, unexpected, residual, noise };
+}
+
+/** The MCP SDK's own transport codes: ConnectionClosed and RequestTimeout. */
+const TRANSPORT_CODES = new Set(['-32000', '-32001']);
+
+/**
+ * What a recorded `thrown` (the MCP client's exception, run.mjs callTool)
+ * is: `tool` when it is an McpError the server answered for this call
+ * (`MCP error <code>: ...` with any code but the transport ones, for
+ * example -32602 invalid params), `noise` when it is a transport timeout
+ * (-32001), a lost connection (-32000) or not an McpError at all.
+ */
+export function thrownKind(text) {
+  const m = /^MCP error (-?\d+):/.exec(String(text ?? ''));
+  return m && !TRANSPORT_CODES.has(m[1]) ? 'tool' : 'noise';
+}
+
+/** A base call that can satisfy a listed label: it has a result and did not
+ * throw, or it threw the tool's own McpError. */
+function baseCallCounts(call) {
+  if (!call) return false;
+  if (call.thrown !== undefined) return thrownKind(call.thrown) === 'tool';
+  return call.result !== undefined;
 }
 
 /** One call's outcome, short enough for a log line: its result, or what it
@@ -203,6 +245,9 @@ export function formatExpectedLabels(verdict) {
   if (verdict.residual) {
     lines.push('', 'outside the list:', formatDifference(verdict.residual));
   }
+  for (const n of verdict.noise ?? []) {
+    lines.push('', `noise (does not count for ${n.label}): the base call threw ${outcome(n)}`);
+  }
   return lines.join('\n');
 }
 
@@ -222,24 +267,21 @@ export function exitCode({ setupError = false, harnessFailed = false, differs = 
 
 const VERDICTS = ['ok', 'FAIL (difference)', 'FAIL (harness)', 'FAIL (setup)'];
 
-/** The process exit code: the script's own code, except that a base-vs-HEAD
- * difference passes when the PR carries the `behavior-change` label. A
- * self-diff difference (two runs of HEAD: the normalise table is incomplete),
- * a harness failure or a setup error is never excused.
- *
- * With an expected-labels list (`expected`, its verdict; `{ ok: false }`
- * when no verdict could be computed) the label excuses a base-vs-HEAD
- * difference only when the verdict holds, and an equal run fails (every
- * listed label must differ). Without the label the list is never read. */
+/** The process exit code: the script's own code, except that a labelled PR
+ * with an expected-labels list (`expected`, its verdict; `{ ok: false }`
+ * when no verdict could be computed) passes a base-vs-HEAD difference only
+ * when the verdict holds, and fails an equal run (every listed label must
+ * differ). A labelled PR without a list gets no excuse: it passes when the
+ * builds behave the same (a behavior change only unit tests see) and fails
+ * on a difference, and the summary asks for the line. A self-diff difference
+ * (two runs of HEAD: the normalise table is incomplete), a harness failure or
+ * a setup error is never excused. Without the label the list is never read. */
 export function gateExit(code, { behaviorChange = false, selfDiffers = false, expected } = {}) {
-  if (!behaviorChange || selfDiffers) return code;
-  if (expected) {
-    if (code === EXIT.difference || code === EXIT.equal) {
-      return expected.ok ? EXIT.equal : EXIT.difference;
-    }
-    return code;
+  if (!behaviorChange || selfDiffers || !expected) return code;
+  if (code === EXIT.difference || code === EXIT.equal) {
+    return expected.ok ? EXIT.equal : EXIT.difference;
   }
-  return code === EXIT.difference ? EXIT.equal : code;
+  return code;
 }
 
 /** Rule 6 of revision 14: a base record is written to the cache file only
@@ -252,7 +294,14 @@ export function cacheBaseRecord({ passed, baseRecord, expectedEntries = [] }) {
 
 /** The step summary: the verdict, what the label means for it, and each
  * difference report as printed in the log. */
-export function summaryMarkdown({ code, behaviorChange, selfDiffers = false, expected, reports }) {
+export function summaryMarkdown({
+  code,
+  behaviorChange,
+  selfDiffers = false,
+  expected,
+  differingLabels = [],
+  reports,
+}) {
   const lines = ['## e2e differential', ''];
   if (
     expected &&
@@ -270,13 +319,21 @@ export function summaryMarkdown({ code, behaviorChange, selfDiffers = false, exp
       for (const row of expected.listed) {
         lines.push(`- \`${row.entry}\`: ${row.differs ? 'differs' : '**equal on base and head**'}`);
       }
+      for (const n of expected.noise ?? []) {
+        lines.push(`- noise on \`${n.label}\` (the base call threw, does not count)`);
+      }
       lines.push('', '```text', formatExpectedLabels(expected), '```');
     }
   } else if (code === EXIT.difference && behaviorChange && !selfDiffers) {
     lines.push(
-      'Verdict: difference, accepted: the PR carries the `behavior-change` label.',
-      'The PR description must name this difference as the expected one.',
+      `Verdict: ${VERDICTS[code]}. The PR carries the \`behavior-change\` label but its`,
+      'description has no `Expected labels:` line: add one naming every call label',
+      'that differs (for example `Expected labels: browser.drag.cdp`), then push or',
+      'toggle the label to re-run the job.',
     );
+    if (differingLabels.length) {
+      lines.push('', `Differing labels: ${differingLabels.map((l) => `\`${l}\``).join(', ')}`);
+    }
   } else if (code === EXIT.difference && selfDiffers) {
     lines.push(
       `Verdict: ${VERDICTS[code]}. Two runs of HEAD differ: the normalise table`,
@@ -426,6 +483,7 @@ function main() {
     console.log(`e2e-diff: expected labels (base run record-only): ${expectedEntries.join(', ')}`);
   }
   let expected;
+  let differingLabels = [];
   if (!existsSync(join(REPO, 'packages/server/dist/cli.js'))) {
     throw new SetupError('HEAD is not built; run pnpm build first');
   }
@@ -472,6 +530,14 @@ function main() {
         expected = expectedLabelsVerdict(base, head.record, expectedEntries);
         const report = formatExpectedLabels(expected);
         console.log(report);
+      } else if (opts.behaviorChange && base && head.record) {
+        // Labelled without a list: name the labels the line would need.
+        differingLabels = expectedLabelsVerdict(base, head.record, []).unexpected;
+        if (differingLabels.length) {
+          console.log(
+            `e2e-diff: no Expected labels line; differing labels: ${differingLabels.join(', ')}`,
+          );
+        }
       }
     }
   } catch (e) {
@@ -498,17 +564,22 @@ function main() {
   };
   const exit = gateExit(code, gate);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryMarkdown({ code, ...gate, reports }));
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      summaryMarkdown({ code, ...gate, differingLabels, reports }),
+    );
   }
   console.log(`e2e-diff: ${VERDICTS[code]}, exit ${String(code)}`);
   if (exit !== code && exit === EXIT.equal) {
     console.log(
-      expected
-        ? 'e2e-diff: difference accepted: every difference is in the expected labels, exit 0'
-        : 'e2e-diff: difference accepted (behavior-change label); the PR description must name it, exit 0',
+      'e2e-diff: difference accepted: every difference is in the expected labels, exit 0',
     );
   } else if (exit !== code) {
     console.log('e2e-diff: expected labels not met (see above), exit 1');
+  } else if (code === EXIT.difference && gate.behaviorChange && !expected && !gate.selfDiffers) {
+    console.log(
+      'e2e-diff: behavior-change label without an Expected labels line: a difference fails; add the line',
+    );
   }
   return exit;
 }

@@ -6,10 +6,11 @@ on:
   pull_request:
     branches: [main]
     # The default types plus labeled/unlabeled, so adding or removing the
-    # `behavior-change` label re-runs the e2e-diff gate (it re-runs every job),
-    # and edited, so a changed description (its `Expected labels:` line)
-    # re-runs it without a push.
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    # `behavior-change` label re-runs the e2e-diff gate (it re-runs every job).
+    # The description's `Expected labels:` line is read at the event that ran
+    # the job (push, label added or removed): changing the list needs a push
+    # or a label toggle; editing the description alone re-runs nothing.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Top-level permissions are read-only — overridden per-job. The release
 # job below needs contents:write + id-token:write; everything else stays
@@ -270,10 +271,11 @@ jobs:
   # Script exit codes: 1 difference, 2 harness failure, 3 setup error.
   # Behavior-change flow: a PR whose purpose is to change behavior carries
   # the `behavior-change` label and its description names the expected
-  # difference. With the label the job still computes the difference and
-  # writes it to the job log and the step summary, but exit 1 passes; a
-  # harness failure (2) or setup error (3) still fails. Without the label,
-  # exit 1 fails. The label is read as a boolean expression into env, never
+  # difference. With the label and an `Expected labels:` line (below), a
+  # difference passes only when it matches the list; with the label and no
+  # line, equal builds pass (a change only unit tests see) and a difference
+  # fails, the step summary asking for the line. A harness failure (2) or
+  # setup error (3) always fails. Without the label, exit 1 fails. The label is read as a boolean expression into env, never
   # interpolated into the script. scripts/behavior-change-check.mjs fails a
   # labelled PR whose description has no `Expected difference:` line, or whose
   # title starts with `refactor:` or `refactor(core)`.
@@ -286,6 +288,8 @@ jobs:
   # never interpolated into the script. The base run then records those cases
   # without asserting them, each listed label must differ, and any differing
   # label outside the list fails; a record-only base record is never cached.
+  # The line is read at the event that ran the job (push, label added or
+  # removed); changing it needs a push or a label toggle.
   # The normalised base record is cached per base sha, harness hash and Chrome.
   e2e-diff:
     name: e2e differential (Chrome 118, ubuntu)

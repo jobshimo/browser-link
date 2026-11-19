@@ -62,18 +62,22 @@ result }`); a list entry is a label or a label prefix.
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | The list is read only on a PR that carries `behavior-change`, from one `Expected labels:` line of the description (for example `Expected labels: browser.canvas_screenshot.cdp, browser.drag.cdp`), parsed by `behavior-change-check.mjs` (which gets `PR_BODY` as env, never through a shell), each entry validated against `[A-Za-z0-9._-]+`, and passed to the differential step as a step output, then to `e2e-diff.mjs --expected-labels` as an argument. `harnessEnv` deletes `E2E_RECORD_ONLY` from the inherited env, as it does `E2E_EXPECT_FAIL`. The workflow also runs on `edited`, so a description change re-runs the job | a value someone can set by hand on the runner must never reach a run; PR text is untrusted |
+| 1 | The list is read only on a PR that carries `behavior-change`, from one `Expected labels:` line of the description (for example `Expected labels: browser.canvas_screenshot.cdp, browser.drag.cdp`), parsed by `behavior-change-check.mjs` (which gets `PR_BODY` as env, never through a shell), each entry validated against `[A-Za-z0-9._-]+`, and passed to the differential step as a step output, then to `e2e-diff.mjs --expected-labels` as an argument. `harnessEnv` deletes `E2E_RECORD_ONLY` from the inherited env, as it does `E2E_EXPECT_FAIL`. The list is read at the event that ran the job (push, label added or removed); the workflow does not run on `edited`, so changing the list needs a push or a label toggle (follow-up 3; approvals are not a gate on this repo) | a value someone can set by hand on the runner must never reach a run; PR text is untrusted |
 | 2 | Base run: every case with a listed label runs record-only (`recordOnlyRunner` in `packages/e2e/src/expected-labels.mjs`, around every `call` and around `expectCdpError`; not pushed to `deferredFailures`), so a listed failure neither aborts `main()` nor sets the exit; every other case still asserts, so a base failure outside the list still exits 2. The tool-to-case and adapter-coverage checks stay off on that run | the label must not excuse a base that is broken for another reason |
-| 3 | A per-label comparison (`expectedLabelsVerdict`: calls grouped by label, not only the first positional difference): each entry must cover at least one differing call; an entry that comes out equal, or that no call carries, fails the job | no blanket or stale lists |
-| 4 | Any differing label outside the list fails, label or not; with the listed calls removed, the records must still be equal (order, count and the runs' `ok`). A listed change with side effects on later calls (tab state after a drag) lists those labels too. An entry of one segment matches only that exact label, never a namespace | the list names the change, nothing else rides along |
+| 3 | A per-label comparison (`expectedLabelsVerdict`: calls grouped by label and paired by position, not only the first positional difference): each entry must cover at least one differing call; an entry that comes out equal, or that no call carries, fails the job. A pair counts only when the base call has a result (a tool result or an isError tool error) and no `thrown` (follow-up 2). The MCP-error case: a `thrown` McpError the server answered for the call (`MCP error <code>:` with any code but -32000 and -32001, for example -32602 invalid params) counts as a tool error; a transport timeout (-32001), a lost connection (-32000) or a non-MCP exception is noise, never satisfies an entry, and is printed as noise in the log and the summary (`thrownKind`) | no blanket or stale lists; a flaky base call must not stand in for the change |
+| 4 | Any differing label outside the list fails, label or not; with the listed calls removed, the records must still be equal (order, count and the runs' `ok`). A listed change with side effects on later calls (tab state after a drag) lists those labels too. An entry of fewer than three segments matches only that exact label (a default label is the tool name, so `browser.click` is a valid exact label and never covers `browser.click.cdp`); only entries of three or more segments act as prefixes (`labelMatches`, follow-up 1) | the list names the change, nothing else rides along |
 | 5 | HEAD's runs assert everything. The self-diff ignores the list entirely (`gateExit` still refuses to excuse a self-diff difference, list or not) | two runs of the same build differing is the normalise table's fault |
 | 6 | A record-only base run is never written to the base-record cache (`cacheBaseRecord`); `expected-labels.mjs` joins the harness files of the job (self-diff trigger and cache key). The workflow runs only on PRs to main and computes the merge-base from `origin/$BASE_REF`, so stacked PRs are unaffected | a cached record whose listed cases were never asserted must not serve a later run |
 | 7 | The job log and step summary print each listed label with both results | reviewers compare them with the description |
 
-A labelled PR without the line behaves as before (any base-vs-HEAD difference
-passes, harness and setup failures do not). Tests: the parser, the per-label
-comparison, the record-only wrapper and the cache rule, with RED probes for
-rules 2-4, the unlabelled case and the self-diff case
+Follow-up 4 closes the blanket excuse: a labelled PR without the line passes
+only when the differential is equal (behavior PRs only unit tests see, such as
+#84 and #85) and fails when it differs, the summary asking for the line and
+naming the differing labels; with a list, rules 3 and 4 decide. Follow-ups 1-4
+are arch's four tightenings before the merge of this revision's PR. Tests: the
+parser, the per-label comparison, the record-only wrapper and the cache rule,
+with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
+self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
 
@@ -1728,15 +1732,17 @@ compares them with these budgets.
 8. **Expected labels** (revision 14). A `behavior-change` PR that adds e2e
    cases for its new behavior lists their call labels on one
    `Expected labels:` line of its description (a list entry is a label, or a
-   label prefix of two or more segments). `behavior-change-check.mjs` parses
+   label prefix of three or more segments). `behavior-change-check.mjs` parses
    and validates it and passes it to the differential step as a step output,
    which reaches `e2e-diff.mjs --expected-labels` as an argument. The base
    run records the listed cases without asserting them (`E2E_RECORD_ONLY`,
    set only by the script); every other case asserts. The gate compares per
    label: each entry must cover a differing call, and any differing call
-   outside the list fails. HEAD's runs and the self-diff ignore the list, and
-   a record-only base record is never cached. Without the label the line is
-   ignored.
+   outside the list fails; a base call that threw transport noise never
+   counts. A labelled PR without the line passes only an equal differential.
+   HEAD's runs and the self-diff ignore the list, and a record-only base
+   record is never cached. The line is read at the event that ran the job.
+   Without the label the line is ignored.
 
 ### (c) The bundler lands alone
 

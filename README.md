@@ -3105,22 +3105,29 @@ A PR whose purpose is to change behavior follows the behavior-change flow:
    new values. The job fails a labelled PR without that line, and a labelled
    PR whose title starts with `refactor:` or `refactor(core)`: a refactor never
    carries the label.
-4. The job still runs and writes the first difference to the job log and the
-   step summary, then passes. Reviewers compare it with the description. A
-   harness failure, a setup error, or a self-diff difference (two runs of the
-   same build) still fails the job.
-5. If the PR adds e2e cases for the new behavior, they fail on the base build,
-   which the label does not excuse. Name them on one more line of the
-   description, for example
-   `Expected labels: browser.canvas_screenshot.cdp, browser.drag.cdp`: call
-   labels of the e2e record, or label prefixes of two or more segments,
-   comma-separated, each made of `A-Z a-z 0-9 . _ -`. The base run then
-   records those cases without asserting them; every other case still
-   asserts. Each listed label must differ between base and HEAD, and any
-   differing label outside the list fails the job, so a listed change that
-   alters later calls lists their labels too. The step summary shows each
-   listed label with both results. Editing the description re-runs the job.
-   Without the label the line is ignored.
+4. If the e2e sees the change, name every call label that differs on one more
+   line of the description, for example
+   `Expected labels: browser.canvas_screenshot.cdp, browser.drag.cdp`:
+   comma-separated, each made of `A-Z a-z 0-9 . _ -`. An entry of three or
+   more dot-separated segments also covers the labels under it
+   (`browser.drag.cdp` covers `browser.drag.cdp.html5`); a shorter entry
+   matches only that exact label (`browser.click` is the default label of a
+   plain `browser.click` call, never `browser.click.cdp`). Each listed label
+   must differ between base and HEAD through a call the base answered (a
+   result or a tool error); a base call that timed out or lost its connection
+   does not count and the summary shows it as noise. Any differing label
+   outside the list fails the job, so a listed change that alters later calls
+   lists their labels too. Cases the PR adds for the new behavior fail on the
+   base build: listed, the base run records them without asserting them;
+   every other case still asserts. The step summary shows each listed label
+   with both results. Without the line, the job passes only when the builds
+   behave the same (a change only unit tests see); a difference fails it and
+   the summary names the differing labels to list.
+5. The line is read at the event that ran the job: to change the list, push
+   or remove and re-add the label; editing the description alone re-runs
+   nothing. A harness failure, a setup error, or a self-diff difference (two
+   runs of the same build) always fails the job. Without the label the line
+   is ignored.
 
 Without the label, a difference fails the job.
 
