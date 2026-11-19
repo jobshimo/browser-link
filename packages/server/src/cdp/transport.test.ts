@@ -399,20 +399,63 @@ describe('callCdpTool — tool dispatch', () => {
     expect('values_hidden' in (plain as object)).toBe(false);
   });
 
-  test('an out-of-v1-scope tool (drag) rejects naming the extension as fallback', async () => {
-    const { port, targetId } = await startFakeTarget({});
+  const DRAG_PROBE = {
+    result: {
+      value: {
+        from: { x: 10, y: 20, in_viewport: true },
+        to: { x: 110, y: 20, in_viewport: true },
+        draggable: false,
+      },
+    },
+  };
+
+  test('drag runs on a cdp: tab: a pointer drag sends press, moves and release', async () => {
+    const mouse: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => DRAG_PROBE,
+      'Input.dispatchMouseEvent': (params) => {
+        mouse.push((params as { type: string }).type);
+        return {};
+      },
+    });
     grantAccess(port);
-    await expect(callCdpTool(`cdp:${targetId}`, 'drag', {})).rejects.toThrow(
-      /not supported over cdp-direct/i,
-    );
+    const result = await callCdpTool(`cdp:${targetId}`, 'drag', {
+      from_selector: '#card',
+      to_selector: '#slot',
+      duration_ms: 0,
+    });
+    expect(result).toMatchObject({
+      drag_mode: 'pointer',
+      from: { x: 10, y: 20 },
+      to: { x: 110, y: 20 },
+    });
+    expect(mouse).toEqual(['mouseMoved', 'mousePressed', 'mouseMoved', 'mouseReleased']);
   });
 
-  test('a flow containing a drag step fails AT that step with the same unsupported-drag error', async () => {
-    // Runtime.evaluate serves the failure path's recovery snapshot here —
-    // the drag step itself never reaches the page: the flow's performDrag
-    // binding rejects it locally as out of cdp-direct's v1 scope.
+  test('a flow containing a drag step runs it through the same pointer drag', async () => {
+    const mouse: string[] = [];
     const { port, targetId } = await startFakeTarget({
-      'Runtime.evaluate': () => ({ result: { value: { interactive: [] } } }),
+      'Runtime.evaluate': () => DRAG_PROBE,
+      'Input.dispatchMouseEvent': (params) => {
+        mouse.push((params as { type: string }).type);
+        return {};
+      },
+    });
+    grantAccess(port);
+    const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
+      steps: [{ drag: { from_selector: '#card', to_selector: '#slot', duration_ms: 0 } }],
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      steps_completed: 1,
+      results: [{ ok: true, drag_mode: 'pointer' }],
+    });
+    expect(mouse).toEqual(['mouseMoved', 'mousePressed', 'mouseMoved', 'mouseReleased']);
+  });
+
+  test('a flow drag step that cannot resolve its endpoints fails AT that step with the drag error', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({ result: { value: { err: 'from_selector #card not found' } } }),
     });
     grantAccess(port);
     const result = await callCdpTool(`cdp:${targetId}`, 'flow', {
@@ -423,11 +466,8 @@ describe('callCdpTool — tool dispatch', () => {
       failed_step: 0,
       step_kind: 'drag',
       steps_completed: 0,
-      recovery_snapshot: { interactive: [] },
     });
-    const error = (result as { error: string }).error;
-    expect(error).toMatch(/browser\.drag is not supported over cdp-direct/);
-    expect(error).toMatch(/Chrome extension/);
+    expect((result as { error: string }).error).toBe('drag: from_selector #card not found');
   });
 
   test('click rejects with "Element not found" when resolution fails', async () => {

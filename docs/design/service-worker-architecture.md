@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 14, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)). Revision 1 (`5486e34`) was audited as
+Status: revision 15, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,19 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 15 (2026-11-19)
+
+The cdp-direct parity program (`docs/design/cdp-direct-parity.md`) starts, by
+the owner's decision of 2026-11-19, and slice P1 (release 1.4.36, the first
+behaviour change after the plan) records what it builds. One row per slice
+lands here, in the slice's own PR:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | The non-goal "making cdp-direct support the tools it refuses today" is superseded in part by the owner's decision of 2026-11-19: the tools the program takes are listed in the design, one slice each; the others stay refused. Changing cdp-direct's idle or flow models stays a non-goal until the program's gate A answers it | the owner asked for parity, in an order the design sets |
+| 2 | P1 adds `canvas` and `drag` to `CDP_DIRECT_PROVIDES`, so `browser.canvas_screenshot`, `browser.drag` and a flow drag step run on a `cdp:` tab; the derived `CDP_TOOL_SUPPORT` has both rows true (revision 11 row 4 and revision 9 row "cdp-direct's flow drag step keeps its refusal" are history). `buildCdpFlowDeps` binds core `performDrag` to the connection's page driver (evaluator, pointer, drag input, CDP event wait) as the extension's flow steps do, in imported-`perform*` form that the fitness rules allow | the ports (`DragInput`, `CdpEvents`, the evaluator) were already on cdp-direct; `canvas` is only the transport's word that the evaluator takes canvas screenshots |
+| 3 | No new port, no fitness-rule change and no extension code touched. The pinned tests flipped in the same PR: `provides.test.ts`, `support.test.ts` (23 entries, `drag` and `canvas_screenshot` true), `transport.test.ts` (standalone drag and flow drag step), `cdp/flow.test.ts`, and the dispatcher's out-of-scope test; four `.cdp` e2e cases are registered in `e2e/tool-cases.mjs` | revision 11 and 7(e): a behaviour change flips its pins and carries `Expected difference` |
 
 ### Revision 13 (2026-11-18)
 
@@ -384,7 +397,9 @@ README prose, and CI ran only the runner's own Chrome (`ci.yml` job `e2e`,
    the way are logged and done in their own commits or PRs.
 
 Non-goals: making cdp-direct support the tools it refuses today
-(`cdp/support.ts` `CDP_TOOL_SUPPORT`); changing cdp-direct's idle or flow
+(`cdp/support.ts` `CDP_TOOL_SUPPORT`; superseded in part by revision 15 and
+`cdp-direct-parity.md`, which takes them in order, `drag` and
+`canvas_screenshot` first in 1.4.36); changing cdp-direct's idle or flow
 models (decided, section 8, Q4).
 
 ---

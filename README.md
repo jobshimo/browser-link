@@ -525,8 +525,9 @@ the extension, on its own free debugging port, which the built CLI enables
 (`config set cdp-direct.enabled true`, `config set cdp-direct.port <port>`) and
 grants (`cdp allow --minutes 10`) inside the run's temp data dir and HOME.
 The server then drives that Chrome's tab directly: `list_tabs`, `navigate`,
-`snapshot`, `find`, `type`, `click`, `evaluate`, and a click on a missing
-selector with its exact error text (the `.cdp` cases in
+`snapshot`, `find`, `type`, `click`, `evaluate`, `canvas_screenshot` (whole
+canvas and a region), `drag` (alone and as a flow step), and a click on a
+missing selector with its exact error text (the `.cdp` cases in
 `packages/e2e/src/tool-cases.mjs`). They are in the differential too.
 
 A differential job (`e2e-diff`, Chrome 118) guards refactors: the current
@@ -2686,13 +2687,13 @@ Every tool that reaches into page/JS content works identically over
 cdp-direct — same in-page logic, same CDP commands (`Runtime.evaluate`,
 `Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). A handful
 of tools that depend on extension-only state (buffered console/network
-history, canvas capture wiring, native permission grants, the popup's
-dialog channel, or `window.open` tab-creation events) are explicitly out of
+history, native permission grants, the popup's dialog channel, or
+`window.open` tab-creation events) are explicitly out of
 v1 scope and return a clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                                                                                                                | NOT supported in v1 (use the extension instead)                                                                                                     |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `download` (`url` mode) | `console`, `network`, `network_body`, `canvas_screenshot`, `dialog_respond`, `set_permission`, `wait_for_tab`, `drag`, `download` (`selector` mode) |
+| Supported in v1                                                                                                                                                                                                                                                   | NOT supported in v1 (use the extension instead)                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `download` (`url` mode) | `console`, `network`, `network_body`, `dialog_respond`, `set_permission`, `wait_for_tab`, `download` (`selector` mode) |
 
 \* `wait_for`'s `network_url` mode also falls back to "use the extension"
 — cdp-direct does not buffer network requests, so there is nothing to poll
@@ -2726,7 +2727,7 @@ ends the 5 minutes restart from its last step. A long single call, such as a
 
 Claims apply to `cdp:` tab_ids through the same registry extension tabs
 use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add
-(console/network mirroring, canvas capture, drag).
+(console/network mirroring); canvas capture and drag arrived in 1.4.36.
 
 ## Stability
 

@@ -9,8 +9,8 @@
  * generated mirror of core's `tools/`, outcome mapped by
  * `./tool-outcome.ts`), the same bodies the extension runs; the flow tools
  * run on cdp-direct's own flow model (`./flow-control.ts`). A tool whose
- * requirements cdp-direct does not provide (`drag`, `canvas`,
- * `capture-buffers`, `response-bodies`, ...) is refused there with the
+ * requirements cdp-direct does not provide (`capture-buffers`,
+ * `response-bodies`, `dialog-input`, ...) is refused there with the
  * unsupported text (`./support.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
@@ -29,6 +29,7 @@ import { createCdpClientSession } from './adapters/cdp-client-session.js';
 import { createCdpPageInfo } from './adapters/cdp-page-info.js';
 import { createPageDriver, type PageDriverHandle } from '../generated/core/session/page-driver.js';
 import { performClick } from '../generated/core/actions/perform-click.js';
+import { performDrag } from '../generated/core/actions/perform-drag.js';
 import { performFind } from '../generated/core/actions/perform-find.js';
 import { performPress } from '../generated/core/actions/perform-press.js';
 import { performType } from '../generated/core/actions/perform-type.js';
@@ -356,12 +357,14 @@ function buildCdpFlowDeps(
     performWaitFor: (wp) => performWaitFor(actionDeps(client), wp, shouldStopWaiting),
     shouldCancel,
     clock: systemClock,
-    // Drag is out of cdp-direct's v1 scope (CDP_TOOL_SUPPORT maps it to
-    // false, and CDP_DIRECT_PROVIDES lacks `drag`), so a flow drag step fails fast at this step with the exact
-    // error the standalone browser.drag returns on a cdp: tab — naming the
-    // extension transport as the fallback.
-    performDrag: () =>
-      Promise.resolve({ ok: false as const, error: cdpUnsupportedToolError('drag').message }),
+    // Bound as the extension's flow steps bind it (`app/flow-control.ts`): the
+    // connection's page driver gives the evaluator, the pointer, the drag
+    // input and the CDP event wait, so a flow drag step runs the same body as
+    // the standalone browser.drag.
+    performDrag: (dp) => {
+      const { evaluator, pointer, drag, events } = pageDriver(client);
+      return performDrag({ evaluator, pointer, drag, events, clock: systemClock }, dp);
+    },
     buildRecoverySnapshot: () =>
       pageDriver(client).evaluator.evaluate(
         buildSnapshotJs({
