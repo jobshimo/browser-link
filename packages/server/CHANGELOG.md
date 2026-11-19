@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.35](https://github.com/jobshimo/browser-link/compare/v1.4.34...v1.4.35) (2026-11-19)
+
+### Continuous Integration
+
+- **e2e-diff:** a PR labelled `behavior-change` that adds e2e cases for its new behavior can now name them on an `Expected labels:` line of its description (call labels of the e2e record, or label prefixes of two or more segments, comma-separated, each `[A-Za-z0-9._-]+`). Before, those cases failed on the base build and the job stopped with a harness failure the label did not excuse. `scripts/behavior-change-check.mjs` alone parses and validates the line and hands the list to the differential step as a step output; the description is never interpolated into a shell.
+- The base run records the listed cases without asserting them; every other case still asserts, so a base failure outside the list still fails the job. HEAD's runs and the self-diff ignore the list. The gate then compares per label: each listed label must differ (a listed label that comes out equal fails, so no blanket or stale list passes), and any differing label outside the list fails. A record-only base record is never written to the base-record cache. The step summary prints each listed label with its base and head results.
+- Without the label the line is ignored, and a labelled PR without the line behaves as before. The workflow also runs on `edited`, so changing the description re-runs the job without a push.
+- No shipped code changes.
+
 ## [1.4.34](https://github.com/jobshimo/browser-link/compare/v1.4.33...v1.4.34) (2026-11-18)
 
 ### Notes

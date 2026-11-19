@@ -3109,6 +3109,18 @@ A PR whose purpose is to change behavior follows the behavior-change flow:
    step summary, then passes. Reviewers compare it with the description. A
    harness failure, a setup error, or a self-diff difference (two runs of the
    same build) still fails the job.
+5. If the PR adds e2e cases for the new behavior, they fail on the base build,
+   which the label does not excuse. Name them on one more line of the
+   description, for example
+   `Expected labels: browser.canvas_screenshot.cdp, browser.drag.cdp`: call
+   labels of the e2e record, or label prefixes of two or more segments,
+   comma-separated, each made of `A-Z a-z 0-9 . _ -`. The base run then
+   records those cases without asserting them; every other case still
+   asserts. Each listed label must differ between base and HEAD, and any
+   differing label outside the list fails the job, so a listed change that
+   alters later calls lists their labels too. The step summary shows each
+   listed label with both results. Editing the description re-runs the job.
+   Without the label the line is ignored.
 
 Without the label, a difference fails the job.
 
