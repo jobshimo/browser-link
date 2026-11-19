@@ -11,7 +11,8 @@ import {
 } from './support.js';
 
 // The hand-written table as it stood at 1.4.23, before it was derived from
-// the registry (design 3.3, revision 11). The derived map must equal it.
+// the registry (design 3.3, revision 11), with the two rows parity program P1
+// flipped (drag, canvas_screenshot). The derived map must equal it.
 const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
   ['ping', true],
   ['navigate', true],
@@ -27,11 +28,11 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
   ['flow', true],
   ['flow_status', true],
   ['flow_cancel', true],
-  ['drag', false],
+  ['drag', true],
   ['console', false],
   ['network', false],
   ['network_body', false],
-  ['canvas_screenshot', false],
+  ['canvas_screenshot', true],
   ['dialog_respond', false],
   ['set_permission', false],
   ['wait_for_tab', false],
@@ -41,7 +42,7 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
 const HAND_DECLARED = ['wait_for_tab'];
 
 describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
-  test('equals the 1.4.23 table: the same 23 tools with the same values', () => {
+  test('equals the 1.4.23 table with drag and canvas_screenshot now true: the same 23 tools', () => {
     expect(CDP_TOOL_SUPPORT.size).toBe(23);
     expect(CDP_TOOL_SUPPORT).toEqual(new Map(TABLE_AT_1_4_23));
     expect(Object.fromEntries(CDP_TOOL_SUPPORT)).toEqual(Object.fromEntries(TABLE_AT_1_4_23));
@@ -58,10 +59,10 @@ describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
   });
 
   test('RED: declaring a capability on cdp-direct changes the snapshot', () => {
-    const widened = new Set<Requirement>([...CDP_DIRECT_PROVIDES, 'drag']);
+    const widened = new Set<Requirement>([...CDP_DIRECT_PROVIDES, 'capture-buffers']);
     const derived = new Map([...cdpToolSupport(TOOL_REGISTRY, widened), ...CDP_DECLARED_SUPPORT]);
     expect(derived).not.toEqual(new Map(TABLE_AT_1_4_23));
-    expect(derived.get('drag')).toBe(true);
+    expect(derived.get('console')).toBe(true);
   });
 });
 
@@ -86,14 +87,16 @@ const SUPPORTED = [
   // Raw CDP Page.getLayoutMetrics + Page.captureScreenshot: same two commands
   // the extension sends.
   'screenshot',
+  // Parity program P1: the drag input and the CDP event wait were already on
+  // cdp-direct, and a canvas screenshot rides the evaluator.
+  'drag',
+  'canvas_screenshot',
 ];
 
 const UNSUPPORTED = [
-  'drag',
   'console',
   'network',
   'network_body',
-  'canvas_screenshot',
   'dialog_respond',
   'set_permission',
   'wait_for_tab',

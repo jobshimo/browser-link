@@ -1,9 +1,10 @@
-// What cdp-direct provides to the tool registry (design 3.3). The set is v1
-// scope: it never enables the Network domain or keeps console messages, so
-// it has no capture buffers and a `network_url` wait, `browser.console` and
-// `browser.network` are refused; it does not provide `drag`, `canvas`, `response-bodies`,
-// `dialog-input`, `downloads` or `content-settings`,
-// so `browser.drag`, `browser.canvas_screenshot`, `browser.network_body`,
+// What cdp-direct provides to the tool registry (design 3.3). It provides
+// `drag` and `canvas` (parity program P1: the drag input and the CDP event wait
+// were already on cdp-direct, and a canvas screenshot rides the evaluator).
+// It never enables the Network domain or keeps console messages, so it has no
+// capture buffers and a `network_url` wait, `browser.console` and
+// `browser.network` are refused; it does not provide `response-bodies`,
+// `dialog-input`, `downloads` or `content-settings`, so `browser.network_body`,
 // `browser.dialog_respond`, `browser.set_permission` and `browser.download`
 // are refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
@@ -16,9 +17,11 @@ import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports, the CDP event wait and the flow services, without drag, canvas, capture-buffers or response-bodies', () => {
+  test('is the page ports, the CDP event wait and the flow services, with drag and canvas, without capture-buffers or response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
+      'canvas',
       'cdp-events',
+      'drag',
       'evaluator',
       'flow-cancel',
       'flows',
@@ -34,7 +37,6 @@ describe('CDP_DIRECT_PROVIDES', () => {
   test.each([
     ['console', ['capture-buffers']],
     ['network', ['capture-buffers']],
-    ['canvas_screenshot', ['canvas']],
     ['network_body', ['response-bodies']],
     ['dialog_respond', ['dialog-input']],
     ['set_permission', ['content-settings']],
@@ -59,14 +61,47 @@ describe('CDP_DIRECT_PROVIDES', () => {
     },
   );
 
-  test('browser.drag on cdp-direct is refused with the unchanged unsupported text', async () => {
-    let read = false;
+  test('browser.drag on cdp-direct runs through the registry instead of being refused', async () => {
+    const mouse: string[] = [];
     const deps = {
       clock: systemClock,
       evaluator: {
-        evaluate: () => {
-          read = true;
-          return Promise.resolve(undefined);
+        evaluate: () =>
+          Promise.resolve({
+            from: { x: 1, y: 2, in_viewport: true },
+            to: { x: 3, y: 4, in_viewport: true },
+            draggable: false,
+          }),
+      },
+      pointer: {
+        mouse: (e: { type: string }) => {
+          mouse.push(e.type);
+          return Promise.resolve();
+        },
+      },
+      drag: {},
+      'cdp-events': {},
+    } as unknown as ToolDeps;
+    const outcome = await dispatchTool(
+      TOOL_REGISTRY,
+      CDP_DIRECT_PROVIDES,
+      deps,
+      'cdp-direct',
+      'drag',
+      { from_selector: '#card', to_selector: '#zone', duration_ms: 0 },
+    );
+    expect(outcome.ok).toBe(true);
+    expect(mouse).toEqual(['mouseMoved', 'mousePressed', 'mouseMoved', 'mouseReleased']);
+  });
+
+  test('browser.canvas_screenshot on cdp-direct reads through the evaluator instead of being refused', async () => {
+    const expressions: string[] = [];
+    const deps = {
+      clock: systemClock,
+      evaluator: {
+        evaluate: (expression: string) => {
+          expressions.push(expression);
+          return Promise.resolve({ ok: true, format: 'png', image_b64: 'AAAA' });
         },
       },
     } as unknown as ToolDeps;
@@ -75,20 +110,11 @@ describe('CDP_DIRECT_PROVIDES', () => {
       CDP_DIRECT_PROVIDES,
       deps,
       'cdp-direct',
-      'drag',
-      {
-        from_selector: '#card',
-        to_selector: '#zone',
-      },
+      'canvas_screenshot',
+      {},
     );
-    expect(outcome).toEqual({
-      ok: false,
-      failure: { kind: 'unsupported', tool: 'drag', missing: ['drag'] },
-    });
-    expect(read).toBe(false);
-    expect(() => cdpToolResult(outcome)).toThrow(
-      'browser.drag is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.',
-    );
+    expect(outcome.ok).toBe(true);
+    expect(expressions).toHaveLength(1);
   });
 
   test('a network_url wait on cdp-direct is refused with the extension fallback text', async () => {

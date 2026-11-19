@@ -42,11 +42,8 @@
  * `drag` tools (core's tool registry, `tools/`, which both transports
  * dispatch through) and this module's step executor call the exact SAME
  * perform* functions (core's `actions/`) — there is one implementation of
- * each action, never two copies that can drift apart. The one deliberate
- * asymmetry is `drag` over cdp-direct: the tool is out of cdp-direct's v1
- * scope (it does not provide the `drag` requirement), so the server wires
- * a `performDrag` that always fails with the same unsupported-transport
- * error the standalone `browser.drag` returns on a `cdp:` tab.
+ * each action, never two copies that can drift apart. Both transports bind
+ * `performDrag` to the real implementation (cdp-direct since 1.4.36).
  */
 import type { Clock } from '../ports/clock.js';
 import type { ExpectMet, ExpectParams } from '../support/expect.js';
@@ -299,12 +296,9 @@ export interface FlowDeps {
   performType(params: TypeStepParams): Promise<ActionOutcome<TypeStepResult>>;
   performPress(params: PressStepParams): Promise<ActionOutcome<PressStepResult>>;
   performWaitFor(params: WaitForStepParams): Promise<ActionOutcome<WaitForStepResult>>;
-  /** The extension binds the real drag implementation; the server's
-   * cdp-direct wiring binds a stub that always returns the
-   * unsupported-transport `ok:false` (drag is out of cdp-direct's v1
-   * scope — see the server's `cdp/support.ts`), so a flow drag step on a
-   * `cdp:` tab fails fast with the exact error the standalone
-   * `browser.drag` returns there. */
+  /** Both transports bind core's `performDrag` with their page driver, so a
+   * flow drag step runs and fails with the same text as the standalone
+   * `browser.drag`. */
   performDrag(params: DragStepParams): Promise<ActionOutcome<DragStepResult>>;
   buildRecoverySnapshot(): Promise<unknown>;
   /** Cooperative cancellation. Polled — never awaited — immediately before

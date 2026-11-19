@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.36](https://github.com/jobshimo/browser-link/compare/v1.4.35...v1.4.36) (2026-11-19)
+
+### Features
+
+- cdp-direct: `browser.canvas_screenshot` (the whole canvas, a region, a selector) and `browser.drag` (HTML5 drags and pointer drags) now run on a `cdp:` tab, and so does a `drag` step inside `browser.flow`. Until now each answered "browser.drag is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead." (the same sentence with `canvas_screenshot` for the canvas tool). They use the same code as on an extension tab, with the same results and error texts; extension tabs are unchanged. First slice of the cdp-direct parity program (`docs/design/cdp-direct-parity.md`).
+
+### Notes
+
+- cdp-direct provides `canvas` and `drag` to the tool registry (`CDP_DIRECT_PROVIDES`), and its flow wiring binds core's `performDrag` as the extension does. No new port. The e2e gains four `.cdp` cases: `browser.canvas_screenshot.cdp`, `browser.canvas_screenshot.region.cdp`, `browser.drag.cdp` and `browser.flow.drag-step.cdp`.
+- The tool texts, the `cdp-direct` manual topic and the README support table no longer list `drag` and `canvas_screenshot` as unsupported.
+
 ## [1.4.35](https://github.com/jobshimo/browser-link/compare/v1.4.34...v1.4.35) (2026-11-19)
 
 ### Continuous Integration

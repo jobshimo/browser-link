@@ -2,9 +2,7 @@
 /**
  * Registry entry of `drag` (design 3.3, slice 14). It requires the drag
  * input and the CDP event wait besides the evaluator and the pointer. The
- * extension provides them all; cdp-direct does not provide `drag` (v1
- * scope), so the registry refuses the tool there as `unsupported`, which
- * cdp-direct maps to the text its `callCdpTool` always threw for it.
+ * extension provides them all, and cdp-direct has done so since 1.4.36.
  * Numbers pass with a plain `typeof` check; `performDrag` applies the
  * finite and non-negative guard and the duration and hold clamps.
  */

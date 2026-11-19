@@ -1,9 +1,8 @@
 /**
  * `browser.drag`: the body both the standalone tool (`tools/drag.ts`) and a
  * flow's drag step call. Moved in slice 14 from `background.ts`, where it was
- * extension-only: cdp-direct does not provide the `drag` requirement (v1
- * scope), so its standalone tool is refused by the registry and its flow
- * binds a `performDrag` that fails with the same text.
+ * extension-only. Both transports provide the `drag` requirement (cdp-direct
+ * since 1.4.36) and bind this body for the standalone tool and a flow step.
  *
  * The endpoints are resolved in the page (`buildDragProbeJs`). A draggable
  * source is tried as an HTML5 drag first: drag interception is switched on,

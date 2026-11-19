@@ -35,28 +35,36 @@ function fakeDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
 }
 
 describe('runFlow on the cdp-direct wiring', () => {
-  test('the cdp wiring style of performDrag (always ok:false) fails the flow with the unsupported error', async () => {
-    // Mirrors transport.ts's flow-case binding for cdp-direct tabs, where
-    // drag is out of v1 scope — the flow must fail fast AT the drag step
-    // with the exact standalone-tool error, after earlier steps ran.
-    const deps = fakeDeps({
+  test('the cdp wiring of performDrag runs the drag step like any other step', async () => {
+    // Mirrors transport.ts's flow-case binding for cdp-direct tabs, which
+    // binds core's performDrag as the extension does: the step is run, not
+    // refused, and a failing drag fails the flow AT its step with the
+    // standalone tool's own error.
+    const deps = fakeDeps();
+    const ran = await runFlow(
+      [{ press: { key: 'Enter' } }, { drag: { from_selector: '#a', to_selector: '#b' } }],
+      deps,
+    );
+    expect(ran.ok).toBe(true);
+    if (ran.ok) expect(ran.steps_completed).toBe(2);
+    expect(deps.performDrag).toHaveBeenCalledTimes(1);
+
+    const failing = fakeDeps({
       performDrag: vi.fn(async () => ({
         ok: false as const,
-        error:
-          'browser.drag is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.',
+        error: 'drag: from_selector #a has no visible box',
       })),
     });
     const result = await runFlow(
       [{ press: { key: 'Enter' } }, { drag: { from_selector: '#a', to_selector: '#b' } }],
-      deps,
+      failing,
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.failed_step).toBe(1);
       expect(result.step_kind).toBe('drag');
       expect(result.steps_completed).toBe(1);
-      expect(result.error).toMatch(/not supported over cdp-direct/);
-      expect(result.error).toMatch(/Chrome extension/);
+      expect(result.error).toBe('drag: from_selector #a has no visible box');
     }
   });
 });

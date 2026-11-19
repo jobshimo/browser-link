@@ -136,8 +136,8 @@ export const TOPICS: Record<TopicName, Topic> = {
     body: lines(
       "A `cdp:` tab was reached over Chrome's remote-debugging protocol instead of the extension. It appears only when the user has BOTH enabled cdp-direct AND granted a live, time-boxed permission; you cannot request, enable or grant it.",
       '- Every other tool works on it exactly as on an extension tab, including `browser.download` by `url` and `browser.screenshot`. `browser.read` and `browser.flow` by name, the `known` hint, map hints and the trail work as on an extension tab; the one gap is that `list_tabs` shows no `build` or `view_sig` for a `cdp:` tab.',
-      '- Unsupported tools (and a `drag` step inside a flow) fail with a clear error naming the extension as the fallback.',
-      '- `cdp:` tabs (`transport: "cdp"`) lack drag, console, network, network_body, canvas_screenshot, dialog_respond, set_permission, wait_for_tab and download by selector.',
+      '- Unsupported tools fail with a clear error naming the extension as the fallback.',
+      '- `cdp:` tabs (`transport: "cdp"`) lack console, network, network_body, dialog_respond, set_permission, wait_for_tab and download by selector. `drag` (also as a flow step) and `canvas_screenshot` work as on an extension tab.',
       '- The two gate errors are the permission model talking, not a bug: "cdp-direct is disabled" / "requires an active grant" → relay `browser-link config set cdp-direct.enabled true` or `browser-link cdp allow` to the user; there is no workaround.',
     ),
   },

@@ -12,27 +12,27 @@
  * dispatcher-only (they never reach a per-tab transport) and deliberately
  * absent — see `tools/browser-dispatch.ts` for how each is handled.
  *
- * Kept out of scope for v1 (see the README's cdp-direct tool-support table
- * and the CHANGELOG's Internal section for the future-work list): `drag`,
- * `console`, `network`, `network_body`, `canvas_screenshot`,
- * `dialog_respond`, `set_permission`, `wait_for_tab`, and `download`
- * (`browser.download`'s selector mode).
+ * Still refused (see the README's cdp-direct tool-support table and
+ * `docs/design/cdp-direct-parity.md` for the order they are taken in):
+ * `console`, `network`, `network_body`, `dialog_respond`, `set_permission`,
+ * `wait_for_tab`, and `download` (`browser.download`'s selector mode).
+ * `drag` and `canvas_screenshot` joined cdp-direct in 1.4.36.
  */
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { cdpToolSupport } from '../generated/core/tools/registry.js';
 import type { Requirement } from '../generated/core/tools/requirement.js';
 
 /** What cdp-direct provides to the tool registry (design 3.3): the page
- * ports, the CDP event wait and its own flow model (`flows`, and
+ * ports, the CDP event wait, the drag input (`drag`), the canvas screenshot
+ * (`canvas`, through the evaluator) and its own flow model (`flows`, and
  * `flow-cancel`, which only cdp-direct provides). It does not
  * provide `capture-buffers`: it never enables the Network domain or keeps
  * console messages, so a `network_url` wait, `browser.console` and
- * `browser.network` are refused; nor `drag`, so `browser.drag` is refused;
- * nor `canvas`, so `browser.canvas_screenshot` is refused; nor
- * `response-bodies`, so `browser.network_body` is refused; nor `dialog-input`,
- * `downloads` or `content-settings`, so `browser.dialog_respond`,
- * `browser.set_permission` and `browser.download` are refused (all v1 scope;
- * changing any is a behavior change). */
+ * `browser.network` are refused; nor `response-bodies`, so
+ * `browser.network_body` is refused; nor `dialog-input`, `downloads` or
+ * `content-settings`, so `browser.dialog_respond`, `browser.set_permission`
+ * and `browser.download` are refused (v1 scope; changing any is a behavior
+ * change). */
 export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
   'keyboard',
@@ -44,6 +44,8 @@ export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement
   'screen-capture',
   'flows',
   'flow-cancel',
+  'canvas',
+  'drag',
 ]);
 
 /** The row no registry entry derives, declared with its reason. */

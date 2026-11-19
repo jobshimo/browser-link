@@ -977,6 +977,102 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
       `stored payload is ${JSON.stringify(b?.records?.[0]?.payload)}`,
     { label: 'browser.activity.error-sensitive.cdp' },
   );
+
+  // canvas_screenshot on cdp-direct: the same backing store and crop the
+  // extension's cases read (capture.html: a canvas, red left half, blue right).
+  const describeCdp = (b) => JSON.stringify(b)?.slice(0, 300);
+  const captureTarget = new URL(`capture.html?n=${String(Date.now())}`, page).href;
+  await call(
+    'browser.navigate',
+    { tab_id: C, url: captureTarget },
+    (b) => b?.url === captureTarget || `landed on ${describeCdp(b)}`,
+    { print: false },
+  );
+  await call(
+    'browser.canvas_screenshot',
+    { tab_id: C },
+    (b, _t, res) => {
+      if (b?.ok !== true || b.format !== 'png') return `result ${describeCdp(b)}`;
+      if (b.canvas_pixels?.w !== 64 || b.canvas_pixels?.h !== 32) {
+        return `canvas_pixels ${describeCdp(b.canvas_pixels)}`;
+      }
+      if (b.canvas_size?.w !== 128 || b.canvas_size?.h !== 64) {
+        return `canvas_size ${describeCdp(b.canvas_size)}`;
+      }
+      const { img, error } = pngOf(b, res);
+      if (error) return error;
+      if (img.width !== 64 || img.height !== 32) return `image is ${img.width}x${img.height}`;
+      const [left, right] = [img.pixel(8, 16), img.pixel(56, 16)];
+      return (
+        (colorNear(left, RED) && colorNear(right, BLUE)) ||
+        `left ${left.join(',')} / right ${right.join(',')}, expected red / blue`
+      );
+    },
+    { label: 'browser.canvas_screenshot.cdp' },
+  );
+  await call(
+    'browser.canvas_screenshot',
+    { tab_id: C, region: { x: 32, y: 0, w: 32, h: 32 } },
+    (b, _t, res) => {
+      const r = b?.region;
+      if (r?.x !== 32 || r?.y !== 0 || r?.w !== 32 || r?.h !== 32) {
+        return `region ${describeCdp(r)}`;
+      }
+      const { img, error } = pngOf(b, res);
+      if (error) return error;
+      if (img.width !== 32 || img.height !== 32) return `crop is ${img.width}x${img.height}`;
+      const corners = [img.pixel(0, 0), img.pixel(31, 31)];
+      return corners.every((p) => colorNear(p, BLUE)) || `crop corners ${describeCdp(corners)}`;
+    },
+    { label: 'browser.canvas_screenshot.region.cdp' },
+  );
+
+  // drag on cdp-direct: an HTML5 drag of #card onto #zone, then the same
+  // drag as a flow step on a fresh load of the page; the page's drop handler
+  // writes what the dragstart put in the dataTransfer (the extension's case).
+  const droppedText = "JSON.stringify(document.querySelector('#dropped').textContent)";
+  const expectDropped = (b, t) =>
+    b?.value === 'dropped: e2e-card' ||
+    t === '"dropped: e2e-card"' ||
+    `#dropped is ${describeCdp(t)}`;
+  const loadInteract = async () => {
+    const url = new URL(`interact.html?n=${String(Date.now())}`, page).href;
+    await call(
+      'browser.navigate',
+      { tab_id: C, url },
+      (b) => b?.url === url || `landed on ${describeCdp(b)}`,
+      { print: false },
+    );
+  };
+  await loadInteract();
+  await call(
+    'browser.drag',
+    { tab_id: C, from_selector: '#card', to_selector: '#zone', duration_ms: 300 },
+    (b) =>
+      (b?.drag_mode === 'html5' && b.from?.selector === '#card' && b.to?.selector === '#zone') ||
+      `result ${describeCdp(b)}`,
+    { label: 'browser.drag.cdp' },
+  );
+  await call('browser.evaluate', { tab_id: C, expression: droppedText }, expectDropped, {
+    print: false,
+    label: 'browser.drag.drop-check.cdp',
+  });
+  await loadInteract();
+  await call(
+    'browser.flow',
+    {
+      tab_id: C,
+      steps: [{ drag: { from_selector: '#card', to_selector: '#zone', duration_ms: 300 } }],
+    },
+    (b) =>
+      (b?.ok === true && b.steps_completed === 1 && b.results?.[0]?.drag_mode === 'html5') ||
+      `flow ${describeCdp(b)}`,
+    { label: 'browser.flow.drag-step.cdp' },
+  );
+  await call('browser.evaluate', { tab_id: C, expression: droppedText }, expectDropped, {
+    print: false,
+    label: 'browser.flow.drag-step.drop-check.cdp',
+  });
   console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
 }
 
