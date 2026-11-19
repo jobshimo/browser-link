@@ -92,6 +92,8 @@ export const TOOL_CASES = {
     'error.thrown',
     'browser.evaluate.cdp',
     'browser.evaluate.value.cdp',
+    'browser.drag.drop-check.cdp',
+    'browser.flow.drag-step.drop-check.cdp',
   ],
   'browser.read': ['browser.read'],
   'browser.wrap_up': ['browser.wrap_up'],

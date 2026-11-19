@@ -1055,6 +1055,7 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
   );
   await call('browser.evaluate', { tab_id: C, expression: droppedText }, expectDropped, {
     print: false,
+    label: 'browser.drag.drop-check.cdp',
   });
   await loadInteract();
   await call(
@@ -1070,6 +1071,7 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
   );
   await call('browser.evaluate', { tab_id: C, expression: droppedText }, expectDropped, {
     print: false,
+    label: 'browser.flow.drag-step.drop-check.cdp',
   });
   console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
 }
