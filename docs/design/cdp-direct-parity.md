@@ -266,7 +266,9 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   `dialog-closed` for `cdp:` tabs; a dialog open before the dial answers the
   named `Page.enable` error.
 
-### P4. G14 foreground flow registry (M)
+### P4. G14 foreground flow registry (M) — done, release 1.4.40
+
+- **Done.** The foreground flag assumption is closed: `RunningFlow` carries `detached`, and the one-detached-per-tab rule, the 30-minute ceiling, the finished records and the `flow-finished` event apply to detached runs only; a foreground run is dropped when it ends, so its id answers `unknown` as on the extension. **Finding:** a foreground flow's `flow_id` is minted by the dispatcher and returned only with the result (the trail is written after the call settles), so no agent, and no e2e case, can name a running foreground flow; the RED cases below could not be written as e2e cases and the proof is `cdp/detached-flows.test.ts` and `cdp/flow-control.test.ts` (service-worker design revision 19).
 
 - **Shape.** `createCdpFlowControl.start` registers foreground runs in
   `cdp/detached-flows.ts` with `onProgress`, keeps the gate re-check and

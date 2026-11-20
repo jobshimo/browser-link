@@ -78,7 +78,14 @@ interface RunningFlow {
   tabId: string;
   startedAt: number;
   steps: number;
-  expiresAt: number;
+  /** false for a foreground run: registered so `flow_status` and
+   * `flow_cancel` find it, but outside the one-per-tab rule, the ceiling and
+   * the finished records, exactly as on the extension (core
+   * `flow/flow-registry.ts`: only a detached flow has an `expiresAt` and a
+   * persisted record). */
+  detached: boolean;
+  /** Set for a detached run only. */
+  expiresAt?: number;
   cancelled: boolean;
   stopReason?: FlowStopReason;
   /** 1-based index of the step about to be dispatched, and of the repeat
@@ -123,7 +130,7 @@ export function setCdpFlowEventSink(sink: FlowEventSink | null): void {
  * the caller unable to inspect or stop what is blocking them. */
 export function detachedFlowForTab(tabId: string): { flowId: string } | undefined {
   for (const flow of running.values()) {
-    if (flow.tabId === tabId) return { flowId: flow.flowId };
+    if (flow.detached && flow.tabId === tabId) return { flowId: flow.flowId };
   }
   return undefined;
 }
@@ -132,15 +139,19 @@ export function registerDetachedFlow(input: {
   flowId: string;
   tabId: string;
   steps: number;
+  /** Default true; false registers a foreground run. */
+  detached?: boolean;
   now?: number;
 }): RunningFlow {
+  const detached = input.detached !== false;
   const startedAt = input.now ?? Date.now();
   const flow: RunningFlow = {
     flowId: input.flowId,
     tabId: input.tabId,
     startedAt,
     steps: input.steps,
-    expiresAt: startedAt + MAX_DETACHED_FLOW_MS,
+    detached,
+    ...(detached ? { expiresAt: startedAt + MAX_DETACHED_FLOW_MS } : {}),
     cancelled: false,
     step: 0,
   };
@@ -180,7 +191,7 @@ export function shouldStopDetachedFlow(flowId: string, now: number): boolean {
   // the extension registry's `shouldStop` for the same reasoning.
   if (!flow) return true;
   if (flow.cancelled) return true;
-  if (now >= flow.expiresAt) {
+  if (flow.expiresAt !== undefined && now >= flow.expiresAt) {
     flow.cancelled = true;
     flow.stopReason = 'expired';
     return true;
@@ -231,6 +242,10 @@ export function finishDetachedFlow(
   const flow = running.get(flowId);
   if (!flow) return;
   running.delete(flowId);
+  // A foreground run leaves nothing behind: its result went back to its own
+  // caller, so its id is `unknown` afterwards and it emits no summary event
+  // (the extension records and emits for detached flows only).
+  if (!flow.detached) return;
 
   let state: FinishedFlow['state'];
   let stepsCompleted: number;
@@ -315,7 +330,7 @@ export function detachedFlowStatus(flowId: string): FlowStatusPayload {
     return {
       flow_id: flowId,
       state: 'running',
-      detached: true,
+      detached: live.detached,
       started_at: live.startedAt,
       steps: live.steps,
       // The runner reports the step it is ABOUT to dispatch.
@@ -324,7 +339,7 @@ export function detachedFlowStatus(flowId: string): FlowStatusPayload {
         ? {}
         : { iterations_completed: Math.max(0, live.iteration - 1) }),
       ...(live.cancelled ? { cancelling: true as const } : {}),
-      expires_at: live.expiresAt,
+      ...(live.expiresAt === undefined ? {} : { expires_at: live.expiresAt }),
     };
   }
   const done = finished.get(flowId);

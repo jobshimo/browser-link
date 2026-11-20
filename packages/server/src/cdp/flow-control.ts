@@ -36,31 +36,28 @@ export function createCdpFlowControl(deps: CdpFlowControlDeps): FlowControl {
     detachedOnTab: () => detachedFlowForTab(tabId)?.flowId,
     steps: deps.steps,
     start({ flowId, steps, detached, deadlineAt }) {
-      if (!detached) {
-        // THE cdp-direct kill switch. There is no popup Stop button here, so
-        // the user's only lever is `browser-link cdp revoke`; re-checking the
-        // gate before each step turns revoke into a real stop with a
-        // worst-case latency of one step. Deliberately NOT cached: a revoked
-        // grant is visible to the very next check.
-        //
-        // The idle sweep must not cut a running flow: the hold is bounded by
-        // the flow's deadline, or without one by the longest any flow may run.
-        const release = deps.hold(deadlineAt ?? clock.now() + MAX_DETACHED_FLOW_MS);
-        return Promise.resolve({
-          shouldCancel: () => !gateAllows(),
-          finish: () => {
-            release();
-          },
-        });
-      }
-      const flow = registerDetachedFlow({ flowId: flowId ?? '', tabId, steps });
-      // Owner decision D1, bounded by the detached ceiling.
-      const release = deps.hold(flow.expiresAt);
+      // THE cdp-direct kill switch. There is no popup Stop button here, so
+      // the user's only lever is `browser-link cdp revoke`; re-checking the
+      // gate before each step turns revoke into a real stop with a
+      // worst-case latency of one step. Deliberately NOT cached: a revoked
+      // grant is visible to the very next check.
+      //
+      // Foreground and detached runs are both registered, so `flow_status`
+      // answers `running` with progress and `flow_cancel` stops either, as
+      // on the extension; only a detached one is bound by the one-per-tab
+      // rule and the 30-minute ceiling, and only it keeps a record afterwards.
+      const flow = registerDetachedFlow({ flowId: flowId ?? '', tabId, steps, detached });
+      // Owner decision D1. The idle sweep must not cut a running flow: the
+      // hold is bounded by the detached ceiling, or for a foreground flow by
+      // its deadline, or without one by the longest any flow may run.
+      const release = deps.hold(
+        detached ? (flow.expiresAt ?? 0) : (deadlineAt ?? clock.now() + MAX_DETACHED_FLOW_MS),
+      );
       return Promise.resolve({
-        // A detached flow also answers to `browser.flow_cancel` and its own
-        // 30-minute ceiling. The gate branch cancels THROUGH the registry:
-        // `stopped_by: 'grant-revoked'` is the only thing that tells the agent
-        // a human pulled the grant.
+        // The registry answers to `browser.flow_cancel`, and a detached run
+        // to its own 30-minute ceiling. The gate branch cancels THROUGH the
+        // registry: `stopped_by: 'grant-revoked'` is the only thing that
+        // tells the agent a human pulled the grant.
         shouldCancel: () => {
           if (shouldStopDetachedFlow(flow.flowId, clock.now())) return true;
           if (gateAllows()) return false;
@@ -71,7 +68,7 @@ export function createCdpFlowControl(deps: CdpFlowControlDeps): FlowControl {
           reportDetachedProgress(flow.flowId, progress);
         },
         startedAt: flow.startedAt,
-        expiresAt: flow.expiresAt,
+        ...(flow.expiresAt === undefined ? {} : { expiresAt: flow.expiresAt }),
         finish: (result) => {
           release();
           finishDetachedFlow(flow.flowId, result);

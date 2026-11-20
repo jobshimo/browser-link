@@ -2705,7 +2705,9 @@ against. `selector` and `expression` modes are fully supported.
 
 **Detached execution has full parity here, with one asymmetry.** The
 cdp-direct runner is in-process, so `detach` / `flow_status` /
-`flow_cancel` behave identically — same one-per-tab rule, same 30-minute
+`flow_cancel` behave identically, for a foreground flow too (while it runs
+`flow_status` answers `running` with `steps_completed` and `flow_cancel`
+stops it; once it returns its id is `unknown`) — same one-per-tab rule, same 30-minute
 `expired` ceiling, the same manifest under the same 128 KB ceiling (over
 it, the same `manifest_truncated: true` rather than a shortened array),
 same single `flow-finished` event in `browser.events`. What does not exist

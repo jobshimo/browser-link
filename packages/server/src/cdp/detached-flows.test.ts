@@ -319,3 +319,72 @@ describe('the one-per-flow audit event', () => {
     expect(detachedFlowStatus('f1').state).toBe('completed');
   });
 });
+
+describe('foreground runs', () => {
+  test('a running foreground flow answers like the extension: running, not detached, no expiry', () => {
+    const flow = registerDetachedFlow({
+      flowId: 'fg',
+      tabId: 'cdp:T1',
+      steps: 3,
+      detached: false,
+      now: 1_000,
+    });
+    expect(flow.expiresAt).toBeUndefined();
+    reportDetachedProgress('fg', { step: 2 });
+    expect(detachedFlowStatus('fg')).toEqual({
+      flow_id: 'fg',
+      state: 'running',
+      detached: false,
+      started_at: 1_000,
+      steps: 3,
+      steps_completed: 1,
+    });
+  });
+
+  test('a foreground flow is not "the detached flow on the tab", in either order', () => {
+    registerDetachedFlow({ flowId: 'fg', tabId: 'cdp:T1', steps: 1, detached: false });
+    expect(detachedFlowForTab('cdp:T1')).toBeUndefined();
+    registerDetachedFlow({ flowId: 'bg', tabId: 'cdp:T1', steps: 1 });
+    expect(detachedFlowForTab('cdp:T1')?.flowId).toBe('bg');
+  });
+
+  test('cancel flips a foreground flow: cancelling until the runner stops', () => {
+    registerDetachedFlow({ flowId: 'fg', tabId: 'cdp:T1', steps: 2, detached: false });
+    expect(cancelDetachedFlow('fg')).toBe(true);
+    expect(shouldStopDetachedFlow('fg', 0)).toBe(true);
+    expect(detachedFlowStatus('fg')).toMatchObject({
+      state: 'running',
+      detached: false,
+      cancelling: true,
+    });
+  });
+
+  test('the 30-minute ceiling belongs to detached runs only', () => {
+    registerDetachedFlow({ flowId: 'fg', tabId: 'cdp:T1', steps: 2, detached: false, now: 0 });
+    expect(shouldStopDetachedFlow('fg', MAX_DETACHED_FLOW_MS + 1)).toBe(false);
+  });
+
+  test('a finished foreground flow leaves no record and no event: unknown, as on the extension', () => {
+    const sink = vi.fn();
+    setCdpFlowEventSink(sink);
+    registerDetachedFlow({ flowId: 'fg', tabId: 'cdp:T1', steps: 1, detached: false });
+    finishDetachedFlow('fg', { ok: true, steps_completed: 1, results: [{ ok: true }] });
+    expect(detachedFlowStatus('fg')).toEqual({ flow_id: 'fg', state: 'unknown', detached: false });
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  test('finished foreground flows do not consume the detached record cap', () => {
+    registerDetachedFlow({ flowId: 'bg', tabId: 'cdp:T1', steps: 1 });
+    finishDetachedFlow('bg', { ok: true, steps_completed: 1, results: [] });
+    for (let i = 0; i < MAX_DETACHED_FLOW_RECORDS + 2; i += 1) {
+      registerDetachedFlow({
+        flowId: `fg${String(i)}`,
+        tabId: 'cdp:T1',
+        steps: 1,
+        detached: false,
+      });
+      finishDetachedFlow(`fg${String(i)}`, { ok: true, steps_completed: 1, results: [] });
+    }
+    expect(detachedFlowStatus('bg').state).toBe('completed');
+  });
+});
