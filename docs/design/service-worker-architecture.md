@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 17, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core). Revision 1 (`5486e34`) was audited as
+Status: revision 18, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core); revision 18 (release 1.4.39) records parity slice P3. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,18 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 18 (2026-11-20)
+
+Parity slice P3 (release 1.4.39), by arch's decisions on the design audit and
+on experiment X1:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | cdp-direct tracks JavaScript dialogs: its dial builds one `PendingDialog` per connection (`cdp/adapters/cdp-dialog-watch.ts`), subscribes core's `dialogIntake` through `CdpSession.onEvent` before `Page.enable`, and passes it as `dialogs` to `createPageDriver` and to the tool deps; `dialog-input` joins `CDP_DIRECT_PROVIDES`. Revision 8 rows 1, 2 and 4 ("given by the extension only", "cdp-direct passes no `DialogWatch`", unifying the click paths stays out) and revision 10 row 1 (`CDP_DIRECT_PROVIDES` lacks `dialog-input`) are history | the owner's parity program; X1 showed the opening event reaches only a connection that enabled `Page` before the dialog opened |
+| 2 | The cdp intake's sink is bound to the connection's `cdp:` id and adds `dialog-opening` / `dialog-closed` (with `tab_id`) to `BridgeEventLog` through `setCdpBridgeEventSink`, which `server.ts` installs as it installs the detached-flow sink, keeping only the kinds an extension may push (`isExtensionEventKind`). `EventsOut` is unchanged (revision 17 row 3) | the same event, kind and payload shape as the extension's `bridge.event` |
+| 3 | `CdpClient` rejects a command timeout with `CdpCommandTimeoutError` (`method`, `timeoutMs`; the same text). The dial's `Page.enable` alone maps it to `PageEnableTimeoutError`, whose text does not claim a dialog; a failed `Page.enable` closes the socket (before, it stayed open and uncached). No message text is matched anywhere | X1: a dialog opened while no connection existed cannot be answered over cdp-direct and makes `Page.enable` time out; a hung renderer gives the same timeout |
+| 4 | `DialogWatch` gets a contract outside `ports/contract/` (`core/src/session/dialog-watch.contract.ts`; it is not a port), run on the in-memory `CdpSession` in core and on `createCdpDialogWatch` in `cdp/adapters/contract.chrome.test.ts`. No port shape and no fitness rule changed | arch: the new cdp `DialogWatch` side gets its own contract case |
 
 ### Revision 17 (2026-11-20)
 

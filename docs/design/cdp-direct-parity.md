@@ -4,7 +4,8 @@ Status: revision 1 (2026-11-19), for arch's audit before any code. Written at
 `main` `9191c79` (release 1.4.34); every `path:line` below is at that commit.
 No code, test or other document is changed by this file. The owner decided
 on 2026-11-19 that the program starts; two of its decisions are still his
-(section 5). Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
+(section 5). Revision 3 (2026-11-20, release 1.4.39) records P3 as built.
+Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
 experiment X1 and the dialog-intake move; the files it names are at that
 release, every other citation stays at `9191c79`. Revisions:
 
@@ -12,6 +13,7 @@ release, every other citation stays at `9191c79`. Revisions:
 |---|---|---|
 | 1 | 2026-11-19 | The program, for arch's audit. |
 | 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
+| 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, and the named `Page.enable` error. |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
 **likely** (follows from code, not run), **experiment** (needs a Chrome run;
@@ -185,7 +187,7 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   answers as on an extension tab; `browser.type` with neither `selector` nor
   `ref` no longer types into the focused element on a `cdp:` tab.
 
-### P3. G4 dialog tracking and G3 `dialog_respond` (M)
+### P3. G4 dialog tracking and G3 `dialog_respond` (M) — done, release 1.4.39
 
 - **Before code:** experiment X1 (section 6).
 - **Refactor PR first.** Dialog half of the intake and the pending-dialog
@@ -212,8 +214,15 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   opened receives `Page.javascriptDialogOpening` and can answer it
   (**verified**, X1, Chrome 118 and 157; revision 2). Such a tab must be
   answered by the user or another client; `dialog_respond` cannot offer it.
-  Whether P3 answers that case with a faster, clearer error than the
-  `Page.enable` timeout is the behaviour PR's choice.
+  As built (1.4.39, arch's decision): the dial's `Page.enable` timeout
+  (`CdpCommandTimeoutError`, a typed timeout of `CdpClient`, never matched
+  by text) becomes `PageEnableTimeoutError`, whose text does not claim a
+  dialog (a hung renderer gives the same timeout): "cdp-direct: the page did
+  not answer Page.enable within 15 s; a JavaScript dialog opened while
+  cdp-direct had no connection may be blocking it, or the page is
+  unresponsive; close any dialog in the browser and retry." A failed
+  `Page.enable` now closes its socket. README and manual state the limit in
+  one line.
 - **RED first.** `browser.click.opens-dialog.cdp` (click answers
   `dialog: true`, `dialog_respond` closes it, the tab answers `evaluate`
   after), and a `browser.events` check for `dialog-opening` on the cdp tab.
@@ -222,10 +231,30 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
 - **Statements.** `browser-definitions.ts:117`; manual `cdp-direct`; README
   support table and the intro's "the popup's dialog channel"; service-worker
   design revision 8 rows 1-2 and 4, revision 10 row 1 (section 8 below).
+- **As built (1.4.39).** `cdp/adapters/cdp-dialog-watch.ts`
+  (`createCdpDialogWatch`) builds the connection's `PendingDialog` and
+  subscribes `dialogIntake` through `CdpSession.onEvent`, before the dial's
+  `Page.enable` (frames are delivered in order, so an opening right behind
+  the `Page.enable` answer cannot slip past); the page driver and the tool
+  deps get it as `dialogs`. The sink is bound to the connection's `cdp:` id
+  and adds the event, with `tab_id`, to `BridgeEventLog` through
+  `setCdpBridgeEventSink`, installed by `server.ts` as the flow sink is (only
+  the kinds an extension may push). Correction to the shape above: the click
+  result has no `dialog` field on either transport; a click that opened a
+  dialog answers `hit_check: "not_verifiable"` with the dialog note
+  (`HIT_CHECK_DIALOG_NOTE`), which the RED case asserts exactly. The
+  `browser.events` check is a unit test (`transport.test.ts`), not an e2e
+  case: `browser.events` is exempt from the e2e tool table (server only).
+  The real-Chrome contract runs `defineDialogWatchContract`
+  (`core/src/session/dialog-watch.contract.ts`) on `createCdpDialogWatch`
+  (Chrome 118 and 157 locally); `error.dialog-before-dial.cdp` pins the
+  named error.
 - **Expected difference:** on a `cdp:` tab a click that opens a JavaScript
-  dialog answers `dialog: true` instead of waiting for the command timeout;
+  dialog answers `hit_check: "not_verifiable"` with the dialog note instead
+  of waiting for the command timeout;
   `browser.dialog_respond` works; `browser.events` shows `dialog-opening` and
-  `dialog-closed` for `cdp:` tabs.
+  `dialog-closed` for `cdp:` tabs; a dialog open before the dial answers the
+  named `Page.enable` error.
 
 ### P4. G14 foreground flow registry (M)
 
@@ -443,7 +472,7 @@ piece at the end.
 
 | Risk | Where | Containment |
 |---|---|---|
-| A dialog strands a `cdp:` tab | today; P3 removes it for a dialog that opens while the tab's connection is open (X1: one opened with no connection cannot be answered over cdp-direct) | P3 comes before every other M slice; X1 recorded the exact failure (15 s `Input.dispatchMouseEvent` timeout, then 15 s per call); `dialog_respond` stays outside the claim guard |
+| A dialog strands a `cdp:` tab | before 1.4.39; P3 removed it for a dialog that opens while the tab's connection is open (X1: one opened with no connection cannot be answered over cdp-direct) | P3 comes before every other M slice; X1 recorded the exact failure (15 s `Input.dispatchMouseEvent` timeout, then 15 s per call); `dialog_respond` stays outside the claim guard |
 | Download behavior left redirected or denied after disconnect or crash | P8 | no P8 code before E2 shows the scope and revert; revert on close, revoke and process exit is in the slice; option c stays available |
 | Permissions persist in the user's profile | P7 (G10) | the owner picks the semantics; the contract test restores what it set; the README says what persists |
 | Capture buffers expose headers and post data on tabs without per-tab consent | P5 | same bound (200) as the extension; the gate and grant stay the only consent; stated to the owner (5.3) and in the README |

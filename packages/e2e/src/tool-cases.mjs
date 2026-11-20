@@ -63,6 +63,7 @@ export const TOOL_CASES = {
     'browser.click.cdp',
     'error.action.cdp',
     'error.coerce.cdp',
+    'browser.click.opens-dialog.cdp',
   ],
   'browser.type': [
     'browser.type',
@@ -75,7 +76,11 @@ export const TOOL_CASES = {
   'browser.drag': ['browser.drag', 'browser.drag.cdp'],
   'browser.flow': ['browser.flow', 'browser.flow.drag-step.cdp'],
   'browser.flow_cancel': ['browser.flow_cancel'],
-  'browser.dialog_respond': ['browser.click.opens-dialog', 'browser.download.stress-after-scroll'],
+  'browser.dialog_respond': [
+    'browser.click.opens-dialog',
+    'browser.download.stress-after-scroll',
+    'browser.dialog_respond.cdp',
+  ],
   'browser.set_permission': ['browser.set_permission'],
   'browser.download': [
     'browser.download.selector',
@@ -96,6 +101,8 @@ export const TOOL_CASES = {
     'browser.evaluate.coerce.cdp',
     'browser.drag.drop-check.cdp',
     'browser.flow.drag-step.drop-check.cdp',
+    'browser.evaluate.after-dialog.cdp',
+    'error.dialog-before-dial.cdp',
   ],
   'browser.read': ['browser.read'],
   'browser.wrap_up': ['browser.wrap_up'],

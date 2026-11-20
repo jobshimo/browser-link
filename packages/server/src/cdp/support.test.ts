@@ -33,7 +33,7 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
   ['network', false],
   ['network_body', false],
   ['canvas_screenshot', true],
-  ['dialog_respond', false],
+  ['dialog_respond', true],
   ['set_permission', false],
   ['wait_for_tab', false],
   ['download', false],
@@ -42,7 +42,7 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
 const HAND_DECLARED = ['wait_for_tab'];
 
 describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
-  test('equals the 1.4.23 table with drag and canvas_screenshot now true: the same 23 tools', () => {
+  test('equals the 1.4.23 table with drag, canvas_screenshot and dialog_respond now true: the same 23 tools', () => {
     expect(CDP_TOOL_SUPPORT.size).toBe(23);
     expect(CDP_TOOL_SUPPORT).toEqual(new Map(TABLE_AT_1_4_23));
     expect(Object.fromEntries(CDP_TOOL_SUPPORT)).toEqual(Object.fromEntries(TABLE_AT_1_4_23));
@@ -91,13 +91,15 @@ const SUPPORTED = [
   // cdp-direct, and a canvas screenshot rides the evaluator.
   'drag',
   'canvas_screenshot',
+  // Parity program P3: the dial feeds the connection's pending dialog, so a
+  // dialog the connection saw open is answered with Page.handleJavaScriptDialog.
+  'dialog_respond',
 ];
 
 const UNSUPPORTED = [
   'console',
   'network',
   'network_body',
-  'dialog_respond',
   'set_permission',
   'wait_for_tab',
   // Selector mode only — it needs the extension's chrome.downloads capture.

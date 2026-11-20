@@ -24,7 +24,9 @@ import {
   type ContractCase,
 } from '../../generated/core/ports/contract/index.js';
 import { createPageDriver } from '../../generated/core/session/page-driver.js';
+import { defineDialogWatchContract } from '../../generated/core/session/dialog-watch.contract.js';
 import type {
+  BridgeEventPayload,
   CaptureParams,
   DragEventParams,
   MouseEventParams,
@@ -38,6 +40,7 @@ const INSERT_TEXT_REFUSED = 'Invalid parameters';
 const DRAG_PARAMS_REFUSED = 'Invalid parameters';
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
+import { createCdpDialogWatch } from './cdp-dialog-watch.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
 import { systemClock } from './system-clock.js';
 
@@ -342,6 +345,43 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
             await opened;
           },
           noDialogMessage: NO_DIALOG,
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  // Parity P3: cdp-direct's DialogWatch, the connection's pending dialog fed
+  // by core's dialog intake (`createCdpDialogWatch`, what the dial builds).
+  // The harness observes the page's dialog events on the raw client.
+  describe('DialogWatch contract: the dialog watch the dial builds over the CdpClient', () => {
+    run(
+      defineDialogWatchContract(async () => {
+        const { client, close } = await openPage();
+        const sent: BridgeEventPayload[] = [];
+        const watch = createCdpDialogWatch(client, { emit: (event) => sent.push(event) });
+        const next = (method: string): Promise<void> =>
+          new Promise<void>((resolve) => {
+            const off = client.on(method, () => {
+              off();
+              resolve();
+            });
+          });
+        return {
+          watch,
+          sent: () => sent,
+          openAlert: async (message) => {
+            const opened = next('Page.javascriptDialogOpening');
+            await client.send('Runtime.evaluate', {
+              expression: `setTimeout(() => alert(${JSON.stringify(message)}), 0)`,
+            });
+            await opened;
+          },
+          accept: async () => {
+            const closed = next('Page.javascriptDialogClosed');
+            await client.send('Page.handleJavaScriptDialog', { accept: true });
+            await closed;
+          },
           dispose: close,
         };
       }),

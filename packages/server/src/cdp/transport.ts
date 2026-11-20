@@ -10,7 +10,7 @@
  * `./tool-outcome.ts`), the same bodies the extension runs; the flow tools
  * run on cdp-direct's own flow model (`./flow-control.ts`). A tool whose
  * requirements cdp-direct does not provide (`capture-buffers`,
- * `response-bodies`, `dialog-input`, ...) is refused there with the
+ * `response-bodies`, `downloads`, ...) is refused there with the
  * unsupported text (`./support.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
@@ -20,8 +20,15 @@
  */
 import { loadConfig, sanitizeCdpPort } from '../config.js';
 import { checkCdpDirectGate } from './gate.js';
-import { buildTargetWsUrl, cdpTargetIdFromTabId, isDrivablePageTarget } from './targets.js';
-import { CdpClient } from './client.js';
+import {
+  buildTargetWsUrl,
+  CDP_TAB_ID_PREFIX,
+  cdpTargetIdFromTabId,
+  isDrivablePageTarget,
+} from './targets.js';
+import { CdpClient, CdpCommandTimeoutError } from './client.js';
+import type { DialogEventSink, PendingDialog } from '../generated/core/session/dialog-intake.js';
+import { createCdpDialogWatch } from './adapters/cdp-dialog-watch.js';
 import { CDP_DIRECT_PROVIDES, cdpUnsupportedToolError } from './support.js';
 import { buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
@@ -182,17 +189,23 @@ async function dial(targetId: string): Promise<CdpConnection> {
         `(type=${info.targetInfo.type ?? 'unknown'}) — refusing to connect.`,
     );
   }
-  // Page.enable is the only domain cdp-direct's v1 tool set needs enabled
-  // up front — it unlocks Page.loadEventFired, which navigate's
-  // wait_for_load uses. Runtime.evaluate and Input.* commands work without
+  // The connection's pending dialog, fed by core's dialog intake (parity
+  // P3). Subscribed BEFORE Page.enable: the client delivers frames in
+  // order, so an opening event that arrives right behind the Page.enable
+  // answer cannot slip past it. Only a connection whose Page.enable
+  // completed before a dialog opened ever receives its opening event
+  // (experiment X1).
+  dialogs.set(client, createCdpDialogWatch(client, cdpDialogSink(targetId)));
+  // Page.enable unlocks Page.loadEventFired (navigate's wait_for_load) and
+  // the dialog events. Runtime.evaluate and Input.* commands work without
   // their own domain being explicitly enabled. The page observer enables
   // Runtime itself, for `Runtime.bindingCalled`.
-  await client.send('Page.enable');
+  await enablePage(client);
   // The page observer, as the extension installs it in `connectTab`.
   // Non-fatal: on failure the connection is used as before and actions
-  // report `settle.changes: null` with `observer-unavailable`. cdp-direct has
-  // no bridge events and `list_tabs` reads target info live, so a
-  // top-document message only updates the driver's mirror.
+  // report `settle.changes: null` with `observer-unavailable`. `list_tabs`
+  // reads target info live, so a top-document message only updates the
+  // driver's mirror.
   const driver = newPageDriver(client);
   drivers.set(client, driver);
   const installed = await driver.install({ enableRuntime: true });
@@ -202,16 +215,84 @@ async function dial(targetId: string): Promise<CdpConnection> {
   return { client, lastUsedAt: Date.now() };
 }
 
+/** How long the dial waits for `Page.enable`: the client's default
+ * per-command timeout. `let` for `setPageEnableTimeoutForTest`. */
+const DEFAULT_PAGE_ENABLE_TIMEOUT_MS = 15_000;
+let pageEnableTimeoutMs = DEFAULT_PAGE_ENABLE_TIMEOUT_MS;
+
+/** The text of `PageEnableTimeoutError`. It does not claim a dialog: a hung
+ * or busy renderer gives the same timeout. */
+export function pageEnableTimeoutMessage(timeoutMs: number): string {
+  return (
+    `cdp-direct: the page did not answer Page.enable within ${String(timeoutMs / 1000)} s; ` +
+    'a JavaScript dialog opened while cdp-direct had no connection may be blocking it, ' +
+    'or the page is unresponsive; close any dialog in the browser and retry.'
+  );
+}
+
+/** The dial's `Page.enable` got no answer in time. Experiment X1: a page
+ * showing a JavaScript dialog that opened while no cdp-direct connection
+ * existed never answers it, and that dialog cannot be answered over
+ * cdp-direct. */
+export class PageEnableTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(pageEnableTimeoutMessage(timeoutMs));
+    this.name = 'PageEnableTimeoutError';
+  }
+}
+
+/** Send the dial's `Page.enable`. Its timeout (a `CdpCommandTimeoutError`,
+ * never matched by text) becomes `PageEnableTimeoutError`; any failure
+ * closes the client, which is never cached. */
+async function enablePage(client: CdpClient): Promise<void> {
+  try {
+    await client.send('Page.enable', {}, pageEnableTimeoutMs);
+  } catch (err) {
+    client.close();
+    if (err instanceof CdpCommandTimeoutError) throw new PageEnableTimeoutError(err.timeoutMs);
+    throw err;
+  }
+}
+
+/** Where the dialog events of a `cdp:` tab go: the server's bridge event
+ * log, installed by `server.ts` (`setCdpBridgeEventSink`) as the flow sink
+ * is (`detached-flows.ts`), so a build or test that never wires it emits
+ * nothing. */
+export type CdpBridgeEventSink = (eventKind: string, data: Record<string, unknown>) => void;
+let bridgeEventSink: CdpBridgeEventSink | null = null;
+
+export function setCdpBridgeEventSink(sink: CdpBridgeEventSink | null): void {
+  bridgeEventSink = sink;
+}
+
+/** The dialog intake's sink for one connection, bound to its `cdp:` tab
+ * id: the event carries `tab_id` as the extension's `bridge.event` does
+ * once the bridge adds it. */
+function cdpDialogSink(targetId: string): DialogEventSink {
+  const tabId = `${CDP_TAB_ID_PREFIX}${targetId}`;
+  return {
+    emit: (event) => {
+      bridgeEventSink?.(event.eventKind, { ...event.data, tab_id: tabId });
+    },
+  };
+}
+
 /** The page driver of each connection (core's `session/page-driver.ts`):
  * evaluation, keys, settle, and the page observer. Keyed by client so the
  * perform* helpers, which only get the client, can reach it. */
 const drivers = new WeakMap<CdpClient, PageDriverHandle>();
+
+/** The pending dialog of each dialed connection (its `DialogWatch`). A
+ * client that was never dialed (tests) has none, and its clicks do not
+ * watch dialogs, as before P3. */
+const dialogs = new WeakMap<CdpClient, PendingDialog>();
 
 function newPageDriver(client: CdpClient, commandTimeoutMs?: number): PageDriverHandle {
   return createPageDriver({
     session: createCdpClientSession(client, commandTimeoutMs),
     page: createCdpPageInfo(client, systemClock),
     clock: systemClock,
+    dialogs: dialogs.get(client),
   });
 }
 
@@ -244,6 +325,7 @@ function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
     'response-bodies': driver.responses,
     'dialog-input': driver.dialog,
     clock: systemClock,
+    dialogs: driver.dialogs,
   };
 }
 
@@ -314,6 +396,13 @@ export function resetConnectionsForTest(): void {
   }
   idleCleanupMs = DEFAULT_IDLE_CLEANUP_MS;
   idleSweepIntervalMs = DEFAULT_IDLE_SWEEP_INTERVAL_MS;
+  pageEnableTimeoutMs = DEFAULT_PAGE_ENABLE_TIMEOUT_MS;
+}
+
+/** Test-only: how long the dial waits for `Page.enable` (15 s by default);
+ * restored by `resetConnectionsForTest`. Not on any agent-reachable path. */
+export function setPageEnableTimeoutForTest(timeoutMs: number): void {
+  pageEnableTimeoutMs = timeoutMs;
 }
 
 /** Test-only override for the idle-cleanup thresholds — the real values

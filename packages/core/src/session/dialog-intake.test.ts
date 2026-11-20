@@ -6,6 +6,7 @@ import { describe, expect, test } from 'vitest';
 import { createManualClock, createMemoryCdpSession } from '../ports/contract/index.js';
 import type { BridgeEventPayload } from '../ports/values.js';
 import { dialogIntake, PendingDialog } from './dialog-intake.js';
+import { defineDialogWatchContract, type DialogWatchHarness } from './dialog-watch.contract.js';
 import type { DialogWatch, PageDriverHandle } from './page-driver.js';
 import { sessionDialogWatch, TabSession } from './tab-session.js';
 
@@ -121,5 +122,40 @@ describe('PendingDialog as the DialogWatch', () => {
     cdp.emit('Page.javascriptDialogClosed', { result: false });
     expect(session.pendingDialog).toBeUndefined();
     expect(watch.isOpen()).toBe(false);
+  });
+});
+
+describe('DialogWatch contract on the in-memory CdpSession', () => {
+  function harness(intakeOf = dialogIntake): DialogWatchHarness {
+    const cdp = createMemoryCdpSession({});
+    const pending = new PendingDialog();
+    const sent: BridgeEventPayload[] = [];
+    cdp.onEvent(intakeOf(pending, { emit: (event) => sent.push(event) }));
+    return {
+      watch: pending,
+      sent: () => sent,
+      openAlert: async (message) => {
+        cdp.emit('Page.javascriptDialogOpening', { type: 'alert', message });
+      },
+      accept: async () => {
+        cdp.emit('Page.javascriptDialogClosed', { result: true });
+      },
+    };
+  }
+
+  for (const contractCase of defineDialogWatchContract(() => harness())) {
+    test(contractCase.name, () => contractCase.run());
+  }
+
+  test('fails a watch whose intake never sends the close', async () => {
+    const dropsClose: typeof dialogIntake = (pending, sink) => {
+      const intake = dialogIntake(pending, sink);
+      return (method, params) =>
+        method === 'Page.javascriptDialogClosed'
+          ? (pending.closed(), true)
+          : intake(method, params);
+    };
+    const cases = defineDialogWatchContract(() => harness(dropsClose));
+    await expect(cases[2]?.run()).rejects.toThrow(/events sent/);
   });
 });

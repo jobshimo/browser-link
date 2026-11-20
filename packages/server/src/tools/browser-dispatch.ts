@@ -1352,7 +1352,7 @@ function toPublicClaim(claim: TabClaim): PublicClaim {
  *      gate error text, never a confusing downstream failure.
  *   2. The v1 declarative support table (`cdp/support.ts`) — a tool valid
  *      in general but out of cdp-direct's v1 scope (console, network*,
- *      dialog_respond, set_permission, wait_for_tab) gets a clear "not supported over cdp-direct" error
+ *      set_permission, wait_for_tab) gets a clear "not supported over cdp-direct" error
  *      naming the extension transport as the fallback.
  * There is no bypass: every one of the read-tool call sites below and
  * `runAction` (used by every action tool) go through this one function.

@@ -29,7 +29,7 @@ import { getDataDir } from './map/paths.js';
 import { handleToolCall, handleToolsList, type DispatchDeps } from './bridge/dispatch.js';
 import { IpcServer } from './bridge/server.js';
 import { runProxy } from './bridge/proxy.js';
-import { BridgeEventLog } from './bridge/events.js';
+import { BridgeEventLog, isExtensionEventKind } from './bridge/events.js';
 import {
   TabClaimRegistry,
   followFlowFinishedEvents,
@@ -37,7 +37,7 @@ import {
 } from './tools/tab-claims.js';
 import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
-import { callCdpTool } from './cdp/transport.js';
+import { callCdpTool, setCdpBridgeEventSink } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
 import { inspectPortHolder } from './lifecycle/port-holder.js';
 import {
@@ -418,6 +418,11 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   // directly. Same event kind, same payload shape, same "exactly one per
   // flow, never one per iteration" rule as the extension path.
   setCdpFlowEventSink((data) => events.add('flow-finished', data));
+  // The dialog-opening / dialog-closed events of a cdp: tab (parity P3),
+  // added the same way: only the kinds an extension may push.
+  setCdpBridgeEventSink((kind, data) => {
+    if (isExtensionEventKind(kind)) events.add(kind, data);
+  });
 
   // Owner decision D1: a detached flow holds its agent's claim until its
   // `flow-finished` summary arrives (from either transport), or until its
