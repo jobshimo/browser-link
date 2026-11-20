@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>x3 opener</title>
+<h1>X3 opener fixture</h1>
+<button id="open-btn" onclick="window.open('/child?via=window.open-click', '_blank')">window.open (click)</button>
+<a id="blank-link" href="/child?via=target-blank-link" target="_blank">target=_blank link</a>
+<a id="noopener-link" href="/child?via=target-blank-noopener" target="_blank" rel="noopener">target=_blank rel=noopener link</a>
+<button id="noopener-btn" onclick="window.open('/child?via=window.open-noopener', '_blank', 'noopener')">window.open noopener</button>
+<script>
+window.openFromScript = () => window.open('/child?via=window.open-script', '_blank');
+window.openNoopenerFromScript = () => window.open('/child?via=window.open-script-noopener', '_blank', 'noopener');
+window.askGeolocation = () =>
+  new Promise((resolve) =>
+    navigator.geolocation.getCurrentPosition(
+      () => resolve('granted-or-position'),
+      (e) => resolve('error:' + e.code + ':' + e.message),
+      { timeout: 3000 },
+    ),
+  );
+window.notificationPermission = () => Notification.permission;
+</script>
