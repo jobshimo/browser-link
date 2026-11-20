@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.38](https://github.com/jobshimo/browser-link/compare/v1.4.37...v1.4.38) (2026-11-20)
+
+### Refactor
+
+- core: the dialog half of the extension's CDP event intake moves to core (`session/dialog-intake.ts`): `dialogIntake(pending, sink)` maps `Page.javascriptDialogOpening` / `Page.javascriptDialogClosed` into a `PendingDialog` holder and sends `dialog-opening` / `dialog-closed` through a sink bound to the connection. The extension's debugger intake calls it, over its own socket; `TabSession` composes the `PendingDialog`. No behaviour change on either transport: nothing is wired into cdp-direct yet.
+
+### Notes
+
+- Groundwork for parity slice P3 (dialog tracking and `browser.dialog_respond` on `cdp:` tabs), which comes in the next release. The parity design records experiment X1: a JavaScript dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct; only a connection that enabled the `Page` domain before the dialog opened receives it and can answer it.
+
 ## [1.4.37](https://github.com/jobshimo/browser-link/compare/v1.4.36...v1.4.37) (2026-11-20)
 
 ### Features

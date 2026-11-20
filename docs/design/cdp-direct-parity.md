@@ -4,7 +4,14 @@ Status: revision 1 (2026-11-19), for arch's audit before any code. Written at
 `main` `9191c79` (release 1.4.34); every `path:line` below is at that commit.
 No code, test or other document is changed by this file. The owner decided
 on 2026-11-19 that the program starts; two of its decisions are still his
-(section 5).
+(section 5). Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
+experiment X1 and the dialog-intake move; the files it names are at that
+release, every other citation stays at `9191c79`. Revisions:
+
+| # | Date | Change |
+|---|---|---|
+| 1 | 2026-11-19 | The program, for arch's audit. |
+| 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
 **likely** (follows from code, not run), **experiment** (needs a Chrome run;
@@ -86,7 +93,20 @@ docs will say so. Arch confirms or asks the owner.
    `dialogOpened`, `dialogClosed`, the 200-entry bounds at lines 24-26) splits
    into a smaller core object (working name `PageBuffers`, **assumption**)
    that `TabSession` composes and cdp-direct holds per target, since
-   `TabSession` needs a driver and its idle rules (Q4). Each move is a
+   `TabSession` needs a driver and its idle rules (Q4). Closed for dialogs in
+   P3's refactor PR (revision 2): the pending dialog is `PendingDialog`
+   (`core/src/session/dialog-intake.ts`), a holder of at most one
+   `PendingDialogInfo` that is itself a `DialogWatch`; `TabSession` composes
+   one (`session.dialog`) and keeps `pendingDialog`, `dialogOpened` and
+   `dialogClosed` as delegating members, and cdp-direct will hold one per
+   target. The intake's dialog half is `dialogIntake(pending, sink)`, a CDP
+   event listener the extension's `debuggerIntake` calls and cdp-direct will
+   subscribe with `CdpSession.onEvent`. Dialogs do not use the name
+   `PageBuffers`: the buffers are P5's. P5 does the same for console and
+   network (`pushConsole`, `networkEntry` and the 200-entry bounds into a
+   core buffers holder that `TabSession` composes, and the console/network
+   half of the intake beside `dialogIntake`), and settles that holder's name
+   then. Each move is a
    **refactor PR of its own**, before the behavior PR that uses it (7(e)):
    e2e differential empty, title `refactor(core): ...`.
 5. **Events out.** `EventsOut.emit(tabId: number, event)`
@@ -96,6 +116,16 @@ docs will say so. Arch confirms or asks the owner.
    tab-bound emitter. cdp-direct's adapter writes into `BridgeEventLog`, the
    sink `server.ts:420` already installs for `flow-finished`, and gets the
    `events-out.contract.ts` suite.
+   Arch's answer, applied in P3's refactor PR (revision 2): the extension's
+   dialog intake never used `EventsOut` (it sends on its own connection), so
+   the shared intake takes a narrow sink bound to its connection,
+   `DialogEventSink` (`emit(event: BridgeEventPayload): void`, no tab key,
+   in `session/dialog-intake.ts`, not a port), built by each transport: the
+   extension's over `sendBridgeEvent`, cdp-direct's (in P3's behaviour PR)
+   over `BridgeEventLog`. `EventsOut` stays as it is, for flow events. The
+   bound form is not the general answer: P7's `tab-created` is raised for a
+   target cdp-direct never dialed (from the browser-level socket), so it
+   needs a sink keyed by the new `cdp:` id; P7 decides it.
 6. **Fitness.** No tool `case`, no tool-name comparison and no `perform*`
    declaration in `cdp/transport.ts` (`cdp/tool-name.fitness.test.ts:153-171`);
    no raw `Runtime.evaluate` (`cdp/raw-evaluate.fitness.test.ts`). Bindings to
@@ -160,7 +190,9 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
 - **Before code:** experiment X1 (section 6).
 - **Refactor PR first.** Dialog half of the intake and the pending-dialog
   state move to core (step 3.4); `sessionDialogWatch` reads the moved state.
-  Differential empty.
+  Differential empty. Done in release 1.4.38 (revision 2): `dialogIntake`,
+  `PendingDialog` and `DialogEventSink` in `core/src/session/dialog-intake.ts`;
+  nothing wired into cdp-direct.
 - **Shape.** On dial (`transport.ts:149-201`), cdp-direct creates the target's
   pending-dialog state, subscribes the core intake to the connection, and
   passes a `DialogWatch` as `dialogs` to `createPageDriver` (today
@@ -171,8 +203,17 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   `BridgeEventLog` through the cdp `EventsOut` adapter (step 3.5).
   `dialog_respond` already passes the claim guard as a kill switch.
 - **Caveat kept in the docs.** The connection is dialed lazily, so a dialog
-  opened before the first call has no opening event; `Page.handleJavaScriptDialog`
-  still answers it (**experiment**, X1).
+  opened while no cdp-direct connection to the page exists (before the first
+  call, or after the sweep closed the socket) cannot be seen or answered over
+  cdp-direct: a connection dialed with it open never finishes `Page.enable`
+  (15 s timeout, every call on the tab), gets no opening event (nothing is
+  replayed), and `Page.handleJavaScriptDialog` fails with `No dialog is
+  showing`. Only a connection whose `Page.enable` completed before the dialog
+  opened receives `Page.javascriptDialogOpening` and can answer it
+  (**verified**, X1, Chrome 118 and 157; revision 2). Such a tab must be
+  answered by the user or another client; `dialog_respond` cannot offer it.
+  Whether P3 answers that case with a faster, clearer error than the
+  `Page.enable` timeout is the behaviour PR's choice.
 - **RED first.** `browser.click.opens-dialog.cdp` (click answers
   `dialog: true`, `dialog_respond` closes it, the tab answers `evaluate`
   after), and a `browser.events` check for `dialog-opening` on the cdp tab.
@@ -369,6 +410,10 @@ slice's RED case or contract.
 | E4 | P8 | Behavior with the e2e pages for `post`, `one-time`, `chunked`, `gzip` under the behavior E1 accepts, and under `deny` |
 | E5 | P8 | Two concurrent downloads with the same URL: attribution and the files written |
 
+X1 ran on 2026-11-20 (revision 2; lab
+`packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, recorded as a lab script
+over the built server rather than a `*.chrome.test.ts` file).
+
 E1 and E2 need a headed run for the prompt and the user-download question;
 CI is headless, so those two are recorded locally with the Chrome version
 written down (**assumption**: allowed by the owner as for earlier R3 checks).
@@ -398,12 +443,12 @@ piece at the end.
 
 | Risk | Where | Containment |
 |---|---|---|
-| A dialog strands a `cdp:` tab | today; P3 removes it | P3 comes before every other M slice; X1 records the exact failure first; `dialog_respond` stays outside the claim guard |
+| A dialog strands a `cdp:` tab | today; P3 removes it for a dialog that opens while the tab's connection is open (X1: one opened with no connection cannot be answered over cdp-direct) | P3 comes before every other M slice; X1 recorded the exact failure (15 s `Input.dispatchMouseEvent` timeout, then 15 s per call); `dialog_respond` stays outside the claim guard |
 | Download behavior left redirected or denied after disconnect or crash | P8 | no P8 code before E2 shows the scope and revert; revert on close, revoke and process exit is in the slice; option c stays available |
 | Permissions persist in the user's profile | P7 (G10) | the owner picks the semantics; the contract test restores what it set; the README says what persists |
 | Capture buffers expose headers and post data on tabs without per-tab consent | P5 | same bound (200) as the extension; the gate and grant stay the only consent; stated to the owner (5.3) and in the README |
 | Memory and event volume on busy tabs | P5, gate A option 2 | bounded buffers; `Network.enable` only on driven targets; X2 measures volume |
-| Lost state at idle close | P3, P5 | gate A before P5; P3 documents the lazy-dial and sweep caveat |
+| Lost state at idle close | P3, P5 | gate A before P5; P3 documents the measured behaviour (X1): a dialog that opens while no connection to the page exists (before the lazy dial or after the sweep) cannot be seen or answered over cdp-direct, and every call on that tab fails on the `Page.enable` timeout until the user or another client answers it |
 | Footprint on tabs not driven | P6 option b, P7 socket | owner choice; browser socket opened only while needed |
 | Experimental CDP methods (`Input.setInterceptDrags`) change | P1 | contract on 118 (required) and `cdpDirectChecks` on stable (reported) |
 | Mixing refactor and behavior | P3, P5 | the shared-intake move is its own refactor PR with an empty differential |

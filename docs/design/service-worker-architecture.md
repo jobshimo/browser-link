@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 16, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2. Revision 1 (`5486e34`) was audited as
+Status: revision 17, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core). Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,20 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 17 (2026-11-20)
+
+Parity slice P3's refactor PR (release 1.4.38), by arch's decisions on the
+design audit ("EventsOut and `cdp:` ids", "A refactor PR before the behaviour
+PR wherever shared code moves"). No behaviour change on either transport: the
+e2e differential is equal and the PR carries no label.
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | The dialog half of the extension's CDP event intake (`Page.javascriptDialogOpening` / `Closed` into the pending dialog, and the `dialog-opening` / `dialog-closed` events) moves to core `session/dialog-intake.ts` as `dialogIntake(pending, sink)`, one authored body: a CDP event listener that answers true for the two dialog events and false, touching nothing, for any other. The extension's `debuggerIntake` (`app/tab-connection.ts`) calls it; the console, log, network and recorder branches stay in the extension until parity P5 | step 3.4 of the parity design: intake shared, never copied |
+| 2 | The pending dialog is `PendingDialog`, a holder of at most one `PendingDialogInfo` that is itself a `DialogWatch`, outside `ports/` like the other watches. `TabSession` composes one (`session.dialog`) and keeps `pendingDialog`, `dialogOpened` and `dialogClosed` as delegating members; `sessionDialogWatch` reads the composed holder. `PendingDialogInfo` moves with it (still exported from core's entry) | cdp-direct holds no `TabSession` (Q4) and will keep one `PendingDialog` per target in P3's behaviour PR; this closes the parity design's `PageBuffers` assumption for dialogs only, the buffers being P5's |
+| 3 | The intake sends its events through `DialogEventSink` (`emit(event: BridgeEventPayload): void`), a narrow sink bound to one connection, built by each transport; the extension's is `sendBridgeEvent` on its own socket. `EventsOut` (revision 13 decision 6) is unchanged and stays the flow events' port, keyed by a numeric tab id. The bound sink is not the general answer for `cdp:` ids: parity P7's `tab-created` concerns a target cdp-direct never dialed and needs a sink keyed by the `cdp:` id, decided in P7 | the extension's dialog intake never used `EventsOut`; it sends on its own connection |
+| 4 | No port shape change, no fitness-rule change, nothing wired into cdp-direct (no `DialogWatch` at dial, no `dialog-input` in `CDP_DIRECT_PROVIDES`, no new error text): all of that is P3's behaviour PR. Core unit tests drive the intake through the in-memory `CdpSession` (`session/dialog-intake.test.ts`); the extension's intake tests are unchanged | 7(e): a refactor PR before the behaviour PR, differential empty |
 
 ### Revision 16 (2026-11-20)
 
@@ -1194,7 +1208,9 @@ Invariants:
    most `NETWORK_BUFFER_MAX = 200`, oldest dropped first, `networkOrder` and
    `networkBuffer` always hold the same ids.
 6. **At most one pending dialog**, set on `Page.javascriptDialogOpening`,
-   cleared on `Page.javascriptDialogClosed` (`attachDebuggerListener`).
+   cleared on `Page.javascriptDialogClosed` (`attachDebuggerListener`; since
+   revision 17 the `PendingDialog` that `TabSession` composes, written by
+   core's `dialogIntake`).
 7. **Observer state.** `observer.installed === false` means every action
    reports `settle.changes: null`; the script id is removed on cleanup.
 
