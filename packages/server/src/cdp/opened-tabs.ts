@@ -34,9 +34,13 @@
  *   `server.ts` installs it over `BridgeEventLog`, as it installs the flow and
  *   dialog sinks.
  * - **A page opened just before the wait.** Discovery first lists every
- *   existing target; a page the opener opened before the socket was up (the
- *   click landed first) is reported from that listing. A target this process
- *   already reported is not reported again (`reported`).
+ *   existing target. A page of that listing the opener opened is returned
+ *   only when the opener ran an action within the extension's 1.5 s replay
+ *   window before the wait started (or during it); several such pages are an
+ *   error naming them, never a pick by listing order. A target a wait already
+ *   returned is not reported again (`markOpenedTabReturned`); one only
+ *   announced to a wait that did not match it still is.
+ * - **A dropped socket** ends the wait with `BROWSER_SOCKET_LOST_ERROR`.
  *
  * The browser-context ids differ between Chrome 118 and 157 (X3 section 2);
  * discovery does not use them.
@@ -56,9 +60,34 @@ export const BROWSER_SOCKET_COMMANDS: ReadonlySet<string> = new Set(['Target.set
 
 /** What the watch needs of a browser-level socket. */
 export interface BrowserSocket {
-  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** `onAnswer` runs synchronously on the answer's frame, before any later
+   * frame is handled. */
+  send(method: string, params?: Record<string, unknown>, onAnswer?: () => void): Promise<unknown>;
   onAny(handler: (method: string, params: unknown) => void): () => void;
+  /** Runs once when the socket closes, whoever closed it. */
+  onClose(handler: () => void): () => void;
   close(): void;
+}
+
+/** The error a `wait_for_tab` on a `cdp:` opener ends with when the browser
+ * drops its browser-level socket before the wait settled. */
+export const BROWSER_SOCKET_LOST_ERROR =
+  'cdp-direct: the browser closed the browser-level DevTools connection browser.wait_for_tab was watching; no new tab can be seen on it. Retry the call.';
+
+/** `raw` with its `send` limited to `BROWSER_SOCKET_COMMANDS`: any other
+ * method is refused (a rejected promise) and never reaches the socket. */
+export function guardBrowserSocket(raw: BrowserSocket): BrowserSocket {
+  return {
+    send: (method, params, onAnswer) =>
+      BROWSER_SOCKET_COMMANDS.has(method)
+        ? raw.send(method, params, onAnswer)
+        : Promise.reject(new Error(`cdp-direct: ${method} is not sent on the browser socket`)),
+    onAny: (handler) => raw.onAny(handler),
+    onClose: (handler) => raw.onClose(handler),
+    close: () => {
+      raw.close();
+    },
+  };
 }
 
 /** A page the opener opened: its target id and url. */
@@ -79,11 +108,23 @@ export function setCdpTabCreatedSink(sink: CdpTabCreatedSink | null): void {
   tabCreatedSink = sink;
 }
 
-/** The targets this process already reported, oldest first, bounded. */
+/** The targets a `wait_for_tab` already returned (matched), oldest first,
+ * bounded. A target only announced (`tab-created`) to a wait that did not
+ * match it, for example because of its `url_substring`, is not here, so a
+ * later wait on the same opener still sees it. */
 const REPORTED_LIMIT = 256;
 const reportedTargets = new Set<string>();
 
-function remember(reported: Set<string>, targetId: string): void {
+/** Record that a wait returned the `cdp:` tab `tabId` (the dispatcher calls
+ * it on a match); later watches do not announce it again. Any other id is
+ * ignored. */
+export function markOpenedTabReturned(
+  tabId: string,
+  reported: Set<string> = reportedTargets,
+): void {
+  const targetId = cdpTargetIdFromTabId(tabId);
+  if (targetId === null) return;
+  reported.delete(targetId);
   reported.add(targetId);
   if (reported.size > REPORTED_LIMIT) {
     const oldest = reported.values().next().value;
@@ -174,9 +215,21 @@ export interface OpenedTabsDeps {
   openSocket(url: string): Promise<BrowserSocket>;
   sink?: CdpTabCreatedSink;
   reported?: Set<string>;
+  /** Called once, with `BROWSER_SOCKET_LOST_ERROR`, when the browser drops
+   * the socket before `stop`. */
+  onLost?: (err: Error) => void;
+  /** Read once, when discovery's first listing is complete: whether the
+   * opener ran an action within the replay window before the wait started
+   * (or during it). Only then may a page of the first listing be returned.
+   * Default: never. */
+  openerActedRecently?: () => boolean;
+  /** Whether a page url can match the wait (its `url_substring`); a page of
+   * the first listing that cannot is not a candidate. Default: every url. */
+  accepts?: (url: string) => boolean;
 }
 
-async function openBrowserSocket(url: string): Promise<BrowserSocket> {
+/** Export for tests: open the guarded browser socket at a loopback url. */
+export async function openBrowserSocket(url: string): Promise<BrowserSocket> {
   let host: string;
   try {
     host = new URL(url).hostname;
@@ -188,13 +241,14 @@ async function openBrowserSocket(url: string): Promise<BrowserSocket> {
   }
   const client = new CdpClient(url);
   await client.connect();
-  return {
-    send: (method, params) => client.send(method, params),
+  return guardBrowserSocket({
+    send: (method, params, onAnswer) => client.send(method, params, undefined, onAnswer),
     onAny: (handler) => client.onAny(handler),
+    onClose: (handler) => client.onClose(handler),
     close: () => {
       client.close();
     },
-  };
+  });
 }
 
 function defaultDeps(): OpenedTabsDeps {
@@ -205,19 +259,54 @@ function defaultDeps(): OpenedTabsDeps {
   };
 }
 
+/** The text of the error a wait gets when several pages of the first listing
+ * could be the one its opener's last action opened. Sorted by url, then id,
+ * never by Chrome's listing order. */
+export function ambiguousOpenedTabsMessage(
+  openerTabId: string,
+  pages: readonly OpenedTab[],
+): string {
+  const named = [...pages]
+    .sort((a, b) => (a.url === b.url ? (a.targetId < b.targetId ? -1 : 1) : a.url < b.url ? -1 : 1))
+    .map((p) => `${CDP_TAB_ID_PREFIX}${p.targetId} (${p.url === '' ? 'no url yet' : p.url})`)
+    .join(', ');
+  return (
+    `cdp-direct: browser.wait_for_tab cannot tell which tab ${openerTabId} opened: ` +
+    `${String(pages.length)} tabs it opened were already open when the wait started, ` +
+    `within 1.5 s of its last action: ${named}. Call browser.list_tabs and pick one.`
+  );
+}
+
 /**
  * Watch the pages the `cdp:` tab `openerTabId` opens, for one
  * `wait_for_tab` call: open the browser socket, subscribe, turn discovery
  * on, and add a `tab-created { tab_id, opened_from, url }` through the sink
- * for each page reported. Resolves to the stop function (idempotent: it
- * unsubscribes and closes the socket); rejects, with nothing left open, when
- * the gate is closed, the opener id is malformed, the browser endpoint is
- * missing or discovery cannot start.
+ * for each page reported.
+ *
+ * Discovery first lists every existing target, before it answers
+ * `Target.setDiscoverTargets`; those events are buffered and classified when
+ * the answer's frame arrives (`onAnswer`, synchronous, so an event behind it
+ * in the same chunk is not taken for the listing). A page of that first
+ * listing that the opener opened is a candidate only when
+ * `openerActedRecently()` holds and `accepts` its url: no candidate, nothing;
+ * one, it is reported (now, or when its url arrives); several, the watch
+ * rejects with `ambiguousOpenedTabsMessage`. Every other page of the listing
+ * is ignored for the whole watch. Pages created afterwards are reported as
+ * they come.
+ *
+ * Resolves to the stop function (idempotent: it unsubscribes and closes the
+ * socket); rejects, with nothing left open, when the gate is closed, the
+ * opener id is malformed, the browser endpoint is missing, discovery cannot
+ * start, or the first listing is ambiguous. A socket the browser drops
+ * afterwards ends the watch and calls `onLost` with
+ * `BROWSER_SOCKET_LOST_ERROR`. `overrides` replace the production
+ * dependencies.
  */
 export async function watchOpenedTabs(
   openerTabId: string,
-  deps: OpenedTabsDeps = defaultDeps(),
+  overrides: Partial<OpenedTabsDeps> = {},
 ): Promise<() => void> {
+  const deps: OpenedTabsDeps = { ...defaultDeps(), ...overrides };
   const gate = deps.gate();
   if (!gate.ok) throw new Error(gate.error);
   const openerTargetId = cdpTargetIdFromTabId(openerTabId);
@@ -230,46 +319,101 @@ export async function watchOpenedTabs(
       'cdp-direct: no browser-level DevTools endpoint on the configured port (/json/version has no webSocketDebuggerUrl)',
     );
   }
-  const socket = await deps.openSocket(url);
+  const socket = guardBrowserSocket(await deps.openSocket(url));
   const reported = deps.reported ?? reportedTargets;
-  const filter = createOpenedTabFilter(openerTargetId, (id) => reported.has(id));
+  const accepts = deps.accepts ?? (() => true);
+  // Pages of the first listing that may not be reported, for the whole watch.
+  const ignored = new Set<string>();
+  const filter = createOpenedTabFilter(openerTargetId, (id) => reported.has(id) || ignored.has(id));
+  const emit = (opened: OpenedTab): void => {
+    // The grant can lapse during the wait: nothing is announced then.
+    if (!deps.gate().ok) return;
+    (deps.sink ?? tabCreatedSink)?.(`${CDP_TAB_ID_PREFIX}${opened.targetId}`, {
+      opened_from: openerTabId,
+      url: opened.url,
+    });
+  };
+
   let stopped = false;
+  let listing: [string, unknown][] | null = [];
+  // Set by endListing (a closure, so a holder rather than a let).
+  const listingOutcome: { ambiguous: Error | null } = { ambiguous: null };
   const unsubscribe = socket.onAny((method, params) => {
     if (stopped) return;
-    for (const opened of filter(method, params)) {
-      // The grant can lapse during the wait: nothing is announced then.
-      if (!deps.gate().ok) continue;
-      if (reported.has(opened.targetId)) continue;
-      remember(reported, opened.targetId);
-      (deps.sink ?? tabCreatedSink)?.(`${CDP_TAB_ID_PREFIX}${opened.targetId}`, {
-        opened_from: openerTabId,
-        url: opened.url,
-      });
+    if (listing) {
+      listing.push([method, params]);
+      return;
     }
+    for (const opened of filter(method, params)) emit(opened);
+  });
+
+  /** Classify the first listing; runs on the answer's frame. */
+  const endListing = (): void => {
+    if (!listing) return;
+    const events = listing;
+    listing = null;
+    const facts = new Map<string, { type?: string; url?: string; openerId?: string }>();
+    for (const [method, params] of events) {
+      if (method === 'Target.targetDestroyed') {
+        const id = (params as { targetId?: unknown } | null)?.targetId;
+        if (typeof id === 'string') facts.delete(id);
+        continue;
+      }
+      if (method !== 'Target.targetCreated' && method !== 'Target.targetInfoChanged') continue;
+      const info = targetInfoOf(params);
+      if (info) facts.set(info.targetId, info);
+    }
+    const opener = facts.get(openerTargetId);
+    const openerOk = opener !== undefined && isDrivablePageTarget(opener.type, opener.url);
+    const candidates: OpenedTab[] = [];
+    for (const [targetId, f] of facts) {
+      if (targetId === openerTargetId) continue;
+      ignored.add(targetId);
+      if (!openerOk || f.type !== 'page' || f.openerId !== openerTargetId) continue;
+      if (reported.has(targetId)) continue;
+      const pageUrl = f.url ?? '';
+      if (pageUrl !== '' && (!isDrivablePageTarget(f.type, pageUrl) || !accepts(pageUrl))) continue;
+      candidates.push({ targetId, url: pageUrl });
+    }
+    const allowed = candidates.length > 0 && (deps.openerActedRecently?.() ?? false);
+    if (allowed && candidates.length > 1) {
+      listingOutcome.ambiguous = new Error(ambiguousOpenedTabsMessage(openerTabId, candidates));
+    } else if (allowed) {
+      ignored.delete(candidates[0].targetId);
+    }
+    // Feed the listing to the filter: it learns the opener and every target;
+    // only the allowed candidate can come out of it.
+    for (const [method, params] of events) {
+      for (const opened of filter(method, params)) if (!listingOutcome.ambiguous) emit(opened);
+    }
+  };
+
+  const release = (): void => {
+    stopped = true;
+    unsubscribe();
+    unsubscribeClose();
+  };
+  const unsubscribeClose = socket.onClose(() => {
+    if (stopped) return;
+    release();
+    deps.onLost?.(new Error(BROWSER_SOCKET_LOST_ERROR));
   });
   const stop = (): void => {
     if (stopped) return;
-    stopped = true;
-    unsubscribe();
+    release();
     socket.close();
   };
   try {
-    await sendDiscovery(socket, 'Target.setDiscoverTargets', { discover: true });
+    await socket.send('Target.setDiscoverTargets', { discover: true }, endListing);
+    // A socket that answered without calling back still ends the listing.
+    endListing();
   } catch (err) {
     stop();
     throw err;
   }
-  return stop;
-}
-
-/** The only way this module sends on the browser socket. */
-function sendDiscovery(
-  socket: BrowserSocket,
-  method: string,
-  params: Record<string, unknown>,
-): Promise<unknown> {
-  if (!BROWSER_SOCKET_COMMANDS.has(method)) {
-    return Promise.reject(new Error(`cdp-direct: ${method} is not sent on the browser socket`));
+  if (listingOutcome.ambiguous) {
+    stop();
+    throw listingOutcome.ambiguous;
   }
-  return socket.send(method, params);
+  return stop;
 }

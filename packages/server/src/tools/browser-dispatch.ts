@@ -72,6 +72,7 @@ import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
 import { findTab, listKnownTabs, listTabsForSession, withCallTabMemo } from './tab-lookup.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
+import { noteTabAction, tabActedSince } from './tab-actions.js';
 import {
   formatClaimConflict,
   type AgentCaller,
@@ -315,7 +316,15 @@ export interface BrowserToolDeps {
    * browser-level socket; each page it sees is added to the event log as
    * `tab-created`, where the wait's listener reads it as it reads the
    * extension's. Absent in a build without cdp-direct wired up. */
-  watchCdpOpenedTabs?: (openerTabId: string) => Promise<() => void>;
+  watchCdpOpenedTabs?: (
+    openerTabId: string,
+    options: CdpOpenedTabsWatchOptions,
+  ) => Promise<() => void>;
+  /** Optional: a wait matched (returned) the `cdp:` tab `tabId`, so later
+   * watches do not announce it again (`cdp/opened-tabs.ts`
+   * `markOpenedTabReturned`). Only a returned tab counts: one announced to a
+   * wait whose `url_substring` did not match stays visible. */
+  noteCdpTabReturned?: (tabId: string) => void;
   /** Optional activity-trail sink. Called once per dispatched tool, AFTER the
    * call settles, with the row already assembled — success and failure alike.
    * Injected rather than imported so the dispatcher keeps no opinion about
@@ -437,6 +446,21 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
  * DEFAULT_EXPECT_TIMEOUT_MS / MAX_EXPECT_TIMEOUT_MS in the extension's
  * `expect.ts` (and its `cdp/expect.ts` copy); kept in sync manually. */
 const DEFAULT_EXPECT_TIMEOUT_MS = 3_000;
+/** wait_for_tab's replay window: a `tab-created` at most this old still
+ * matches a new wait, and on a `cdp:` opener a page already open when the
+ * watch starts is returned only after an action on the opener this recent. */
+const WAIT_FOR_TAB_REPLAY_WITHIN_MS = 1500;
+
+/** What the dispatcher passes to `watchCdpOpenedTabs` (P7, G11). */
+export interface CdpOpenedTabsWatchOptions {
+  /** The watch's socket was lost: the wait ends with this error. */
+  onLost: (err: Error) => void;
+  /** Whether the opener acted within the replay window before the wait. */
+  openerActedRecently: () => boolean;
+  /** Whether a url can match the wait's `url_substring`. */
+  accepts: (url: string) => boolean;
+}
+
 const MAX_EXPECT_TIMEOUT_MS = 10_000;
 
 /** Longest `snapshot({ since })` id forwarded; matches the tool schema's maxLength. */
@@ -1436,7 +1460,14 @@ async function runAction(
       throw new Error(formatClaimConflict(caller, outcome.existing));
     }
   }
-  return routeToolCall(tool, tabId, params, deps, timeoutMs);
+  // When the tab last acted (start and end): wait_for_tab on a cdp: opener
+  // returns a page that was already open only after a recent action (P7).
+  noteTabAction(tabId);
+  try {
+    return await routeToolCall(tool, tabId, params, deps, timeoutMs);
+  } finally {
+    noteTabAction(tabId);
+  }
 }
 
 /** Best-effort origin extraction for the map-hint lookup. A tab URL that
@@ -3035,7 +3066,7 @@ async function dispatchBrowserTool(
       // (`cdp/opened-tabs.ts`, parity P7), which adds the same `tab-created`
       // event to the log; the listener below reads both alike. Gate first,
       // so a disabled/ungranted setup gets the standard gate error.
-      let watchCdp: (() => Promise<() => void>) | null = null;
+      let watchCdp: ((onLost: (err: Error) => void) => Promise<() => void>) | null = null;
       if (isCdpTabId(opened_from)) {
         const gate = deps.cdpGate
           ? deps.cdpGate()
@@ -3046,7 +3077,16 @@ async function dispatchBrowserTool(
         if (!gate.ok) throw new Error(gate.error);
         const watch = deps.watchCdpOpenedTabs;
         if (!watch) throw new Error('cdp-direct is not available in this build of browser-link.');
-        watchCdp = () => watch(opened_from);
+        const needle = typeof url_substring === 'string' ? url_substring.toLowerCase() : null;
+        const waitStartedAt = Date.now();
+        watchCdp = (onLost) =>
+          watch(opened_from, {
+            onLost,
+            // The extension's replay window, measured on the opener's actions.
+            openerActedRecently: () =>
+              tabActedSince(opened_from, waitStartedAt - WAIT_FOR_TAB_REPLAY_WITHIN_MS),
+            accepts: (url) => needle === null || url.toLowerCase().includes(needle),
+          });
       }
       if (!deps.subscribeEvents) {
         return {
@@ -3066,7 +3106,7 @@ async function dispatchBrowserTool(
       // the source event landed in the buffer milliseconds before this
       // handler was reached. Older events are not replayed — they belong
       // to a previous flow.
-      const REPLAY_WITHIN_MS = 1500;
+      const REPLAY_WITHIN_MS = WAIT_FOR_TAB_REPLAY_WITHIN_MS;
       const subscribe = deps.subscribeEvents;
       const tabClaims = deps.tabClaims;
       return new Promise<unknown>((resolve, reject) => {
@@ -3113,6 +3153,7 @@ async function dispatchBrowserTool(
           } else {
             claimed = true;
           }
+          if (watchCdp) deps.noteCdpTabReturned?.(eTabId);
           settleWith({
             matched: true,
             tab_id: eTabId,
@@ -3131,7 +3172,9 @@ async function dispatchBrowserTool(
         }, timeoutMs);
         unsubscribe = subscribe(listener, { replayWithinMs: REPLAY_WITHIN_MS });
         if (watchCdp) {
-          watchCdp().then(
+          watchCdp((err) => {
+            if (finish()) reject(err);
+          }).then(
             (stop) => {
               if (settled) stop();
               else stopWatch = stop;

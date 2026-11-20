@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>e2e opener</title>
+  </head>
+  <body>
+    <!-- The opener of the browser.wait_for_tab cases on a cdp: tab (parity P7,
+         G11). Every element opens /opened.html with its own query, so each
+         case waits for a url no other case opens. -->
+    <button id="open-btn" type="button">Open by window.open</button>
+    <a id="blank-link" href="/opened.html?cdp-link" target="_blank">Open by a link</a>
+    <a id="after-link" href="/opened.html?cdp-after" target="_blank">Open, then wait</a>
+    <a id="stale-link" href="/opened.html?cdp-stale" target="_blank">Open long before</a>
+    <a id="two-a" href="/opened.html?cdp-two-a" target="_blank">Open one of two</a>
+    <a id="two-b" href="/opened.html?cdp-two-b" target="_blank">Open the other</a>
+    <script>
+      document.getElementById('open-btn').addEventListener('click', () => {
+        window.open('/opened.html?cdp-tab', '_blank');
+      });
+    </script>
+  </body>
+</html>

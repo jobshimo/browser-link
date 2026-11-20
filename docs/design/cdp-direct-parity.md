@@ -368,12 +368,33 @@ every idle close today.
     `tab-created { opened_from, url, tab_id }`, the extension's payload once
     the bridge adds `tab_id`. The dispatcher's existing listener matches and
     auto-claims it, so the answer has the extension's shape.
-  - **A page opened before the call.** The socket is not up when the click
-    lands first; discovery lists existing targets first, so such a page is
-    reported from that listing while it is still open, unless this process
-    already reported it (a bounded set of 256 ids). The extension instead
-    replays a `tab-created` only from the last 1.5 s. Stated in the tool
-    text, the manual and the README.
+  - **A page opened before the call** (arch's ruling on review, replacing
+    "any already-open child counts"). Discovery lists the existing targets
+    before it answers `Target.setDiscoverTargets`; the watch buffers those
+    events and classifies them on the answer's frame (`CdpClient.send`'s
+    synchronous `onAnswer`, so an event right behind the answer in the same
+    chunk is live; pinned by a unit test on a real `CdpClient` and by the
+    `stale` e2e case). A page of that first listing the opener opened is
+    returned only when the opener ran an action through the dispatcher
+    within the extension's replay window (`REPLAY_WITHIN_MS`, 1.5 s) before
+    the wait started, or during it: `runAction` notes the start and end of
+    every action tool per tab (`tools/tab-actions.ts`); it fits there
+    cleanly, since every action tool goes through it. Several such pages
+    (after the `url_substring`) are an error naming them, sorted by url,
+    never a pick by Chrome's listing order; every other page of the listing
+    is ignored for the whole watch. Pages created after the listing count as
+    they come. Remaining difference, stated in the tool text, the manual and
+    the README: the extension measures the 1.5 s from the `tab-created`
+    event, this from the opener's last action.
+  - **Returned, not announced.** A tab counts as already returned only when a
+    wait matched it (the dispatcher calls `markOpenedTabReturned` on a
+    match; a bounded set of 256 ids); one announced to a wait whose
+    `url_substring` did not match stays visible to later waits.
+  - **Allowlist at the socket.** `openBrowserSocket` wraps the client in
+    `guardBrowserSocket`, whose `send` refuses any command but
+    `Target.setDiscoverTargets` without sending it.
+  - **A dropped socket** ends the wait at once with
+    `cdp-direct: the browser closed the browser-level DevTools connection browser.wait_for_tab was watching; no new tab can be seen on it. Retry the call.` (`CdpClient.onClose`), not with `reason: 'timeout'`.
   - Browser-context ids (118 vs 157) do not matter: discovery does not use
     them.
   - **Footprint.** X3 saw none on other tabs (no attach, no latency change),

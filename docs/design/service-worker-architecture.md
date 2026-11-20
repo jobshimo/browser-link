@@ -91,6 +91,7 @@ Parity slice P7, G11 (release 1.4.41): `browser.wait_for_tab` on a `cdp:` opener
 | 2 | Its `tab-created` goes through `CdpTabCreatedSink`, keyed by the new `cdp:` id, outside `ports/` and installed by `server.ts` over `BridgeEventLog` like the flow and dialog sinks. `EventsOut` and `DialogEventSink` are unchanged; no port or fitness rule changed | the event is raised for a target cdp-direct never dialed, so the connection-bound sink of revision 17 row 3 does not fit |
 | 3 | The hand-declared `wait_for_tab` row (`CDP_DECLARED_SUPPORT`) is removed; `CDP_TOOL_SUPPORT` is derived from the registry alone, and the dispatcher's refusal is replaced by the watch | `wait_for_tab` is dispatcher-only and now works on both transports |
 | 4 | Verified on headless Chrome 118 and 157 only (X3 and the e2e); the owner's headed browser is untested | both runs were headless |
+| 5 | A page already open when the watch starts is returned only after an action on the opener within the 1.5 s replay window (`runAction` notes each action's start and end per tab, `tools/tab-actions.ts`); several are an error naming them. The first listing is told from live events by the `Target.setDiscoverTargets` answer's frame (`CdpClient.send` `onAnswer`, synchronous). `CdpClient` also gains `onClose`: a dropped browser socket ends the wait with an error | arch's ruling on review: an old popup must never be returned as if the last action had opened it, as the extension's replay window guarantees |
 
 ### Revision 19 (2026-11-20)
 

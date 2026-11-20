@@ -39,7 +39,7 @@ import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool, setCdpBridgeEventSink } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
-import { setCdpTabCreatedSink, watchOpenedTabs } from './cdp/opened-tabs.js';
+import { markOpenedTabReturned, setCdpTabCreatedSink, watchOpenedTabs } from './cdp/opened-tabs.js';
 import { inspectPortHolder } from './lifecycle/port-holder.js';
 import {
   probeVersion,
@@ -519,7 +519,10 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
     listCdpTabs: () => listCdpTargets(),
     callCdpTool,
     cdpGate: () => checkCdpDirectGate(),
-    watchCdpOpenedTabs: (openerTabId) => watchOpenedTabs(openerTabId),
+    watchCdpOpenedTabs: (openerTabId, options) => watchOpenedTabs(openerTabId, options),
+    noteCdpTabReturned: (tabId) => {
+      markOpenedTabReturned(tabId);
+    },
     // browser.download writes here. The directory is re-read per download so
     // `browser-link config set downloads.dir` applies without a restart.
     saveDownload: (filename, data) =>
