@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.37](https://github.com/jobshimo/browser-link/compare/v1.4.36...v1.4.37) (2026-11-20)
+
+### Features
+
+- cdp-direct: `browser.find`, `browser.click`, `browser.type`, `browser.navigate` and `browser.evaluate` on a `cdp:` tab now read a missing or non-string `text`, `selector`, `url` or `expression` the way an extension tab does, as `String(x)` (a numeric selector looks for `"42"`, a missing url navigates to `"undefined"`), where they used `''`. One consequence: `browser.type` with neither `selector` nor `ref` no longer types into the focused element on a `cdp:` tab; it looks for the selector `undefined`, as on the extension (the tool's schema always required one of them). Extension answers are unchanged.
+
+### Notes
+
+- The five registry entries each have one `coerce` now (both transport keys point to it). The e2e gains two `.cdp` cases: `error.coerce.cdp` and `browser.evaluate.coerce.cdp`.
+
 ## [1.4.36](https://github.com/jobshimo/browser-link/compare/v1.4.35...v1.4.36) (2026-11-19)
 
 ### Features

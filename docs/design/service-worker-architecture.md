@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 15, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1. Revision 1 (`5486e34`) was audited as
+Status: revision 16, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,15 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 16 (2026-11-20)
+
+Parity slice P2 (release 1.4.37), by the owner's decision of 2026-11-20
+("unificamos si es mejor"):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | The five registry entries that kept a per-transport `coerce` (`find`, `click`, `type`, `navigate`, `evaluate`) now share the extension's coercion: a missing or non-string `text`, `selector`, `url` or `expression` reads as `String(x)` on a `cdp:` tab as on an extension tab (one function per entry, both transport keys point to it). The extension's answers are unchanged. The difference was reachable over the wire: the server's raw `CallToolRequestSchema` handler and the dispatcher do not validate arguments against the input schema, and the MCP client the e2e harness uses sends a non-string argument as given. A `type` with no `selector` and no `ref` on a `cdp:` tab no longer types into the focused element (the tool's schema never allowed it); it looks for the selector `undefined`, as on the extension. Two `.cdp` e2e cases pin it | the extension is the reference transport; revision 7(e) kept both coercions until a behaviour PR unified them |
 
 ### Revision 15 (2026-11-19)
 
@@ -345,8 +354,9 @@ Consequences, measured:
   The per-tool argument coercion and failure mapping differ by construction:
   the extension spreads `sensitive_field` into the response (`handleTool`,
   cases `type` and `press`), the server throws (`transport.ts`
-  `failureError`); the extension coerces a missing string with `String(p[key])`
-  (`handleTool` `str`), cdp-direct's `navigate` with `''`.
+  `failureError`). (The coercion of a missing string was the third such
+  difference until revision 16: both transports now read it as
+  `String(p[key])`.)
 - **Copies by packaging constraint.** The server publishes to npm standalone
   and cannot depend on the private extension or shared packages, so
   `cdp/flow.ts` (1348), `cdp/inpage/*`, `cdp/expect.ts` (270), `cdp/keymap.ts`
@@ -1018,7 +1028,8 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   `tools/page-read.ts`. `ping` requires `page` (the `PageInfo` port, now a
   requirement both transports provide) and answers `{ title, url }` in that
   key order. `snapshot`, `state` and `evaluate` require `evaluator`;
-  `evaluate` keeps each transport's coercion of a missing expression.
+  `evaluate` reads a missing expression as `String(p.expression)` on both
+  transports (revision 16).
   `canvas_screenshot` requires `evaluator` and `canvas`, a provides-set entry
   like `capture-buffers` that only the extension provides (v1 scope); its
   in-page builder is `inpage/canvas.ts`. `console` and `network` require
@@ -1623,7 +1634,7 @@ follow-ups the revisions already record, each its own PR if the owner wants it
 (section 7 "Known places where the move invites a behavior change"): unifying
 the network buffer for cdp-direct (`network-url-mode`), enabling drag, console,
 network or downloads on cdp-direct (`CDP_DIRECT_PROVIDES`, 3.3), unifying
-argument coercion behind the per-transport `coerce` override, adopting
+argument coercion (done in revision 16), adopting
 `TabSession` idle rules or `FlowRun` on cdp-direct (Q4), the non-GET download
 refusal comment and the Windows `table-changed` fallback (arch's answer), and
 the open wall times and P3/P4 (Chrome 118 behavior) of "Open questions". The
@@ -1810,8 +1821,7 @@ deletion commit is not pushed before the first commit's CI is green.
   `transport-parity.test.ts`), enabling drag, console, network or downloads
   on cdp-direct (`CDP_DIRECT_PROVIDES`, 3.3), unifying argument coercion
   (extension `String(p[key])` vs cdp-direct `''` for a missing `navigate`
-  url: the registry entry keeps each transport's coercion behind a
-  per-transport `coerce` override until a behavior PR unifies it), adopting
+  url: unified on the extension's in revision 16, release 1.4.37), adopting
   `TabSession` idle rules or `FlowRun` on cdp-direct (Q4), and the two server
   notes in arch's answer (non-GET download refusal comment, Windows
   `table-changed` fallback). Each is its own PR if the owner wants it.

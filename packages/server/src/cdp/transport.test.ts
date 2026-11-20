@@ -470,6 +470,36 @@ describe('callCdpTool — tool dispatch', () => {
     expect((result as { error: string }).error).toBe('drag: from_selector #card not found');
   });
 
+  test('a non-string argument reaches a cdp: tab and is read as String(x), as on an extension tab (P2)', async () => {
+    const expressions: string[] = [];
+    const navigated: string[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': (params) => {
+        expressions.push((params as { expression: string }).expression);
+        return { result: { value: { ok: false, reason: 'not-found' } } };
+      },
+      'Page.navigate': (params) => {
+        navigated.push((params as { url: string }).url);
+        return {};
+      },
+    });
+    grantAccess(port);
+    const tab = `cdp:${targetId}`;
+    await callCdpTool(tab, 'evaluate', { expression: 5 });
+    expect(expressions.at(-1)).toBe('5');
+    await expect(callCdpTool(tab, 'click', { selector: 42 })).rejects.toThrow(
+      'Element not found: 42',
+    );
+    await expect(callCdpTool(tab, 'type', { selector: 42, text: 7 })).rejects.toThrow(
+      'Element not found: 42',
+    );
+    await callCdpTool(tab, 'navigate', { url: 9, wait_for_load: false });
+    expect(navigated).toEqual(['9']);
+    const before = expressions.length;
+    await callCdpTool(tab, 'find', { text: 3 });
+    expect(expressions.slice(before).some((e) => e.includes('3'))).toBe(true);
+  });
+
   test('click rejects with "Element not found" when resolution fails', async () => {
     const { port, targetId } = await startFakeTarget({
       'Runtime.evaluate': () => ({ result: { value: { ok: false, reason: 'not-found' } } }),
@@ -581,10 +611,17 @@ describe('callCdpTool — tool dispatch', () => {
   });
 
   test('type without expect is unchanged (no expect key in the result)', async () => {
-    const { port, targetId } = await startFakeTarget({});
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({ result: { value: { ok: true, sensitive_field: false } } }),
+    });
     grantAccess(port);
-    const result = await callCdpTool(`cdp:${targetId}`, 'type', { text: 'hi', settle_ms: 0 });
-    expect(result).toEqual({ typed: 2 });
+    const result = await callCdpTool(`cdp:${targetId}`, 'type', {
+      selector: '#q',
+      text: 'hi',
+      settle_ms: 0,
+    });
+    expect(result).toMatchObject({ typed: 2 });
+    expect(result).not.toHaveProperty('expect');
   });
 
   test('a flow step with an unmet expect fails fast at that step', async () => {
