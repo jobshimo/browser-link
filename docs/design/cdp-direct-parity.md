@@ -61,7 +61,7 @@ experiment first.
 | G11 | `wait_for_tab` | refused in the dispatcher (`browser-dispatch.ts:3034-3043`), declared `false` (`support.ts:50`) | opener-to-new-target signal, `tab-created` for `cdp:` tabs | M | Medium | code verified; `openerId` **experiment** |
 | G12 | `build`, `view_sig` in `list_tabs` | absent (README line 2670) | the observer's `doc_info` reaching `listCdpTargets` | M | Medium (footprint) | verified |
 | G13 | idle and claim model | fixed 5 min socket sweep (`transport.ts:79`), no call hold | an owner decision superseding Q4 | L | Medium | verified |
-| G14 | foreground flow registry | `start` registers detached flows only (`cdp/flow-control.ts:39`) | register foreground runs; `flow_status` answers `running` | M | Low | code verified; observable answer **likely** |
+| G14 | foreground flow registry | `start` registers detached flows only (`cdp/flow-control.ts:39`) | register foreground runs (done in P4, 1.4.40) | M | Low | not agent-visible; internal parity only |
 | G15 | per-transport coercion | done in P2 (1.4.37): the five entries (`find`, `click`, `type`, `navigate`, `evaluate`) share the extension's coercion | one `coerce` per entry | S | Low, agent-visible | reachable over the wire (verified) |
 | G16 | bridge events | only `flow-finished` (`server.ts:420`), claim and `download-*` | `dialog-*` (G4) and `tab-created` (G11) | M | Low | verified |
 
@@ -266,7 +266,9 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   `dialog-closed` for `cdp:` tabs; a dialog open before the dial answers the
   named `Page.enable` error.
 
-### P4. G14 foreground flow registry (M)
+### P4. G14 foreground flow registry (M) — done, release 1.4.40, internal parity
+
+- **Done, internal parity.** The foreground flag assumption is closed: `RunningFlow` carries `detached`, and the one-detached-per-tab rule, the 30-minute ceiling, the finished records and the `flow-finished` event apply to detached runs only; a foreground run is dropped when it ends, so its id answers `unknown` as on the extension. **Finding: not agent-visible; internal parity only.** A running foreground flow has no id an agent can name over MCP on either transport: `browser-dispatch` mints the `flow_id` and returns it only with the result, the activity trail is written after the call settles, and no event, `list_tabs` field or activity row names a running flow. So `flow_status` and `flow_cancel` on a running foreground flow cannot be called, there is no wire difference and no e2e case or expected label, and the PR is not a behaviour change. The proof is `cdp/detached-flows.test.ts` and `cdp/flow-control.test.ts` (service-worker design revision 19).
 
 - **Shape.** `createCdpFlowControl.start` registers foreground runs in
   `cdp/detached-flows.ts` with `onProgress`, keeps the gate re-check and
@@ -274,14 +276,10 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   module may need a foreground/detached flag so the one-detached-per-tab rule
   and the 30-minute ceiling apply to detached runs only (**assumption**).
   Adopting `FlowRun`/`FlowRegistry` instead touches Q4 and is left to gate A.
-- **RED first.** `browser.flow_status.running.cdp` (status of a running
-  foreground flow from a second call answers `running` with
-  `steps_completed`), `browser.flow_cancel.foreground.cdp`.
+- **RED first.** Unit tests only (see Done): the two e2e cases the plan named cannot be written.
 - **Statements.** README 2701-2717 ("behave identically" holds for foreground
   flows too); manual topic `flows` (`manual/topics.ts:79`) if it mentions it.
-- **Expected difference:** on a `cdp:` tab, `browser.flow_status` of a running
-  foreground flow answers `running` instead of `unknown`, and
-  `browser.flow_cancel` stops it.
+- **Expected difference:** none on the wire (not agent-visible; internal parity only).
 
 ### Gate A. G13, the idle and connection model (owner, section 5.1)
 

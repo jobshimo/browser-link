@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.40](https://github.com/jobshimo/browser-link/compare/v1.4.39...v1.4.40) (2026-11-20)
+
+### Features
+
+- cdp-direct: a foreground `browser.flow` on a `cdp:` tab is now registered while it runs, as on an extension tab, so the registry answers `running` (`detached: false`, `steps_completed`) and a cancel stops it within one step. Internal parity, not agent-visible: a running foreground flow's `flow_id` is returned only with its result, so no agent can ask about it over MCP, and nothing changes on the wire. Once the flow returns its id is `unknown`, with no manifest and no `flow-finished` event, as before and as on the extension. Detached flows and extension tabs are unchanged.
+
+### Notes
+
+- A foreground flow's `flow_id` is minted by the server and returned only with the flow's result, so no agent can name a running foreground flow over MCP: the behaviour is covered by unit tests (`cdp/detached-flows.test.ts`, `cdp/flow-control.test.ts`), not by an e2e case. The parity design closes its "foreground flag" assumption: the registry keeps a `detached` flag per run, and the one-per-tab rule, the ceiling and the finished records apply to detached runs only.
+
 ## [1.4.39](https://github.com/jobshimo/browser-link/compare/v1.4.38...v1.4.39) (2026-11-20)
 
 ### Features
