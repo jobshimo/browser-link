@@ -9,8 +9,8 @@
  * - `ping` answers `{ title, url }` in that key order, from `PageInfo.info`.
  * - `navigate` arms the load wait before the navigation, cancels it when the
  *   navigation fails, and answers `PageInfo.info` as the transport gives it.
- *   Like `evaluate`, it keeps each transport's coercion of a missing string
- *   (the extension's `String(p[key])`, cdp-direct's `''`; design 7(e)).
+ *   Like `evaluate`, both transports share one coercion of a missing or
+ *   non-string value: the extension's `String(p[key])`.
  * - `evaluate` declares `commandTimeout: 'call-budget'`: a transport that
  *   bounds commands itself (cdp-direct) makes the call's budget the
  *   per-command timeout of the evaluator it gives.
@@ -73,19 +73,20 @@ export interface NavigateParams {
   wait_for_load: boolean;
 }
 
+function coerceNavigate(p: Params): NavigateParams {
+  return {
+    url: typeof p.url === 'string' ? p.url : String(p.url),
+    wait_for_load: p.wait_for_load !== false,
+  };
+}
+
 export const navigateTool: ToolEntry<NavigateParams, 'navigator' | 'page'> = {
   name: 'navigate',
   requires: ['navigator', 'page'],
   listed: true,
   coerce: {
-    extension: (p) => ({
-      url: typeof p.url === 'string' ? p.url : String(p.url),
-      wait_for_load: p.wait_for_load !== false,
-    }),
-    'cdp-direct': (p) => ({
-      url: typeof p.url === 'string' ? p.url : '',
-      wait_for_load: p.wait_for_load !== false,
-    }),
+    extension: coerceNavigate,
+    'cdp-direct': coerceNavigate,
   },
   handler: async ({ navigator, page }, { url, wait_for_load }) => {
     // Armed before the navigation is sent (see session/load-wait.ts).
@@ -171,16 +172,18 @@ export interface EvaluateParams {
   expression: string;
 }
 
+function coerceEvaluate(p: Params): EvaluateParams {
+  return { expression: typeof p.expression === 'string' ? p.expression : String(p.expression) };
+}
+
 export const evaluateTool: ToolEntry<EvaluateParams, 'evaluator'> = {
   name: 'evaluate',
   requires: ['evaluator'],
   listed: true,
   commandTimeout: 'call-budget',
   coerce: {
-    extension: (p) => ({
-      expression: typeof p.expression === 'string' ? p.expression : String(p.expression),
-    }),
-    'cdp-direct': (p) => ({ expression: typeof p.expression === 'string' ? p.expression : '' }),
+    extension: coerceEvaluate,
+    'cdp-direct': coerceEvaluate,
   },
   handler: async (deps, params) => result(await deps.evaluator.evaluate(params.expression)),
 };

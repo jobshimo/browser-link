@@ -62,6 +62,7 @@ export const TOOL_CASES = {
     'error.action',
     'browser.click.cdp',
     'error.action.cdp',
+    'error.coerce.cdp',
   ],
   'browser.type': [
     'browser.type',
@@ -92,6 +93,7 @@ export const TOOL_CASES = {
     'error.thrown',
     'browser.evaluate.cdp',
     'browser.evaluate.value.cdp',
+    'browser.evaluate.coerce.cdp',
     'browser.drag.drop-check.cdp',
     'browser.flow.drag-step.drop-check.cdp',
   ],

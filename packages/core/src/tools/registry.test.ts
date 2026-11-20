@@ -182,10 +182,12 @@ describe('cdpToolSupport', () => {
   });
 });
 
-describe('find: each transport keeps its own coercion (design 7(e))', () => {
-  it('a missing text: the extension reads "undefined", cdp-direct reads ""', () => {
+describe('find: both transports share one coercion', () => {
+  it('a missing or non-string text reads as String(x) on both', () => {
     expect(findTool.coerce.extension({}).text).toBe('undefined');
-    expect(findTool.coerce['cdp-direct']({}).text).toBe('');
+    expect(findTool.coerce['cdp-direct']({}).text).toBe('undefined');
+    expect(findTool.coerce['cdp-direct']({ text: 5 }).text).toBe('5');
+    expect(findTool.coerce['cdp-direct']).toBe(findTool.coerce.extension);
   });
 
   it('with a ref or a key, the extension leaves a missing text undefined', () => {
@@ -193,23 +195,19 @@ describe('find: each transport keeps its own coercion (design 7(e))', () => {
     expect(findTool.coerce.extension({ key: { role: 'button' } }).text).toBeUndefined();
   });
 
-  it('cdp-direct: a missing text fails as before, the extension searches "undefined"', async () => {
+  it('a missing text searches "undefined" on both transports', async () => {
     const evaluated: string[] = [];
     const evaluate = (expression: string): Promise<never> => {
       evaluated.push(expression);
       return Promise.resolve({ matched: false } as never);
     };
-    expect(
-      await dispatchTool(TOOL_REGISTRY, ALL, deps(evaluate), 'cdp-direct', 'find', {}),
-    ).toEqual({ ok: false, failure: { kind: 'action', message: 'find: text required' } });
-    expect(evaluated).toEqual([]);
-    expect(await dispatchTool(TOOL_REGISTRY, ALL, deps(evaluate), 'extension', 'find', {})).toEqual(
-      {
-        ok: true,
-        result: { matched: false },
-      },
-    );
-    expect(evaluated).toHaveLength(1);
+    for (const transport of ['extension', 'cdp-direct'] as const) {
+      evaluated.length = 0;
+      expect(await dispatchTool(TOOL_REGISTRY, ALL, deps(evaluate), transport, 'find', {})).toEqual(
+        { ok: true, result: { matched: false } },
+      );
+      expect(evaluated).toHaveLength(1);
+    }
   });
 
   it('both read the other fields the same way', () => {
@@ -234,10 +232,12 @@ describe('find: each transport keeps its own coercion (design 7(e))', () => {
   });
 });
 
-describe('click: each transport keeps its own coercion (design 7(e))', () => {
-  it('a missing selector: the extension reads "undefined", cdp-direct reads ""', () => {
+describe('click: both transports share one coercion', () => {
+  it('a missing or non-string selector reads as String(x) on both', () => {
     expect(clickTool.coerce.extension({}).selector).toBe('undefined');
-    expect(clickTool.coerce['cdp-direct']({}).selector).toBe('');
+    expect(clickTool.coerce['cdp-direct']({}).selector).toBe('undefined');
+    expect(clickTool.coerce['cdp-direct']({ selector: 5 }).selector).toBe('5');
+    expect(clickTool.coerce['cdp-direct']).toBe(clickTool.coerce.extension);
   });
 
   it('with a ref, both leave a missing selector undefined', () => {
@@ -265,13 +265,19 @@ describe('click: each transport keeps its own coercion (design 7(e))', () => {
   });
 });
 
-describe('type: each transport keeps its own coercion (design 7(e))', () => {
-  it('a missing selector and text: the extension reads "undefined", cdp-direct leaves the selector out and types ""', () => {
-    expect(typeTool.coerce.extension({})).toMatchObject({
-      selector: 'undefined',
-      text: 'undefined',
-    });
-    expect(typeTool.coerce['cdp-direct']({})).toMatchObject({ selector: undefined, text: '' });
+describe('type: both transports share one coercion', () => {
+  it('a missing or non-string selector and text read as String(x) on both', () => {
+    for (const transport of ['extension', 'cdp-direct'] as const) {
+      expect(typeTool.coerce[transport]({})).toMatchObject({
+        selector: 'undefined',
+        text: 'undefined',
+      });
+      expect(typeTool.coerce[transport]({ selector: 1, text: 2 })).toMatchObject({
+        selector: '1',
+        text: '2',
+      });
+    }
+    expect(typeTool.coerce['cdp-direct']).toBe(typeTool.coerce.extension);
   });
 
   it('with a ref, both leave a missing selector undefined', () => {

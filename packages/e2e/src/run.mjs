@@ -943,6 +943,22 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     'Error: Element not found: #e2e-no-such-element',
   );
 
+  // A non-string selector is read as String(x), as on an extension tab (P2):
+  // the lookup is for "true", where cdp-direct used to look for "".
+  await expectCdpError(
+    'error.coerce.cdp',
+    'browser.click',
+    { tab_id: C, selector: true },
+    'Error: Element not found: true',
+  );
+  // A non-string expression is evaluated as String(x) too.
+  await call(
+    'browser.evaluate',
+    { tab_id: C, expression: 7 },
+    (_b, t) => t === '7' || `7 evaluated to ${JSON.stringify(t)}`,
+    { label: 'browser.evaluate.coerce.cdp' },
+  );
+
   // wait_for in network_url mode is refused on cdp-direct (no capture buffers):
   // an action failure with the core's exact sentence, not a timeout.
   await expectCdpError(

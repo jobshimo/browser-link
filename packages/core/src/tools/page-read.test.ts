@@ -154,12 +154,13 @@ describe('snapshot and state', () => {
   });
 });
 
-describe('evaluate: each transport keeps its own coercion (design 7(e))', () => {
-  it('a missing expression: the extension evaluates "undefined", cdp-direct ""', () => {
-    expect(evaluateTool.coerce.extension({})).toEqual({ expression: 'undefined' });
-    expect(evaluateTool.coerce['cdp-direct']({})).toEqual({ expression: '' });
-    expect(evaluateTool.coerce.extension({ expression: 5 })).toEqual({ expression: '5' });
-    expect(evaluateTool.coerce['cdp-direct']({ expression: 5 })).toEqual({ expression: '' });
+describe('evaluate: both transports share one coercion', () => {
+  it('a missing or non-string expression reads as String(x) on both', () => {
+    for (const transport of ['extension', 'cdp-direct'] as const) {
+      expect(evaluateTool.coerce[transport]({})).toEqual({ expression: 'undefined' });
+      expect(evaluateTool.coerce[transport]({ expression: 5 })).toEqual({ expression: '5' });
+    }
+    expect(evaluateTool.coerce['cdp-direct']).toBe(evaluateTool.coerce.extension);
   });
 
   it('answers the value; the page exception is `thrown`, carrying the error', async () => {
@@ -370,9 +371,12 @@ describe('navigate', () => {
     });
   });
 
-  it('a missing url: the extension navigates to "undefined", cdp-direct to ""', () => {
-    expect(navigateTool.coerce.extension({})).toEqual({ url: 'undefined', wait_for_load: true });
-    expect(navigateTool.coerce['cdp-direct']({})).toEqual({ url: '', wait_for_load: true });
+  it('a missing or non-string url reads as String(x) on both transports', () => {
+    for (const transport of ['extension', 'cdp-direct'] as const) {
+      expect(navigateTool.coerce[transport]({})).toEqual({ url: 'undefined', wait_for_load: true });
+      expect(navigateTool.coerce[transport]({ url: 7 })).toEqual({ url: '7', wait_for_load: true });
+    }
+    expect(navigateTool.coerce['cdp-direct']).toBe(navigateTool.coerce.extension);
   });
 });
 

@@ -2,11 +2,9 @@
 /**
  * Registry entries of the interaction tools (design 3.3): `find` and
  * `click` (slice 10), `type` and `press` (slice 11). Each `coerce` is the
- * argument coercion its transport did in its own `case` before it moved
- * (`background.ts` `handleTool`, `cdp/transport.ts` `callCdpTool`): where
- * the two differ (a missing `text` or `selector`: the extension's
- * `String(p[key])`, cdp-direct's `''` or `undefined`), each keeps its own
- * (design 7(e)).
+ * argument coercion of the extension (the reference transport), shared by
+ * both transports: a missing or non-string `text` or `selector` reads as
+ * `String(p[key])`.
  *
  * `type` and `press` can fail on a sensitive field: `fromActionOutcome`
  * maps a failure carrying `sensitive_field: true` to the `sensitive` kind
@@ -47,35 +45,26 @@ function findRest(p: Params): Omit<FindParams, 'text'> {
   };
 }
 
+function coerceFind(p: Params): FindParams {
+  const { role, exact, ref, key, offset, hide_password_values } = findRest(p);
+  return {
+    text: ref !== undefined || p.key !== undefined ? optStr(p, 'text') : str(p, 'text'),
+    role,
+    exact,
+    ref,
+    key,
+    offset,
+    hide_password_values,
+  };
+}
+
 export const findTool: ToolEntry<FindParams, 'evaluator'> = {
   name: 'find',
   requires: ['evaluator'],
   listed: true,
   coerce: {
-    extension: (p) => {
-      const { role, exact, ref, key, offset, hide_password_values } = findRest(p);
-      return {
-        text: ref !== undefined || p.key !== undefined ? optStr(p, 'text') : str(p, 'text'),
-        role,
-        exact,
-        ref,
-        key,
-        offset,
-        hide_password_values,
-      };
-    },
-    'cdp-direct': (p) => {
-      const { role, exact, ref, key, offset, hide_password_values } = findRest(p);
-      return {
-        text: typeof p.text === 'string' ? p.text : '',
-        role,
-        exact,
-        ref,
-        key,
-        offset,
-        hide_password_values,
-      };
-    },
+    extension: coerceFind,
+    'cdp-direct': coerceFind,
   },
   handler: async (deps, params) => fromActionOutcome(await performFind(deps, params)),
 };
@@ -90,27 +79,22 @@ function clickRest(p: Params): Omit<ClickParams, 'selector' | 'ref'> {
   };
 }
 
+function coerceClick(p: Params): ClickParams {
+  const ref = optStr(p, 'ref');
+  return {
+    selector: ref !== undefined ? optStr(p, 'selector') : str(p, 'selector'),
+    ref,
+    ...clickRest(p),
+  };
+}
+
 export const clickTool: ToolEntry<ClickParams, 'evaluator' | 'pointer' | 'settler'> = {
   name: 'click',
   requires: ['evaluator', 'pointer', 'settler'],
   listed: true,
   coerce: {
-    extension: (p) => {
-      const ref = optStr(p, 'ref');
-      return {
-        selector: ref !== undefined ? optStr(p, 'selector') : str(p, 'selector'),
-        ref,
-        ...clickRest(p),
-      };
-    },
-    'cdp-direct': (p) => {
-      const ref = optStr(p, 'ref');
-      return {
-        selector: typeof p.selector === 'string' ? p.selector : ref !== undefined ? undefined : '',
-        ref,
-        ...clickRest(p),
-      };
-    },
+    extension: coerceClick,
+    'cdp-direct': coerceClick,
   },
   handler: async (deps, params) => fromActionOutcome(await performClick(deps, params)),
 };
@@ -125,26 +109,23 @@ function typeRest(p: Params): Omit<TypeParams, 'selector' | 'ref' | 'text'> {
   };
 }
 
+function coerceType(p: Params): TypeParams {
+  const ref = optStr(p, 'ref');
+  return {
+    selector: ref !== undefined ? optStr(p, 'selector') : str(p, 'selector'),
+    ref,
+    text: str(p, 'text'),
+    ...typeRest(p),
+  };
+}
+
 export const typeTool: ToolEntry<TypeParams, 'evaluator' | 'keyboard' | 'settler'> = {
   name: 'type',
   requires: ['evaluator', 'keyboard', 'settler'],
   listed: true,
   coerce: {
-    extension: (p) => {
-      const ref = optStr(p, 'ref');
-      return {
-        selector: ref !== undefined ? optStr(p, 'selector') : str(p, 'selector'),
-        ref,
-        text: str(p, 'text'),
-        ...typeRest(p),
-      };
-    },
-    'cdp-direct': (p) => ({
-      selector: optStr(p, 'selector'),
-      ref: optStr(p, 'ref'),
-      text: typeof p.text === 'string' ? p.text : '',
-      ...typeRest(p),
-    }),
+    extension: coerceType,
+    'cdp-direct': coerceType,
   },
   handler: async (deps, params) => fromActionOutcome(await performType(deps, params)),
 };

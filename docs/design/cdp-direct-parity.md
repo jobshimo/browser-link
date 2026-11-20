@@ -53,7 +53,7 @@ experiment first.
 | G12 | `build`, `view_sig` in `list_tabs` | absent (README line 2670) | the observer's `doc_info` reaching `listCdpTargets` | M | Medium (footprint) | verified |
 | G13 | idle and claim model | fixed 5 min socket sweep (`transport.ts:79`), no call hold | an owner decision superseding Q4 | L | Medium | verified |
 | G14 | foreground flow registry | `start` registers detached flows only (`cdp/flow-control.ts:39`) | register foreground runs; `flow_status` answers `running` | M | Low | code verified; observable answer **likely** |
-| G15 | per-transport coercion | 5 entries differ (`interaction.ts:53,96,131`, `page-read.ts:78,177`) | one `coerce` per entry | S | Low, agent-visible | entries verified; reachability **unverified** |
+| G15 | per-transport coercion | done in P2 (1.4.37): the five entries (`find`, `click`, `type`, `navigate`, `evaluate`) share the extension's coercion | one `coerce` per entry | S | Low, agent-visible | reachable over the wire (verified) |
 | G16 | bridge events | only `flow-finished` (`server.ts:420`), claim and `download-*` | `dialog-*` (G4) and `tab-created` (G11) | M | Low | verified |
 
 G16 residue (**assumption**): `tab-navigated`, `tab-renamed`,
@@ -141,18 +141,19 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   flow drag step on a `cdp:` tab run instead of answering "not supported over
   cdp-direct in v1"; extension cases unchanged.
 
-### P2. G15 coercion (S) — only if the owner wants it
+### P2. G15 coercion (S) — done, release 1.4.37
 
-- **Shape.** Each of the five entries gets one `coerce` (the extension's
-  `String(x)` or cdp-direct's `''`, the owner's choice, **assumption**: the
-  extension's, since it is the reference transport).
-- **RED first.** A dispatcher-level unit test sending a non-string or missing
-  `selector`/`text`/`url`/`expression` to a `cdp:` tab; an e2e case only if
-  the unit test shows the MCP path reaches it. Whether MCP input-schema
-  validation stops such input first is **unverified** (`server.ts:172` uses a
-  raw `setRequestHandler`; the validation path was not followed).
+- **Shape.** Each of the five entries has one `coerce`, the extension's
+  `String(x)` (owner decision of 2026-11-20, "unificamos si es mejor": the
+  extension is the reference transport).
+- **Reachable.** Nothing between the MCP client and `callCdpTool` validates
+  the arguments: the server registers raw `setRequestHandler` handlers (no
+  input-schema validation) and the dispatcher passes the arguments on. A
+  `transport.test.ts` case and two `.cdp` e2e cases (`error.coerce.cdp`,
+  `browser.evaluate.coerce.cdp`) send non-string arguments to a `cdp:` tab.
 - **Expected difference:** a missing or non-string argument on a `cdp:` tab
-  answers as on an extension tab.
+  answers as on an extension tab; `browser.type` with neither `selector` nor
+  `ref` no longer types into the focused element on a `cdp:` tab.
 
 ### P3. G4 dialog tracking and G3 `dialog_respond` (M)
 
@@ -335,7 +336,7 @@ the results:
 
 ### 5.3 Smaller owner questions
 
-- **G15:** do P2 at all, and if so which coercion is "the same" (section 4 P2).
+- **G15:** answered 2026-11-20: unify on the extension's coercion (P2, done).
 - **G12:** footprint (a) driven tabs only, or (b) script every listed target
   at each `list_tabs`.
 - **G10:** which semantics is "the same" for `set_permission`: the
@@ -455,7 +456,6 @@ README, tool-text and manual statements cited (manual lines are 137-140, not
 Corrected: the real-Chrome contract runs on Chrome 118 only, not stable
 (step 3.8); `downloadChecks` starts at `run.mjs:2000` (inventory: 1995).
 
-Not verified: anything marked **experiment**; that MCP input validation makes
-G15 unreachable; the `transport.test.ts` case count and its flow drag case;
+Not verified: anything marked **experiment**; the `transport.test.ts` case count and its flow drag case;
 `run.mjs:2051`'s comment; the generated mirror under
 `packages/server/src/generated/core` against core (citations use core paths).
