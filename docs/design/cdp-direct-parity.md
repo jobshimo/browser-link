@@ -13,7 +13,7 @@ release, every other citation stays at `9191c79`. Revisions:
 |---|---|---|
 | 1 | 2026-11-19 | The program, for arch's audit. |
 | 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
-| 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, and the named `Page.enable` error. |
+| 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, the named `Page.enable` error, and the click move now bounded by the dialog watch (declared after an independent verification). |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
 **likely** (follows from code, not run), **experiment** (needs a Chrome run;
@@ -249,6 +249,16 @@ moves shared code. Case names are as they would appear in `tool-cases.mjs`.
   (`core/src/session/dialog-watch.contract.ts`) on `createCdpDialogWatch`
   (Chrome 118 and 157 locally); `error.dialog-before-dial.cdp` pins the
   named error.
+  Also a difference, declared after independent verification: with a watch,
+  core's `dispatchWatchedMove` (`session/page-driver.ts`) dispatches the
+  click's move through `dispatchMouseEvents` instead of racing it against
+  the remaining `HIT_CHECK_TIMEOUT_MS` budget (`actions/click-landing.ts`
+  `moveOntoTarget`). So on a `cdp:` tab a move whose
+  `Input.dispatchMouseEvent` fails (connection closed, any CDP error) now
+  fails the whole click with that error, where before it was `unanswered`
+  and the click failed with `miss: no-answer` and no press sent; and a slow
+  move on a busy page waits up to the client's 15 s command timeout instead
+  of the budget. This is the extension's behaviour (parity).
 - **Expected difference:** on a `cdp:` tab a click that opens a JavaScript
   dialog answers `hit_check: "not_verifiable"` with the dialog note instead
   of waiting for the command timeout;
