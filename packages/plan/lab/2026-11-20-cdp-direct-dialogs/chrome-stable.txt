@@ -1,0 +1,571 @@
++    82ms label=chrome-stable chrome=C:\Program Files\Google\Chrome\Application\chrome.exe
++    82ms owner primary pids on 17529/17530 before: [54284]
++   519ms browser=Chrome/157.0.8103.51 protocol=1.3 ports ws=61633 ipc=61634 cdp=61635 page=http://127.0.0.1:61631/
++  1566ms cli: cdp-direct.enabled set to on. This alone does not let an agent use a cdp: tab — run `browser-link cdp allow` to also grant it.
++  1566ms cli: cdp-direct.port set to 61635.
++  1566ms cli: cdp-direct grant recorded — expires 2026-11-20T00:40:18.924Z. Revoke any time with `browser-link cdp revoke`.
++  1566ms ===== CASE click-alert: server dialed before the click; the click opens alert() =====
++  1697ms CALL browser.snapshot {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113"} (first call: dials) -> isError=false duration=23ms
++  1697ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "87qz3y:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "87qz3y:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "87qz3y:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "87qz3y:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "87qz3yiamwo8swxa",
+          "snapshot_id": "87qz3yiamwo8swxa:s1"
+        }
++ 16731ms CALL browser.click {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113","selector":"#alert-btn"} (opens alert) -> isError=true duration=15034ms
++ 16731ms   text: Error: cdp-direct: command "Input.dispatchMouseEvent" timed out after 15000ms
++ 31754ms CALL browser.evaluate {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113","expression":"1+1"} (dialog still open) -> isError=true duration=15023ms
++ 31754ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++ 46764ms CALL browser.snapshot {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113"} (dialog still open) -> isError=true duration=15010ms
++ 46764ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++ 46764ms   -- a connection dialed now, with the dialog already open (lazy-dial shape) --
++ 46768ms   [late] connected, type=page
++ 61776ms   [late] Page.enable FAILED after 15008ms: cdp-direct: command "Page.enable" timed out after 15000ms
++ 62279ms   [late] dialog events seen after dial+500ms: 0
++ 62280ms   [late] Page.handleJavaScriptDialog {"accept":true} FAILED after 1ms: No dialog is showing; connection open after: true
++ 62282ms   [bare] (no Page.enable) Page.handleJavaScriptDialog FAILED after 1ms: No dialog is showing
++ 77806ms CALL browser.evaluate {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113","expression":"document.querySelector('#out').textContent"} (after the attempts to accept) -> isError=true duration=15008ms
++ 77806ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++ 92814ms CALL browser.snapshot {"tab_id":"cdp:EDA8C2024F743AF786C16882CFE39113"} (after the attempts to accept) -> isError=true duration=15008ms
++ 92814ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++ 92827ms ===== CASE click-confirm: server dialed before the click; the click opens confirm() =====
++ 92884ms CALL browser.snapshot {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE"} (first call: dials) -> isError=false duration=17ms
++ 92884ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "6i6vch:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "6i6vch:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "6i6vch:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "6i6vch:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "6i6vchmimwo8uvaa",
+          "snapshot_id": "6i6vchmimwo8uvaa:s1"
+        }
++107917ms CALL browser.click {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE","selector":"#confirm-btn"} (opens confirm) -> isError=true duration=15033ms
++107917ms   text: Error: cdp-direct: command "Input.dispatchMouseEvent" timed out after 15000ms
++122923ms CALL browser.evaluate {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE","expression":"1+1"} (dialog still open) -> isError=true duration=15006ms
++122923ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++137936ms CALL browser.snapshot {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE"} (dialog still open) -> isError=true duration=15013ms
++137936ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++137936ms   -- a connection dialed now, with the dialog already open (lazy-dial shape) --
++137938ms   [late] connected, type=page
++152939ms   [late] Page.enable FAILED after 15001ms: cdp-direct: command "Page.enable" timed out after 15000ms
++153444ms   [late] dialog events seen after dial+500ms: 0
++153445ms   [late] Page.handleJavaScriptDialog {"accept":true} FAILED after 1ms: No dialog is showing; connection open after: true
++153448ms   [bare] (no Page.enable) Page.handleJavaScriptDialog FAILED after 1ms: No dialog is showing
++168967ms CALL browser.evaluate {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE","expression":"document.querySelector('#out').textContent"} (after the attempts to accept) -> isError=true duration=15012ms
++168967ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++183978ms CALL browser.snapshot {"tab_id":"cdp:526A393FAF6A50D81C118E91FA2515FE"} (after the attempts to accept) -> isError=true duration=15012ms
++183978ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++183988ms ===== CASE click-prompt: server dialed before the click; the click opens prompt() =====
++184029ms CALL browser.snapshot {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5"} (first call: dials) -> isError=false duration=14ms
++184029ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "c9yjyg:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "c9yjyg:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "c9yjyg:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "c9yjyg:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "c9yjyg3ymwo8wtm4",
+          "snapshot_id": "c9yjyg3ymwo8wtm4:s1"
+        }
++199055ms CALL browser.click {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5","selector":"#prompt-btn"} (opens prompt) -> isError=true duration=15026ms
++199055ms   text: Error: cdp-direct: command "Input.dispatchMouseEvent" timed out after 15000ms
++214060ms CALL browser.evaluate {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5","expression":"1+1"} (dialog still open) -> isError=true duration=15005ms
++214060ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++229073ms CALL browser.snapshot {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5"} (dialog still open) -> isError=true duration=15013ms
++229073ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++229073ms   -- a connection dialed now, with the dialog already open (lazy-dial shape) --
++229075ms   [late] connected, type=page
++244082ms   [late] Page.enable FAILED after 15008ms: cdp-direct: command "Page.enable" timed out after 15000ms
++244593ms   [late] dialog events seen after dial+500ms: 0
++244593ms   [late] Page.handleJavaScriptDialog {"accept":true,"promptText":"typed"} FAILED after 1ms: No dialog is showing; connection open after: true
++244595ms   [bare] (no Page.enable) Page.handleJavaScriptDialog FAILED after 1ms: No dialog is showing
++260115ms CALL browser.evaluate {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5","expression":"document.querySelector('#out').textContent"} (after the attempts to accept) -> isError=true duration=15006ms
++260115ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++275120ms CALL browser.snapshot {"tab_id":"cdp:30DACEE24D860362217958C85E0A88B5"} (after the attempts to accept) -> isError=true duration=15005ms
++275120ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++275130ms ===== CASE observer-alert: an observer connection (server's CdpClient, Page.enable) exists before the click =====
++275179ms CALL browser.snapshot {"tab_id":"cdp:1B9C5709688B67500DAD9C6007025982"} (first call: dials) -> isError=false duration=16ms
++275179ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "b40jrk:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "b40jrk:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "b40jrk:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "b40jrk:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "b40jrk6dmwo8yry2",
+          "snapshot_id": "b40jrk6dmwo8yry2:s1"
+        }
++275182ms   [obs] connected, type=page
++275182ms   [obs] Page.enable answered after 0ms
++275206ms   [obs] EVENT Page.javascriptDialogOpening {"url":"http://127.0.0.1:61631/","frameId":"1B9C5709688B67500DAD9C6007025982","message":"x","type":"alert","hasBrowserHandler":true,"defaultPrompt":""}
++276690ms   [obs] events 1.5s after click start: ["Page.javascriptDialogOpening"]
++276691ms   [obs] EVENT Page.javascriptDialogClosed {"frameId":"1B9C5709688B67500DAD9C6007025982","result":true,"userInput":""}
++276692ms   [obs] Page.handleJavaScriptDialog {"accept":true} -> {} after 1ms; connection open after: true
++276853ms CALL browser.click {"tab_id":"cdp:1B9C5709688B67500DAD9C6007025982","selector":"#alert-btn"} (opens alert) -> isError=false duration=1670ms
++276853ms   text: {
+          "clicked": "#alert-btn",
+          "tag": "button",
+          "settle": {
+            "settled": true,
+            "duration_ms": 151,
+            "mutation_count": 1,
+            "focus_moved": true,
+            "changes": {
+              "records": 1,
+              "targets": 1,
+              "kinds": {
+                "childList": 1,
+                "attributes": 0,
+                "characterData": 0
+              },
+              "roots": {
+                "document": true,
+                "shadow": false,
+                "frame": false
+              },
+              "descriptors": [
+                {
+                  "tag": "span",
+                  "id": "out",
+                  "path": "body>p>span#out"
+                }
+              ],
+              "overflow": 0
+            }
+          }
+        }
++276853ms   click call settled 1671ms after it started: {"isError":false,"text":"{\n  \"clicked\": \"#alert-btn\",\n  \"tag\": \"button\",\n  \"settle\": {\n    \"settled\": true,\n    \"duration_ms\": 151,\n    \"mutation_count\": 1,\n    \"focus_moved\": true,\n    \"changes\": {\n      \"records\": 1,\n      \"targets\": 1,\n      \"kinds\": {\n      
++277158ms   [obs] events total: ["Page.javascriptDialogOpening","Page.javascriptDialogClosed"]
++277163ms CALL browser.evaluate {"tab_id":"cdp:1B9C5709688B67500DAD9C6007025982","expression":"document.querySelector('#out').textContent"} (after accept) -> isError=false duration=4ms
++277163ms   text: after-alert
++277163ms ===== CASE observer-confirm: an observer connection (server's CdpClient, Page.enable) exists before the click =====
++277204ms CALL browser.snapshot {"tab_id":"cdp:60F370E02BC088953F5B3DC4A62E97F3"} (first call: dials) -> isError=false duration=12ms
++277204ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "8a2w98:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "8a2w98:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "8a2w98:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "8a2w98:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "8a2w98slmwo8ytid",
+          "snapshot_id": "8a2w98slmwo8ytid:s1",
+          "pending_wrap_up": 1
+        }
++277205ms   [obs] connected, type=page
++277206ms   [obs] Page.enable answered after 0ms
++277232ms   [obs] EVENT Page.javascriptDialogOpening {"url":"http://127.0.0.1:61631/","frameId":"60F370E02BC088953F5B3DC4A62E97F3","message":"c?","type":"confirm","hasBrowserHandler":true,"defaultPrompt":""}
++278719ms   [obs] events 1.5s after click start: ["Page.javascriptDialogOpening"]
++278721ms   [obs] EVENT Page.javascriptDialogClosed {"frameId":"60F370E02BC088953F5B3DC4A62E97F3","result":true,"userInput":""}
++278723ms   [obs] Page.handleJavaScriptDialog {"accept":true} -> {} after 4ms; connection open after: true
++278889ms CALL browser.click {"tab_id":"cdp:60F370E02BC088953F5B3DC4A62E97F3","selector":"#confirm-btn"} (opens confirm) -> isError=false duration=1683ms
++278889ms   text: {
+          "clicked": "#confirm-btn",
+          "tag": "button",
+          "settle": {
+            "settled": true,
+            "duration_ms": 152,
+            "mutation_count": 1,
+            "focus_moved": true,
+            "changes": {
+              "records": 1,
+              "targets": 1,
+              "kinds": {
+                "childList": 1,
+                "attributes": 0,
+                "characterData": 0
+              },
+              "roots": {
+                "document": true,
+                "shadow": false,
+                "frame": false
+              },
+              "descriptors": [
+                {
+                  "tag": "span",
+                  "id": "out",
+                  "path": "body>p>span#out"
+                }
+              ],
+              "overflow": 0
+            }
+          },
+          "pending_wrap_up": 1
+        }
++278889ms   click call settled 1683ms after it started: {"isError":false,"text":"{\n  \"clicked\": \"#confirm-btn\",\n  \"tag\": \"button\",\n  \"settle\": {\n    \"settled\": true,\n    \"duration_ms\": 152,\n    \"mutation_count\": 1,\n    \"focus_moved\": true,\n    \"changes\": {\n      \"records\": 1,\n      \"targets\": 1,\n      \"kinds\": {\n    
++279193ms   [obs] events total: ["Page.javascriptDialogOpening","Page.javascriptDialogClosed"]
++279197ms CALL browser.evaluate {"tab_id":"cdp:60F370E02BC088953F5B3DC4A62E97F3","expression":"document.querySelector('#out').textContent"} (after accept) -> isError=false duration=4ms
++279197ms   text: confirm=true
++279198ms ===== CASE observer-prompt: an observer connection (server's CdpClient, Page.enable) exists before the click =====
++279247ms CALL browser.snapshot {"tab_id":"cdp:EC6DA971830A1FAED243BA0DA6257F5F"} (first call: dials) -> isError=false duration=15ms
++279247ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "qqt13e:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "qqt13e:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "qqt13e:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "qqt13e:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "qqt13ehumwo8yv32",
+          "snapshot_id": "qqt13ehumwo8yv32:s1",
+          "pending_wrap_up": 2
+        }
++279248ms   [obs] connected, type=page
++279249ms   [obs] Page.enable answered after 0ms
++279274ms   [obs] EVENT Page.javascriptDialogOpening {"url":"http://127.0.0.1:61631/","frameId":"EC6DA971830A1FAED243BA0DA6257F5F","message":"p?","type":"prompt","hasBrowserHandler":true,"defaultPrompt":"def"}
++280757ms   [obs] events 1.5s after click start: ["Page.javascriptDialogOpening"]
++280759ms   [obs] EVENT Page.javascriptDialogClosed {"frameId":"EC6DA971830A1FAED243BA0DA6257F5F","result":true,"userInput":"typed"}
++280761ms   [obs] Page.handleJavaScriptDialog {"accept":true,"promptText":"typed"} -> {} after 4ms; connection open after: true
++280923ms CALL browser.click {"tab_id":"cdp:EC6DA971830A1FAED243BA0DA6257F5F","selector":"#prompt-btn"} (opens prompt) -> isError=false duration=1674ms
++280923ms   text: {
+          "clicked": "#prompt-btn",
+          "tag": "button",
+          "settle": {
+            "settled": true,
+            "duration_ms": 152,
+            "mutation_count": 1,
+            "focus_moved": true,
+            "changes": {
+              "records": 1,
+              "targets": 1,
+              "kinds": {
+                "childList": 1,
+                "attributes": 0,
+                "characterData": 0
+              },
+              "roots": {
+                "document": true,
+                "shadow": false,
+                "frame": false
+              },
+              "descriptors": [
+                {
+                  "tag": "span",
+                  "id": "out",
+                  "path": "body>p>span#out"
+                }
+              ],
+              "overflow": 0
+            }
+          },
+          "pending_wrap_up": 2
+        }
++280923ms   click call settled 1674ms after it started: {"isError":false,"text":"{\n  \"clicked\": \"#prompt-btn\",\n  \"tag\": \"button\",\n  \"settle\": {\n    \"settled\": true,\n    \"duration_ms\": 152,\n    \"mutation_count\": 1,\n    \"focus_moved\": true,\n    \"changes\": {\n      \"records\": 1,\n      \"targets\": 1,\n      \"kinds\": {\n     
++281228ms   [obs] events total: ["Page.javascriptDialogOpening","Page.javascriptDialogClosed"]
++281232ms CALL browser.evaluate {"tab_id":"cdp:EC6DA971830A1FAED243BA0DA6257F5F","expression":"document.querySelector('#out').textContent"} (after accept) -> isError=false duration=4ms
++281232ms   text: prompt=typed
++281233ms ===== CASE timer-alert: the click only arms a 1.5 s timer; the alert opens by itself =====
++281281ms CALL browser.snapshot {"tab_id":"cdp:49EA79AFAFC8678F85D6930061A03322"} (first call: dials) -> isError=false duration=17ms
++281281ms   text: {
+          "title": "x1 dialogs",
+          "url": "http://127.0.0.1:61631/",
+          "interactive": [
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#alert-btn",
+              "ref": "wr7ctd:e1",
+              "text": "alert"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#confirm-btn",
+              "ref": "wr7ctd:e2",
+              "text": "confirm"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#prompt-btn",
+              "ref": "wr7ctd:e3",
+              "text": "prompt"
+            },
+            {
+              "tag": "button",
+              "role": "button",
+              "selector": "#timer-btn",
+              "ref": "wr7ctd:e4",
+              "text": "timer alert"
+            }
+          ],
+          "headings": [
+            {
+              "level": "H1",
+              "text": "X1 dialog fixture"
+            }
+          ],
+          "text": "X1 dialog fixture\n\nResult of the last dialog: none\n\nalert confirm prompt timer alert",
+          "doc_id": "wr7ctd24mwo8ywnh",
+          "snapshot_id": "wr7ctd24mwo8ywnh:s1",
+          "pending_wrap_up": 3
+        }
++281282ms   [obs] connected, type=page
++281283ms   [obs] Page.enable answered after 0ms
++281469ms CALL browser.click {"tab_id":"cdp:49EA79AFAFC8678F85D6930061A03322","selector":"#timer-btn"} (arms the timer) -> isError=false duration=186ms
++281469ms   text: {
+          "clicked": "#timer-btn",
+          "tag": "button",
+          "settle": {
+            "settled": true,
+            "duration_ms": 156,
+            "mutation_count": 0,
+            "focus_moved": true,
+            "changes": {
+              "records": 0,
+              "targets": 0,
+              "kinds": {
+                "childList": 0,
+                "attributes": 0,
+                "characterData": 0
+              },
+              "roots": {
+                "document": false,
+                "shadow": false,
+                "frame": false
+              },
+              "descriptors": [],
+              "overflow": 0
+            }
+          },
+          "pending_wrap_up": 3
+        }
++282820ms   [obs] EVENT Page.javascriptDialogOpening {"url":"http://127.0.0.1:61631/","frameId":"49EA79AFAFC8678F85D6930061A03322","message":"t","type":"alert","hasBrowserHandler":true,"defaultPrompt":""}
++283978ms   [obs] events 2.5s after the click returned: ["Page.javascriptDialogOpening"]
++298996ms CALL browser.evaluate {"tab_id":"cdp:49EA79AFAFC8678F85D6930061A03322","expression":"1+1"} (timer alert open) -> isError=true duration=15018ms
++298996ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++314008ms CALL browser.snapshot {"tab_id":"cdp:49EA79AFAFC8678F85D6930061A03322"} (timer alert open) -> isError=true duration=15012ms
++314008ms   text: Error: cdp-direct: command "Runtime.evaluate" timed out after 15000ms
++314008ms   [obs] EVENT Page.javascriptDialogClosed {"frameId":"49EA79AFAFC8678F85D6930061A03322","result":true,"userInput":""}
++314009ms   [obs] Page.handleJavaScriptDialog {"accept":true} -> {} after 1ms; connection open after: true
++314315ms CALL browser.evaluate {"tab_id":"cdp:49EA79AFAFC8678F85D6930061A03322","expression":"document.querySelector('#out').textContent"} (after accept) -> isError=false duration=4ms
++314315ms   text: after-timer-alert
++314315ms   [obs] events total: ["Page.javascriptDialogOpening","Page.javascriptDialogClosed"]
++314315ms ===== CASE preopen-alert: alert() is open before the server's first call on the tab =====
++330070ms CALL browser.snapshot {"tab_id":"cdp:E5A71BFF1CE93FEBFED33A290E7EF2AB"} (first call on the tab, alert already open: lazy dial) -> isError=true duration=15009ms
++330071ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++330072ms   [late] connected, type=page
++345074ms   [late] Page.enable FAILED after 15001ms: cdp-direct: command "Page.enable" timed out after 15000ms
++345582ms   [late] dialog events replayed on Page.enable: []
++345583ms   [late] Page.handleJavaScriptDialog {"accept":true} FAILED after 1ms: No dialog is showing; connection open after: true
++345584ms   [bare] (no Page.enable) Page.handleJavaScriptDialog FAILED after 0ms: No dialog is showing
++361111ms CALL browser.evaluate {"tab_id":"cdp:E5A71BFF1CE93FEBFED33A290E7EF2AB","expression":"String(window.__r)"} (after the attempts to accept) -> isError=true duration=15023ms
++361111ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++376118ms CALL browser.snapshot {"tab_id":"cdp:E5A71BFF1CE93FEBFED33A290E7EF2AB"} (after the attempts to accept) -> isError=true duration=15007ms
++376118ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++376127ms ===== CASE preopen-confirm: confirm() is open before the server's first call on the tab =====
++391876ms CALL browser.snapshot {"tab_id":"cdp:668FBE0AEA05960381B45B4593F69CEB"} (first call on the tab, confirm already open: lazy dial) -> isError=true duration=15017ms
++391876ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++391877ms   [late] connected, type=page
++406879ms   [late] Page.enable FAILED after 15002ms: cdp-direct: command "Page.enable" timed out after 15000ms
++407385ms   [late] dialog events replayed on Page.enable: []
++407386ms   [late] Page.handleJavaScriptDialog {"accept":true} FAILED after 1ms: No dialog is showing; connection open after: true
++407388ms   [bare] (no Page.enable) Page.handleJavaScriptDialog FAILED after 0ms: No dialog is showing
++422915ms CALL browser.evaluate {"tab_id":"cdp:668FBE0AEA05960381B45B4593F69CEB","expression":"String(window.__r)"} (after the attempts to accept) -> isError=true duration=15017ms
++422915ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++437924ms CALL browser.snapshot {"tab_id":"cdp:668FBE0AEA05960381B45B4593F69CEB"} (after the attempts to accept) -> isError=true duration=15009ms
++437924ms   text: Error: cdp-direct: command "Page.enable" timed out after 15000ms
++437933ms ===== teardown =====
++440245ms owner primary: pid 54284 still alive
++440245ms server stderr tail: "[browser-link] WebSocket listening on ws://127.0.0.1:61633\n[browser-link ipc] IPC server listening on 127.0.0.1:61634\n[browser-link] MCP server ready on stdio (role=primary, multi-agent=on)\n"
