@@ -83,13 +83,13 @@ self-diff case
 
 ### Revision 19 (2026-11-20)
 
-Parity slice P4 (release 1.4.40), the foreground flow registry (G14):
+Parity slice P4 (release 1.4.40), the foreground flow registry (G14), internal parity, not agent-visible (no behaviour change on the wire):
 
 | # | Decision | Why |
 |---|---|---|
 | 1 | cdp-direct registers a foreground run in its own model (`cdp/detached-flows.ts`, Q4 stands: no `FlowRun` or `FlowRegistry`): `registerDetachedFlow` takes `detached` (default true); only a detached run has `expiresAt`, counts for `detachedFlowForTab`, keeps a finished record and emits `flow-finished`. A finished foreground run is dropped, so its id answers `unknown` as on the extension | the extension's `toFlowStatus` answers `running` / `detached: false` for a live foreground entry and `unknown` after it, and keeps records and events for detached flows only |
 | 2 | `createCdpFlowControl.start` gives both kinds the same `shouldCancel` (registry stop, then the gate re-check, `grant-revoked`) and `onProgress`; the connection hold stays bounded by the flow's deadline in the foreground and by the detached ceiling otherwise | the hold bound and the kill switch are unchanged; `FlowLaunch.onProgress` is now given by both kinds |
-| 3 | No e2e case: the server mints a foreground flow's `flow_id` and returns it only with the result, so nothing over MCP names a running foreground flow. The unit tests of `detached-flows` and `flow-control` carry the proof | the differential cannot show a difference no agent can reach |
+| 3 | No e2e case: the server mints a foreground flow's `flow_id` and returns it only with the result, so nothing over MCP names a running foreground flow. The unit tests of `detached-flows` and `flow-control` carry the proof | there is no wire difference for the differential to show, so the PR carries no `behavior-change` label |
 
 ### Revision 18 (2026-11-20)
 
