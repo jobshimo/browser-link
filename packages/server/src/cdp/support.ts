@@ -8,16 +8,18 @@
  * Keyed by the WIRE-LEVEL tool name (what `callBrowserTool`/`callCdpTool`
  * receive — `'click'`, not `'browser.click'`).
  *
- * `list_tabs`, `claim_tab`, `release_tab`, `my_tabs`, `events`, `reset` are
- * dispatcher-only (they never reach a per-tab transport) and deliberately
- * absent — see `tools/browser-dispatch.ts` for how each is handled.
+ * `list_tabs`, `claim_tab`, `release_tab`, `my_tabs`, `events`, `reset` and
+ * `wait_for_tab` are dispatcher-only (they never reach a per-tab transport)
+ * and deliberately absent — see `tools/browser-dispatch.ts` for how each is
+ * handled (`wait_for_tab` on a `cdp:` opener uses `./opened-tabs.ts` since
+ * 1.4.41, parity P7).
  *
  * Still refused (see the README's cdp-direct tool-support table and
  * `docs/design/cdp-direct-parity.md` for the order they are taken in):
- * `console`, `network`, `network_body`, `set_permission`,
- * `wait_for_tab`, and `download` (`browser.download`'s selector mode).
+ * `console`, `network`, `network_body`, `set_permission`, and `download`
+ * (`browser.download`'s selector mode).
  * `drag` and `canvas_screenshot` joined cdp-direct in 1.4.36, `dialog_respond` in
- * 1.4.39.
+ * 1.4.39, `wait_for_tab` in 1.4.41.
  */
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { cdpToolSupport } from '../generated/core/tools/registry.js';
@@ -50,17 +52,12 @@ export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement
   'dialog-input',
 ]);
 
-/** The row no registry entry derives, declared with its reason. */
-export const CDP_DECLARED_SUPPORT: ReadonlyMap<string, boolean> = new Map([
-  // Dispatcher-only, in no registry: `browser-dispatch.ts` answers it itself
-  // and refuses a `cdp:` opener, since only the extension reports new tabs.
-  ['wait_for_tab', false],
-]);
-
 /**
  * Derived (design 3.3): each listed registry entry is supported when
- * `CDP_DIRECT_PROVIDES` holds every requirement it `requires`; the declared
- * rows follow. Its order is not a contract: callers only `.get` a tool.
+ * `CDP_DIRECT_PROVIDES` holds every requirement it `requires`. No row is
+ * hand-declared since parity P7 removed `wait_for_tab`'s (it is
+ * dispatcher-only and works on both transports). Its order is not a
+ * contract: callers only `.get` a tool.
  *
  * A real Map (not a plain object/Record) so a tool name absent from the
  * table types as genuinely `undefined` at `.get()`: this tsconfig leaves
@@ -70,10 +67,9 @@ export const CDP_DECLARED_SUPPORT: ReadonlyMap<string, boolean> = new Map([
  * `chrome.downloads` hook; its url mode never sends this wire tool — it rides
  * `evaluate` — so it works on cdp-direct too.
  */
-export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map([
-  ...cdpToolSupport(TOOL_REGISTRY, CDP_DIRECT_PROVIDES),
-  ...CDP_DECLARED_SUPPORT,
-]);
+export const CDP_TOOL_SUPPORT: ReadonlyMap<string, boolean> = new Map(
+  cdpToolSupport(TOOL_REGISTRY, CDP_DIRECT_PROVIDES),
+);
 
 export function isCdpToolSupported(tool: string): boolean {
   return CDP_TOOL_SUPPORT.get(tool) === true;

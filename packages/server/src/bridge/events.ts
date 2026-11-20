@@ -49,7 +49,9 @@ export type BridgeEventKind =
  * detached flow — never per iteration, which with `MAX_EVENTS = 200` would
  * let a single 200-iteration run silently evict every other event in the
  * log. On cdp-direct the same event is added server-side by
- * `cdp/detached-flows.ts`, since there is no extension there to push it.
+ * `cdp/detached-flows.ts`, since there is no extension there to push it;
+ * likewise `tab-created` for a page a `cdp:` tab opened, by
+ * `cdp/opened-tabs.ts` during that tab's `wait_for_tab` (parity P7).
  *
  * `tab-navigated` is extension-pushable for the same reason: it reports
  * what the tab's own page observer saw (its top document's URL). The bridge

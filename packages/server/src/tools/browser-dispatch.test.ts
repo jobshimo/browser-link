@@ -29,6 +29,7 @@ import { saveConfig } from '../config.js';
 import { BridgeEventLog } from '../bridge/events.js';
 import { TabClaimRegistry, followFlowFinishedEvents, type AgentCaller } from './tab-claims.js';
 import { BROWSER_TOOL_DEFINITIONS } from './browser-definitions.js';
+import { resetTabActionsForTest } from './tab-actions.js';
 import { handleToolCall } from '../bridge/dispatch.js';
 
 function makeDeps(overrides: Partial<BrowserToolDeps> = {}): BrowserToolDeps {
@@ -2625,13 +2626,231 @@ describe('cdp-direct routing', () => {
     expect(subscribeEvents).not.toHaveBeenCalled();
   });
 
-  test('wait_for_tab on a granted cdp: opened_from reports the v1 limitation', async () => {
-    const subscribeEvents = vi.fn();
-    const deps = makeDeps({ cdpGate: () => OK_GATE, subscribeEvents });
+  /** A cdp: wait wired to a real event log, with a fake opened-tab watch
+   * (parity P7, G11) whose start and stop the test controls and counts. */
+  function cdpWaitDeps(watch: BrowserToolDeps['watchCdpOpenedTabs']) {
+    const log = new BridgeEventLog();
+    const claims = new TabClaimRegistry({ nowMs: () => 3_000_000 });
+    const deps = makeDeps({
+      cdpGate: () => OK_GATE,
+      subscribeEvents: (fn, options) => log.subscribe(fn, options),
+      tabClaims: claims,
+      watchCdpOpenedTabs: watch,
+    });
+    return { log, claims, deps };
+  }
+
+  test('wait_for_tab on a granted cdp: opener answers the opened cdp: tab and auto-claims it', async () => {
+    const stop = vi.fn();
+    let emit: () => void = () => {};
+    const watch = vi.fn(async () => stop);
+    const { log, claims, deps } = cdpWaitDeps(watch);
+    emit = () =>
+      log.add('tab-created', { tab_id: 'cdp:NEW', opened_from: 'cdp:ABC', url: 'http://x/c' });
+    setTimeout(() => emit(), 30);
+    const out = await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'cdp:ABC', timeout_ms: 2000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(out).toEqual({
+      matched: true,
+      tab_id: 'cdp:NEW',
+      url: 'http://x/c',
+      elapsed_ms: expect.any(Number),
+      claimed: true,
+    });
+    expect(watch).toHaveBeenCalledWith(
+      'cdp:ABC',
+      expect.objectContaining({ onLost: expect.any(Function) }),
+    );
+    expect(claims.getClaim('cdp:NEW')?.agent_id).toBe(TEST_CALLER.agent_id);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cdp: wait that times out stops its watch', async () => {
+    const stop = vi.fn();
+    const { deps } = cdpWaitDeps(vi.fn(async () => stop));
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'cdp:ABC', timeout_ms: 30 },
+      deps,
+      TEST_CALLER,
+    )) as { matched: boolean; reason?: string };
+    expect(out.matched).toBe(false);
+    expect(out.reason).toBe('timeout');
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cdp: wait whose watch fails to start rejects with that error and leaves no listener', async () => {
+    const { log, deps } = cdpWaitDeps(
+      vi.fn(async () => {
+        throw new Error('cdp-direct: no browser-level DevTools endpoint');
+      }),
+    );
+    await expect(
+      handleBrowserTool(
+        'browser.wait_for_tab',
+        { opened_from: 'cdp:ABC', timeout_ms: 2000 },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow('cdp-direct: no browser-level DevTools endpoint');
+    // A later event reaches no listener of the failed wait (nothing throws, nothing claims).
+    log.add('tab-created', { tab_id: 'cdp:NEW', opened_from: 'cdp:ABC', url: 'http://x/c' });
+  });
+
+  test('a watch that starts after the wait already settled is stopped at once', async () => {
+    const stop = vi.fn();
+    let release: (s: () => void) => void = () => {};
+    const watch = vi.fn(
+      () =>
+        new Promise<() => void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const { log, deps } = cdpWaitDeps(watch);
+    // The event is already in the log (replay window): the wait settles on subscribe.
+    log.add('tab-created', { tab_id: 'cdp:NEW', opened_from: 'cdp:ABC', url: 'http://x/c' });
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'cdp:ABC', timeout_ms: 2000 },
+      deps,
+      TEST_CALLER,
+    )) as { matched: boolean };
+    expect(out.matched).toBe(true);
+    expect(stop).not.toHaveBeenCalled();
+    release(stop);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cdp: wait marks the tab it returned, and only that one (F2)', async () => {
+    const noteCdpTabReturned = vi.fn();
+    const { log, deps } = cdpWaitDeps(vi.fn(async () => () => {}));
+    deps.noteCdpTabReturned = noteCdpTabReturned;
+    setTimeout(() => {
+      // Announced but not matched (url_substring), then the one that matches.
+      log.add('tab-created', { tab_id: 'cdp:OTHER', opened_from: 'cdp:ABC', url: 'http://x/a' });
+      log.add('tab-created', { tab_id: 'cdp:NEW', opened_from: 'cdp:ABC', url: 'http://x/want' });
+    }, 20);
+    const out = (await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'cdp:ABC', url_substring: 'want', timeout_ms: 2000 },
+      deps,
+      TEST_CALLER,
+    )) as { tab_id?: string };
+    expect(out.tab_id).toBe('cdp:NEW');
+    expect(noteCdpTabReturned.mock.calls).toEqual([['cdp:NEW']]);
+  });
+
+  test('a cdp: wait that times out marks nothing', async () => {
+    const noteCdpTabReturned = vi.fn();
+    const { deps } = cdpWaitDeps(vi.fn(async () => () => {}));
+    deps.noteCdpTabReturned = noteCdpTabReturned;
+    await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'cdp:ABC', timeout_ms: 20 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(noteCdpTabReturned).not.toHaveBeenCalled();
+  });
+
+  test('an extension wait never marks a cdp tab returned', async () => {
+    const noteCdpTabReturned = vi.fn();
+    const log = new BridgeEventLog();
+    const deps = makeDeps({
+      subscribeEvents: (fn, options) => log.subscribe(fn, options),
+      noteCdpTabReturned,
+    });
+    log.add('tab-created', { tab_id: 'tab_9', opened_from: 'tab_1', url: 'http://x/' });
+    await handleBrowserTool(
+      'browser.wait_for_tab',
+      { opened_from: 'tab_1', timeout_ms: 2000 },
+      deps,
+      TEST_CALLER,
+    );
+    expect(noteCdpTabReturned).not.toHaveBeenCalled();
+  });
+
+  test('a cdp: wait whose browser socket is lost rejects with that error at once (F4)', async () => {
+    const stop = vi.fn();
+    const { deps } = cdpWaitDeps(
+      vi.fn(async (_opener: string, { onLost }: { onLost: (err: Error) => void }) => {
+        setTimeout(() => onLost(new Error('the socket is gone')), 20);
+        return stop;
+      }),
+    );
+    const started = Date.now();
+    await expect(
+      handleBrowserTool(
+        'browser.wait_for_tab',
+        { opened_from: 'cdp:ABC', timeout_ms: 10_000 },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow('the socket is gone');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('the watch learns whether the opener acted in the last 1.5 s, and the url_substring', async () => {
+    resetTabActionsForTest();
+    const seen: { acted: boolean; accepts: [boolean, boolean] }[] = [];
+    const watch = vi.fn(
+      async (
+        _opener: string,
+        options: { openerActedRecently: () => boolean; accepts: (url: string) => boolean },
+      ) => {
+        seen.push({
+          acted: options.openerActedRecently(),
+          accepts: [options.accepts('http://x/OAUTH/cb'), options.accepts('http://x/other')],
+        });
+        return () => {};
+      },
+    );
+    const { deps } = cdpWaitDeps(watch);
+    deps.callCdpTool = vi.fn(async () => ({ clicked: '#b' }));
+    const wait = () =>
+      handleBrowserTool(
+        'browser.wait_for_tab',
+        { opened_from: 'cdp:ABC', url_substring: 'oauth', timeout_ms: 10 },
+        deps,
+        TEST_CALLER,
+      );
+    // No action on the opener yet.
+    await wait();
+    // An action (a click through runAction) on the opener, then a wait.
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'cdp:ABC', selector: '#b' },
+      deps,
+      TEST_CALLER,
+    );
+    await wait();
+    // An action on another tab does not count for this opener.
+    resetTabActionsForTest();
+    await handleBrowserTool(
+      'browser.click',
+      { tab_id: 'cdp:OTHER', selector: '#b' },
+      deps,
+      TEST_CALLER,
+    );
+    await wait();
+    expect(seen).toEqual([
+      { acted: false, accepts: [true, false] },
+      { acted: true, accepts: [true, false] },
+      { acted: false, accepts: [true, false] },
+    ]);
+  });
+
+  test('a cdp: opener in a build without the watch wired is refused plainly', async () => {
+    const deps = makeDeps({ cdpGate: () => OK_GATE, subscribeEvents: vi.fn(() => () => {}) });
     await expect(
       handleBrowserTool('browser.wait_for_tab', { opened_from: 'cdp:ABC' }, deps, TEST_CALLER),
-    ).rejects.toThrow(/browser.wait_for_tab is not supported over cdp-direct/i);
-    expect(subscribeEvents).not.toHaveBeenCalled();
+    ).rejects.toThrow('cdp-direct is not available in this build of browser-link.');
   });
 
   test('wait_for_tab on an extension opened_from is unaffected by cdp-direct', async () => {

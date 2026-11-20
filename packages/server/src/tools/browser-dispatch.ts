@@ -72,6 +72,7 @@ import type { DispatchOutcomeContext } from '../map/learning.js';
 import { isCdpTabId } from '../cdp/targets.js';
 import { findTab, listKnownTabs, listTabsForSession, withCallTabMemo } from './tab-lookup.js';
 import { cdpUnsupportedToolError, isCdpToolSupported } from '../cdp/support.js';
+import { noteTabAction, tabActedSince } from './tab-actions.js';
 import {
   formatClaimConflict,
   type AgentCaller,
@@ -310,6 +311,20 @@ export interface BrowserToolDeps {
    * cdp-direct wired up, in which case any `cdp:` tab_id is treated as
    * unreachable — there is no bypass. */
   cdpGate?(): { ok: true } | { ok: false; error: string };
+  /** Optional: watch the tabs a `cdp:` tab opens for one `wait_for_tab` call
+   * (`cdp/opened-tabs.ts`, parity P7). Resolves to the stop that closes its
+   * browser-level socket; each page it sees is added to the event log as
+   * `tab-created`, where the wait's listener reads it as it reads the
+   * extension's. Absent in a build without cdp-direct wired up. */
+  watchCdpOpenedTabs?: (
+    openerTabId: string,
+    options: CdpOpenedTabsWatchOptions,
+  ) => Promise<() => void>;
+  /** Optional: a wait matched (returned) the `cdp:` tab `tabId`, so later
+   * watches do not announce it again (`cdp/opened-tabs.ts`
+   * `markOpenedTabReturned`). Only a returned tab counts: one announced to a
+   * wait whose `url_substring` did not match stays visible. */
+  noteCdpTabReturned?: (tabId: string) => void;
   /** Optional activity-trail sink. Called once per dispatched tool, AFTER the
    * call settles, with the row already assembled — success and failure alike.
    * Injected rather than imported so the dispatcher keeps no opinion about
@@ -431,6 +446,21 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 2_000;
  * DEFAULT_EXPECT_TIMEOUT_MS / MAX_EXPECT_TIMEOUT_MS in the extension's
  * `expect.ts` (and its `cdp/expect.ts` copy); kept in sync manually. */
 const DEFAULT_EXPECT_TIMEOUT_MS = 3_000;
+/** wait_for_tab's replay window: a `tab-created` at most this old still
+ * matches a new wait, and on a `cdp:` opener a page already open when the
+ * watch starts is returned only after an action on the opener this recent. */
+const WAIT_FOR_TAB_REPLAY_WITHIN_MS = 1500;
+
+/** What the dispatcher passes to `watchCdpOpenedTabs` (P7, G11). */
+export interface CdpOpenedTabsWatchOptions {
+  /** The watch's socket was lost: the wait ends with this error. */
+  onLost: (err: Error) => void;
+  /** Whether the opener acted within the replay window before the wait. */
+  openerActedRecently: () => boolean;
+  /** Whether a url can match the wait's `url_substring`. */
+  accepts: (url: string) => boolean;
+}
+
 const MAX_EXPECT_TIMEOUT_MS = 10_000;
 
 /** Longest `snapshot({ since })` id forwarded; matches the tool schema's maxLength. */
@@ -1352,7 +1382,7 @@ function toPublicClaim(claim: TabClaim): PublicClaim {
  *      gate error text, never a confusing downstream failure.
  *   2. The v1 declarative support table (`cdp/support.ts`) — a tool valid
  *      in general but out of cdp-direct's v1 scope (console, network*,
- *      set_permission, wait_for_tab) gets a clear "not supported over cdp-direct" error
+ *      set_permission, download by selector) gets a clear "not supported over cdp-direct" error
  *      naming the extension transport as the fallback.
  * There is no bypass: every one of the read-tool call sites below and
  * `runAction` (used by every action tool) go through this one function.
@@ -1430,7 +1460,14 @@ async function runAction(
       throw new Error(formatClaimConflict(caller, outcome.existing));
     }
   }
-  return routeToolCall(tool, tabId, params, deps, timeoutMs);
+  // When the tab last acted (start and end): wait_for_tab on a cdp: opener
+  // returns a page that was already open only after a recent action (P7).
+  noteTabAction(tabId);
+  try {
+    return await routeToolCall(tool, tabId, params, deps, timeoutMs);
+  } finally {
+    noteTabAction(tabId);
+  }
 }
 
 /** Best-effort origin extraction for the map-hint lookup. A tab URL that
@@ -3024,12 +3061,12 @@ async function dispatchBrowserTool(
       if (typeof opened_from !== 'string' || opened_from.length === 0) {
         throw new Error('browser.wait_for_tab: opened_from required');
       }
-      // wait_for_tab is not supported over cdp-direct in v1 — a new tab
-      // opened by a cdp-direct tab produces no bridge event to wait on
-      // (only the extension emits `tab-created`). Gate first (so a
-      // disabled/ungranted setup gets the standard gate error, not a
-      // confusing "not supported" for a tool it was never allowed to try),
-      // then report the limitation.
+      // A cdp: opener has no extension to announce the tabs it opens: the
+      // wait opens a browser-level watch for its own duration
+      // (`cdp/opened-tabs.ts`, parity P7), which adds the same `tab-created`
+      // event to the log; the listener below reads both alike. Gate first,
+      // so a disabled/ungranted setup gets the standard gate error.
+      let watchCdp: ((onLost: (err: Error) => void) => Promise<() => void>) | null = null;
       if (isCdpTabId(opened_from)) {
         const gate = deps.cdpGate
           ? deps.cdpGate()
@@ -3038,7 +3075,18 @@ async function dispatchBrowserTool(
               error: 'cdp-direct is not available in this build of browser-link.',
             };
         if (!gate.ok) throw new Error(gate.error);
-        throw cdpUnsupportedToolError('wait_for_tab');
+        const watch = deps.watchCdpOpenedTabs;
+        if (!watch) throw new Error('cdp-direct is not available in this build of browser-link.');
+        const needle = typeof url_substring === 'string' ? url_substring.toLowerCase() : null;
+        const waitStartedAt = Date.now();
+        watchCdp = (onLost) =>
+          watch(opened_from, {
+            onLost,
+            // The extension's replay window, measured on the opener's actions.
+            openerActedRecently: () =>
+              tabActedSince(opened_from, waitStartedAt - WAIT_FOR_TAB_REPLAY_WITHIN_MS),
+            accepts: (url) => needle === null || url.toLowerCase().includes(needle),
+          });
       }
       if (!deps.subscribeEvents) {
         return {
@@ -3058,20 +3106,29 @@ async function dispatchBrowserTool(
       // the source event landed in the buffer milliseconds before this
       // handler was reached. Older events are not replayed — they belong
       // to a previous flow.
-      const REPLAY_WITHIN_MS = 1500;
+      const REPLAY_WITHIN_MS = WAIT_FOR_TAB_REPLAY_WITHIN_MS;
       const subscribe = deps.subscribeEvents;
       const tabClaims = deps.tabClaims;
-      return new Promise<unknown>((resolve) => {
+      return new Promise<unknown>((resolve, reject) => {
         let settled = false;
         let unsubscribe: () => void = () => {
           /* placeholder */
         };
-        const settleWith = (payload: unknown): void => {
-          if (settled) return;
+        // The cdp: watch's stop, once it started; a watch that starts after
+        // the wait settled is stopped as soon as it resolves (below).
+        let stopWatch: () => void = () => {
+          /* no watch, or not started yet */
+        };
+        const finish = (): boolean => {
+          if (settled) return false;
           settled = true;
           unsubscribe();
           clearTimeout(timer);
-          resolve(payload);
+          stopWatch();
+          return true;
+        };
+        const settleWith = (payload: unknown): void => {
+          if (finish()) resolve(payload);
         };
         const listener: BridgeEventListener = (e) => {
           if (settled) return;
@@ -3096,6 +3153,7 @@ async function dispatchBrowserTool(
           } else {
             claimed = true;
           }
+          if (watchCdp) deps.noteCdpTabReturned?.(eTabId);
           settleWith({
             matched: true,
             tab_id: eTabId,
@@ -3113,6 +3171,19 @@ async function dispatchBrowserTool(
           });
         }, timeoutMs);
         unsubscribe = subscribe(listener, { replayWithinMs: REPLAY_WITHIN_MS });
+        if (watchCdp) {
+          watchCdp((err) => {
+            if (finish()) reject(err);
+          }).then(
+            (stop) => {
+              if (settled) stop();
+              else stopWatch = stop;
+            },
+            (err: unknown) => {
+              if (finish()) reject(err instanceof Error ? err : new Error(String(err)));
+            },
+          );
+        }
       });
     }
     case 'browser.dialog_respond': {

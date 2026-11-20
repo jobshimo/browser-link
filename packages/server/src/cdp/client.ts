@@ -59,6 +59,7 @@ export class CdpClient {
   private readonly pending = new Map<number, PendingCall>();
   private readonly eventHandlers = new Map<string, Set<CdpEventHandler>>();
   private readonly anyEventHandlers = new Set<(method: string, params: unknown) => void>();
+  private readonly closeHandlers = new Set<() => void>();
   private closed = false;
 
   constructor(
@@ -132,6 +133,16 @@ export class CdpClient {
     const err = new Error('cdp-direct: connection closed');
     for (const pending of this.pending.values()) pending.reject(err);
     this.pending.clear();
+    const handlers = [...this.closeHandlers];
+    this.closeHandlers.clear();
+    for (const handler of handlers) handler();
+  }
+
+  /** Run `handler` once when the WebSocket closes, whoever closed it (the
+   * peer, the network, or `close()`). Returns an unsubscribe function. */
+  onClose(handler: () => void): () => void {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
   }
 
   /** Whether the underlying WebSocket is open and this client has not been
@@ -141,11 +152,15 @@ export class CdpClient {
     return !this.closed && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
-  /** Send one CDP command and wait for its matching response. */
+  /** Send one CDP command and wait for its matching response. `onAnswer`
+   * runs synchronously when a successful answer's frame is handled, before
+   * any later frame: a caller can tell the events that came
+   * before the answer from those after it. */
   send<T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
     timeoutMs = 15_000,
+    onAnswer?: () => void,
   ): Promise<T> {
     if (!this.ws || this.closed) {
       return Promise.reject(new Error('cdp-direct: client is not connected'));
@@ -160,6 +175,7 @@ export class CdpClient {
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
+          onAnswer?.();
           resolve(value as T);
         },
         reject: (err) => {

@@ -155,4 +155,22 @@ describe('CdpClient', () => {
     for (const serverSideWs of wss?.clients ?? []) serverSideWs.close();
     await expect(pending).rejects.toThrow(/closed/i);
   });
+
+  test('onClose runs once when the server closes the connection; an unsubscribed handler does not run', async () => {
+    const port = await startFakeCdpServer(() => {
+      /* never respond */
+    });
+    const client = new CdpClient(`ws://127.0.0.1:${port}`);
+    await client.connect();
+    let calls = 0;
+    let dropped = 0;
+    client.onClose(() => calls++);
+    const off = client.onClose(() => dropped++);
+    off();
+    const closed = new Promise<void>((resolve) => client.onClose(resolve));
+    for (const serverSideWs of wss?.clients ?? []) serverSideWs.close();
+    await closed;
+    expect(calls).toBe(1);
+    expect(dropped).toBe(0);
+  });
 });

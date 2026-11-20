@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 18, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core); revision 18 (release 1.4.39) records parity slice P3. Revision 1 (`5486e34`) was audited as
+Status: revision 18, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core); revision 18 (release 1.4.39) records parity slice P3; revision 19 (release 1.4.40) records parity slice P4; revision 20 (release 1.4.41) records parity slice P7's G11 (`wait_for_tab` on `cdp:` tabs). Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,18 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 20 (2026-11-20)
+
+Parity slice P7, G11 (release 1.4.41): `browser.wait_for_tab` on a `cdp:` opener, by arch's conditions on experiment X3:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | cdp-direct gets a browser-level socket, `cdp/opened-tabs.ts`, opened per `wait_for_tab` call and closed on every way the call ends; it sends only `Target.setDiscoverTargets` and reports a drivable page whose `openerId` is the waiting `cdp:` tab, with the url of `Target.targetInfoChanged`. It is outside the page-connection cache, so the 5-minute sweep and gate A do not apply | X3: `openerId` exists only on the browser socket; a socket that sets no permission cannot clear another client's overrides (they are cleared per browser context when a session that set one closes) |
+| 2 | Its `tab-created` goes through `CdpTabCreatedSink`, keyed by the new `cdp:` id, outside `ports/` and installed by `server.ts` over `BridgeEventLog` like the flow and dialog sinks. `EventsOut` and `DialogEventSink` are unchanged; no port or fitness rule changed | the event is raised for a target cdp-direct never dialed, so the connection-bound sink of revision 17 row 3 does not fit |
+| 3 | The hand-declared `wait_for_tab` row (`CDP_DECLARED_SUPPORT`) is removed; `CDP_TOOL_SUPPORT` is derived from the registry alone, and the dispatcher's refusal is replaced by the watch | `wait_for_tab` is dispatcher-only and now works on both transports |
+| 4 | Verified on headless Chrome 118 and 157 only (X3 and the e2e); the owner's headed browser is untested | both runs were headless |
+| 5 | A page already open when the watch starts is returned only after an action on the opener within the 1.5 s replay window (`runAction` notes each action's start and end per tab, `tools/tab-actions.ts`); several are an error naming them. The first listing is told from live events by the `Target.setDiscoverTargets` answer's frame (`CdpClient.send` `onAnswer`, synchronous). `CdpClient` also gains `onClose`: a dropped browser socket ends the wait with an error | arch's ruling on review: an old popup must never be returned as if the last action had opened it, as the extension's replay window guarantees |
 
 ### Revision 19 (2026-11-20)
 

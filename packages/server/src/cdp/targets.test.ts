@@ -6,6 +6,7 @@ import * as paths from '../map/paths.js';
 import { saveConfig } from '../config.js';
 import { saveGrant } from './grant.js';
 import {
+  browserSocketUrl,
   buildTargetWsUrl,
   cdpTargetIdFromTabId,
   isCdpTabId,
@@ -113,6 +114,58 @@ describe('listCdpTargets — discovery', () => {
       .mockResolvedValueOnce(jsonResponse({ Browser: 'Chrome/124.0.0.0' }))
       .mockResolvedValueOnce(jsonResponse({ not: 'an array' }));
     expect(await listCdpTargets()).toEqual([]);
+  });
+});
+
+describe('browserSocketUrl (parity P7: the browser-level socket)', () => {
+  test('rebuilds the loopback url from the path of webSocketDebuggerUrl', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({
+        Browser: 'HeadlessChrome/118.0.5993.70',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/7c3a-11ef-ABCD',
+      }),
+    );
+    expect(await browserSocketUrl(9222)).toBe(
+      'ws://127.0.0.1:9222/devtools/browser/7c3a-11ef-ABCD',
+    );
+    expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:9222/json/version', expect.anything());
+  });
+
+  test('never takes the host the endpoint reports', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({
+        Browser: 'Chrome/157.0.0.0',
+        webSocketDebuggerUrl: 'ws://attacker.example:9222/devtools/browser/abc',
+      }),
+    );
+    expect(await browserSocketUrl(9222)).toBe('ws://127.0.0.1:9222/devtools/browser/abc');
+  });
+
+  test.each([
+    ['a page socket path', 'ws://127.0.0.1:9222/devtools/page/abc'],
+    ['a path with a traversal', 'ws://127.0.0.1:9222/devtools/browser/../page/abc'],
+    ['no url at all', undefined],
+    ['not a url', 'not a url'],
+  ])('null for %s', async (_label, wsUrl) => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ Browser: 'Chrome/157.0.0.0', webSocketDebuggerUrl: wsUrl }),
+    );
+    expect(await browserSocketUrl(9222)).toBeNull();
+  });
+
+  test('null when the endpoint is not Chrome', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({
+        Browser: 'Other/1.0',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+      }),
+    );
+    expect(await browserSocketUrl(9222)).toBeNull();
+  });
+
+  test('null when fetch rejects', async () => {
+    fetchSpy.mockRejectedValueOnce(new Error('nope'));
+    expect(await browserSocketUrl(9222)).toBeNull();
   });
 });
 

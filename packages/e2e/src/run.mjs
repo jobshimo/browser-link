@@ -328,6 +328,7 @@ async function main() {
     '/capture.html': readFileSync(CAPTURE_FILE),
     '/interact.html': readFileSync(join(E2E_DIR, 'pages/interact.html')),
     '/opened.html': readFileSync(join(E2E_DIR, 'pages/opened.html')),
+    '/opener.html': readFileSync(join(E2E_DIR, 'pages/opener.html')),
   };
   state.http = createServer((q, r) => {
     const path = (q.url ?? '/').split('?')[0];
@@ -1093,6 +1094,8 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     label: 'browser.flow.drag-step.drop-check.cdp',
   });
 
+  await waitForTabChecks(C, page, expectCdpError);
+
   // JavaScript dialogs on cdp-direct (parity P3). Last on this tab: before
   // P3 the dialog strands it. A click on #alert-btn opens alert('e2e alert').
   const dialogPage = new URL(`?cdp-dialog&n=${String(Date.now())}`, page).href;
@@ -1132,6 +1135,191 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     'Error: cdp-direct: the page did not answer Page.enable within 15 s; a JavaScript dialog opened while cdp-direct had no connection may be blocking it, or the page is unresponsive; close any dialog in the browser and retry.',
   );
   console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
+}
+
+/**
+ * browser.wait_for_tab on a cdp: opener (parity P7, G11), on the static
+ * opener.html fixture (every element opens /opened.html with its own query;
+ * nothing is injected into the page).
+ * - window.open from a click, and a target=_blank link: each wait, started
+ *   together with its click as on the extension, answers the new cdp: tab,
+ *   claimed; the new tab answers an evaluate.
+ * - after-click: the click lands first and the wait starts after it, so the
+ *   page is in discovery's first listing; the click was within 1.5 s, so it
+ *   is returned.
+ * - stale: a page opened 1.6 s before the wait (no action since) is not
+ *   returned: the wait times out. This also shows that Chrome sends the
+ *   first listing before its setDiscoverTargets answer: otherwise the page
+ *   would be taken for a new one.
+ * - ambiguous: two pages opened, then an action, then the wait: an error
+ *   naming both, never a pick.
+ * - unrelated: a page with no opener during the wait is ignored.
+ * Each follow-up call runs on both builds (ids are read from the browser
+ * when the base build refuses the wait), so the records stay aligned; every
+ * page opened here is closed by url afterwards.
+ */
+async function waitForTabChecks(C, page, expectCdpError) {
+  const browser = state.cdpChromeCdp;
+  const describe = (b) => JSON.stringify(b)?.slice(0, 300);
+  const at = (query) => new URL(`opened.html?${query}`, page).href;
+  const opener = new URL('opener.html', page).href;
+  const isNewTab = (b, url) =>
+    (b?.matched === true &&
+      typeof b.tab_id === 'string' &&
+      b.tab_id.startsWith('cdp:') &&
+      b.tab_id !== C &&
+      b.url === url &&
+      b.claimed === true) ||
+    `result ${describe(b)}`;
+  const timedOut = (b) =>
+    (b?.matched === false && b.reason === 'timeout') || `result ${describe(b)}`;
+  // The cdp: id of the page at `url`, read on the harness's own browser
+  // session (the page may still be committing its url).
+  const cdpTabAt = async (url) => {
+    for (const t0 = now(); now() - t0 < 5_000; await sleep(50)) {
+      const { targetInfos } = await browser.send('Target.getTargets');
+      const info = targetInfos.find((i) => i.type === 'page' && i.url === url);
+      if (info) return `cdp:${info.targetId}`;
+    }
+    throw new StepFailure('wait_for_tab.cdp', `no page at ${url}`);
+  };
+  const closeAt = async (url) => {
+    const { targetInfos } = await browser.send('Target.getTargets');
+    for (const info of targetInfos.filter((i) => i.type === 'page' && i.url === url)) {
+      await Promise.race([
+        browser.send('Target.closeTarget', { targetId: info.targetId }).catch(() => undefined),
+        sleep(3000),
+      ]);
+    }
+  };
+  const click = (selector, label) =>
+    call('browser.click', { tab_id: C, selector, settle_ms: 0 }, undefined, {
+      print: false,
+      label,
+    });
+  // The new tab answers an evaluate, under the id the wait gave (or, on the
+  // base build, the one the browser has).
+  const answers = async (waited, url, label) => {
+    const id = json(waited)?.tab_id ?? (await cdpTabAt(url));
+    await call(
+      'browser.evaluate',
+      { tab_id: id, expression: 'location.href' },
+      (_b, t) => t === url || `the new tab is at ${JSON.stringify(t)}`,
+      { label },
+    );
+  };
+
+  await call(
+    'browser.navigate',
+    { tab_id: C, url: opener },
+    (b) => b?.url === opener || `landed on ${describe(b)}`,
+    { print: false },
+  );
+
+  // window.open from a click handler.
+  const [byClick] = await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'cdp-tab', timeout_ms: 15_000 },
+      (b) => isNewTab(b, at('cdp-tab')),
+      { label: 'browser.wait_for_tab.cdp' },
+    ),
+    click('#open-btn', 'browser.click.opens-tab.cdp'),
+  ]);
+  await answers(byClick, at('cdp-tab'), 'browser.evaluate.opened-tab.cdp');
+  await closeAt(at('cdp-tab'));
+
+  // A target=_blank link (Chrome gives it an implicit noopener; openerId is
+  // still set, experiment X3).
+  const [byLink] = await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'cdp-link', timeout_ms: 15_000 },
+      (b) => isNewTab(b, at('cdp-link')),
+      { label: 'browser.wait_for_tab.blank-link.cdp' },
+    ),
+    click('#blank-link', 'browser.click.blank-link.cdp'),
+  ]);
+  await answers(byLink, at('cdp-link'), 'browser.evaluate.linked-tab.cdp');
+  await closeAt(at('cdp-link'));
+
+  // The click first, the wait after it: the page is in the first listing.
+  await click('#after-link', 'browser.click.after-link.cdp');
+  const afterClick = await call(
+    'browser.wait_for_tab',
+    { opened_from: C, url_substring: 'cdp-after', timeout_ms: 15_000 },
+    (b) => isNewTab(b, at('cdp-after')),
+    { label: 'browser.wait_for_tab.after-click.cdp' },
+  );
+  await answers(afterClick, at('cdp-after'), 'browser.evaluate.after-tab.cdp');
+  await closeAt(at('cdp-after'));
+
+  // A page opened 1.6 s before the wait, no action since: not returned.
+  await click('#stale-link', 'browser.click.stale-link.cdp');
+  await cdpTabAt(at('cdp-stale'));
+  await sleep(1_600);
+  await call(
+    'browser.wait_for_tab',
+    { opened_from: C, url_substring: 'cdp-stale', timeout_ms: 1_500 },
+    timedOut,
+    { label: 'browser.wait_for_tab.stale.cdp' },
+  );
+  await closeAt(at('cdp-stale'));
+
+  // Two pages opened, both within 1.5 s: an error naming both. Each new tab
+  // answers an evaluate first, so its id is named in the record before the
+  // error text names it; then an action on the opener starts the window.
+  await click('#two-a', 'browser.click.two-a.cdp');
+  // The new page took the foreground: bring the opener back (the harness's
+  // own session) so the second click's move check can answer.
+  await cdpTabAt(at('cdp-two-a'));
+  await browser.send('Target.activateTarget', { targetId: C.slice('cdp:'.length) });
+  await click('#two-b', 'browser.click.two-b.cdp');
+  const twoA = await cdpTabAt(at('cdp-two-a'));
+  const twoB = await cdpTabAt(at('cdp-two-b'));
+  for (const [id, url, label] of [
+    [twoA, at('cdp-two-a'), 'browser.evaluate.two-a.cdp'],
+    [twoB, at('cdp-two-b'), 'browser.evaluate.two-b.cdp'],
+  ]) {
+    await call(
+      'browser.evaluate',
+      { tab_id: id, expression: 'location.href' },
+      (_b, t) => t === url || `the tab is at ${JSON.stringify(t)}`,
+      { print: false, label },
+    );
+  }
+  await call(
+    'browser.evaluate',
+    { tab_id: C, expression: "'acted'" },
+    (_b, t) => t === 'acted' || `answered ${JSON.stringify(t)}`,
+    { print: false, label: 'browser.evaluate.opener-acts.cdp' },
+  );
+  await expectCdpError(
+    'error.wait-for-tab-ambiguous.cdp',
+    'browser.wait_for_tab',
+    { opened_from: C, url_substring: 'cdp-two', timeout_ms: 5_000 },
+    `Error: cdp-direct: browser.wait_for_tab cannot tell which tab ${C} opened: 2 tabs it opened were already open when the wait started, within 1.5 s of its last action: ${twoA} (${at('cdp-two-a')}), ${twoB} (${at('cdp-two-b')}). Call browser.list_tabs and pick one.`,
+  );
+  await closeAt(at('cdp-two-a'));
+  await closeAt(at('cdp-two-b'));
+
+  // A page with no opener (the harness's own Target.createTarget) during the
+  // wait: not reported, the wait times out. Narrowed by its url: the log's
+  // 1.5 s replay would otherwise hand back an earlier tab-created, as it
+  // would on the extension.
+  await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'cdp-lone', timeout_ms: 2_000 },
+      timedOut,
+      { label: 'browser.wait_for_tab.unrelated.cdp' },
+    ),
+    (async () => {
+      await sleep(300);
+      await browser.send('Target.createTarget', { url: at('cdp-lone') });
+    })(),
+  ]);
+  await closeAt(at('cdp-lone'));
 }
 
 /**
