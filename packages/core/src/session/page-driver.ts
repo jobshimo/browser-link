@@ -106,7 +106,8 @@ export interface PageDriverHandle extends PageDriver {
 /** The transport's view of JavaScript dialogs. Read-only and outside
  * `ports/` (design revision 8): the extension's watch reads its tab's
  * `TabSession` pending dialog (`session/tab-session.ts`
- * `sessionDialogWatch`); cdp-direct does not track dialogs and gives none. */
+ * `sessionDialogWatch`); cdp-direct's is the `PendingDialog` its dial feeds
+ * (parity P3, `session/dialog-intake.ts`). Both are `PendingDialog` state. */
 export interface DialogWatch {
   isOpen(): boolean;
 }
@@ -186,8 +187,8 @@ export function dialogOpen({ dialogs }: { dialogs?: DialogWatch }): boolean {
  * 10), each event races the watch, polled on `clock`: a dialog pauses the
  * page and the event that opened it is answered only once it closes, so
  * `dialog: true` answers at once and nothing after it is sent; the answer
- * is otherwise whether a dialog is open after them. Without one
- * (cdp-direct), the events are awaited in turn and `dialog` is false.
+ * is otherwise whether a dialog is open after them. Without one (a driver
+ * built with no watch), the events are awaited in turn and `dialog` is false.
  */
 export async function dispatchMouseEvents(
   { pointer, clock, dialogs }: MouseDeps,
@@ -223,9 +224,9 @@ export async function dispatchMouseEvents(
 /**
  * The move of a click whose landing is watched, within `budgetMs`. With a
  * dialog watch, as `dispatchMouseEvents` (the watch bounds the dispatch, the
- * budget is not applied, a failure rejects). Without one (cdp-direct, whose
- * `moveOntoTarget` set the budget left as the command's own timeout before
- * slice 10), the dispatch races the budget on `clock`: a failed or late one
+ * budget is not applied, a failure rejects). Without one (a driver built
+ * with no watch; cdp-direct's before parity P3, whose `moveOntoTarget` set
+ * the budget left as the command's own timeout before slice 10), the dispatch races the budget on `clock`: a failed or late one
  * is `unanswered`.
  */
 export async function dispatchWatchedMove(

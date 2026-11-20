@@ -99,6 +99,9 @@ import {
 import { buildContract, CONTRACT_SOURCE_URL } from '../../extension/contract/build.mjs';
 
 const CALL_TIMEOUT_MS = 45_000;
+/** core's HIT_CHECK_DIALOG_NOTE: the click's note when it opened a dialog. */
+const CDP_DIALOG_NOTE =
+  'a JavaScript dialog opened during the click and the page is paused until it is answered (browser.dialog_respond), so where the click landed was not verified';
 const TOTAL_TIMEOUT_MS = 300_000;
 const REPORT_BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7 + 3) % 256));
 const ATTACHMENTS = {
@@ -1089,7 +1092,84 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     print: false,
     label: 'browser.flow.drag-step.drop-check.cdp',
   });
+
+  // JavaScript dialogs on cdp-direct (parity P3). Last on this tab: before
+  // P3 the dialog strands it. A click on #alert-btn opens alert('e2e alert').
+  const dialogPage = new URL(`?cdp-dialog&n=${String(Date.now())}`, page).href;
+  await call(
+    'browser.navigate',
+    { tab_id: C, url: dialogPage },
+    (b) => b?.url === dialogPage || `landed on ${describeCdp(b)}`,
+    { print: false },
+  );
+  // The click answers at once, saying a dialog opened (the extension's
+  // answer, browser.click.opens-dialog); the field is asserted exactly.
+  await call(
+    'browser.click',
+    { tab_id: C, selector: '#alert-btn', settle_ms: 0 },
+    (b) =>
+      (b?.hit_check === 'not_verifiable' && b.hit_check_note === CDP_DIALOG_NOTE) ||
+      `click answered ${describeCdp(b)}`,
+    { label: 'browser.click.opens-dialog.cdp' },
+  );
+  // dialog_respond closes it over the connection that saw it open.
+  await call('browser.dialog_respond', { tab_id: C, accept: true }, undefined, {
+    label: 'browser.dialog_respond.cdp',
+  });
+  // The page answers again.
+  await call(
+    'browser.evaluate',
+    { tab_id: C, expression: "'resumed'" },
+    (_b, t) => t === 'resumed' || `evaluate answered ${JSON.stringify(t)}`,
+    { label: 'browser.evaluate.after-dialog.cdp' },
+  );
+  // A dialog open before the first call: the named error, not the bare
+  // Page.enable timeout (it cannot be answered over cdp-direct, X1).
+  await dialogBeforeDial(
+    state.cdpChromeCdp,
+    page,
+    expectCdpError,
+    'Error: cdp-direct: the page did not answer Page.enable within 15 s; a JavaScript dialog opened while cdp-direct had no connection may be blocking it, or the page is unresponsive; close any dialog in the browser and retry.',
+  );
   console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
+}
+
+/**
+ * A dialog already open when cdp-direct dials the tab (experiment X1): the
+ * harness opens a fresh target, opens alert() in it from its own session
+ * (a timer, so its Runtime.evaluate answers; that session never enables
+ * Page), then the server's first call on the tab must fail with `want`. The
+ * target is closed afterwards, whatever the answer.
+ */
+async function dialogBeforeDial(browser, page, expectCdpError, want) {
+  const url = new URL(`?cdp-predialog&n=${String(Date.now())}`, page).href;
+  const { targetId } = await browser.send('Target.createTarget', { url });
+  try {
+    const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true });
+    await evaluateUntil(
+      browser,
+      "document.readyState === 'complete' && !!document.querySelector('#alert-btn')",
+      sessionId,
+      15_000,
+    );
+    await browser.send(
+      'Runtime.evaluate',
+      { expression: "setTimeout(() => alert('e2e pre-dial'), 0)" },
+      sessionId,
+    );
+    await sleep(700);
+    await expectCdpError(
+      'error.dialog-before-dial.cdp',
+      'browser.evaluate',
+      { tab_id: `cdp:${targetId}`, expression: "'unreachable'" },
+      want,
+    );
+  } finally {
+    await Promise.race([
+      browser.send('Target.closeTarget', { targetId }).catch(() => undefined),
+      sleep(3000),
+    ]);
+  }
 }
 
 /**

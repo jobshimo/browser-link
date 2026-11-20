@@ -9,8 +9,12 @@ import { clearGrant, saveGrant } from './grant.js';
 import { CDP_DIRECT_DISABLED_ERROR, checkCdpDirectGate } from './gate.js';
 import {
   callCdpTool,
+  PageEnableTimeoutError,
+  pageEnableTimeoutMessage,
   resetConnectionsForTest,
+  setCdpBridgeEventSink,
   setIdleCleanupConfigForTest,
+  setPageEnableTimeoutForTest,
   sweepIdleConnectionsForTest,
 } from './transport.js';
 import {
@@ -28,6 +32,7 @@ import {
   PASSWORD_VALUES_HIDDEN_NOTE,
   UNOBSERVED_FRAMES_HINT,
   CLICK_MOVE_TRIES,
+  HIT_CHECK_DIALOG_NOTE,
   HIT_CHECK_TIMEOUT_MS,
   buildClickHitCheckJs,
   buildClickMoveCheckJs,
@@ -1840,6 +1845,134 @@ describe('callCdpTool — page observer', () => {
       },
     ]);
     expect(evaluations(seen).some((e) => e.includes('g.teardown()'))).toBe(true);
+  });
+
+  // Parity P3: the dial feeds the connection's pending dialog through core's
+  // dialog intake, the click races it, and dialog_respond answers it.
+  describe('JavaScript dialogs (parity P3)', () => {
+    const OPENING = {
+      type: 'alert',
+      message: 'e2e alert',
+      url: 'https://example.com/',
+      hasBrowserHandler: true,
+      defaultPrompt: '',
+    };
+    let sinkEvents: { kind: string; data: Record<string, unknown> }[];
+
+    beforeEach(() => {
+      sinkEvents = [];
+      setCdpBridgeEventSink((kind, data) => sinkEvents.push({ kind, data }));
+    });
+    afterEach(() => {
+      setCdpBridgeEventSink(null);
+    });
+
+    /** A page whose press opens an alert: the opening event, and the press
+     * never answered (the page is paused). */
+    function alertPage(seen: Seen[], handled: unknown[]): Record<string, Handler> {
+      return observerPage(seen, {
+        extra: {
+          'Input.dispatchMouseEvent': (params) => {
+            if ((params as { type: string }).type !== 'mousePressed') return {};
+            pushEvent('Page.javascriptDialogOpening', OPENING);
+            return NO_REPLY;
+          },
+          'Page.handleJavaScriptDialog': (params) => {
+            handled.push(params);
+            pushEvent('Page.javascriptDialogClosed', { result: true, userInput: '' });
+            return {};
+          },
+        },
+      });
+    }
+
+    test('a click whose press opens a dialog answers at once with the dialog note, as on an extension tab', async () => {
+      const seen: Seen[] = [];
+      const { port, targetId } = await startFakeTarget(alertPage(seen, []));
+      grantAccess(port);
+      const started = Date.now();
+      const result = await callCdpTool(`cdp:${targetId}`, 'click', {
+        selector: '#go',
+        settle_ms: 0,
+      });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result).toEqual({
+        clicked: '#go',
+        tag: 'button',
+        hit_check: 'not_verifiable',
+        hit_check_note: HIT_CHECK_DIALOG_NOTE,
+      });
+    });
+
+    test('the opening and the close go to the bridge event log for the cdp: tab, and dialog_respond answers the dialog', async () => {
+      const seen: Seen[] = [];
+      const handled: unknown[] = [];
+      const { port, targetId } = await startFakeTarget(alertPage(seen, handled));
+      grantAccess(port);
+      const tabId = `cdp:${targetId}`;
+      await callCdpTool(tabId, 'click', { selector: '#go', settle_ms: 0 });
+      expect(sinkEvents).toEqual([
+        {
+          kind: 'dialog-opening',
+          data: {
+            type: 'alert',
+            message: 'e2e alert',
+            default_prompt: '',
+            url: 'https://example.com/',
+            tab_id: tabId,
+          },
+        },
+      ]);
+      await callCdpTool(tabId, 'dialog_respond', { accept: true, prompt_text: 'x' });
+      expect(handled).toEqual([{ accept: true, promptText: 'x' }]);
+      await vi.waitFor(() => {
+        expect(sinkEvents[1]).toEqual({
+          kind: 'dialog-closed',
+          data: { accept: true, user_input: '', tab_id: tabId },
+        });
+      });
+    });
+
+    test('a dial whose Page.enable gets no answer fails with the named error, closes its socket and caches nothing', async () => {
+      let enables = 0;
+      const { port, targetId } = await startFakeTarget({
+        'Page.enable': () => {
+          enables++;
+          return enables === 1 ? NO_REPLY : {};
+        },
+      });
+      grantAccess(port);
+      setPageEnableTimeoutForTest(100);
+      const failure = callCdpTool(`cdp:${targetId}`, 'evaluate', { expression: '1' });
+      await expect(failure).rejects.toBeInstanceOf(PageEnableTimeoutError);
+      await expect(failure).rejects.toThrow(pageEnableTimeoutMessage(100));
+      expect(pageEnableTimeoutMessage(15_000)).toBe(
+        'cdp-direct: the page did not answer Page.enable within 15 s; a JavaScript dialog opened while cdp-direct had no connection may be blocking it, or the page is unresponsive; close any dialog in the browser and retry.',
+      );
+      const firstSocket = (wss as unknown as { _testWs?: WebSocket })._testWs;
+      await vi.waitFor(() => {
+        expect(firstSocket?.readyState).toBe(WebSocket.CLOSED);
+      });
+      // The next call dials afresh and works.
+      await expect(callCdpTool(`cdp:${targetId}`, 'ping', {})).resolves.toMatchObject({
+        url: 'https://example.com/',
+      });
+      expect(connectionCount).toBe(2);
+    });
+
+    test('a Page.enable that fails with a CDP error keeps that error and closes the socket', async () => {
+      const { port, targetId } = await startFakeTarget({
+        'Page.enable': () => new CdpError('Page.enable refused'),
+      });
+      grantAccess(port);
+      await expect(callCdpTool(`cdp:${targetId}`, 'ping', {})).rejects.toThrow(
+        'Page.enable refused',
+      );
+      const socket = (wss as unknown as { _testWs?: WebSocket })._testWs;
+      await vi.waitFor(() => {
+        expect(socket?.readyState).toBe(WebSocket.CLOSED);
+      });
+    });
   });
 });
 

@@ -1,12 +1,12 @@
 // What cdp-direct provides to the tool registry (design 3.3). It provides
 // `drag` and `canvas` (parity program P1: the drag input and the CDP event wait
-// were already on cdp-direct, and a canvas screenshot rides the evaluator).
+// were already on cdp-direct, and a canvas screenshot rides the evaluator)
+// and `dialog-input` (P3: the dial feeds the connection's pending dialog).
 // It never enables the Network domain or keeps console messages, so it has no
 // capture buffers and a `network_url` wait, `browser.console` and
 // `browser.network` are refused; it does not provide `response-bodies`,
-// `dialog-input`, `downloads` or `content-settings`, so `browser.network_body`,
-// `browser.dialog_respond`, `browser.set_permission` and `browser.download`
-// are refused. Declaring a capability outside that scope is a
+// `downloads` or `content-settings`, so `browser.network_body`,
+// `browser.set_permission` and `browser.download` are refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
 import { describe, expect, test } from 'vitest';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
@@ -17,10 +17,11 @@ import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports, the CDP event wait and the flow services, with drag and canvas, without capture-buffers or response-bodies', () => {
+  test('is the page ports, the CDP event wait and the flow services, with drag, canvas and dialog-input, without capture-buffers or response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
       'canvas',
       'cdp-events',
+      'dialog-input',
       'drag',
       'evaluator',
       'flow-cancel',
@@ -38,7 +39,6 @@ describe('CDP_DIRECT_PROVIDES', () => {
     ['console', ['capture-buffers']],
     ['network', ['capture-buffers']],
     ['network_body', ['response-bodies']],
-    ['dialog_respond', ['dialog-input']],
     ['set_permission', ['content-settings']],
     ['download', ['downloads']],
     ['download_settle', ['downloads']],

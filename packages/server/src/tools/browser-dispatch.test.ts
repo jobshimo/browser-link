@@ -2538,17 +2538,12 @@ describe('cdp-direct routing', () => {
     const callCdpTool = vi.fn(async () => ({}));
     const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
     await expect(
-      handleBrowserTool(
-        'browser.dialog_respond',
-        { tab_id: 'cdp:ABC', accept: true },
-        deps,
-        TEST_CALLER,
-      ),
-    ).rejects.toThrow(/browser.dialog_respond is not supported over cdp-direct/i);
+      handleBrowserTool('browser.network', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
+    ).rejects.toThrow(/browser.network is not supported over cdp-direct/i);
     expect(callCdpTool).not.toHaveBeenCalled();
   });
 
-  test('browser.drag and browser.canvas_screenshot on a cdp: tab reach callCdpTool', async () => {
+  test('browser.drag, browser.canvas_screenshot and browser.dialog_respond on a cdp: tab reach callCdpTool', async () => {
     const callCdpTool = vi.fn(async () => ({ ok: true }));
     const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
     await handleBrowserTool(
@@ -2558,7 +2553,17 @@ describe('cdp-direct routing', () => {
       TEST_CALLER,
     );
     await handleBrowserTool('browser.canvas_screenshot', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER);
-    expect(callCdpTool.mock.calls.map((c) => c[1])).toEqual(['drag', 'canvas_screenshot']);
+    await handleBrowserTool(
+      'browser.dialog_respond',
+      { tab_id: 'cdp:ABC', accept: true },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callCdpTool.mock.calls.map((c) => c[1])).toEqual([
+      'drag',
+      'canvas_screenshot',
+      'dialog_respond',
+    ]);
   });
 
   test('browser.console on a cdp: tab is rejected the same way', async () => {

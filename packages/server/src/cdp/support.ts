@@ -14,9 +14,10 @@
  *
  * Still refused (see the README's cdp-direct tool-support table and
  * `docs/design/cdp-direct-parity.md` for the order they are taken in):
- * `console`, `network`, `network_body`, `dialog_respond`, `set_permission`,
+ * `console`, `network`, `network_body`, `set_permission`,
  * `wait_for_tab`, and `download` (`browser.download`'s selector mode).
- * `drag` and `canvas_screenshot` joined cdp-direct in 1.4.36.
+ * `drag` and `canvas_screenshot` joined cdp-direct in 1.4.36, `dialog_respond` in
+ * 1.4.39.
  */
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { cdpToolSupport } from '../generated/core/tools/registry.js';
@@ -24,15 +25,15 @@ import type { Requirement } from '../generated/core/tools/requirement.js';
 
 /** What cdp-direct provides to the tool registry (design 3.3): the page
  * ports, the CDP event wait, the drag input (`drag`), the canvas screenshot
- * (`canvas`, through the evaluator) and its own flow model (`flows`, and
- * `flow-cancel`, which only cdp-direct provides). It does not
+ * (`canvas`, through the evaluator), the dialog input (`dialog-input`, for a
+ * dialog the connection saw open: parity P3) and its own flow model
+ * (`flows`, and `flow-cancel`, which only cdp-direct provides). It does not
  * provide `capture-buffers`: it never enables the Network domain or keeps
  * console messages, so a `network_url` wait, `browser.console` and
  * `browser.network` are refused; nor `response-bodies`, so
- * `browser.network_body` is refused; nor `dialog-input`, `downloads` or
- * `content-settings`, so `browser.dialog_respond`, `browser.set_permission`
- * and `browser.download` are refused (v1 scope; changing any is a behavior
- * change). */
+ * `browser.network_body` is refused; nor `downloads` or `content-settings`,
+ * so `browser.set_permission` and `browser.download` are refused (v1 scope;
+ * changing any is a behavior change). */
 export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement>([
   'evaluator',
   'keyboard',
@@ -46,6 +47,7 @@ export const CDP_DIRECT_PROVIDES: ReadonlySet<Requirement> = new Set<Requirement
   'flow-cancel',
   'canvas',
   'drag',
+  'dialog-input',
 ]);
 
 /** The row no registry entry derives, declared with its reason. */

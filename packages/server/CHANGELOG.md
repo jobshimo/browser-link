@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.39](https://github.com/jobshimo/browser-link/compare/v1.4.38...v1.4.39) (2026-11-20)
+
+### Features
+
+- cdp-direct: JavaScript dialogs on a `cdp:` tab. A click that opens an `alert()`, `confirm()` or `prompt()` now answers at once with `hit_check: "not_verifiable"` and the dialog note, as on an extension tab, where it failed after 15 s with `cdp-direct: command "Input.dispatchMouseEvent" timed out after 15000ms` and left the tab stranded. `browser.dialog_respond` now works on a `cdp:` tab (it answered "not supported over cdp-direct in v1"), and `browser.events` shows `dialog-opening` and `dialog-closed` for `cdp:` tabs. Extension tabs are unchanged.
+- cdp-direct: the mouse move of a `cdp:` tab's click is now bounded by the dialog watch, as on an extension tab, instead of the click's remaining landing-check budget (`HIT_CHECK_TIMEOUT_MS`): a move whose `Input.dispatchMouseEvent` fails (connection closed or any CDP error) now fails the whole click with that error, where it answered `Click on <target> did not reach it` with `no press was sent`, and a slow move on a busy page waits up to the client's 15 s command timeout instead of being given up at the budget. Extension tabs are unchanged.
+- cdp-direct: a tab whose page does not answer `Page.enable` when browser-link connects to it now fails with `cdp-direct: the page did not answer Page.enable within 15 s; a JavaScript dialog opened while cdp-direct had no connection may be blocking it, or the page is unresponsive; close any dialog in the browser and retry.` instead of `cdp-direct: command "Page.enable" timed out after 15000ms`, and that connection is closed instead of left open. A dialog that opened while browser-link had no connection to the tab cannot be seen or answered over cdp-direct (experiment X1, Chrome 118 and 157); the README and the `cdp-direct` manual topic state the limit.
+
+### Notes
+
+- cdp-direct provides `dialog-input`; its dial feeds a per-connection `PendingDialog` through core's dialog intake before `Page.enable`, and passes it to the page driver as its `DialogWatch`. `CdpClient` rejects a command timeout with a typed `CdpCommandTimeoutError` (same text). The real-Chrome contract gains a `DialogWatch` case; the e2e gains `browser.click.opens-dialog.cdp`, `browser.dialog_respond.cdp`, `browser.evaluate.after-dialog.cdp` and `error.dialog-before-dial.cdp`.
+
 ## [1.4.38](https://github.com/jobshimo/browser-link/compare/v1.4.37...v1.4.38) (2026-11-20)
 
 ### Refactor

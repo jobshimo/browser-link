@@ -33,6 +33,19 @@ export interface CdpClientOptions {
   connectTimeoutMs?: number;
 }
 
+/** A command that got no answer within its per-command timeout. Its message
+ * is the text callers have always seen; the class (and `method`) lets a
+ * caller tell a timeout from a CDP error without reading the message. */
+export class CdpCommandTimeoutError extends Error {
+  constructor(
+    readonly method: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`cdp-direct: command "${method}" timed out after ${timeoutMs}ms`);
+    this.name = 'CdpCommandTimeoutError';
+  }
+}
+
 function frameToText(raw: unknown): string {
   if (typeof raw === 'string') return raw;
   if (Buffer.isBuffer(raw)) return raw.toString('utf8');
@@ -142,7 +155,7 @@ export class CdpClient {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`cdp-direct: command "${method}" timed out after ${timeoutMs}ms`));
+        reject(new CdpCommandTimeoutError(method, timeoutMs));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => {
