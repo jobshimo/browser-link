@@ -9,10 +9,10 @@
 
 import type { ExtensionToServer } from '@browser-link/shared';
 import {
+  dialogIntake,
   OBSERVER_BINDING,
   type Clock,
   type FlowStep,
-  type PendingDialogInfo,
   type TabRegistry,
   type TabReservation,
   type TabSession,
@@ -210,18 +210,6 @@ interface CdpNetworkLoadingFailed {
   errorText?: string;
 }
 
-interface CdpPageJavascriptDialogOpening {
-  type?: string;
-  message?: string;
-  defaultPrompt?: string;
-  url?: string;
-}
-
-interface CdpPageJavascriptDialogClosed {
-  result?: boolean;
-  userInput?: string;
-}
-
 // Convert an arbitrary console arg (`unknown`) into something printable
 // without leaking `[object Object]`. Used by the console buffer when CDP
 // hands us values we don't statically know.
@@ -243,9 +231,17 @@ export interface DebuggerIntakeDeps {
 }
 
 /** The tab's debugger intake: console, network and dialog events into its
- * `TabSession`, dialog bridge events, and the recorder's binding calls. */
+ * `TabSession`, dialog bridge events, and the recorder's binding calls. The
+ * dialog half is core's `dialogIntake`, writing the session's
+ * `PendingDialog` and sending its events through a sink bound to this
+ * connection (`sendBridgeEvent`). */
 export function debuggerIntake(conn: TabConnection, deps: DebuggerIntakeDeps): TabEventListener {
   const { session } = conn;
+  const dialogs = dialogIntake(session.dialog, {
+    emit: (event) => {
+      sendBridgeEvent(conn, event.eventKind, event.data);
+    },
+  });
   return (method, params) => {
     if (method === 'Runtime.consoleAPICalled') {
       const p = params as CdpRuntimeConsoleAPICalled;
@@ -307,37 +303,12 @@ export function debuggerIntake(conn: TabConnection, deps: DebuggerIntakeDeps): T
       entry.failed = p.errorText ?? 'failed';
       return;
     }
-    if (method === 'Page.javascriptDialogOpening') {
-      // The page JS thread is now frozen until something calls
-      // Page.handleJavaScriptDialog. We do NOT respond automatically —
-      // the agent reads dialog-opening from browser.events and decides
-      // via browser.dialog_respond. The popup also exposes accept/dismiss
-      // buttons as a manual escape hatch.
-      const p = params as CdpPageJavascriptDialogOpening;
-      const info: PendingDialogInfo = {
-        type: p.type ?? 'alert',
-        message: p.message ?? '',
-      };
-      if (typeof p.defaultPrompt === 'string') info.default_prompt = p.defaultPrompt;
-      if (typeof p.url === 'string') info.url = p.url;
-      session.dialogOpened(info);
-      const data: Record<string, unknown> = {
-        type: info.type,
-        message: info.message,
-      };
-      if (info.default_prompt !== undefined) data.default_prompt = info.default_prompt;
-      if (info.url !== undefined) data.url = info.url;
-      sendBridgeEvent(conn, 'dialog-opening', data);
-      return;
-    }
-    if (method === 'Page.javascriptDialogClosed') {
-      const p = params as CdpPageJavascriptDialogClosed;
-      session.dialogClosed();
-      const data: Record<string, unknown> = { accept: p.result === true };
-      if (typeof p.userInput === 'string') data.user_input = p.userInput;
-      sendBridgeEvent(conn, 'dialog-closed', data);
-      return;
-    }
+    // Page.javascriptDialogOpening / Closed. The page JS thread is frozen on
+    // a dialog until something calls Page.handleJavaScriptDialog. We do NOT
+    // respond automatically — the agent reads dialog-opening from
+    // browser.events and decides via browser.dialog_respond. The popup also
+    // exposes accept/dismiss buttons as a manual escape hatch.
+    if (dialogs(method, params)) return;
     if (
       method === 'Runtime.bindingCalled' &&
       (params as { name?: string }).name === OBSERVER_BINDING

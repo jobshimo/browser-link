@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>x1 dialogs</title>
+<h1>X1 dialog fixture</h1>
+<p>Result of the last dialog: <span id="out">none</span></p>
+<button id="alert-btn" onclick="alert('x'); document.getElementById('out').textContent = 'after-alert'">alert</button>
+<button id="confirm-btn" onclick="document.getElementById('out').textContent = 'confirm=' + confirm('c?')">confirm</button>
+<button id="prompt-btn" onclick="document.getElementById('out').textContent = 'prompt=' + prompt('p?', 'def')">prompt</button>
+<button id="timer-btn" onclick="setTimeout(function () { alert('t'); document.getElementById('out').textContent = 'after-timer-alert'; }, 1500)">timer alert</button>

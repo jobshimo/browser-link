@@ -1,6 +1,7 @@
 // The per-tab page state of a connected tab (design section 4, `TabSession`):
 // the idle clock and what holds it, the bounded console and network buffers,
-// the pending JavaScript dialog and the tab's page driver. No socket, no
+// the pending JavaScript dialog (the `PendingDialog` of
+// `session/dialog-intake.ts`, composed here) and the tab's page driver. No socket, no
 // server metadata: the extension's `app/tab-connection.ts` holds a
 // `TabSession`, never the other way round. Only the extension uses it;
 // cdp-direct keeps its own idle model (design section 8, Q4).
@@ -19,20 +20,12 @@ import type {
   NetworkEntry,
   PageDriverHandle,
 } from './page-driver.js';
+import { PendingDialog, type PendingDialogInfo } from './dialog-intake.js';
 
 /** Console entries kept per tab; the oldest is dropped first. */
 export const CONSOLE_BUFFER_MAX = 200;
 /** Network entries kept per tab; the oldest request is dropped first. */
 export const NETWORK_BUFFER_MAX = 200;
-
-/** A native dialog blocking the tab, set on `Page.javascriptDialogOpening`
- * and cleared on `Page.javascriptDialogClosed`. */
-export interface PendingDialogInfo {
-  type: string;
-  message: string;
-  default_prompt?: string;
-  url?: string;
-}
 
 /** A tool call the tab is still answering. */
 export interface CallInProgress {
@@ -63,7 +56,8 @@ export interface TabSessionDeps {
  * 5. The console buffer holds at most `CONSOLE_BUFFER_MAX` entries and the
  *    network buffer at most `NETWORK_BUFFER_MAX`, oldest dropped first;
  *    `networkOrder` and `networkBuffer` always hold the same ids.
- * 6. At most one pending dialog: opening replaces it, closing clears it.
+ * 6. At most one pending dialog: opening replaces it, closing clears it
+ *    (the invariant of `PendingDialog`, which `dialog` is).
  */
 export class TabSession {
   readonly driver: PageDriverHandle;
@@ -73,7 +67,8 @@ export class TabSession {
   private readonly consoleEntries: ConsoleEntry[] = [];
   private readonly networkEntries = new Map<string, NetworkEntry>();
   private readonly networkIds: string[] = [];
-  private dialog: PendingDialogInfo | undefined;
+  /** The tab's pending dialog: the state the dialog intake writes. */
+  readonly dialog = new PendingDialog();
 
   constructor({ clock, driver }: TabSessionDeps) {
     this.clock = clock;
@@ -161,22 +156,22 @@ export class TabSession {
   }
 
   get pendingDialog(): PendingDialogInfo | undefined {
-    return this.dialog;
+    return this.dialog.current;
   }
 
   dialogOpened(info: PendingDialogInfo): void {
-    this.dialog = info;
+    this.dialog.opened(info);
   }
 
   dialogClosed(): void {
-    this.dialog = undefined;
+    this.dialog.closed();
   }
 }
 
 /** A dialog watch that reads, on every call, the pending dialog of the
  * session `current()` returns (none: no dialog). */
 export function sessionDialogWatch(current: () => TabSession | undefined): DialogWatch {
-  return { isOpen: () => current()?.pendingDialog !== undefined };
+  return { isOpen: () => current()?.dialog.isOpen() === true };
 }
 
 /** A capture watch over `session`'s console and network buffers, read
