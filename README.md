@@ -2689,19 +2689,20 @@ Every tool that reaches into page/JS content works identically over
 cdp-direct — same in-page logic, same CDP commands (`Runtime.evaluate`,
 `Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). A handful
 of tools that depend on extension-only state (buffered console/network
-history, native permission grants, or
-`window.open` tab-creation events) are explicitly out of
+history, or native permission grants) are explicitly out of
 v1 scope and return a clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                                                                                                                                                                                      | NOT supported in v1 (use the extension instead)                                                      |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`\*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `download` (`url` mode) | `console`, `network`, `network_body`, `set_permission`, `wait_for_tab`, `download` (`selector` mode) |
+| Supported in v1                                                                                                                                                                                                                                                                                      | NOT supported in v1 (use the extension instead)                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `download` (`url` mode) | `console`, `network`, `network_body`, `set_permission`, `download` (`selector` mode) |
 
 \* `wait_for`'s `network_url` mode also falls back to "use the extension"
 — cdp-direct does not buffer network requests, so there is nothing to poll
 against. `selector` and `expression` modes are fully supported.
 
 † Limit: a JavaScript dialog that opened while browser-link had no connection to the tab (before its first call, or after the 5-minute idle close) cannot be seen or answered over cdp-direct; calls on that tab fail with "the page did not answer Page.enable within 15 s" until you close the dialog in the browser.
+
+‡ For the length of the call only, `wait_for_tab` on a `cdp:` tab opens a browser-level DevTools socket that discovers targets and sends nothing else (no permission commands). It reports a page only when the waiting `cdp:` tab opened it (`window.open` from a click or a script, a `target=_blank` link) and ignores every other tab, yours included. A page the tab opened just before the call counts if it is still open and no earlier wait returned it (on the extension, one opened in the last 1.5 s). Verified on headless Chrome 118 and 157 only; a headed browser is untested.
 
 **Detached execution has full parity here, with one asymmetry.** The
 cdp-direct runner is in-process, so `detach` / `flow_status` /

@@ -39,6 +39,7 @@ import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
 import { callCdpTool, setCdpBridgeEventSink } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
+import { setCdpTabCreatedSink, watchOpenedTabs } from './cdp/opened-tabs.js';
 import { inspectPortHolder } from './lifecycle/port-holder.js';
 import {
   probeVersion,
@@ -423,6 +424,13 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
   setCdpBridgeEventSink((kind, data) => {
     if (isExtensionEventKind(kind)) events.add(kind, data);
   });
+  // The tab-created of a page a cdp: tab opened (parity P7): raised for a
+  // target cdp-direct never dialed, so its sink is keyed by the new cdp: id
+  // rather than bound to a connection. Same payload as the extension's once
+  // the bridge adds `tab_id`.
+  setCdpTabCreatedSink((tabId, data) => {
+    events.add('tab-created', { ...data, tab_id: tabId });
+  });
 
   // Owner decision D1: a detached flow holds its agent's claim until its
   // `flow-finished` summary arrives (from either transport), or until its
@@ -511,6 +519,7 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
     listCdpTabs: () => listCdpTargets(),
     callCdpTool,
     cdpGate: () => checkCdpDirectGate(),
+    watchCdpOpenedTabs: (openerTabId) => watchOpenedTabs(openerTabId),
     // browser.download writes here. The directory is re-read per download so
     // `browser-link config set downloads.dir` applies without a restart.
     saveDownload: (filename, data) =>

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.41](https://github.com/jobshimo/browser-link/compare/v1.4.40...v1.4.41) (2026-11-20)
+
+### Features
+
+- cdp-direct: `browser.wait_for_tab` now works with a `cdp:` `opened_from`, where it answered `browser.wait_for_tab is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.` A page the `cdp:` tab opens (`window.open` from a click or a script, a `target=_blank` link) is answered as `{ matched: true, tab_id: "cdp:<targetId>", url, elapsed_ms, claimed }` and auto-claimed for the caller, as on an extension tab, and `browser.events` shows its `tab-created { tab_id, opened_from, url }`. For the length of the call the server holds a browser-level DevTools socket (the `webSocketDebuggerUrl` of `/json/version`, rebuilt on the loopback host) that sends only `Target.setDiscoverTargets`, never a permission command; every target not opened by the waiting tab, the user's own tabs included, is ignored. One difference from the extension: a page the tab opened before the call counts while it is still open and no earlier wait returned it (the extension counts only one opened in the last 1.5 s). Extension tabs are unchanged.
+
+### Notes
+
+- Experiment X3 (`packages/plan/lab/2026-11-20-cdp-direct-browser-socket/`) found `openerId` on `Target.targetCreated` for every way of opening a page, on Chrome 118 and 157, and no opener field in `/json/list`; the url comes from the following `Target.targetInfoChanged`. The browser-context ids differ between the two Chromes (118 does not list the default context's id); discovery does not use them. Both runs were headless: the owner's headed browser is untested. The e2e gains `browser.wait_for_tab.cdp`, `browser.wait_for_tab.blank-link.cdp`, `browser.wait_for_tab.unrelated.cdp` and the calls around them; `cdp/support.ts` no longer declares a `wait_for_tab` row.
+
 ## [1.4.40](https://github.com/jobshimo/browser-link/compare/v1.4.39...v1.4.40) (2026-11-20)
 
 ### Features

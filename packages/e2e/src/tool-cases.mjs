@@ -42,7 +42,12 @@ export const TOOL_CASES = {
     'browser.wait_for.network',
     'error.wait-for-network.cdp',
   ],
-  'browser.wait_for_tab': ['browser.wait_for_tab'],
+  'browser.wait_for_tab': [
+    'browser.wait_for_tab',
+    'browser.wait_for_tab.cdp',
+    'browser.wait_for_tab.blank-link.cdp',
+    'browser.wait_for_tab.unrelated.cdp',
+  ],
   'browser.flow_status': [
     'browser.flow_status',
     'browser.flow_status.cancelled',
@@ -64,6 +69,8 @@ export const TOOL_CASES = {
     'error.action.cdp',
     'error.coerce.cdp',
     'browser.click.opens-dialog.cdp',
+    'browser.click.opens-tab.cdp',
+    'browser.click.blank-link.cdp',
   ],
   'browser.type': [
     'browser.type',
@@ -99,6 +106,8 @@ export const TOOL_CASES = {
     'browser.evaluate.cdp',
     'browser.evaluate.value.cdp',
     'browser.evaluate.coerce.cdp',
+    'browser.evaluate.opened-tab.cdp',
+    'browser.evaluate.linked-tab.cdp',
     'browser.drag.drop-check.cdp',
     'browser.flow.drag-step.drop-check.cdp',
     'browser.evaluate.after-dialog.cdp',

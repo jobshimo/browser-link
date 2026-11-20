@@ -92,6 +92,43 @@ export async function isChromeDevtoolsEndpoint(port: number): Promise<boolean> {
   }
 }
 
+/** The path of a browser-level DevTools socket: `/devtools/browser/<id>`. */
+const BROWSER_SOCKET_PATH = /^\/devtools\/browser\/[A-Za-z0-9-]+$/;
+
+/**
+ * The browser-level DevTools socket of the Chrome at `port` (parity P7, G11):
+ * the `webSocketDebuggerUrl` of `/json/version`, behind the same checks as
+ * the page sockets. Only its PATH is taken, and only when it is a
+ * `/devtools/browser/<id>` path; the url is rebuilt on the loopback host and
+ * the sanitized port, so an endpoint that reports another host or a page
+ * path can never steer where the socket goes. `null` when the endpoint is
+ * not Chrome, is unreachable, or reports no such url.
+ */
+export async function browserSocketUrl(port: number): Promise<string | null> {
+  const url = loopbackHttpUrl(port, '/json/version');
+  if (!url) return null;
+  const { signal, cancel } = withTimeout(DISCOVERY_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal });
+    if (!res.ok) return null;
+    const info = (await res.json()) as CdpVersionInfo & { webSocketDebuggerUrl?: unknown };
+    if (typeof info.Browser !== 'string' || !info.Browser.includes('Chrome')) return null;
+    if (typeof info.webSocketDebuggerUrl !== 'string') return null;
+    let path: string;
+    try {
+      path = new URL(info.webSocketDebuggerUrl).pathname;
+    } catch {
+      return null;
+    }
+    if (!BROWSER_SOCKET_PATH.test(path)) return null;
+    return `ws://${LOOPBACK_HOST}:${sanitizeCdpPort(port)}${path}`;
+  } catch {
+    return null;
+  } finally {
+    cancel();
+  }
+}
+
 /**
  * The core "is this a real, drivable page target" predicate, shared by
  * discovery (`isRealPageTarget` below, feeding `list_tabs`) AND by

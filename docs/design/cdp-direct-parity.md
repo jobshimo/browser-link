@@ -4,7 +4,8 @@ Status: revision 1 (2026-11-19), for arch's audit before any code. Written at
 `main` `9191c79` (release 1.4.34); every `path:line` below is at that commit.
 No code, test or other document is changed by this file. The owner decided
 on 2026-11-19 that the program starts; two of its decisions are still his
-(section 5). Revision 3 (2026-11-20, release 1.4.39) records P3 as built.
+(section 5). Revision 4 (2026-11-20, release 1.4.41) records experiment X3
+and P7's G11 as built. Revision 3 (2026-11-20, release 1.4.39) records P3 as built.
 Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
 experiment X1 and the dialog-intake move; the files it names are at that
 release, every other citation stays at `9191c79`. Revisions:
@@ -14,6 +15,7 @@ release, every other citation stays at `9191c79`. Revisions:
 | 1 | 2026-11-19 | The program, for arch's audit. |
 | 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
 | 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, the named `Page.enable` error, and the click move now bounded by the dialog watch (declared after an independent verification). |
+| 4 | 2026-11-20 | Experiment X3 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-browser-socket/`, Chrome for Testing 118.0.5993.70 and stable 157, headless only; the owner's headed browser is untested). `Target.targetCreated` on the browser socket carries `openerId` for `window.open` from a click or a script and for `target=_blank` links (with or without `noopener`) on both; its url is empty and arrives in the next `Target.targetInfoChanged`; `/json/list` has no opener field. A permission override lives as long as the DevTools session that set it, and when a session that set one closes, every override of that browser context is cleared (per browser context, not browser-wide), other clients' included; `Browser.setPermission` also works on a page socket. Browser-context ids differ: Chrome 118 does not list the default context's id and refuses it, 157 accepts it. P7's G11 done (release 1.4.41), see P7 "G11 as built": a per-call browser socket that sends only `Target.setDiscoverTargets`, and `tab-created` through a sink keyed by the new `cdp:` id. The risk rows (section 8) on permissions and footprint are reworded to X3. |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
 **likely** (follows from code, not run), **experiment** (needs a Chrome run;
@@ -58,7 +60,7 @@ experiment first.
 | G8 | `wait_for` `network_url` | its own refusal text (`core/src/actions/perform-wait-for.ts:44`) | G6's `finishedUrls()` (`perform-wait-for.ts:155`) | S after G6 | Low | verified |
 | G9 | `download` selector mode, `download_settle` | refusal; `url` mode works (rides `evaluate`) | a cdp `Downloads` adapter; no CDP primitive for D17's hold-then-settle | L | High | code verified; CDP side **experiment** |
 | G10 | `set_permission` | refusal text | a cdp `ContentSettings` adapter over a browser-level socket | L | Medium | **experiment** |
-| G11 | `wait_for_tab` | refused in the dispatcher (`browser-dispatch.ts:3034-3043`), declared `false` (`support.ts:50`) | opener-to-new-target signal, `tab-created` for `cdp:` tabs | M | Medium | code verified; `openerId` **experiment** |
+| G11 | `wait_for_tab` | refused in the dispatcher (`browser-dispatch.ts:3034-3043`), declared `false` (`support.ts:50`) | opener-to-new-target signal, `tab-created` for `cdp:` tabs (done in P7, 1.4.41) | M | Medium | code verified; `openerId` measured by X3 |
 | G12 | `build`, `view_sig` in `list_tabs` | absent (README line 2670) | the observer's `doc_info` reaching `listCdpTargets` | M | Medium (footprint) | verified |
 | G13 | idle and claim model | fixed 5 min socket sweep (`transport.ts:79`), no call hold | an owner decision superseding Q4 | L | Medium | verified |
 | G14 | foreground flow registry | `start` registers detached flows only (`cdp/flow-control.ts:39`) | register foreground runs (done in P4, 1.4.40) | M | Low | not agent-visible; internal parity only |
@@ -335,6 +337,48 @@ every idle close today.
 
 ### P7. Browser-level socket, G11 `wait_for_tab`, then G10 `set_permission`
 
+- **G11 as built (release 1.4.41).** `cdp/opened-tabs.ts`. Decisions:
+  - **Socket lifetime: per call.** `browser.wait_for_tab` with a `cdp:`
+    `opened_from` opens one browser-level socket (the `webSocketDebuggerUrl`
+    of `/json/version`; only its `/devtools/browser/<id>` path is taken and
+    rebuilt on `127.0.0.1` and the sanitized port, `cdp/targets.ts`
+    `browserSocketUrl`) after the gate, and closes it on every way the call
+    ends: a match, the timeout, a watch that fails to start (it closes its
+    own socket), and a watch that starts after the wait already settled. It
+    is never cached, so the 5-minute sweep and gate A do not apply to it.
+    The dispatcher has no per-call cancel; the 60 s cap bounds the socket.
+  - **Discovery only.** The socket sends `Target.setDiscoverTargets
+    {discover: true}` and nothing else (`BROWSER_SOCKET_COMMANDS`, pinned by
+    a unit test): no `Browser.setPermission` or `grantPermissions`, so
+    closing it cannot clear another client's permission overrides (X3: only
+    a session that set an override clears its browser context's overrides
+    on close).
+  - **Filter.** Discovery sees every target of the instance, the user's own
+    tabs included. A target is reported only when it is a drivable page
+    (`isDrivablePageTarget`), its `openerId` is the waiting tab's target
+    id, its url (from `targetInfoChanged`, or from the discovery listing
+    for a page that already existed) is not empty, the opener is itself
+    listed as a drivable page, and the gate (enabled + live grant) is open
+    when it is reported. Everything else is ignored.
+  - **Sink.** `CdpTabCreatedSink`, `(tabId: string, data: { opened_from,
+    url }) => void`, keyed by the new `cdp:<targetId>` (the
+    connection-bound `DialogEventSink` cannot fit a target never dialed),
+    in `cdp/opened-tabs.ts`, not a port; `server.ts` installs it
+    (`setCdpTabCreatedSink`) over `BridgeEventLog` as
+    `tab-created { opened_from, url, tab_id }`, the extension's payload once
+    the bridge adds `tab_id`. The dispatcher's existing listener matches and
+    auto-claims it, so the answer has the extension's shape.
+  - **A page opened before the call.** The socket is not up when the click
+    lands first; discovery lists existing targets first, so such a page is
+    reported from that listing while it is still open, unless this process
+    already reported it (a bounded set of 256 ids). The extension instead
+    replays a `tab-created` only from the last 1.5 s. Stated in the tool
+    text, the manual and the README.
+  - Browser-context ids (118 vs 157) do not matter: discovery does not use
+    them.
+  - **Footprint.** X3 saw none on other tabs (no attach, no latency change),
+    headless only.
+
 - **Before code:** experiment X3 (section 6); the G10 semantics question.
 - **Shape.** One browser-level `CdpClient` to the `webSocketDebuggerUrl` of
   `/json/version` (already fetched, `cdp/targets.ts:78`), behind the same
@@ -482,11 +526,11 @@ piece at the end.
 |---|---|---|
 | A dialog strands a `cdp:` tab | before 1.4.39; P3 removed it for a dialog that opens while the tab's connection is open (X1: one opened with no connection cannot be answered over cdp-direct) | P3 comes before every other M slice; X1 recorded the exact failure (15 s `Input.dispatchMouseEvent` timeout, then 15 s per call); `dialog_respond` stays outside the claim guard |
 | Download behavior left redirected or denied after disconnect or crash | P8 | no P8 code before E2 shows the scope and revert; revert on close, revoke and process exit is in the slice; option c stays available |
-| Permissions persist in the user's profile | P7 (G10) | the owner picks the semantics; the contract test restores what it set; the README says what persists |
+| Permissions persist in the user's profile | P7 (G10) | X3: they do not; an override lives as long as the DevTools session that set it, and closing a session that set one clears every override of that browser context (per browser context, not browser-wide), other clients' included. The owner picks the semantics; the contract asserts the state after the setting connection closes; G11's socket sets nothing |
 | Capture buffers expose headers and post data on tabs without per-tab consent | P5 | same bound (200) as the extension; the gate and grant stay the only consent; stated to the owner (5.3) and in the README |
 | Memory and event volume on busy tabs | P5, gate A option 2 | bounded buffers; `Network.enable` only on driven targets; X2 measures volume |
 | Lost state at idle close | P3, P5 | gate A before P5; P3 documents the measured behaviour (X1): a dialog that opens while no connection to the page exists (before the lazy dial or after the sweep) cannot be seen or answered over cdp-direct, and every call on that tab fails on the `Page.enable` timeout until the user or another client answers it |
-| Footprint on tabs not driven | P6 option b, P7 socket | owner choice; browser socket opened only while needed |
+| Footprint on tabs not driven | P6 option b, P7 socket | owner choice; G11's browser socket is open only for one `wait_for_tab` call and X3 saw no footprint (headless only) |
 | Experimental CDP methods (`Input.setInterceptDrags`) change | P1 | contract on 118 (required) and `cdpDirectChecks` on stable (reported) |
 | Mixing refactor and behavior | P3, P5 | the shared-intake move is its own refactor PR with an empty differential |
 

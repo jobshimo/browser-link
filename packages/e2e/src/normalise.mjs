@@ -11,6 +11,8 @@ import { createHash } from 'node:crypto';
 export const ID_KEYS = {
   tab_id: 'tab',
   tabId: 'tab',
+  // wait_for_tab's argument: a tab id (a random target id on a cdp: tab).
+  opened_from: 'tab',
   doc_id: 'doc',
   flow_id: 'flow',
   request_id: 'request',

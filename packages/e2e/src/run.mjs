@@ -1093,6 +1093,8 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     label: 'browser.flow.drag-step.drop-check.cdp',
   });
 
+  await waitForTabChecks(C, page);
+
   // JavaScript dialogs on cdp-direct (parity P3). Last on this tab: before
   // P3 the dialog strands it. A click on #alert-btn opens alert('e2e alert').
   const dialogPage = new URL(`?cdp-dialog&n=${String(Date.now())}`, page).href;
@@ -1132,6 +1134,135 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     'Error: cdp-direct: the page did not answer Page.enable within 15 s; a JavaScript dialog opened while cdp-direct had no connection may be blocking it, or the page is unresponsive; close any dialog in the browser and retry.',
   );
   console.log(`cdp-direct ok${String(Math.round(now() - t0))} (all cases, Chrome start included)`);
+}
+
+/**
+ * browser.wait_for_tab on a cdp: opener (parity P7, G11). On the interact
+ * page a click on #open-tab calls window.open, and a click on a
+ * target=_blank link opens a page: each wait, started together with its click
+ * as on the extension (browser.wait_for_tab), answers the new cdp: tab,
+ * claimed; the new tab answers an evaluate. A page the harness opens itself
+ * (no opener) is ignored: that wait times out. Every page opened here is
+ * closed by url afterwards, whatever the answers (the base build refuses the
+ * wait, but its click still opens the page).
+ */
+async function waitForTabChecks(C, page) {
+  const browser = state.cdpChromeCdp;
+  const describe = (b) => JSON.stringify(b)?.slice(0, 300);
+  const interact = new URL('interact.html?cdp-tab', page).href;
+  // interact.html opens '/opened.html' + location.search.
+  const opened = new URL('opened.html?cdp-tab', page).href;
+  const linked = new URL('opened.html?cdp-link', page).href;
+  const lone = new URL('opened.html?cdp-lone', page).href;
+  const isNewTab = (b, url) =>
+    (b?.matched === true &&
+      typeof b.tab_id === 'string' &&
+      b.tab_id.startsWith('cdp:') &&
+      b.tab_id !== C &&
+      b.url === url &&
+      b.claimed === true) ||
+    `result ${describe(b)}`;
+  // The cdp: id of the page at `url`, read on the harness's own browser
+  // session (the page may still be committing its url).
+  const cdpTabAt = async (url) => {
+    for (const t0 = now(); now() - t0 < 5_000; await sleep(50)) {
+      const { targetInfos } = await browser.send('Target.getTargets');
+      const info = targetInfos.find((i) => i.type === 'page' && i.url === url);
+      if (info) return `cdp:${info.targetId}`;
+    }
+    throw new StepFailure('wait_for_tab.cdp', `no page at ${url}`);
+  };
+  const closeAt = async (url) => {
+    const { targetInfos } = await browser.send('Target.getTargets');
+    for (const info of targetInfos.filter((i) => i.type === 'page' && i.url === url)) {
+      await Promise.race([
+        browser.send('Target.closeTarget', { targetId: info.targetId }).catch(() => undefined),
+        sleep(3000),
+      ]);
+    }
+  };
+
+  await call(
+    'browser.navigate',
+    { tab_id: C, url: interact },
+    (b) => b?.url === interact || `landed on ${describe(b)}`,
+    { print: false },
+  );
+
+  // window.open from a click handler.
+  const [byClick] = await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'opened.html', timeout_ms: 15_000 },
+      (b) => isNewTab(b, opened),
+      { label: 'browser.wait_for_tab.cdp' },
+    ),
+    call('browser.click', { tab_id: C, selector: '#open-tab', settle_ms: 0 }, undefined, {
+      print: false,
+      label: 'browser.click.opens-tab.cdp',
+    }),
+  ]);
+  // The new tab answers. Its id is the wait's answer; the base build refuses
+  // the wait, so there it is read from the browser, which keeps both runs'
+  // calls aligned (only the waits differ).
+  const N = json(byClick)?.tab_id ?? (await cdpTabAt(opened));
+  await call(
+    'browser.evaluate',
+    { tab_id: N, expression: 'location.href' },
+    (_b, t) => t === opened || `the new tab is at ${JSON.stringify(t)}`,
+    { label: 'browser.evaluate.opened-tab.cdp' },
+  );
+  await closeAt(opened);
+
+  // A target=_blank link (Chrome gives it an implicit noopener; openerId is
+  // still set, experiment X3).
+  await call(
+    'browser.evaluate',
+    {
+      tab_id: C,
+      expression: `(() => { const a = document.createElement('a'); a.id = 'e2e-blank-link'; a.href = ${JSON.stringify(linked)}; a.target = '_blank'; a.textContent = 'Open link'; document.body.append(a); return 'added'; })()`,
+    },
+    (_b, t) => t === 'added' || `answered ${JSON.stringify(t)}`,
+    { print: false, label: 'browser.evaluate.add-blank-link.cdp' },
+  );
+  const [byLink] = await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'cdp-link', timeout_ms: 15_000 },
+      (b) => isNewTab(b, linked),
+      { label: 'browser.wait_for_tab.blank-link.cdp' },
+    ),
+    call('browser.click', { tab_id: C, selector: '#e2e-blank-link', settle_ms: 0 }, undefined, {
+      print: false,
+      label: 'browser.click.blank-link.cdp',
+    }),
+  ]);
+  const L = json(byLink)?.tab_id ?? (await cdpTabAt(linked));
+  await call(
+    'browser.evaluate',
+    { tab_id: L, expression: 'location.href' },
+    (_b, t) => t === linked || `the linked tab is at ${JSON.stringify(t)}`,
+    { label: 'browser.evaluate.linked-tab.cdp' },
+  );
+  await closeAt(linked);
+
+  // A page with no opener (the harness's own Target.createTarget) during the
+  // wait: not reported, the wait times out. Narrowed by its url: the log's
+  // 1.5 s replay would otherwise hand back the first case's tab-created, as
+  // it would on the extension.
+  await Promise.all([
+    call(
+      'browser.wait_for_tab',
+      { opened_from: C, url_substring: 'cdp-lone', timeout_ms: 2_000 },
+      (b) => (b?.matched === false && b.reason === 'timeout') || `result ${describe(b)}`,
+      { label: 'browser.wait_for_tab.unrelated.cdp' },
+    ),
+    (async () => {
+      await sleep(300);
+      await browser.send('Target.createTarget', { url: lone });
+    })(),
+  ]);
+  await closeAt(lone);
 }
 
 /**

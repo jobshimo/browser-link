@@ -310,6 +310,12 @@ export interface BrowserToolDeps {
    * cdp-direct wired up, in which case any `cdp:` tab_id is treated as
    * unreachable — there is no bypass. */
   cdpGate?(): { ok: true } | { ok: false; error: string };
+  /** Optional: watch the tabs a `cdp:` tab opens for one `wait_for_tab` call
+   * (`cdp/opened-tabs.ts`, parity P7). Resolves to the stop that closes its
+   * browser-level socket; each page it sees is added to the event log as
+   * `tab-created`, where the wait's listener reads it as it reads the
+   * extension's. Absent in a build without cdp-direct wired up. */
+  watchCdpOpenedTabs?: (openerTabId: string) => Promise<() => void>;
   /** Optional activity-trail sink. Called once per dispatched tool, AFTER the
    * call settles, with the row already assembled — success and failure alike.
    * Injected rather than imported so the dispatcher keeps no opinion about
@@ -1352,7 +1358,7 @@ function toPublicClaim(claim: TabClaim): PublicClaim {
  *      gate error text, never a confusing downstream failure.
  *   2. The v1 declarative support table (`cdp/support.ts`) — a tool valid
  *      in general but out of cdp-direct's v1 scope (console, network*,
- *      set_permission, wait_for_tab) gets a clear "not supported over cdp-direct" error
+ *      set_permission, download by selector) gets a clear "not supported over cdp-direct" error
  *      naming the extension transport as the fallback.
  * There is no bypass: every one of the read-tool call sites below and
  * `runAction` (used by every action tool) go through this one function.
@@ -3024,12 +3030,12 @@ async function dispatchBrowserTool(
       if (typeof opened_from !== 'string' || opened_from.length === 0) {
         throw new Error('browser.wait_for_tab: opened_from required');
       }
-      // wait_for_tab is not supported over cdp-direct in v1 — a new tab
-      // opened by a cdp-direct tab produces no bridge event to wait on
-      // (only the extension emits `tab-created`). Gate first (so a
-      // disabled/ungranted setup gets the standard gate error, not a
-      // confusing "not supported" for a tool it was never allowed to try),
-      // then report the limitation.
+      // A cdp: opener has no extension to announce the tabs it opens: the
+      // wait opens a browser-level watch for its own duration
+      // (`cdp/opened-tabs.ts`, parity P7), which adds the same `tab-created`
+      // event to the log; the listener below reads both alike. Gate first,
+      // so a disabled/ungranted setup gets the standard gate error.
+      let watchCdp: (() => Promise<() => void>) | null = null;
       if (isCdpTabId(opened_from)) {
         const gate = deps.cdpGate
           ? deps.cdpGate()
@@ -3038,7 +3044,9 @@ async function dispatchBrowserTool(
               error: 'cdp-direct is not available in this build of browser-link.',
             };
         if (!gate.ok) throw new Error(gate.error);
-        throw cdpUnsupportedToolError('wait_for_tab');
+        const watch = deps.watchCdpOpenedTabs;
+        if (!watch) throw new Error('cdp-direct is not available in this build of browser-link.');
+        watchCdp = () => watch(opened_from);
       }
       if (!deps.subscribeEvents) {
         return {
@@ -3061,17 +3069,26 @@ async function dispatchBrowserTool(
       const REPLAY_WITHIN_MS = 1500;
       const subscribe = deps.subscribeEvents;
       const tabClaims = deps.tabClaims;
-      return new Promise<unknown>((resolve) => {
+      return new Promise<unknown>((resolve, reject) => {
         let settled = false;
         let unsubscribe: () => void = () => {
           /* placeholder */
         };
-        const settleWith = (payload: unknown): void => {
-          if (settled) return;
+        // The cdp: watch's stop, once it started; a watch that starts after
+        // the wait settled is stopped as soon as it resolves (below).
+        let stopWatch: () => void = () => {
+          /* no watch, or not started yet */
+        };
+        const finish = (): boolean => {
+          if (settled) return false;
           settled = true;
           unsubscribe();
           clearTimeout(timer);
-          resolve(payload);
+          stopWatch();
+          return true;
+        };
+        const settleWith = (payload: unknown): void => {
+          if (finish()) resolve(payload);
         };
         const listener: BridgeEventListener = (e) => {
           if (settled) return;
@@ -3113,6 +3130,17 @@ async function dispatchBrowserTool(
           });
         }, timeoutMs);
         unsubscribe = subscribe(listener, { replayWithinMs: REPLAY_WITHIN_MS });
+        if (watchCdp) {
+          watchCdp().then(
+            (stop) => {
+              if (settled) stop();
+              else stopWatch = stop;
+            },
+            (err: unknown) => {
+              if (finish()) reject(err instanceof Error ? err : new Error(String(err)));
+            },
+          );
+        }
       });
     }
     case 'browser.dialog_respond': {
