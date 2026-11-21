@@ -963,15 +963,6 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     { label: 'browser.evaluate.coerce.cdp' },
   );
 
-  // wait_for in network_url mode is refused on cdp-direct (no capture buffers):
-  // an action failure with the core's exact sentence, not a timeout.
-  await expectCdpError(
-    'error.wait-for-network.cdp',
-    'browser.wait_for',
-    { tab_id: C, network_url: '/api', timeout_ms: 300 },
-    'Error: wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.',
-  );
-
   // The sensitive path on cdp-direct: the type into the password field reads
   // the focused field first, then its failing expectation is tagged
   // `sensitive`; the error is the executor's text, and the trail stores the
@@ -1046,6 +1037,12 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     },
     { label: 'browser.canvas_screenshot.region.cdp' },
   );
+
+  // console, network, network_body and a network_url wait on cdp-direct
+  // (parity P5): the dial enabled Log and Network, so capture.html's three
+  // console lines and its fetch are in the connection's buffers; the same
+  // assertions as the extension's cases.
+  await cdpCaptureChecks(C, captureTarget, describeCdp);
 
   // drag on cdp-direct: an HTML5 drag of #card onto #zone, then the same
   // drag as a flow step on a fresh load of the page; the page's drop handler
@@ -1609,6 +1606,123 @@ async function downloadStressAfterScroll(T, downloadsDir) {
     );
   }
   stepDone(label, t);
+}
+
+/**
+ * The capture cases on a cdp: tab `C` showing capture.html at `target`. Its
+ * polls carry the label of the case they wait for, so a base build that
+ * refuses the tool records them under that (listable) label and the run goes
+ * on; pollUntil would record them under the extension's label.
+ */
+async function cdpCaptureChecks(C, target, describe) {
+  const pollCdp = (label, tool, args, ready, timeoutMs = 5_000) =>
+    recordOnly(label, async () => {
+      const t0 = now();
+      for (;;) {
+        let res;
+        try {
+          res = await callTool(tool, args, { label, poll: true });
+        } catch (e) {
+          throw new StepFailure(label, errorText(e));
+        }
+        const body = json(res);
+        if (!res.isError && ready(body)) return body;
+        if (now() - t0 > timeoutMs) {
+          throw new StepFailure(
+            label,
+            `not ready after ${String(timeoutMs)} ms: ${describe(res.isError ? text(res) : body)}`,
+          );
+        }
+        await sleep(100);
+      }
+    });
+  const marker = 'e2e-console-marker 42';
+  await pollCdp(
+    'browser.console.cdp',
+    'browser.console',
+    { tab_id: C },
+    (b) => Array.isArray(b) && b.some((e) => e.text === marker),
+  );
+  await call(
+    'browser.console',
+    { tab_id: C },
+    (b) => {
+      const e = Array.isArray(b) ? b.find((x) => x.text === marker) : undefined;
+      return (e?.level === 'log' && e?.source === 'console') || `no log entry ${describe(e ?? b)}`;
+    },
+    { label: 'browser.console.cdp' },
+  );
+  await call(
+    'browser.console',
+    { tab_id: C, level: 'error' },
+    (b) =>
+      (Array.isArray(b) &&
+        b.every((e) => e.level === 'error') &&
+        b.some((e) => e.text === 'e2e-console-error')) ||
+      `level error gave ${describe(b)}`,
+    { label: 'browser.console.error.cdp' },
+  );
+  await call(
+    'browser.console',
+    { tab_id: C, level: 'warn' },
+    (b) =>
+      (Array.isArray(b) &&
+        b.every((e) => e.level === 'warn') &&
+        b.some((e) => e.text === 'e2e-console-warn')) ||
+      `level warn gave ${describe(b)}`,
+    { label: 'browser.console.warn.cdp' },
+  );
+
+  const search = new URL(target).search;
+  const dataUrl = new URL(`data.json${search}`, target).href;
+  const filter = { tab_id: C, url_filter: `data.json${search}` };
+  const isData = (e) => e.url === dataUrl && typeof e.finished_at === 'number';
+  await pollCdp(
+    'browser.network.cdp',
+    'browser.network',
+    filter,
+    (b) => Array.isArray(b) && b.some(isData),
+  );
+  const listed = await call(
+    'browser.network',
+    filter,
+    (b) => {
+      const e = b.find(isData);
+      if (!b.every((x) => x.url.includes('data.json'))) return `url_filter let in ${describe(b)}`;
+      return (
+        (e.method === 'GET' &&
+          e.status === 200 &&
+          e.mime_type === 'application/json' &&
+          typeof e.request_id === 'string') ||
+        `entry ${describe(e)}`
+      );
+    },
+    { label: 'browser.network.cdp' },
+  );
+  // A base build that refuses browser.network leaves no id (record-only run).
+  const requestId = (listed ? json(listed) : [])?.find?.(isData)?.request_id ?? 'none';
+  await call(
+    'browser.network_body',
+    { tab_id: C, request_id: requestId },
+    (b) =>
+      (b?.body === DATA_BODY && b?.base64Encoded === false) ||
+      `body ${describe(b)}, expected ${DATA_BODY}`,
+    { label: 'browser.network_body.cdp' },
+  );
+
+  // The page fetches a URL nobody has fetched yet, 300 ms out, so the wait
+  // starts first; it ends when that finished request's URL holds the needle.
+  const needle = 'e2e-wait-net-cdp';
+  await pageValue(
+    C,
+    `setTimeout(() => { fetch('/data.json?${needle}=1', { cache: 'no-store' }); }, 300); 'scheduled'`,
+  );
+  await call(
+    'browser.wait_for',
+    { tab_id: C, network_url: needle, timeout_ms: 5000 },
+    (b) => b?.matched === true || `network_url wait answered ${describe(b)}`,
+    { label: 'browser.wait_for.network.cdp' },
+  );
 }
 
 /** A page value read through browser.evaluate (setup, not a checked step). */

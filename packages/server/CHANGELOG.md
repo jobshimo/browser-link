@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.45](https://github.com/jobshimo/browser-link/compare/v1.4.44...v1.4.45) (2026-11-21)
+
+### Features
+
+- cdp-direct: `browser.console`, `browser.network`, `browser.network_body` and `browser.wait_for` with `network_url` now work on `cdp:` tabs, where they answered `browser.<tool> is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.` (`wait_for`: `wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.`). They answer the same shapes as on an extension tab, with the same 200-entry bounds; a `network_url` step inside a `browser.flow` works too. The connection to a `cdp:` tab now enables Chrome's `Log` and `Network` domains when it opens, so capture starts at browser-link's first call to the tab: `browser.console` also holds the earlier console and log history Chrome replays then (with Chrome's own timestamps), and `browser.network` and `browser.network_body` see only requests made since. Buffers are raw: request headers, post data and response headers as Chrome reports them, with no per-tab consent on `cdp:` tabs (the cdp-direct grant stays the only consent).
+- cdp-direct: the idle close of a `cdp:` connection now keeps captured state. A connection whose console or network buffers hold at least one entry is closed after 30 minutes without a tool call on its tab (the extension's default idle disconnect; fixed, not a setting) instead of 5; one with empty buffers keeps the 5 minutes. Almost every used tab falls under the 30-minute rule, because the console history Chrome replays at the first call fills the buffers within seconds. Console and network events do not restart the clock; only a tool call on the tab does. A connection with a pending JavaScript dialog is kept until the dialog is answered or the tab closes. A running flow still holds the connection as before. The buffers are dropped with the connection: the next call starts again from the replayed console history (never a duplicate), and `browser.network_body` answers only for requests the current connection saw. Extension tabs are unchanged.
+
+### Notes
+
+- A `Log.enable` or `Network.enable` that fails when the connection opens fails the call and closes the socket, as `Page.enable` does. The real-Chrome contract gains the capture watch (`session/capture-watch.contract.ts`, run in core and on a Chrome target). The e2e gains `browser.console.cdp`, `browser.console.error.cdp`, `browser.console.warn.cdp`, `browser.network.cdp`, `browser.network_body.cdp` and `browser.wait_for.network.cdp` on `capture.html`, and drops `error.wait-for-network.cdp`.
+
 ## [1.4.44](https://github.com/jobshimo/browser-link/compare/v1.4.43...v1.4.44) (2026-11-21)
 
 ### Refactor

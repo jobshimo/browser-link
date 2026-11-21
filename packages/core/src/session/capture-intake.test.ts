@@ -13,6 +13,7 @@ import {
   normalizeConsoleLevel,
   stringifyConsoleArg,
 } from './capture-intake.js';
+import { defineCaptureWatchContract } from './capture-watch.contract.js';
 
 function wired() {
   const clock = createManualClock(1_000);
@@ -230,5 +231,47 @@ describe('normalizeConsoleLevel and stringifyConsoleArg', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     expect(stringifyConsoleArg(cyclic)).toBe('[object Object]');
+  });
+});
+
+// Parity P5: the capture watch contract on the in-memory session; cdp-direct
+// runs the same cases on its watch over a real Chrome target.
+describe('CaptureWatch contract: CaptureBuffers fed by captureIntake', () => {
+  function harness(intakeOf: typeof captureIntake = captureIntake) {
+    const clock = createManualClock(1_000);
+    const cdp = createMemoryCdpSession({});
+    const buffers = new CaptureBuffers({ clock });
+    cdp.onEvent(intakeOf(buffers, clock));
+    return {
+      watch: buffers,
+      warn: (message: string) => {
+        cdp.emit('Runtime.consoleAPICalled', {
+          type: 'warning',
+          args: [{ type: 'string', value: message }],
+          timestamp: 5,
+        });
+        return Promise.resolve();
+      },
+      request: () => {
+        const url = 'https://x.test/contract';
+        cdp.emit('Network.requestWillBeSent', { requestId: 'c1', request: { url, method: 'GET' } });
+        cdp.emit('Network.responseReceived', { requestId: 'c1', response: { status: 200 } });
+        cdp.emit('Network.loadingFinished', { requestId: 'c1', encodedDataLength: 1 });
+        return Promise.resolve(url);
+      },
+    };
+  }
+
+  for (const contractCase of defineCaptureWatchContract(() => harness())) {
+    test(contractCase.name, () => contractCase.run());
+  }
+
+  test('fails a watch whose intake drops loadingFinished', async () => {
+    const dropsFinish: typeof captureIntake = (buffers, clock) => {
+      const intake = captureIntake(buffers, clock);
+      return (method, params) => method !== 'Network.loadingFinished' && intake(method, params);
+    };
+    const cases = defineCaptureWatchContract(() => harness(dropsFinish));
+    await expect(cases[1]?.run()).rejects.toThrow(/finished_at/);
   });
 });

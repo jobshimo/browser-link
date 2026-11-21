@@ -25,6 +25,7 @@ import {
 } from '../../generated/core/ports/contract/index.js';
 import { createPageDriver } from '../../generated/core/session/page-driver.js';
 import { defineDialogWatchContract } from '../../generated/core/session/dialog-watch.contract.js';
+import { defineCaptureWatchContract } from '../../generated/core/session/capture-watch.contract.js';
 import type {
   BridgeEventPayload,
   CaptureParams,
@@ -41,6 +42,7 @@ const DRAG_PARAMS_REFUSED = 'Invalid parameters';
 import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpDialogWatch } from './cdp-dialog-watch.js';
+import { createCdpCaptureWatch } from './cdp-capture-watch.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
 import { systemClock } from './system-clock.js';
 
@@ -381,6 +383,77 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
             const closed = next('Page.javascriptDialogClosed');
             await client.send('Page.handleJavaScriptDialog', { accept: true });
             await closed;
+          },
+          dispose: close,
+        };
+      }),
+    );
+  });
+
+  // Parity P5: cdp-direct's CaptureWatch, the connection's console and
+  // network buffers fed by core's capture intake (`createCdpCaptureWatch`,
+  // subscribed before the domains are enabled, as the dial does). The
+  // harness observes the page's events on the raw client.
+  describe('CaptureWatch contract: the capture watch the dial builds over the CdpClient', () => {
+    let server: Server | undefined;
+    let url = '';
+    beforeAll(async () => {
+      server = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html', connection: 'close' });
+        res.end(SERVED);
+      });
+      await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
+      url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/captured`;
+    });
+    afterAll(async () => {
+      await new Promise<void>((resolve) => {
+        server?.close(() => {
+          resolve();
+        });
+        server?.closeAllConnections();
+      });
+    });
+
+    run(
+      defineCaptureWatchContract(async () => {
+        const { client, close } = await openPage();
+        const watch = createCdpCaptureWatch(client, systemClock);
+        await client.send('Log.enable');
+        await client.send('Network.enable');
+        await client.send('Runtime.enable');
+        return {
+          watch,
+          warn: async (message) => {
+            const seen = new Promise<void>((resolve) => {
+              const off = client.on('Runtime.consoleAPICalled', (params) => {
+                const p = params as { args?: { value?: unknown }[] };
+                if (p.args?.[0]?.value !== message) return;
+                off();
+                resolve();
+              });
+            });
+            await client.send('Runtime.evaluate', {
+              expression: `console.warn(${JSON.stringify(message)})`,
+            });
+            await seen;
+          },
+          request: async () => {
+            let requestId = '';
+            const finished = new Promise<void>((resolve) => {
+              const offSent = client.on('Network.requestWillBeSent', (params) => {
+                const p = params as { requestId: string; request: { url: string } };
+                if (p.request.url === url) requestId = p.requestId;
+              });
+              const offFinished = client.on('Network.loadingFinished', (params) => {
+                if ((params as { requestId: string }).requestId !== requestId) return;
+                offSent();
+                offFinished();
+                resolve();
+              });
+            });
+            await client.send('Page.navigate', { url });
+            await finished;
+            return url;
           },
           dispose: close,
         };

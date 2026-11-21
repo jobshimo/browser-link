@@ -1,6 +1,6 @@
 # Service worker architecture: one core, two transports
 
-Status: revision 18, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core); revision 18 (release 1.4.39) records parity slice P3; revision 19 (release 1.4.40) records parity slice P4; revision 20 (release 1.4.41) records parity slice P7's G11 (`wait_for_tab` on `cdp:` tabs). Revision 1 (`5486e34`) was audited as
+Status: revision 18, program complete with slice 22 (release 1.4.34); revision 14 (release 1.4.35) changes only the differential's behavior-change flow (7(b)); revision 15 (release 1.4.36) records parity slice P1; revision 16 (release 1.4.37) records parity slice P2; revision 17 (release 1.4.38) records parity slice P3's refactor (the dialog intake in core); revision 18 (release 1.4.39) records parity slice P3; revision 19 (release 1.4.40) records parity slice P4; revision 20 (release 1.4.41) records parity slice P7's G11 (`wait_for_tab` on `cdp:` tabs); revision 21 (release 1.4.45) records parity slice P5 (console and network capture on `cdp:` tabs) and gate A. Revision 1 (`5486e34`) was audited as
 "approve with changes" (`.eng/reviews/20261117-0522-plan-audit-service-worker-architecture-d.md`).
 Revision 2 (`f8187c7`) was audited by arch on 2026-11-17, again "approve with
 changes": slices 0-4 may start; problem N4 is fixed before slice 5b, N2 and N3
@@ -80,6 +80,17 @@ with RED probes for rules 2-4, follow-ups 1-4, the unlabelled case and the
 self-diff case
 (`scripts/e2e-diff.test.mjs`, `scripts/behavior-change-check.test.mjs`,
 `packages/e2e/src/expected-labels.test.mjs`).
+
+### Revision 21 (2026-11-21)
+
+Parity slice P5, G5-G8 (release 1.4.45), and gate A
+(`docs/design/cdp-direct-parity.md` P5 "As built" and 5.1 "Answer"):
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | cdp-direct provides `capture-buffers` and `response-bodies`: the dial subscribes core's `captureIntake` into one `CaptureBuffers` per connection before any domain enable, then enables `Log` and `Network`; `console`, `network`, `network_body` and a `network_url` wait work on `cdp:` tabs. This supersedes revision 9 row 6's "provided by the extension only" | the intake and buffers moved to core in P5's refactor (1.4.44), so both transports run one body |
+| 2 | The buffers are raw on both transports (headers, post data, response headers); `cdp:` tabs have no per-tab consent, the grant stays the only one | owner decision 2026-11-19 |
+| 3 | Gate A: a connection whose buffers hold an entry is swept after 30 minutes without a tool call (the extension's default idle TTL, fixed), one with empty buffers after 5; a pending dialog keeps it until answered; flow holds unchanged; buffers die with the connection. This amends Q4 for the connection lifetime only; cdp-direct still has no `TabSession` | owner decision 2026-11-21 |
 
 ### Revision 20 (2026-11-20)
 
@@ -1079,7 +1090,8 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   `evaluate` reads a missing expression as `String(p.expression)` on both
   transports (revision 16).
   `canvas_screenshot` requires `evaluator` and `canvas`, a provides-set entry
-  like `capture-buffers` that only the extension provides (v1 scope); its
+  like `capture-buffers`, which both transports provide (cdp-direct since
+  revision 21); its
   in-page builder is `inpage/canvas.ts`. `console` and `network` require
   `capture-buffers` and read the `CaptureWatch`, which also gives
   `consoleEntries()` and `networkEntries()` over the `TabSession` buffers
@@ -1089,8 +1101,8 @@ export function cdpToolSupport(registry, provided: ReadonlySet<Requirement>): Re
   and answers `PageInfo.info()` as each transport gives it. `screenshot`
   requires `screen-capture` and `evaluator`; core `support/screenshot.ts`
   `runScreenshot` takes the `ScreenCapture` port instead of a raw `send`.
-  `network_body` requires `response-bodies`, which only the extension
-  provides (v1 scope), so cdp-direct refuses it with its unchanged text.
+  `network_body` requires `response-bodies`, which both transports
+  provide (cdp-direct since revision 21).
   `LayoutMetrics`, `CaptureParams` and `ResponseBody` live in
   `ports/values.ts` with only the fields core uses. The `evaluate` entry
   declares `commandTimeout: 'call-budget'`; cdp-direct reads that declaration
@@ -1910,7 +1922,9 @@ colliding top-level name, which would break the e2e's literal-line patch.
 **Q4 (owner, 2026-11-17). cdp-direct keeps its idle and flow models**
 (`detached-flows.ts`; idle cleanup in `transport.ts`). This plan moves
 `TabSession` and `FlowRun` for the extension only; adopting them on
-cdp-direct is a separate behavior change.
+cdp-direct is a separate behavior change. Amended by revision 21 (gate A)
+for the connection lifetime only: a connection holding captured entries is
+kept 30 minutes, one with a pending dialog until it is answered.
 
 **Q5 (owner, 2026-11-17). Source maps stay in the npm package.** The bundled
 maps embed `packages/core` sources with workspace-relative paths; slice 4

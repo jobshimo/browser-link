@@ -5,8 +5,8 @@
 // bounded capture buffers. One authored body for both transports, beside
 // the dialog half (`session/dialog-intake.ts`). The extension calls it from
 // its debugger intake (`app/tab-connection.ts`) into the `CaptureBuffers`
-// its `TabSession` composes; cdp-direct does not use it yet (P5's behaviour
-// PR subscribes it to the connection's `CdpSession.onEvent`).
+// its `TabSession` composes; cdp-direct subscribes it to each connection's
+// `CdpSession.onEvent` at dial, into one `CaptureBuffers` per connection.
 //
 // Not a port (design revisions 7, 8 and 13): `CaptureBuffers` is observed
 // state read through `CaptureWatch`. The intake sends nothing toward the

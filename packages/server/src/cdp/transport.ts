@@ -9,9 +9,9 @@
  * generated mirror of core's `tools/`, outcome mapped by
  * `./tool-outcome.ts`), the same bodies the extension runs; the flow tools
  * run on cdp-direct's own flow model (`./flow-control.ts`). A tool whose
- * requirements cdp-direct does not provide (`capture-buffers`,
- * `response-bodies`, `downloads`, ...) is refused there with the
- * unsupported text (`./support.ts`). The wire-level contract is
+ * requirements cdp-direct does not provide (`downloads`,
+ * `content-settings`) is refused there with the unsupported text
+ * (`./support.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -29,6 +29,8 @@ import {
 import { CdpClient, CdpCommandTimeoutError } from './client.js';
 import type { DialogEventSink, PendingDialog } from '../generated/core/session/dialog-intake.js';
 import { createCdpDialogWatch } from './adapters/cdp-dialog-watch.js';
+import { createCdpCaptureWatch } from './adapters/cdp-capture-watch.js';
+import type { CaptureBuffers } from '../generated/core/session/capture-intake.js';
 import { CDP_DIRECT_PROVIDES, cdpUnsupportedToolError } from './support.js';
 import { buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
@@ -47,6 +49,7 @@ import type { ToolDeps } from '../generated/core/tools/requirement.js';
 import { cdpToolResult } from './tool-outcome.js';
 import { cdpFlowCancel, createCdpFlowControl } from './flow-control.js';
 import type { FlowDeps } from '../generated/core/flow/flow-engine.js';
+import { DEFAULT_IDLE_TTL_MINUTES } from '../generated/core/policies/idle-rules.js';
 
 // The v1 support table and what cdp-direct provides live in `./support.ts`
 // (importable by `tools/browser-dispatch.ts` without pulling
@@ -79,7 +82,7 @@ const connections = new Map<string, CdpConnection>();
  * never poisons the cache for the next call. */
 const inFlight = new Map<string, Promise<CdpConnection>>();
 
-/** Idle connections are closed after this long unused — keeps a long-lived
+/** Idle connections holding no state are closed after this long unused — keeps a long-lived
  * server process from accumulating an unbounded number of open WebSockets
  * to targets an agent stopped touching hours ago. `let`, not `const`:
  * `setIdleCleanupConfigForTest` overrides both for tests, where waiting
@@ -88,6 +91,13 @@ const DEFAULT_IDLE_CLEANUP_MS = 5 * 60_000;
 const DEFAULT_IDLE_SWEEP_INTERVAL_MS = 60_000;
 let idleCleanupMs = DEFAULT_IDLE_CLEANUP_MS;
 let idleSweepIntervalMs = DEFAULT_IDLE_SWEEP_INTERVAL_MS;
+
+/** Gate A (parity P5): a connection whose capture buffers hold an entry is
+ * kept this long without a tool call on its tab, the extension's default
+ * idle TTL; fixed, not a setting. The console replay of the dial fills the
+ * buffers within seconds on almost any page that logs, so almost every used
+ * tab falls under it. */
+const CAPTURE_IDLE_CLEANUP_MS = DEFAULT_IDLE_TTL_MINUTES * 60_000;
 
 let cleanupTimer: NodeJS.Timeout | null = null;
 
@@ -129,9 +139,25 @@ function holdConnectionForFlow(targetId: string, until: number): () => void {
   };
 }
 
-/** Close every connection unused for longer than the idle window at `now`.
- * A connection a running flow holds is skipped; one whose flow outlived its
- * bound counts as used at that bound. */
+/** How long `client` may go without a tool call before the sweep closes it
+ * (gate A): never while a JavaScript dialog it saw open is pending; 30
+ * minutes while its capture buffers hold an entry; otherwise the 5-minute
+ * window. The buffers are dropped with the connection. A connection whose
+ * socket already closed (the tab is gone) keeps nothing: only the 5-minute
+ * window applies, so the sweep removes it. */
+function idleLimitOf(client: CdpClient): number {
+  if (!client.isOpen) return idleCleanupMs;
+  if (dialogs.get(client)?.isOpen() === true) return Number.POSITIVE_INFINITY;
+  const capture = captures.get(client);
+  const holdsEntries =
+    capture !== undefined && (capture.consoleBuffer.length > 0 || capture.networkOrder.length > 0);
+  return holdsEntries ? Math.max(idleCleanupMs, CAPTURE_IDLE_CLEANUP_MS) : idleCleanupMs;
+}
+
+/** Close every connection unused for longer than its idle limit at `now`
+ * (`idleLimitOf`). A connection a running flow holds is skipped; one whose
+ * flow outlived its bound counts as used at that bound. Capture events do
+ * not count as use: only a tool call on the tab does. */
 function sweepIdleConnections(now: number): void {
   for (const [targetId, conn] of connections) {
     let lastActiveAt = conn.lastUsedAt;
@@ -141,7 +167,7 @@ function sweepIdleConnections(now: number): void {
       else lastActiveAt = Math.max(lastActiveAt, hold.until);
     }
     if (held) continue;
-    if (now - lastActiveAt > idleCleanupMs) {
+    if (now - lastActiveAt > idleLimitOf(conn.client)) {
       connections.delete(targetId);
       void closeConnection(conn.client, targetId);
     }
@@ -150,7 +176,7 @@ function sweepIdleConnections(now: number): void {
 
 /**
  * The actual dial: open the WebSocket, re-validate the target, enable
- * `Page`. Extracted out of `getConnection` so concurrent callers can share
+ * `Page`, `Log` and `Network`, install the page observer. Extracted out of `getConnection` so concurrent callers can share
  * ONE in-flight `Promise<CdpConnection>` (see `inFlight` above) instead of
  * each running this independently.
  */
@@ -196,11 +222,22 @@ async function dial(targetId: string): Promise<CdpConnection> {
   // completed before a dialog opened ever receives its opening event
   // (experiment X1).
   dialogs.set(client, createCdpDialogWatch(client, cdpDialogSink(targetId)));
+  // The connection's console and network buffers, fed by core's capture
+  // intake (parity P5). Subscribed BEFORE Log.enable and the observer's
+  // Runtime.enable: Chrome follows each answer with a replay of the page's
+  // earlier log and console entries (lab X2), which would otherwise be
+  // lost. The buffers die with the connection; a redial's own replay
+  // refills fresh ones, so nothing is held twice.
+  captures.set(client, createCdpCaptureWatch(client, systemClock));
   // Page.enable unlocks Page.loadEventFired (navigate's wait_for_load) and
   // the dialog events. Runtime.evaluate and Input.* commands work without
   // their own domain being explicitly enabled. The page observer enables
   // Runtime itself, for `Runtime.bindingCalled`.
   await enablePage(client);
+  // Log and Network feed the capture buffers (console, network, a
+  // network_url wait) and let Network.getResponseBody answer for requests
+  // this connection saw (network_body).
+  await enableCapture(client);
   // The page observer, as the extension installs it in `connectTab`.
   // Non-fatal: on failure the connection is used as before and actions
   // report `settle.changes: null` with `observer-unavailable`. `list_tabs`
@@ -254,6 +291,18 @@ async function enablePage(client: CdpClient): Promise<void> {
   }
 }
 
+/** Send the dial's `Log.enable` and `Network.enable`. A failure closes the
+ * client, which is never cached, as for `Page.enable`. */
+async function enableCapture(client: CdpClient): Promise<void> {
+  try {
+    await client.send('Log.enable');
+    await client.send('Network.enable');
+  } catch (err) {
+    client.close();
+    throw err;
+  }
+}
+
 /** Where the dialog events of a `cdp:` tab go: the server's bridge event
  * log, installed by `server.ts` (`setCdpBridgeEventSink`) as the flow sink
  * is (`detached-flows.ts`), so a build or test that never wires it emits
@@ -286,6 +335,9 @@ const drivers = new WeakMap<CdpClient, PageDriverHandle>();
  * client that was never dialed (tests) has none, and its clicks do not
  * watch dialogs, as before P3. */
 const dialogs = new WeakMap<CdpClient, PendingDialog>();
+
+/** The capture buffers of each dialed connection (its `CaptureWatch`). */
+const captures = new WeakMap<CdpClient, CaptureBuffers>();
 
 function newPageDriver(client: CdpClient, commandTimeoutMs?: number): PageDriverHandle {
   return createPageDriver({
@@ -326,6 +378,7 @@ function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
     'dialog-input': driver.dialog,
     clock: systemClock,
     dialogs: driver.dialogs,
+    captureBuffers: captures.get(client),
   };
 }
 
@@ -418,6 +471,12 @@ export function setIdleCleanupConfigForTest(idleMs: number, sweepIntervalMs: num
  * step past the real 5-minute window without waiting for it. */
 export function sweepIdleConnectionsForTest(now: number): void {
   sweepIdleConnections(now);
+}
+
+/** Test-only: how many connections the cache holds now (dead ones not yet
+ * removed included). Not on any agent-reachable path. */
+export function cachedConnectionCountForTest(): number {
+  return connections.size;
 }
 
 // === Flow deps ==============================================================

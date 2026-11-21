@@ -14,13 +14,13 @@
  * - `evaluate` declares `commandTimeout: 'call-budget'`: a transport that
  *   bounds commands itself (cdp-direct) makes the call's budget the
  *   per-command timeout of the evaluator it gives.
- * - `network_body` requires `response-bodies`, which only the extension
- *   provides (v1 scope).
+ * - `network_body` requires `response-bodies`, which both transports
+ *   provide (cdp-direct since 1.4.45).
  * - `canvas_screenshot` requires `canvas`, which both transports provide
  *   (cdp-direct since 1.4.36). `console` and `network` require
- *   `capture-buffers`, which cdp-direct does not provide (v1 scope), so the
- *   registry refuses them there as `unsupported`, which cdp-direct maps to
- *   the text its `callCdpTool` always threw for them.
+ *   `capture-buffers`, which both transports provide (cdp-direct since
+ *   1.4.45, parity P5); a transport without them would be refused as
+ *   `unsupported`.
  */
 import { buildCanvasScreenshotJs, type CanvasScreenshotOpts } from '../inpage/canvas.js';
 import {

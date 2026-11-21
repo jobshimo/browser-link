@@ -2687,20 +2687,27 @@ browser-link config set cdp-direct.grant-ttl 15           # default TTL future `
 
 Every tool that reaches into page/JS content works identically over
 cdp-direct — same in-page logic, same CDP commands (`Runtime.evaluate`,
-`Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). A handful
-of tools that depend on extension-only state (buffered console/network
-history, or native permission grants) are explicitly out of
-v1 scope and return a clear error naming the extension as the fallback.
+`Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). The tools
+that depend on extension-only APIs (native permission grants, the
+`chrome.downloads` capture) are explicitly out of v1 scope and return a
+clear error naming the extension as the fallback.
 
-| Supported in v1                                                                                                                                                                                                                                                                                      | NOT supported in v1 (use the extension instead)                                      |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`*, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `download` (`url` mode) | `console`, `network`, `network_body`, `set_permission`, `download` (`selector` mode) |
+| Supported in v1                                                                                                                                                                                                                                                                                                                               | NOT supported in v1 (use the extension instead) |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`_, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `console`_, `network`_, `network_body`_, `download` (`url` mode) | `set_permission`, `download` (`selector` mode)  |
 
-\* `wait_for`'s `network_url` mode also falls back to "use the extension"
-— cdp-direct does not buffer network requests, so there is nothing to poll
-against. `selector` and `expression` modes are fully supported.
+\* Since 1.4.45 the connection enables Chrome's `Log` and `Network` domains
+when it is opened, and `console`, `network`, `network_body` and
+`wait_for`'s `network_url` mode read what it captured, with the
+extension's 200-entry bounds. Buffers are raw (headers and post data
+included), with no per-tab consent on `cdp:` tabs. Capture starts at
+browser-link's first call to the tab: `console` also holds the earlier
+console history Chrome replays then, `network` only requests made since.
+A connection whose buffers hold an entry is kept 30 minutes without a tool
+call on its tab (see the connection clock below); `network_body` answers
+only for requests the current connection saw.
 
-† Limit: a JavaScript dialog that opened while browser-link had no connection to the tab (before its first call, or after the 5-minute idle close) cannot be seen or answered over cdp-direct; calls on that tab fail with "the page did not answer Page.enable within 15 s" until you close the dialog in the browser.
+† Limit: a JavaScript dialog that opened while browser-link had no connection to the tab (before its first call, or after an idle close) cannot be seen or answered over cdp-direct; calls on that tab fail with "the page did not answer Page.enable within 15 s" until you close the dialog in the browser.
 
 ‡ For the length of the call only, `wait_for_tab` on a `cdp:` tab opens a browser-level DevTools socket that discovers targets and sends nothing else (no permission commands). It reports a page only when the waiting `cdp:` tab opened it (`window.open` from a click or a script, a `target=_blank` link) and ignores every other tab, yours included. A page the tab opened before the call started is returned only when an action tool ran on that tab in the last 1.5 s (or runs during the wait) and no earlier wait returned it; several such pages make the call fail naming them, so you pick one with `list_tabs`. The extension measures the same 1.5 s from when the new tab was announced rather than from the action. If the browser drops the connection, the call fails with "cdp-direct: the browser closed the browser-level DevTools connection browser.wait_for_tab was watching; no new tab can be seen on it. Retry the call." Verified on headless Chrome 118 and 157 only; a headed browser is untested.
 
@@ -2726,17 +2733,25 @@ server restart loses the manifests, where the extension's survive in
 
 **The connection clock.** The server keeps one connection per `cdp:` tab it
 drives and closes it after 5 minutes without a call; the next call dials it
-again. That value is internal, not a setting. A running flow holds its tab's
+again. A connection whose console or network buffers hold an entry is kept
+30 minutes instead (the extension's default idle disconnect), and almost
+every used tab falls there, because the console history Chrome replays at
+the first call fills the buffers within seconds; console and network events
+alone do not restart that clock, only a tool call on the tab does. A
+connection with a pending JavaScript dialog is kept until the dialog is
+answered or the tab closes. The buffers are dropped with the connection;
+the next call starts again from the replayed console history, and
+`network_body` answers only for requests the current connection saw.
+These values are internal, not settings. A running flow holds its tab's
 connection open, bounded by the flow's own maximum duration (its time budget,
 at most 60 s, in the foreground; 30 minutes when detached), and when the flow
-ends the 5 minutes restart from its last step. A long single call, such as a
+ends the window restarts from its last step. A long single call, such as a
 `wait_for`, holds nothing.
 
 Claims apply to `cdp:` tab_ids through the same registry extension tabs
-use. See the CHANGELOG's v0.23.0 entry for what a future v2 might add
-(console/network mirroring); canvas capture and drag arrived in 1.4.36,
-JavaScript dialogs (`dialog_respond`, `dialog-opening` / `dialog-closed` in
-`browser.events`) in 1.4.39.
+use. Canvas capture and drag arrived in 1.4.36, JavaScript dialogs
+(`dialog_respond`, `dialog-opening` / `dialog-closed` in `browser.events`)
+in 1.4.39, console and network capture in 1.4.45.
 
 ## Stability
 
