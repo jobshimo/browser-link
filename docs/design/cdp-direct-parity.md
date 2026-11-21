@@ -4,7 +4,8 @@ Status: revision 1 (2026-11-19), for arch's audit before any code. Written at
 `main` `9191c79` (release 1.4.34); every `path:line` below is at that commit.
 No code, test or other document is changed by this file. The owner decided
 on 2026-11-19 that the program starts; two of its decisions are still his
-(section 5). Revision 5 (2026-11-21, release 1.4.45) records gate A's answer
+(section 5). Revision 6 (2026-11-21, release 1.4.49) records the owner's G10
+answer and G10 as built. Revision 5 (2026-11-21, release 1.4.45) records gate A's answer
 and P5 (G5-G8) as built. Revision 4 (2026-11-20, release 1.4.41) records experiment X3
 and P7's G11 as built. Revision 3 (2026-11-20, release 1.4.39) records P3 as built.
 Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
@@ -17,6 +18,7 @@ release, every other citation stays at `9191c79`. Revisions:
 | 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
 | 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, the named `Page.enable` error, and the click move now bounded by the dialog watch (declared after an independent verification). |
 | 5 | 2026-11-21 | Gate A answered and P5 done in one PR (release 1.4.45, G5-G8): see P5 "As built" and 5.1 "Answer". |
+| 6 | 2026-11-21 | G10 answered (option a: a temporary override that says so) and done (release 1.4.49): see P7 "G10 as built" and section 5's G10 entry. |
 | 4 | 2026-11-20 | Experiment X3 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-browser-socket/`, Chrome for Testing 118.0.5993.70 and stable 157, headless only; the owner's headed browser is untested). `Target.targetCreated` on the browser socket carries `openerId` for `window.open` from a click or a script and for `target=_blank` links (with or without `noopener`) on both; its url is empty and arrives in the next `Target.targetInfoChanged`; `/json/list` has no opener field. A permission override lives as long as the DevTools session that set it, and when a session that set one closes, every override of that browser context is cleared (per browser context, not browser-wide), other clients' included; `Browser.setPermission` also works on a page socket. Browser-context ids differ: Chrome 118 does not list the default context's id and refuses it, 157 accepts it. P7's G11 done (release 1.4.41), see P7 "G11 as built": a per-call browser socket that sends only `Target.setDiscoverTargets`, and `tab-created` through a sink keyed by the new `cdp:` id. The risk rows (section 8) on permissions and footprint are reworded to X3. |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
@@ -61,7 +63,7 @@ experiment first.
 | G7 | `network_body` | refusal text | `response-bodies` (port exists, `page-read.ts:261`) with G6 | S after G6 | Low | verified |
 | G8 | `wait_for` `network_url` | its own refusal text (`core/src/actions/perform-wait-for.ts:44`) | G6's `finishedUrls()` (`perform-wait-for.ts:155`) | S after G6 | Low | verified |
 | G9 | `download` selector mode, `download_settle` | refusal; `url` mode works (rides `evaluate`) | a cdp `Downloads` adapter; no CDP primitive for D17's hold-then-settle | L | High | code verified; CDP side **experiment** |
-| G10 | `set_permission` | refusal text | a cdp `ContentSettings` adapter over a browser-level socket | L | Medium | **experiment** |
+| G10 | `set_permission` | refusal text | a cdp `ContentSettings` adapter on the tab's page connection (done in P7, 1.4.49) | L | Medium | measured by X3 and on stable |
 | G11 | `wait_for_tab` | refused in the dispatcher (`browser-dispatch.ts:3034-3043`), declared `false` (`support.ts:50`) | opener-to-new-target signal, `tab-created` for `cdp:` tabs (done in P7, 1.4.41) | M | Medium | code verified; `openerId` measured by X3 |
 | G12 | `build`, `view_sig` in `list_tabs` | absent (README line 2670) | the observer's `doc_info` reaching `listCdpTargets` | M | Medium (footprint) | verified |
 | G13 | idle and claim model | fixed 5 min socket sweep (`transport.ts:79`), no call hold | an owner decision superseding Q4 | L | Medium | verified |
@@ -452,6 +454,49 @@ every idle close today.
   - **Footprint.** X3 saw none on other tabs (no attach, no latency change),
     headless only.
 
+- **G10 as built (release 1.4.49).** Owner decision of 2026-11-21, option a:
+  `set_permission` works on `cdp:` tabs as a temporary override, and says so.
+  - **Mechanism.** `cdp/adapters/cdp-content-settings.ts`
+    (`createCdpContentSettings`), given as `content-settings` in
+    `actionDeps` (`cdp/transport.ts`) over the tab's own page connection;
+    `content-settings` joined `CDP_DIRECT_PROVIDES`. Each `set(setting,
+    pattern, value)` core writes is one `Browser.setPermission
+    { permission: { name }, setting, origin }` with no `browserContextId`
+    (the default context, X3), never `Browser.grantPermissions` (it replaces
+    the whole override set, X3). Never on the P7 discovery socket:
+    `BROWSER_SOCKET_COMMANDS` is unchanged and still pinned.
+  - **Names.** The extension's seven names, unchanged in core. The adapter maps
+    the content setting core writes back to the descriptor Chrome takes:
+    `location` to `geolocation`, `clipboard` to `clipboard-read` (the
+    read-write permission `chrome.contentSettings.clipboard` holds, so both
+    clipboard names act as on the extension), `sensors` to `accelerometer`
+    (gyroscope follows it); `notifications`, `camera`, `microphone` as they
+    are; `allow`/`block`/`ask` to `granted`/`denied`/`prompt`; the
+    pattern's `/*` is dropped for the origin. Measured on headless stable
+    (157): Chrome refuses `location`, `sensors` and `clipboardReadWrite` as
+    descriptor names. A setting not mapped goes to Chrome unchanged.
+  - **Data, not a tool name.** The `ContentSettings` port gained an optional
+    `temporaryNote` (`core/src/ports/content-settings.ts`); only the cdp
+    adapter gives it. With it, `setPermissionTool` adds `note` to its result
+    and its unsupported-name error drops ` by chrome.contentSettings in MV3`:
+    `set_permission: 'midi' is not supported. Supported names: geolocation,
+    notifications, camera, microphone, clipboardReadWrite,
+    clipboardSanitizedWrite, sensors.` The extension's adapter gives none, so
+    its results and texts are unchanged.
+  - **Lifetime.** The connection is not held for the override: the normal
+    idle close (30 minutes, 5 when nothing was captured) closes it and the
+    override goes with it; any DevTools client closing clears the overrides
+    of that browser context (X3). The result's `note`, the tool text, the
+    manual `cdp-direct` topic and the README say so.
+  - **Contract.** `contract.chrome.test.ts` runs the `ContentSettings`
+    contract on a real page connection, reading the state the page sees on
+    `https://a.test` (served through `Fetch` on that connection). The state
+    after the setting connection closes is not asserted (X3 measured it).
+  - **e2e.** `browser.set_permission.cdp` (granted, denied, prompt, with the
+    note), `browser.set_permission.read.cdp` (the page's
+    `navigator.permissions` state after each) and
+    `error.set_permission-name.cdp` on the cdp tab.
+
 - **Before code:** experiment X3 (section 6); the G10 semantics question.
 - **Shape.** One browser-level `CdpClient` to the `webSocketDebuggerUrl` of
   `/json/version` (already fetched, `cdp/targets.ts:78`), behind the same
@@ -555,6 +600,11 @@ the results:
   extension's persistent `chrome.contentSettings` (profile) and its name set,
   or CDP's runtime `Browser.setPermission` override (lost when Chrome exits,
   larger name set), and which error text an unsupported name gets.
+  **Answered 2026-11-21 (option a):** the runtime override, on the tab's own
+  page connection, with the extension's names; the result, the tool text, the
+  manual and the README say it is temporary; an unsupported name gets the
+  extension's text without the MV3 wording. Done in 1.4.49 (P7, "G10 as
+  built").
 - **Privacy (inform, not decide):** cdp tabs have no per-tab consent, and P5
   buffers hold request headers and post data on any granted tab the agent
   drives.

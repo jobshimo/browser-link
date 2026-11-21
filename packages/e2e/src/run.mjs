@@ -102,6 +102,9 @@ const CALL_TIMEOUT_MS = 45_000;
 /** core's HIT_CHECK_DIALOG_NOTE: the click's note when it opened a dialog. */
 const CDP_DIALOG_NOTE =
   'a JavaScript dialog opened during the click and the page is paused until it is answered (browser.dialog_respond), so where the click landed was not verified';
+/** cdp-direct's CDP_TEMPORARY_PERMISSION_NOTE: set_permission's note on a cdp: tab (G10). */
+const CDP_TEMPORARY_PERMISSION_NOTE =
+  'Temporary: on a cdp: tab this permission is a DevTools override, not a saved site setting. It lasts while browser-link stays connected to the tab (the connection is dropped after 30 minutes without a tool call on the tab, 5 when nothing was captured) and another DevTools client disconnecting from the browser can clear it earlier.';
 const TOTAL_TIMEOUT_MS = 300_000;
 const REPORT_BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7 + 3) % 256));
 const ATTACHMENTS = {
@@ -1090,6 +1093,44 @@ async function cdpDirectChecks({ chromePath, serverEnv, page }) {
     print: false,
     label: 'browser.flow.drag-step.drop-check.cdp',
   });
+
+  // set_permission on cdp-direct (parity G10): a temporary Browser.setPermission
+  // override on the tab's own connection; the page reads each state through
+  // navigator.permissions (granted, denied, then back to prompt), and the
+  // result carries the temporary note. An unsupported name fails with the
+  // extension's text without the MV3 wording.
+  const permissionOrigin = new URL(page).origin;
+  const geolocationState =
+    "navigator.permissions.query({ name: 'geolocation' }).then((s) => JSON.stringify(s.state))";
+  for (const state_ of ['granted', 'denied', 'prompt']) {
+    await call(
+      'browser.set_permission',
+      { tab_id: C, origin: permissionOrigin, name: 'geolocation', state: state_ },
+      (b) =>
+        (b?.origin === permissionOrigin &&
+          b.name === 'geolocation' &&
+          b.state === state_ &&
+          b.applied_as === 'location' &&
+          b.note === CDP_TEMPORARY_PERMISSION_NOTE) ||
+        `result ${describeCdp(b)}`,
+      { label: 'browser.set_permission.cdp' },
+    );
+    await call(
+      'browser.evaluate',
+      { tab_id: C, expression: geolocationState },
+      (b, t) =>
+        b?.value === JSON.stringify(state_) ||
+        t === JSON.stringify(state_) ||
+        `the page read ${describeCdp(t)}, expected ${state_}`,
+      { print: false, label: 'browser.set_permission.read.cdp' },
+    );
+  }
+  await expectCdpError(
+    'error.set_permission-name.cdp',
+    'browser.set_permission',
+    { tab_id: C, origin: permissionOrigin, name: 'midi', state: 'granted' },
+    "Error: set_permission: 'midi' is not supported. Supported names: geolocation, notifications, camera, microphone, clipboardReadWrite, clipboardSanitizedWrite, sensors.",
+  );
 
   await waitForTabChecks(C, page, expectCdpError);
 

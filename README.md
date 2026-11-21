@@ -2690,13 +2690,13 @@ browser-link config set cdp-direct.grant-ttl 15           # default TTL future `
 Every tool that reaches into page/JS content works identically over
 cdp-direct — same in-page logic, same CDP commands (`Runtime.evaluate`,
 `Input.dispatchMouseEvent`/`dispatchKeyEvent`, `Page.navigate`). The tools
-that depend on extension-only APIs (native permission grants, the
-`chrome.downloads` capture) are explicitly out of v1 scope and return a
-clear error naming the extension as the fallback.
+that depend on extension-only APIs (the `chrome.downloads` capture) are
+explicitly out of scope and return a clear error naming the way out.
+`set_permission` works on `cdp:` tabs as a temporary override (see ¶).
 
-| Supported in v1                                                                                                                                                                                                                                                                                                                               | NOT supported in v1 (use the extension instead) |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`_, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `console`_, `network`_, `network_body`_, `download` (`url` mode) | `set_permission`, `download` (`selector` mode)§ |
+| Supported in v1                                                                                                                                                                                                                                                                                                                                                  | NOT supported in v1 (use the extension instead) |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`_, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `console`_, `network`_, `network_body`_, `download` (`url` mode), `set_permission`¶ | `download` (`selector` mode)§                   |
 
 \* Since 1.4.45 the connection enables Chrome's `Log` and `Network` domains
 when it is opened, and `console`, `network`, `network_body` and
@@ -2708,6 +2708,8 @@ console history Chrome replays then, `network` only requests made since.
 A connection whose buffers hold an entry is kept 30 minutes without a tool
 call on its tab (see the connection clock below); `network_body` answers
 only for requests the current connection saw.
+
+¶ Temporary, by decision (2026-11-21): on a `cdp:` tab `set_permission` is a DevTools override (`Browser.setPermission` on browser-link's own connection to the tab), not the saved site setting the extension writes. It takes the same names and states; an unsupported name fails with the extension's error without the MV3 wording. The permission lasts while browser-link stays connected to the tab (the connection is dropped after 30 minutes without a tool call on the tab, 5 when nothing was captured) and another DevTools client disconnecting from the browser can clear it earlier; the result says so in `note`. browser-link does not keep the connection open for it.
 
 § Not ported, by decision (2026-11-21): Chrome gives a DevTools client no way to hold a download until it is saved, so `download` with a `selector` (and `download_settle`) stays refused on `cdp:` tabs. Pass `url` instead, or use a tab connected through the extension.
 

@@ -1381,8 +1381,8 @@ function toPublicClaim(claim: TabClaim): PublicClaim {
  *      after the setting was disabled or the grant expired gets the exact
  *      gate error text, never a confusing downstream failure.
  *   2. The v1 declarative support table (`cdp/support.ts`) — a tool valid
- *      in general but out of cdp-direct's v1 scope (console, network*,
- *      set_permission, download by selector) gets a clear "not supported over cdp-direct" error
+ *      in general but out of cdp-direct's scope (today: download by
+ *      selector) gets a clear "not supported over cdp-direct" error
  *      naming the extension transport as the fallback.
  * There is no bypass: every one of the read-tool call sites below and
  * `runAction` (used by every action tool) go through this one function.

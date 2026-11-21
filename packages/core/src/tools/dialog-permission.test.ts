@@ -157,6 +157,58 @@ describe('set_permission', () => {
   });
 });
 
+describe('set_permission on a surface whose setting is a temporary override (parity G10)', () => {
+  const NOTE = 'temporary override note';
+  function temporary(): ContentSettings & { writes: string[][] } {
+    const writes: string[][] = [];
+    return {
+      writes,
+      temporaryNote: NOTE,
+      set: (setting, primaryPattern, value) => {
+        writes.push([setting, primaryPattern, value]);
+        return Promise.resolve();
+      },
+    };
+  }
+
+  it('writes the same setting and answers the surface note with the result', async () => {
+    const settings = temporary();
+    const outcome = await call(
+      'set_permission',
+      { origin: 'https://a.test', name: 'geolocation', state: 'denied' },
+      deps({ settings }),
+    );
+    expect(outcome).toEqual({
+      ok: true,
+      result: {
+        origin: 'https://a.test',
+        name: 'geolocation',
+        state: 'denied',
+        applied_as: 'location',
+        note: NOTE,
+      },
+    });
+    expect(settings.writes).toEqual([['location', 'https://a.test/*', 'block']]);
+  });
+
+  it('fails an unsupported name with the same text without the MV3 wording, writing nothing', async () => {
+    const settings = temporary();
+    const outcome = await call(
+      'set_permission',
+      { origin: 'https://a.test', name: 'midi', state: 'granted' },
+      deps({ settings }),
+    );
+    expect(toolResponse('r3', outcome)).toEqual({
+      kind: 'tool.response',
+      id: 'r3',
+      ok: false,
+      error:
+        "set_permission: 'midi' is not supported. Supported names: geolocation, notifications, camera, microphone, clipboardReadWrite, clipboardSanitizedWrite, sensors.",
+    });
+    expect(settings.writes).toEqual([]);
+  });
+});
+
 describe('cdp-direct', () => {
   it.each([
     ['dialog_respond', 'dialog-input'],

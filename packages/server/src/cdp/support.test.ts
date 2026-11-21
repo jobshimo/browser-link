@@ -12,7 +12,7 @@ import {
 // The hand-written table as it stood at 1.4.23, before it was derived from
 // the registry (design 3.3, revision 11), with the rows the parity program
 // flipped (P1: drag, canvas_screenshot; P3: dialog_respond; P5: console,
-// network, network_body) and without the
+// network, network_body; G10: set_permission) and without the
 // hand-declared `wait_for_tab` row P7 removed (G11: the dispatcher answers
 // `wait_for_tab` itself on both transports). The derived map must equal it.
 const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
@@ -36,7 +36,7 @@ const TABLE_AT_1_4_23: readonly (readonly [string, boolean])[] = [
   ['network_body', true],
   ['canvas_screenshot', true],
   ['dialog_respond', true],
-  ['set_permission', false],
+  ['set_permission', true],
   ['download', false],
 ];
 
@@ -58,10 +58,10 @@ describe('CDP_TOOL_SUPPORT is derived from the registry (design 3.3)', () => {
   });
 
   test('RED: declaring a capability on cdp-direct changes the snapshot', () => {
-    const widened = new Set<Requirement>([...CDP_DIRECT_PROVIDES, 'content-settings']);
+    const widened = new Set<Requirement>([...CDP_DIRECT_PROVIDES, 'downloads']);
     const derived = new Map(cdpToolSupport(TOOL_REGISTRY, widened));
     expect(derived).not.toEqual(new Map(TABLE_AT_1_4_23));
-    expect(derived.get('set_permission')).toBe(true);
+    expect(derived.get('download')).toBe(true);
   });
 });
 
@@ -98,10 +98,12 @@ const SUPPORTED = [
   'console',
   'network',
   'network_body',
+  // Parity G10: Browser.setPermission on the tab's own page connection, a
+  // temporary override (owner decision 2026-11-21, option a).
+  'set_permission',
 ];
 
 const UNSUPPORTED = [
-  'set_permission',
   // Selector mode only — it needs the extension's chrome.downloads capture.
   // browser.download's url mode never reaches this wire tool: it rides
   // `evaluate`, which IS supported.

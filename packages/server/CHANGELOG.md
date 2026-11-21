@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.49](https://github.com/jobshimo/browser-link/compare/v1.4.48...v1.4.49) (2026-11-21)
+
+### Features
+
+- cdp-direct: `browser.set_permission` now works on `cdp:` tabs, where it answered `browser.set_permission is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.` It is a temporary DevTools override (`Browser.setPermission` on browser-link's own connection to the tab, for the origin), not the saved site setting the extension writes, and the result says so in a new `note` field: `Temporary: on a cdp: tab this permission is a DevTools override, not a saved site setting. It lasts while browser-link stays connected to the tab (the connection is dropped after 30 minutes without a tool call on the tab, 5 when nothing was captured) and another DevTools client disconnecting from the browser can clear it earlier.` browser-link does not keep the connection open for it. It takes the extension's names and states; an unsupported name fails with the extension's text without the MV3 wording (`set_permission: 'midi' is not supported. Supported names: geolocation, notifications, camera, microphone, clipboardReadWrite, clipboardSanitizedWrite, sensors.`). Extension tabs are unchanged. The tool text, the manual's `cdp-direct` topic and the README's cdp-direct table say so.
+
+### Notes
+
+- The real-Chrome contract gains the `ContentSettings` contract on a page connection. The e2e gains `browser.set_permission.cdp`, `browser.set_permission.read.cdp` and `error.set_permission-name.cdp`.
+
 ## [1.4.48](https://github.com/jobshimo/browser-link/compare/v1.4.47...v1.4.48) (2026-11-21)
 
 ### Features
