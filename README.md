@@ -2670,9 +2670,11 @@ working exactly as before, unaffected). Claims, `browser.read` by name,
 saved flows by name, the persistent map's origin-keyed hints, the `known`
 hint on results, the activity trail's url and title, and every other
 cross-cutting feature work on a `cdp:` tab the same as an extension tab.
-One thing is missing: a `cdp:` tab carries no `build` or `view_sig` in
-`list_tabs`, so its map start pack is chosen by origin and path alone and the
-learner records no build or view signature for it. These features look the
+A `cdp:` tab lists `build` and `view_sig` only once browser-link already holds a
+connection to it (from an earlier call on that tab); `list_tabs` never connects
+and never runs script in a page, so a tab without a connection lists without
+them, its map start pack is chosen by origin and path, and the learner records
+no build or view signature for it. These features look the
 tab up through the same cdp-direct discovery as `list_tabs`; if that
 discovery fails, the call still answers, without the map hints and with no
 page in its trail row.

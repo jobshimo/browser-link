@@ -37,7 +37,7 @@ import {
 } from './tools/tab-claims.js';
 import { checkCdpDirectGate } from './cdp/gate.js';
 import { listCdpTargets } from './cdp/targets.js';
-import { callCdpTool, setCdpBridgeEventSink } from './cdp/transport.js';
+import { callCdpTool, setCdpBridgeEventSink, withCdpFootprint } from './cdp/transport.js';
 import { setCdpFlowEventSink } from './cdp/detached-flows.js';
 import { markOpenedTabReturned, setCdpTabCreatedSink, watchOpenedTabs } from './cdp/opened-tabs.js';
 import { inspectPortHolder } from './lifecycle/port-holder.js';
@@ -516,7 +516,7 @@ async function runPrimary(cfg: BrowserLinkConfig): Promise<void> {
     // cdp-direct wiring — see cdp/gate.ts, cdp/targets.ts, cdp/transport.ts.
     // Each call re-checks the live enabled+grant gate itself; there is no
     // caching here that could let a disabled/revoked setting linger.
-    listCdpTabs: () => listCdpTargets(),
+    listCdpTabs: async () => withCdpFootprint(await listCdpTargets()),
     callCdpTool,
     cdpGate: () => checkCdpDirectGate(),
     watchCdpOpenedTabs: (openerTabId, options) => watchOpenedTabs(openerTabId, options),
