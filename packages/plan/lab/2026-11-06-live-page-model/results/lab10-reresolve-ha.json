@@ -1,7 +1,7 @@
 {
   "question": "Precision of semantic re-resolution (role + name hard filter, tag-path similarity, sibling-index tie-break, ties refused) after list re-renders",
   "scenario": "ha",
-  "page": "http://homeassistant.local:8123/config/entities",
+  "page": "http://lit-app.example:8123/config/entities",
   "runs": [
     {
       "step": "filter \"sensor\" (rows replaced)",

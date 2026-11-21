@@ -1,6 +1,6 @@
 // Lab 11: S3 acceptance (spec v4 §6.3) in a REAL page with the BUILT in-page
 // code (`packages/extension/dist/inpage/{observer,builders}.js`) over raw CDP
-// against the lab Chrome on port 9222, on Home Assistant (Lit).
+// against the lab Chrome on port 9222, on a local Lit app (Lit).
 //
 //   A. "A Lit list re-rendered with the same items keeps refs valid": take a
 //      ref for a row element, switch tab away and back (lab 8 showed nodes
@@ -17,7 +17,7 @@
 // (The fourth §6.3 clause, "ambiguous entries never get a stored key", is a
 // server-side map rule covered by packages/server/src/map/semantic-key.test.ts.)
 //
-// Read-only on the house: a text filter and tab switches; synthetic nodes only.
+// Read-only on the app: a text filter and tab switches; synthetic nodes only.
 // usage: node lab11-ref-target.mjs
 // Writes results/lab11-ref-target-ha.json (machine paths scrubbed).
 
@@ -29,7 +29,7 @@ import { buildFindJs, buildElementRectJs } from '../../../extension/dist/inpage/
 
 const LAB_DIR = dirname(fileURLToPath(import.meta.url));
 const HTTP = 'http://127.0.0.1:9222';
-const PAGE = 'http://homeassistant.local:8123/config/entities';
+const PAGE = 'http://lit-app.example:8123/config/entities';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const target = await (await fetch(`${HTTP}/json/new?about:blank`, { method: 'PUT' })).json();

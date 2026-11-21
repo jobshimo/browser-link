@@ -12,7 +12,7 @@
 //
 // usage: node lab8-identity-interactions.mjs ha | react
 //
-// `ha` runs on the owner's Home Assistant (lab profile is logged in): only
+// `ha` runs on a local Lit app (lab profile is logged in): only
 // navigation, a text filter and tab switches — nothing that changes a device.
 // `react` runs on github.com/facebook/react/issues (a public React app).
 // Opens its own tab over raw CDP on the lab Chrome (port 9222), closes it,
@@ -133,7 +133,7 @@ const pressEnter = async () => {
 const rows = [];
 let page;
 if (scenario === 'ha') {
-  page = 'http://homeassistant.local:8123/config/entities';
+  page = 'http://lit-app.example:8123/config/entities';
   const loaded = waitLoad();
   await send('Page.navigate', { url: page });
   await Promise.race([loaded, sleep(20000)]);

@@ -1,4 +1,4 @@
-+    38ms label=chrome-118 chrome=C:/Users/NERO/AppData/Local/Temp/claude/09a8d5156dd42345/bfd363a9-84c1-4cdd-a718-40fa13fc76bf/scratchpad/cft/chrome/win64-118.0.5993.70/chrome-win64/chrome.exe
++    38ms label=chrome-118 chrome=C:/Users/<user>/AppData/Local/Temp/claude/09a8d5156dd42345/bfd363a9-84c1-4cdd-a718-40fa13fc76bf/scratchpad/cft/chrome/win64-118.0.5993.70/chrome-win64/chrome.exe
 +    38ms owner primary pids on 17529/17530 before: [54284]
 +   273ms browser=Chrome/118.0.5993.70 protocol=1.3 cdp=57938 origin=http://127.0.0.1:57937
 +   273ms /json/version keys: ["Browser","Protocol-Version","User-Agent","V8-Version","WebKit-Version","webSocketDebuggerUrl"]
