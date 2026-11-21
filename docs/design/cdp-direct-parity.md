@@ -110,7 +110,16 @@ docs will say so. Arch confirms or asks the owner.
    network (`pushConsole`, `networkEntry` and the 200-entry bounds into a
    core buffers holder that `TabSession` composes, and the console/network
    half of the intake beside `dialogIntake`), and settles that holder's name
-   then. Each move is a
+   then. Closed for console and network in P5's refactor PR: the holder is
+   `CaptureBuffers` (`core/src/session/capture-intake.ts`, with
+   `CONSOLE_BUFFER_MAX` and `NETWORK_BUFFER_MAX`), itself a
+   `CaptureWatch` and built with only a clock; `TabSession` composes one
+   (`session.capture`), keeps `consoleBuffer`, `networkBuffer`,
+   `networkOrder`, `pushConsole` and `networkEntry` as delegating members,
+   and `sessionCaptureWatch` answers it. The intake's console/network half is
+   `captureIntake(buffers, clock)`, a CDP event listener with no sink (it
+   sends nothing toward the server) that the extension's `debuggerIntake`
+   calls. Each move is a
    **refactor PR of its own**, before the behavior PR that uses it (7(e)):
    e2e differential empty, title `refactor(core): ...`.
 5. **Events out.** `EventsOut.emit(tabId: number, event)`

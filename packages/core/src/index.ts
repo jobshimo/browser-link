@@ -40,6 +40,7 @@ export * from './policies/idle-rules.js';
 export * from './session/load-wait.js';
 export * from './session/page-driver.js';
 export * from './session/dialog-intake.js';
+export * from './session/capture-intake.js';
 export * from './session/tab-session.js';
 export * from './session/tab-registry.js';
 export * from './session/pending-replies.js';
