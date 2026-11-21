@@ -146,8 +146,8 @@ export interface NetworkEntry {
  * captured. Read-only and outside `ports/` (design revisions 7 and 8): the
  * extension's watch reads its tab's `TabSession` console and network
  * buffers (`session/tab-session.ts` `sessionCaptureWatch`), which are a
- * `CaptureBuffers` (`session/capture-intake.ts`); cdp-direct captures
- * nothing and gives none. */
+ * `CaptureBuffers` (`session/capture-intake.ts`); cdp-direct's is the
+ * `CaptureBuffers` its dial feeds (parity P5). */
 export interface CaptureWatch {
   /** The URLs of the captured requests that have finished, oldest first. */
   finishedUrls(): Iterable<string>;

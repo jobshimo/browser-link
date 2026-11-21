@@ -4,7 +4,8 @@ Status: revision 1 (2026-11-19), for arch's audit before any code. Written at
 `main` `9191c79` (release 1.4.34); every `path:line` below is at that commit.
 No code, test or other document is changed by this file. The owner decided
 on 2026-11-19 that the program starts; two of its decisions are still his
-(section 5). Revision 4 (2026-11-20, release 1.4.41) records experiment X3
+(section 5). Revision 5 (2026-11-21, release 1.4.45) records gate A's answer
+and P5 (G5-G8) as built. Revision 4 (2026-11-20, release 1.4.41) records experiment X3
 and P7's G11 as built. Revision 3 (2026-11-20, release 1.4.39) records P3 as built.
 Revision 2 (2026-11-20, P3's refactor PR, release 1.4.38) records
 experiment X1 and the dialog-intake move; the files it names are at that
@@ -15,6 +16,7 @@ release, every other citation stays at `9191c79`. Revisions:
 | 1 | 2026-11-19 | The program, for arch's audit. |
 | 2 | 2026-11-20 | Experiment X1 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-dialogs/`, Chrome for Testing 118.0.5993.70 and stable 157, headless, same answers on both). Measured: a dialog opened while no cdp-direct connection to the page exists cannot be seen or answered over cdp-direct. A connection dialed with the dialog already open never finishes `Page.enable` (15 s command timeout), receives no `Page.javascriptDialogOpening` (nothing is replayed), and its `Page.handleJavaScriptDialog` fails with `No dialog is showing`, with or without `Page.enable`. Only a connection whose `Page.enable` completed before the dialog opened receives the opening event and can answer it; answering leaves the connection open and the waiting click returns. The P3 caveat (step "Caveat kept in the docs") and the risk rows (section 8) are reworded to this. Lab note: the lab's `late` connection is the lab client mirroring dial (`Target.getTargetInfo`, then `Page.enable`), not `dial()` itself; the server's own lazy dial was observed only through its tool answers (the `preopen-*` cases: the first call fails on `Page.enable` after 15 s). P3's refactor PR also moves the dialog half of the intake to core (step 3.4) and settles step 3.5 for dialogs. |
 | 3 | 2026-11-20 | P3 done (release 1.4.39): see P3 "As built", including the correction that the click result carries no `dialog` field, the named `Page.enable` error, and the click move now bounded by the dialog watch (declared after an independent verification). |
+| 5 | 2026-11-21 | Gate A answered and P5 done in one PR (release 1.4.45, G5-G8): see P5 "As built" and 5.1 "Answer". |
 | 4 | 2026-11-20 | Experiment X3 ran (lab `packages/plan/lab/2026-11-20-cdp-direct-browser-socket/`, Chrome for Testing 118.0.5993.70 and stable 157, headless only; the owner's headed browser is untested). `Target.targetCreated` on the browser socket carries `openerId` for `window.open` from a click or a script and for `target=_blank` links (with or without `noopener`) on both; its url is empty and arrives in the next `Target.targetInfoChanged`; `/json/list` has no opener field. A permission override lives as long as the DevTools session that set it, and when a session that set one closes, every override of that browser context is cleared (per browser context, not browser-wide), other clients' included; `Browser.setPermission` also works on a page socket. Browser-context ids differ: Chrome 118 does not list the default context's id and refuses it, 157 accepts it. P7's G11 done (release 1.4.41), see P7 "G11 as built": a per-call browser socket that sends only `Target.setDiscoverTargets`, and `tab-created` through a sink keyed by the new `cdp:` id. The risk rows (section 8) on permissions and footprint are reworded to X3. |
 
 Marks used: **verified** (read in code at `9191c79` or pinned by a test),
@@ -330,6 +332,38 @@ every idle close today.
   for events after the tab's first call (section 5.1 decides what happens at
   an idle close).
 
+**As built (release 1.4.45, one PR, G5-G8).**
+
+- The dial subscribes core's `captureIntake` into one `CaptureBuffers` per
+  connection (`cdp/adapters/cdp-capture-watch.ts`, beside the dialog watch)
+  before `Page.enable`, then sends `Page.enable`, `Log.enable`,
+  `Network.enable`, and the observer's `Runtime.enable`. Subscribing first
+  keeps the replay Chrome sends after `Log.enable` and `Runtime.enable`
+  (X2). A failed `Log.enable` or `Network.enable` closes the socket and
+  fails the dial, as `Page.enable` does.
+- `actionDeps` gives the buffers as `captureBuffers`, so `console`,
+  `network`, a `network_url` wait (standalone and as a flow step) read them;
+  `network_body` uses the page driver's `ResponseBodies` over the same
+  connection. `capture-buffers` and `response-bodies` are in
+  `CDP_DIRECT_PROVIDES`.
+- Buffers are raw: headers, post data and response headers, no redaction,
+  and no per-tab consent on `cdp:` tabs (owner decision 2026-11-19: "esto es
+  una herramienta de desarrollo y esa limitacion sobra"). The grant stays
+  the only consent.
+- No redial duplicates: the buffers live and die with the connection. A kept
+  connection is never re-enabled; a new dial starts with empty buffers that
+  its own replay fills once, so a redial never holds an entry twice
+  (`transport.test.ts`, "a redial does not duplicate").
+- `network_body` answers only for requests the current connection saw (X2:
+  after a close the body is gone, `No resource with given identifier found`).
+- The sweep follows gate A's answer (5.1). The real-Chrome contract is
+  `session/capture-watch.contract.ts`, run in core and in
+  `contract.chrome.test.ts`.
+- e2e: `browser.console.cdp`, `browser.console.error.cdp`,
+  `browser.console.warn.cdp`, `browser.network.cdp`,
+  `browser.network_body.cdp`, `browser.wait_for.network.cdp`;
+  `error.wait-for-network.cdp` removed.
+
 ### P6. G12 `build` and `view_sig` (M), after the owner picks the footprint
 
 - **Shape (option a).** `driver.install` gets `onTopDocument`
@@ -472,6 +506,23 @@ shared (server registry); this question is about the connection only.
 
 Recommendation: option 1 plus call hold (**assumption**). The answer
 supersedes Q4 and is recorded in the service-worker design (section 8).
+
+**Answer (owner, 2026-11-21, through arch): "Como la extensión".** Built in
+P5 (release 1.4.45), superseding the earlier "No barrer si hay estado":
+
+- A connection whose capture buffers hold at least one entry is swept after
+  30 minutes without a tool call on its tab (the extension's default idle
+  TTL, `core/src/policies/idle-rules.ts` `DEFAULT_IDLE_TTL_MINUTES`; fixed,
+  not a setting); one with empty buffers keeps the 5-minute sweep. Almost
+  every used tab falls under the 30-minute branch, because the console
+  replay of the first dial fills the buffers within seconds.
+- Console and network events do not restart the clock; only a tool call on
+  the tab does.
+- A pending JavaScript dialog keeps the connection with no time limit until
+  it is answered or the tab closes.
+- A running flow's hold skips the connection as before.
+- The buffers are dropped with the connection (`transport.ts`
+  `idleLimitOf`, read by `sweepIdleConnections`).
 
 ### 5.2 Gate B (after E1-E5): downloads on cdp-direct
 

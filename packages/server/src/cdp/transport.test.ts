@@ -867,6 +867,143 @@ describe('callCdpTool — a running flow holds its connection (owner decision D1
 });
 
 /*
+ * Gate A (parity P5): a connection whose capture buffers hold an entry is
+ * swept after 30 minutes without a tool call on its tab (the extension's
+ * default idle TTL) instead of 5; one with empty buffers keeps the 5-minute
+ * sweep; a pending JavaScript dialog keeps the connection until it is
+ * answered; a running flow still holds it. Only `Date` is faked, as in the
+ * D1 tests above, and each check reads `connectionCount` through a ping AFTER
+ * the sweep it judges.
+ */
+describe('callCdpTool — the idle sweep keeps captured state (gate A)', () => {
+  const MIN = 60_000;
+  const T0 = 1_700_000_000_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const arrive = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+
+  async function connect(): Promise<string> {
+    const { port, targetId } = await startFakeTarget({
+      'Runtime.evaluate': () => ({ result: { value: false } }),
+    });
+    grantAccess(port);
+    const tabId = `cdp:${targetId}`;
+    await callCdpTool(tabId, 'ping', {});
+    return tabId;
+  }
+
+  function logOne(text: string): void {
+    pushEvent('Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ type: 'string', value: text }],
+      timestamp: Date.now(),
+    });
+  }
+
+  /** Sweep at `minutes` (plus `ms`) after the dial, then count sockets
+   * through a ping. The grant is renewed first (it lasts an hour), so the
+   * ping after a long idle is not refused by the gate. */
+  async function sweepAt(minutes: number, tabId: string, ms = 0): Promise<number> {
+    vi.setSystemTime(T0 + minutes * MIN + ms);
+    sweepIdleConnectionsForTest(Date.now());
+    saveGrant(60);
+    await callCdpTool(tabId, 'ping', {});
+    return connectionCount;
+  }
+
+  test('buffers holding an entry survive a 5-minute idle and are swept after 30', async () => {
+    const tabId = await connect();
+    logOne('kept');
+    await arrive();
+    expect(await sweepAt(10, tabId)).toBe(1);
+    // The ping at minute 10 is the last call: 30 minutes from it.
+    expect(await sweepAt(40, tabId)).toBe(1);
+    expect(await sweepAt(70, tabId, 1)).toBe(2);
+  });
+
+  test('empty buffers keep the 5-minute sweep', async () => {
+    const tabId = await connect();
+    expect(await sweepAt(5, tabId)).toBe(1);
+    expect(await sweepAt(10, tabId, 1)).toBe(2);
+  });
+
+  test('a network entry alone counts as held state', async () => {
+    const tabId = await connect();
+    pushEvent('Network.requestWillBeSent', {
+      requestId: 'r1',
+      request: { url: 'https://example.com/a', method: 'GET' },
+    });
+    await arrive();
+    expect(await sweepAt(10, tabId)).toBe(1);
+  });
+
+  test('a pending dialog keeps the connection past 30 minutes until it is answered', async () => {
+    const tabId = await connect();
+    pushEvent('Page.javascriptDialogOpening', { type: 'alert', message: 'm', url: '' });
+    await arrive();
+    expect(await sweepAt(120, tabId)).toBe(1);
+    expect(await sweepAt(240, tabId)).toBe(1);
+    pushEvent('Page.javascriptDialogClosed', { result: true, userInput: '' });
+    await arrive();
+    // Answered, with empty buffers: the 5-minute sweep applies again.
+    expect(await sweepAt(245, tabId, 1)).toBe(2);
+  });
+
+  test('a tool call on the tab restarts the 30-minute clock', async () => {
+    const tabId = await connect();
+    logOne('kept');
+    await arrive();
+    vi.setSystemTime(T0 + 25 * MIN);
+    await callCdpTool(tabId, 'ping', {});
+    // 50 minutes after the dial, 25 after the call.
+    expect(await sweepAt(50, tabId)).toBe(1);
+  });
+
+  test('console and network events alone do not restart the clock', async () => {
+    const tabId = await connect();
+    logOne('first');
+    await arrive();
+    vi.setSystemTime(T0 + 29 * MIN);
+    logOne('late');
+    pushEvent('Network.requestWillBeSent', {
+      requestId: 'r2',
+      request: { url: 'https://example.com/late', method: 'GET' },
+    });
+    await arrive();
+    expect(await sweepAt(30, tabId, 1)).toBe(2);
+  });
+
+  test('a running flow still holds a connection whose buffers hold entries', async () => {
+    const tabId = await connect();
+    logOne('kept');
+    await arrive();
+    await callCdpTool(tabId, 'flow', {
+      flow_id: 'gate-a',
+      detach: true,
+      steps: [{ wait_for: { expression: 'ready', timeout_ms: 30_000, poll_interval_ms: 10 } }],
+    });
+    // The flow's hold is bounded at 30 minutes (the detached ceiling); past
+    // it the hold counts as activity at that bound, so at minute 55 the
+    // 30-minute window runs from minute 30, not from the dial.
+    for (const minutes of [20, 55]) {
+      vi.setSystemTime(T0 + minutes * MIN);
+      sweepIdleConnectionsForTest(Date.now());
+    }
+    expect(detachedFlowStatus('gate-a').state).toBe('running');
+    await callCdpTool(tabId, 'ping', {});
+    expect(connectionCount).toBe(1);
+  });
+});
+
+/*
  * The cdp-direct kill switch. There is no extension here and therefore no
  * popup Stop button, so `browser-link cdp revoke` is the ONLY lever the
  * user has — and before flow cancellation existed, revoking mid-flow did
@@ -2012,12 +2149,233 @@ describe('callCdpTool — wait_for', () => {
     expect(expressions).toContain('Boolean(window.ready)');
   });
 
-  test('network_url mode is still refused on cdp-direct (unchanged)', async () => {
+  test('network_url mode matches a request the connection saw finish (parity P5, G8)', async () => {
     const { port, targetId } = await startFakeTarget({});
     grantAccess(port);
-    await expect(
-      callCdpTool(`cdp:${targetId}`, 'wait_for', { network_url: '/api' }),
-    ).rejects.toThrow(/network_url mode is not supported over cdp-direct/);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    pushEvent('Network.requestWillBeSent', {
+      requestId: 'r1',
+      request: { url: 'https://example.com/api/items', method: 'GET' },
+    });
+    pushEvent('Network.loadingFinished', { requestId: 'r1', encodedDataLength: 10 });
+    const result = await callCdpTool(`cdp:${targetId}`, 'wait_for', {
+      network_url: '/api/items',
+      timeout_ms: 2000,
+    });
+    expect(result).toMatchObject({ matched: true });
+  });
+});
+
+/*
+ * Parity P5 (G5-G8): the dial enables Log and Network and subscribes core's
+ * capture intake into one `CaptureBuffers` per connection, BEFORE the
+ * observer's Runtime.enable and before Log.enable, whose answers Chrome
+ * follows with a replay of the page's earlier console and log entries
+ * (lab X2). The buffers are raw: headers and post data as Chrome reports
+ * them.
+ */
+describe('callCdpTool — console and network capture (parity P5)', () => {
+  /** A console call the page made before any connection: Chrome replays it
+   * after every Runtime.enable, with the same timestamp each time (X2). */
+  const REPLAYED = {
+    type: 'warning',
+    args: [{ type: 'string', value: 'replayed' }],
+    timestamp: 1795139718499.537,
+  };
+  const LOGGED = {
+    entry: {
+      source: 'network',
+      level: 'error',
+      text: 'Failed to load resource',
+      timestamp: 1795139718505.98,
+      url: 'https://example.com/missing',
+    },
+  };
+
+  /** A page that records the order of its commands and replays one console
+   * call after Runtime.enable and one log entry after Log.enable, each
+   * pushed before the command's answer. */
+  function replayingPage(order: string[]): Record<string, Handler> {
+    const recordAs =
+      (method: string, replay?: () => void): Handler =>
+      () => {
+        order.push(method);
+        replay?.();
+        return method === 'Target.getTargetInfo' ? DEFAULT_PAGE_TARGET_INFO : {};
+      };
+    return {
+      'Target.getTargetInfo': recordAs('Target.getTargetInfo'),
+      'Page.enable': recordAs('Page.enable'),
+      'Log.enable': recordAs('Log.enable', () => {
+        pushEvent('Log.entryAdded', LOGGED);
+      }),
+      'Network.enable': recordAs('Network.enable'),
+      'Runtime.enable': recordAs('Runtime.enable', () => {
+        pushEvent('Runtime.consoleAPICalled', REPLAYED);
+      }),
+    };
+  }
+
+  const REPLAYED_ENTRY = {
+    timestamp: 1795139718499.537,
+    level: 'warn',
+    text: 'replayed',
+    source: 'console',
+  };
+  const LOGGED_ENTRY = {
+    timestamp: 1795139718505.98,
+    level: 'error',
+    text: 'Failed to load resource',
+    source: 'log',
+    url: 'https://example.com/missing',
+  };
+
+  test('the dial enables Page, Log and Network before the observer enables Runtime', async () => {
+    const order: string[] = [];
+    const { port, targetId } = await startFakeTarget(replayingPage(order));
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    // The dial's commands; the ping's own Target.getTargetInfo follows.
+    expect(order.slice(0, 5)).toEqual([
+      'Target.getTargetInfo',
+      'Page.enable',
+      'Log.enable',
+      'Network.enable',
+      'Runtime.enable',
+    ]);
+  });
+
+  test('the replay that follows Log.enable and Runtime.enable is captured: the intake is subscribed first', async () => {
+    const order: string[] = [];
+    const { port, targetId } = await startFakeTarget(replayingPage(order));
+    grantAccess(port);
+    const entries = await callCdpTool(`cdp:${targetId}`, 'console', {});
+    expect(entries).toEqual([
+      expect.objectContaining(LOGGED_ENTRY),
+      expect.objectContaining(REPLAYED_ENTRY),
+    ]);
+  });
+
+  test('browser.console reads the connection buffer and filters by level', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    pushEvent('Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [
+        { type: 'string', value: 'hello' },
+        { type: 'number', value: 1 },
+      ],
+      timestamp: 10,
+    });
+    pushEvent('Runtime.consoleAPICalled', {
+      type: 'error',
+      args: [{ type: 'string', value: 'boom' }],
+      timestamp: 11,
+    });
+    await vi.waitFor(async () => {
+      expect(await callCdpTool(`cdp:${targetId}`, 'console', {})).toHaveLength(2);
+    });
+    expect(await callCdpTool(`cdp:${targetId}`, 'console', {})).toEqual([
+      { timestamp: 10, level: 'log', text: 'hello 1', source: 'console' },
+      { timestamp: 11, level: 'error', text: 'boom', source: 'console' },
+    ]);
+    expect(await callCdpTool(`cdp:${targetId}`, 'console', { level: 'error' })).toEqual([
+      { timestamp: 11, level: 'error', text: 'boom', source: 'console' },
+    ]);
+  });
+
+  test('browser.network reads the connection buffer raw: headers and post data unredacted', async () => {
+    const { port, targetId } = await startFakeTarget({});
+    grantAccess(port);
+    await callCdpTool(`cdp:${targetId}`, 'ping', {});
+    pushEvent('Network.requestWillBeSent', {
+      requestId: 'r7',
+      type: 'Fetch',
+      request: {
+        url: 'https://example.com/api/login',
+        method: 'POST',
+        headers: { Authorization: 'Bearer secret-token' },
+        postData: 'user=a&password=b',
+      },
+    });
+    pushEvent('Network.responseReceived', {
+      requestId: 'r7',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        mimeType: 'application/json',
+        headers: { 'Set-Cookie': 'sid=abc' },
+      },
+    });
+    pushEvent('Network.loadingFinished', { requestId: 'r7', encodedDataLength: 42 });
+    pushEvent('Network.requestWillBeSent', {
+      requestId: 'r8',
+      request: { url: 'https://example.com/other.css', method: 'GET' },
+    });
+    await vi.waitFor(async () => {
+      expect(await callCdpTool(`cdp:${targetId}`, 'network', {})).toHaveLength(2);
+    });
+    const filtered = await callCdpTool(`cdp:${targetId}`, 'network', { url_filter: 'API/LOGIN' });
+    expect(filtered).toEqual([
+      expect.objectContaining({
+        request_id: 'r7',
+        url: 'https://example.com/api/login',
+        method: 'POST',
+        resource_type: 'Fetch',
+        request_headers: { Authorization: 'Bearer secret-token' },
+        request_post_data: 'user=a&password=b',
+        status: 200,
+        status_text: 'OK',
+        mime_type: 'application/json',
+        response_headers: { 'Set-Cookie': 'sid=abc' },
+        encoded_data_length: 42,
+        finished_at: expect.any(Number) as number,
+      }),
+    ]);
+  });
+
+  test('browser.network_body reads the body over the same connection (G7)', async () => {
+    const asked: unknown[] = [];
+    const { port, targetId } = await startFakeTarget({
+      'Network.getResponseBody': (params) => {
+        asked.push(params);
+        return { body: '{"ok":true}', base64Encoded: false };
+      },
+    });
+    grantAccess(port);
+    const body = await callCdpTool(`cdp:${targetId}`, 'network_body', { request_id: 'r7' });
+    expect(body).toEqual({ body: '{"ok":true}', base64Encoded: false });
+    expect(asked).toEqual([{ requestId: 'r7' }]);
+  });
+
+  test('a redial does not duplicate the replayed console history', async () => {
+    const order: string[] = [];
+    const { port, targetId } = await startFakeTarget(replayingPage(order));
+    grantAccess(port);
+    const first = await callCdpTool(`cdp:${targetId}`, 'console', {});
+    expect(first).toHaveLength(2);
+
+    closeTargetSocket();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const second = await callCdpTool(`cdp:${targetId}`, 'console', {});
+    expect(connectionCount).toBe(2);
+    expect(second).toEqual(first);
+  });
+
+  test('a Network.enable that fails fails the dial and closes the socket', async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Network.enable': () => new CdpError('Network.enable refused'),
+    });
+    grantAccess(port);
+    await expect(callCdpTool(`cdp:${targetId}`, 'ping', {})).rejects.toThrow(
+      'Network.enable refused',
+    );
+    const socket = (wss as unknown as { _testWs?: WebSocket })._testWs;
+    await vi.waitFor(() => {
+      expect(socket?.readyState).toBe(WebSocket.CLOSED);
+    });
   });
 });
 

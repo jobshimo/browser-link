@@ -2539,8 +2539,18 @@ describe('cdp-direct routing', () => {
     const callCdpTool = vi.fn(async () => ({}));
     const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
     await expect(
-      handleBrowserTool('browser.network', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
-    ).rejects.toThrow(/browser.network is not supported over cdp-direct/i);
+      handleBrowserTool(
+        'browser.set_permission',
+        {
+          tab_id: 'cdp:ABC',
+          origin: 'https://example.com',
+          name: 'geolocation',
+          state: 'granted',
+        },
+        deps,
+        TEST_CALLER,
+      ),
+    ).rejects.toThrow(/browser.set_permission is not supported over cdp-direct/i);
     expect(callCdpTool).not.toHaveBeenCalled();
   });
 
@@ -2567,11 +2577,18 @@ describe('cdp-direct routing', () => {
     ]);
   });
 
-  test('browser.console on a cdp: tab is rejected the same way', async () => {
-    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool: vi.fn(async () => ({})) });
-    await expect(
-      handleBrowserTool('browser.console', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER),
-    ).rejects.toThrow(/browser.console is not supported over cdp-direct/i);
+  test('browser.console, browser.network and browser.network_body on a cdp: tab reach callCdpTool (P5)', async () => {
+    const callCdpTool = vi.fn(async () => []);
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
+    await handleBrowserTool('browser.console', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER);
+    await handleBrowserTool('browser.network', { tab_id: 'cdp:ABC' }, deps, TEST_CALLER);
+    await handleBrowserTool(
+      'browser.network_body',
+      { tab_id: 'cdp:ABC', request_id: 'r1' },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callCdpTool.mock.calls.map((c) => c[1])).toEqual(['console', 'network', 'network_body']);
   });
 
   test('list_tabs merges deps.listCdpTabs() results after extension tabs', async () => {

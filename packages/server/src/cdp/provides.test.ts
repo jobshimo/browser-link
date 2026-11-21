@@ -1,12 +1,11 @@
 // What cdp-direct provides to the tool registry (design 3.3). It provides
 // `drag` and `canvas` (parity program P1: the drag input and the CDP event wait
 // were already on cdp-direct, and a canvas screenshot rides the evaluator)
-// and `dialog-input` (P3: the dial feeds the connection's pending dialog).
-// It never enables the Network domain or keeps console messages, so it has no
-// capture buffers and a `network_url` wait, `browser.console` and
-// `browser.network` are refused; it does not provide `response-bodies`,
-// `downloads` or `content-settings`, so `browser.network_body`,
-// `browser.set_permission` and `browser.download` are refused. Declaring a capability outside that scope is a
+// and `dialog-input` (P3: the dial feeds the connection's pending dialog),
+// `capture-buffers` and `response-bodies` (P5: the dial enables Log and
+// Network and feeds the connection's capture buffers). It does not provide
+// `downloads` or `content-settings`, so `browser.set_permission` and
+// `browser.download` are refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
 import { describe, expect, test } from 'vitest';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
@@ -17,9 +16,10 @@ import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports, the CDP event wait and the flow services, with drag, canvas and dialog-input, without capture-buffers or response-bodies', () => {
+  test('is the page ports, the CDP event wait and the flow services, with drag, canvas, dialog-input, capture-buffers and response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
       'canvas',
+      'capture-buffers',
       'cdp-events',
       'dialog-input',
       'drag',
@@ -30,15 +30,13 @@ describe('CDP_DIRECT_PROVIDES', () => {
       'navigator',
       'page',
       'pointer',
+      'response-bodies',
       'screen-capture',
       'settler',
     ]);
   });
 
   test.each([
-    ['console', ['capture-buffers']],
-    ['network', ['capture-buffers']],
-    ['network_body', ['response-bodies']],
     ['set_permission', ['content-settings']],
     ['download', ['downloads']],
     ['download_settle', ['downloads']],
@@ -117,25 +115,31 @@ describe('CDP_DIRECT_PROVIDES', () => {
     expect(expressions).toHaveLength(1);
   });
 
-  test('a network_url wait on cdp-direct is refused with the extension fallback text', async () => {
-    const deps = { clock: systemClock } as unknown as ToolDeps;
-    const outcome = await dispatchTool(
-      TOOL_REGISTRY,
-      CDP_DIRECT_PROVIDES,
-      deps,
-      'cdp-direct',
-      'wait_for',
-      {
-        network_url: '/api',
+  test('browser.console, browser.network and a network_url wait read the capture watch instead of being refused (P5)', async () => {
+    const entry = { timestamp: 1, level: 'log', text: 'hi', source: 'console' };
+    const request = {
+      request_id: 'r1',
+      url: 'https://example.com/api',
+      method: 'GET',
+      started_at: 1,
+      finished_at: 2,
+    };
+    const deps = {
+      clock: systemClock,
+      evaluator: { evaluate: () => Promise.resolve(true) },
+      captureBuffers: {
+        consoleEntries: () => [entry],
+        networkEntries: () => [request],
+        finishedUrls: () => [request.url],
       },
-    );
-    expect(outcome).toEqual({
-      ok: false,
-      failure: {
-        kind: 'action',
-        message:
-          'wait_for: network_url mode is not supported over cdp-direct in v1 (no network buffering) — use a tab connected through the Chrome extension instead.',
-      },
+    } as unknown as ToolDeps;
+    const run = (tool: string, params: Record<string, unknown>) =>
+      dispatchTool(TOOL_REGISTRY, CDP_DIRECT_PROVIDES, deps, 'cdp-direct', tool, params);
+    expect(await run('console', {})).toEqual({ ok: true, result: [entry] });
+    expect(await run('network', {})).toEqual({ ok: true, result: [request] });
+    expect(await run('wait_for', { network_url: '/api' })).toMatchObject({
+      ok: true,
+      result: { matched: true },
     });
   });
 });

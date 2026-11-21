@@ -2,8 +2,8 @@
 /**
  * Registry entry of `wait_for` (design 3.3, slice 13). Both transports read
  * its params the same way. `network_url` mode needs `capture-buffers`: a
- * transport that does not provide them (cdp-direct) answers with the text
- * the tool always gave there, as an ordinary `action` failure; a timeout is
+ * transport that does not provide them answers with the text cdp-direct
+ * gave before it captured (parity P5), as an ordinary `action` failure; a timeout is
  * an ordinary result (`matched: false`, `reason: 'timeout'`), not a failure.
  */
 import {
