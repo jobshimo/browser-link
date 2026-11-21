@@ -377,6 +377,15 @@ every idle close today.
   `cdp-direct` (`topics.ts:138`).
 - **Expected difference:** (a) a `cdp:` tab this server has driven lists
   `build` and `view_sig`; (b) every `cdp:` tab does.
+- **As built (release 1.4.46, option a, the owner's decision).** `driver.install`
+  gets `onTopDocument` (`cdp/transport.ts`, `noteTopDocument`): a `doc_info`
+  of the top document is kept per connection and a new `doc_start` drops it.
+  `withCdpFootprint` adds `build` and `view_sig` to the listed `cdp:` tabs that
+  have a connection in the cache and have reported; `server.ts` wires it
+  behind `listCdpTargets`. `list_tabs` never dials and never runs script. A tab
+  without a connection lists as before and the map start pack falls back to
+  origin and path. The learner reads the same listing, so it records both for
+  a connected tab. The G12 row of the gap table is closed by this.
 
 ### P7. Browser-level socket, G11 `wait_for_tab`, then G10 `set_permission`
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.46](https://github.com/jobshimo/browser-link/compare/v1.4.45...v1.4.46) (2026-11-21)
+
+### Features
+
+- cdp-direct: `browser.list_tabs` now lists `build` and `view_sig` for a `cdp:` tab that browser-link already holds a connection to and whose page has reported them, as it does for an extension tab. `list_tabs` never opens a connection and never runs script in a page to get them: a `cdp:` tab without a connection lists without them, as before, and its map start pack is chosen by origin and path. The learner records `build` and `view_sig` for a connected `cdp:` tab. A new document in the tab drops the old identity until the page reports again.
+
 ## [1.4.45](https://github.com/jobshimo/browser-link/compare/v1.4.44...v1.4.45) (2026-11-21)
 
 ### Features

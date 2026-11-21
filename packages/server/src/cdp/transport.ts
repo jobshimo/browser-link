@@ -37,6 +37,7 @@ import { systemClock } from './adapters/system-clock.js';
 import { createCdpClientSession } from './adapters/cdp-client-session.js';
 import { createCdpPageInfo } from './adapters/cdp-page-info.js';
 import { createPageDriver, type PageDriverHandle } from '../generated/core/session/page-driver.js';
+import type { ObserverMessageOutcome } from '../generated/core/support/observer-host.js';
 import { performClick } from '../generated/core/actions/perform-click.js';
 import { performDrag } from '../generated/core/actions/perform-drag.js';
 import { performFind } from '../generated/core/actions/perform-find.js';
@@ -245,7 +246,12 @@ async function dial(targetId: string): Promise<CdpConnection> {
   // driver's mirror.
   const driver = newPageDriver(client);
   drivers.set(client, driver);
-  const installed = await driver.install({ enableRuntime: true });
+  const installed = await driver.install({
+    enableRuntime: true,
+    onTopDocument: (outcome) => {
+      noteTopDocument(client, outcome);
+    },
+  });
   if (!installed.ok) {
     console.warn('browser-link: cdp-direct page observer not installed', installed.error);
   }
@@ -338,6 +344,35 @@ const dialogs = new WeakMap<CdpClient, PendingDialog>();
 
 /** The capture buffers of each dialed connection (its `CaptureWatch`). */
 const captures = new WeakMap<CdpClient, CaptureBuffers>();
+
+/** The page identity (build, view_sig) the top document of each dialed
+ * connection last reported (parity P6, G12). Dropped when a new top document
+ * starts, so a listing never shows the identity of a page that is gone. */
+const docIdentities = new WeakMap<CdpClient, { build: string; view_sig: string }>();
+
+function noteTopDocument(client: CdpClient, outcome: ObserverMessageOutcome): void {
+  if (outcome.kind === 'doc_start') docIdentities.delete(client);
+  else if (outcome.kind === 'doc_info') {
+    docIdentities.set(client, { build: outcome.build, view_sig: outcome.view_sig });
+  }
+}
+
+/**
+ * Add build and view_sig to the listed cdp tabs that already have a live
+ * connection and whose top document reported them. Never dials and never runs
+ * script in a page: a tab without a connection, or one that has not reported,
+ * is listed as it was.
+ */
+export function withCdpFootprint<T extends { tab_id: string }>(
+  tabs: readonly T[],
+): (T & { build?: string; view_sig?: string })[] {
+  return tabs.map((tab) => {
+    const targetId = cdpTargetIdFromTabId(tab.tab_id);
+    const conn = targetId === null ? undefined : connections.get(targetId);
+    const identity = conn?.client.isOpen ? docIdentities.get(conn.client) : undefined;
+    return identity ? { ...tab, ...identity } : tab;
+  });
+}
 
 function newPageDriver(client: CdpClient, commandTimeoutMs?: number): PageDriverHandle {
   return createPageDriver({

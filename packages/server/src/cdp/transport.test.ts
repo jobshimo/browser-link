@@ -17,6 +17,7 @@ import {
   setPageEnableTimeoutForTest,
   sweepIdleConnectionsForTest,
   cachedConnectionCountForTest,
+  withCdpFootprint,
 } from './transport.js';
 import {
   cancelDetachedFlow,
@@ -1995,6 +1996,123 @@ describe('callCdpTool — page observer', () => {
       },
     ]);
     expect(evaluations(seen).some((e) => e.includes('g.teardown()'))).toBe(true);
+  });
+
+  describe('build and view_sig of a connected tab (parity P6, G12)', () => {
+    const DOC_INFO = (docId: string, build: string, viewSig: string): string =>
+      JSON.stringify({
+        type: 'doc_info',
+        doc_id: docId,
+        url: 'https://example.com/',
+        build,
+        view_sig: viewSig,
+        title: 'Example',
+      });
+
+    /** A fake page whose top-document probe answers `doc-1`. */
+    function topDocumentPage(): Record<string, Handler> {
+      const base = observerPage([]);
+      const evaluate = base['Runtime.evaluate'] as Handler;
+      return {
+        ...base,
+        'Runtime.evaluate': (params) =>
+          (params as { expression?: string }).expression === TOP_DOCUMENT_PROBE_JS
+            ? { result: { value: { doc_id: 'doc-1' } } }
+            : evaluate(params),
+      };
+    }
+
+    const listed = (targetId: string) => [
+      {
+        tab_id: `cdp:${targetId}`,
+        url: 'https://example.com/',
+        title: 'Example',
+        transport: 'cdp' as const,
+      },
+    ];
+
+    async function connectAndReport(): Promise<string> {
+      const { port, targetId } = await startFakeTarget(topDocumentPage());
+      grantAccess(port);
+      await callCdpTool(`cdp:${targetId}`, 'ping', {});
+      pushEvent('Runtime.bindingCalled', {
+        name: OBSERVER_BINDING,
+        payload: DOC_INFO('doc-1', '3f9a2b1c', '00aa11bb'),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return targetId;
+    }
+
+    test('a connected tab lists the build and view_sig of its top document', async () => {
+      const targetId = await connectAndReport();
+      expect(withCdpFootprint(listed(targetId))).toEqual([
+        { ...listed(targetId)[0], build: '3f9a2b1c', view_sig: '00aa11bb' },
+      ]);
+    });
+
+    test('a tab whose connection closed lists neither, even before the cache drops it', async () => {
+      const targetId = await connectAndReport();
+      closeTargetSocket();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(withCdpFootprint(listed(targetId))).toEqual(listed(targetId));
+    });
+
+    test('a connected tab that has not reported yet, or whose document restarted, lists neither', async () => {
+      const { port, targetId } = await startFakeTarget(topDocumentPage());
+      grantAccess(port);
+      await callCdpTool(`cdp:${targetId}`, 'ping', {});
+      expect(withCdpFootprint(listed(targetId))).toEqual(listed(targetId));
+      pushEvent('Runtime.bindingCalled', {
+        name: OBSERVER_BINDING,
+        payload: DOC_INFO('doc-1', '3f9a2b1c', '00aa11bb'),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // A new top document: the old identity must not outlive it.
+      pushEvent('Runtime.bindingCalled', {
+        name: OBSERVER_BINDING,
+        payload: JSON.stringify({
+          type: 'doc_start',
+          doc_id: 'doc-1',
+          url: 'https://example.com/next',
+          version: 1,
+          coverage: 'full',
+        }),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(withCdpFootprint(listed(targetId))).toEqual(listed(targetId));
+    });
+
+    test('an unconnected tab lists neither and listing opens no connection', async () => {
+      const { port, targetId } = await startFakeTarget(topDocumentPage());
+      grantAccess(port);
+      expect(withCdpFootprint(listed(targetId))).toEqual(listed(targetId));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(connectionCount).toBe(0);
+      expect(cachedConnectionCountForTest()).toBe(0);
+    });
+
+    test('the learner records the build and view_sig of a connected cdp tab', async () => {
+      const targetId = await connectAndReport();
+      const recordOutcome = vi.fn();
+      await handleBrowserTool(
+        'browser.ping',
+        { tab_id: `cdp:${targetId}` },
+        {
+          listTabs: () => [],
+          listCdpTabs: async () => withCdpFootprint(listed(targetId)),
+          callBrowserTool: async () => {
+            throw new Error('the extension transport must not be used for a cdp: tab');
+          },
+          callCdpTool,
+          cdpGate: () => checkCdpDirectGate(),
+          recordOutcome,
+        },
+        { agent_id: 'agent-p6', pid: 9, binary: 'node' },
+      );
+      expect(recordOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ build: '3f9a2b1c', viewSig: '00aa11bb' }),
+      );
+    });
   });
 
   // Parity P3: the dial feeds the connection's pending dialog through core's
