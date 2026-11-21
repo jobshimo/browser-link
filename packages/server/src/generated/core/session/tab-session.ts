@@ -1,7 +1,8 @@
 // GENERATED from packages/core/src/session/tab-session.ts. Do not edit.
 // The per-tab page state of a connected tab (design section 4, `TabSession`):
-// the idle clock and what holds it, the bounded console and network buffers,
-// the pending JavaScript dialog (the `PendingDialog` of
+// the idle clock and what holds it, the bounded console and network buffers
+// (the `CaptureBuffers` of `session/capture-intake.ts`, composed here), the
+// pending JavaScript dialog (the `PendingDialog` of
 // `session/dialog-intake.ts`, composed here) and the tab's page driver. No socket, no
 // server metadata: the extension's `app/tab-connection.ts` holds a
 // `TabSession`, never the other way round. Only the extension uses it;
@@ -21,12 +22,8 @@ import type {
   NetworkEntry,
   PageDriverHandle,
 } from './page-driver.js';
+import { CaptureBuffers } from './capture-intake.js';
 import { PendingDialog, type PendingDialogInfo } from './dialog-intake.js';
-
-/** Console entries kept per tab; the oldest is dropped first. */
-export const CONSOLE_BUFFER_MAX = 200;
-/** Network entries kept per tab; the oldest request is dropped first. */
-export const NETWORK_BUFFER_MAX = 200;
 
 /** A tool call the tab is still answering. */
 export interface CallInProgress {
@@ -56,7 +53,8 @@ export interface TabSessionDeps {
  *    (`idleCandidate`); a finished flow's end is activity (`flowEnded`).
  * 5. The console buffer holds at most `CONSOLE_BUFFER_MAX` entries and the
  *    network buffer at most `NETWORK_BUFFER_MAX`, oldest dropped first;
- *    `networkOrder` and `networkBuffer` always hold the same ids.
+ *    `networkOrder` and `networkBuffer` always hold the same ids (the
+ *    invariants of `CaptureBuffers`, which `capture` is).
  * 6. At most one pending dialog: opening replaces it, closing clears it
  *    (the invariant of `PendingDialog`, which `dialog` is).
  */
@@ -65,15 +63,16 @@ export class TabSession {
   private readonly clock: Clock;
   private activityAt: number;
   private readonly calls = new Set<CallInProgress>();
-  private readonly consoleEntries: ConsoleEntry[] = [];
-  private readonly networkEntries = new Map<string, NetworkEntry>();
-  private readonly networkIds: string[] = [];
+  /** The tab's console and network buffers: the state the capture intake
+   * writes. */
+  readonly capture: CaptureBuffers;
   /** The tab's pending dialog: the state the dialog intake writes. */
   readonly dialog = new PendingDialog();
 
   constructor({ clock, driver }: TabSessionDeps) {
     this.clock = clock;
     this.driver = driver;
+    this.capture = new CaptureBuffers({ clock });
     this.activityAt = clock.now();
   }
 
@@ -124,36 +123,25 @@ export class TabSession {
   }
 
   get consoleBuffer(): readonly ConsoleEntry[] {
-    return this.consoleEntries;
+    return this.capture.consoleBuffer;
   }
 
   get networkBuffer(): ReadonlyMap<string, NetworkEntry> {
-    return this.networkEntries;
+    return this.capture.networkBuffer;
   }
 
   get networkOrder(): readonly string[] {
-    return this.networkIds;
+    return this.capture.networkOrder;
   }
 
   pushConsole(entry: ConsoleEntry): void {
-    this.consoleEntries.push(entry);
-    if (this.consoleEntries.length > CONSOLE_BUFFER_MAX) this.consoleEntries.shift();
+    this.capture.pushConsole(entry);
   }
 
   /** The network entry of `requestId`, created (and the oldest dropped past
    * the bound) the first time the request is seen. */
   networkEntry(requestId: string): NetworkEntry {
-    let entry = this.networkEntries.get(requestId);
-    if (!entry) {
-      entry = { request_id: requestId, url: '', method: '', started_at: this.clock.now() };
-      this.networkEntries.set(requestId, entry);
-      this.networkIds.push(requestId);
-      while (this.networkIds.length > NETWORK_BUFFER_MAX) {
-        const oldId = this.networkIds.shift();
-        if (oldId !== undefined) this.networkEntries.delete(oldId);
-      }
-    }
-    return entry;
+    return this.capture.networkEntry(requestId);
   }
 
   get pendingDialog(): PendingDialogInfo | undefined {
@@ -177,21 +165,10 @@ export function sessionDialogWatch(current: () => TabSession | undefined): Dialo
 
 /** A capture watch over `session`'s console and network buffers, read
  * live on every call: the console messages, the requests in the order they
- * were first seen, and the URLs of those that have finished. */
+ * were first seen, and the URLs of those that have finished. It is the
+ * session's `CaptureBuffers` itself. */
 export function sessionCaptureWatch(session: TabSession): CaptureWatch {
-  return {
-    *finishedUrls() {
-      for (const id of session.networkOrder) {
-        const entry = session.networkBuffer.get(id);
-        if (entry?.finished_at !== undefined) yield entry.url;
-      }
-    },
-    consoleEntries: () => session.consoleBuffer,
-    networkEntries: () =>
-      session.networkOrder
-        .map((id) => session.networkBuffer.get(id))
-        .filter((entry): entry is NetworkEntry => entry !== undefined),
-  };
+  return session.capture;
 }
 
 /** The tabs one idle-sweep tick disconnects: every session whose

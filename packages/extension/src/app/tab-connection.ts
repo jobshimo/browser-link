@@ -9,6 +9,7 @@
 
 import type { ExtensionToServer } from '@browser-link/shared';
 import {
+  captureIntake,
   dialogIntake,
   OBSERVER_BINDING,
   type Clock,
@@ -17,7 +18,6 @@ import {
   type TabReservation,
   type TabSession,
 } from '@browser-link/core';
-import { normalizeConsoleLevel } from '../console-level.js';
 import { appendRecordingStep, parseRecordedPayload, toFlowStep } from '../recording.js';
 import { workerFailure } from '../worker-messages.js';
 
@@ -161,69 +161,6 @@ export function deliverCdpEvent(
   for (const listener of conn.eventListeners) listener(method, params);
 }
 
-// === CDP types — only the fields the intake reads ======================
-
-interface CdpRuntimeConsoleAPICalled {
-  args?: { value?: unknown; description?: string }[];
-  timestamp?: number;
-  type?: string;
-}
-
-interface CdpLogEntryAdded {
-  entry?: {
-    level?: string;
-    text?: string;
-    timestamp?: number;
-    url?: string;
-    lineNumber?: number;
-  };
-}
-
-interface CdpNetworkRequestWillBeSent {
-  requestId: string;
-  type?: string;
-  request?: {
-    url?: string;
-    method?: string;
-    headers?: Record<string, string>;
-    postData?: string;
-  };
-}
-
-interface CdpNetworkResponseReceived {
-  requestId: string;
-  response?: {
-    status?: number;
-    statusText?: string;
-    mimeType?: string;
-    headers?: Record<string, string>;
-  };
-}
-
-interface CdpNetworkLoadingFinished {
-  requestId: string;
-  encodedDataLength?: number;
-}
-
-interface CdpNetworkLoadingFailed {
-  requestId: string;
-  errorText?: string;
-}
-
-// Convert an arbitrary console arg (`unknown`) into something printable
-// without leaking `[object Object]`. Used by the console buffer when CDP
-// hands us values we don't statically know.
-export function stringifyConsoleArg(v: unknown): string {
-  if (typeof v === 'string') return v;
-  if (v === null || v === undefined) return String(v);
-  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return Object.prototype.toString.call(v);
-  }
-}
-
 export interface DebuggerIntakeDeps {
   clock: Clock;
   /** The recording reached its step cap: stop it (`Recording.finish`). */
@@ -232,77 +169,20 @@ export interface DebuggerIntakeDeps {
 
 /** The tab's debugger intake: console, network and dialog events into its
  * `TabSession`, dialog bridge events, and the recorder's binding calls. The
- * dialog half is core's `dialogIntake`, writing the session's
- * `PendingDialog` and sending its events through a sink bound to this
- * connection (`sendBridgeEvent`). */
+ * console and network half is core's `captureIntake`, writing the
+ * session's `CaptureBuffers`; the dialog half is core's `dialogIntake`,
+ * writing the session's `PendingDialog` and sending its events through a
+ * sink bound to this connection (`sendBridgeEvent`). */
 export function debuggerIntake(conn: TabConnection, deps: DebuggerIntakeDeps): TabEventListener {
   const { session } = conn;
+  const capture = captureIntake(session.capture, deps.clock);
   const dialogs = dialogIntake(session.dialog, {
     emit: (event) => {
       sendBridgeEvent(conn, event.eventKind, event.data);
     },
   });
   return (method, params) => {
-    if (method === 'Runtime.consoleAPICalled') {
-      const p = params as CdpRuntimeConsoleAPICalled;
-      const args = p.args ?? [];
-      const text = args
-        .map((a) => (a.value !== undefined ? stringifyConsoleArg(a.value) : (a.description ?? '')))
-        .join(' ');
-      session.pushConsole({
-        timestamp: p.timestamp ?? deps.clock.now(),
-        level: normalizeConsoleLevel(p.type),
-        text,
-        source: 'console',
-      });
-      return;
-    }
-    if (method === 'Log.entryAdded') {
-      const p = params as CdpLogEntryAdded;
-      const e = p.entry ?? {};
-      session.pushConsole({
-        timestamp: e.timestamp ?? deps.clock.now(),
-        level: normalizeConsoleLevel(e.level),
-        text: e.text ?? '',
-        source: 'log',
-        url: e.url,
-        line: e.lineNumber,
-      });
-      return;
-    }
-    if (method === 'Network.requestWillBeSent') {
-      const p = params as CdpNetworkRequestWillBeSent;
-      const entry = session.networkEntry(p.requestId);
-      entry.url = p.request?.url ?? entry.url;
-      entry.method = p.request?.method ?? entry.method;
-      entry.resource_type = p.type ?? entry.resource_type;
-      entry.request_headers = p.request?.headers ?? entry.request_headers;
-      entry.request_post_data = p.request?.postData ?? entry.request_post_data;
-      return;
-    }
-    if (method === 'Network.responseReceived') {
-      const p = params as CdpNetworkResponseReceived;
-      const entry = session.networkEntry(p.requestId);
-      entry.status = p.response?.status;
-      entry.status_text = p.response?.statusText;
-      entry.mime_type = p.response?.mimeType;
-      entry.response_headers = p.response?.headers;
-      return;
-    }
-    if (method === 'Network.loadingFinished') {
-      const p = params as CdpNetworkLoadingFinished;
-      const entry = session.networkEntry(p.requestId);
-      entry.finished_at = deps.clock.now();
-      entry.encoded_data_length = p.encodedDataLength;
-      return;
-    }
-    if (method === 'Network.loadingFailed') {
-      const p = params as CdpNetworkLoadingFailed;
-      const entry = session.networkEntry(p.requestId);
-      entry.finished_at = deps.clock.now();
-      entry.failed = p.errorText ?? 'failed';
-      return;
-    }
+    if (capture(method, params)) return;
     // Page.javascriptDialogOpening / Closed. The page JS thread is frozen on
     // a dialog until something calls Page.handleJavaScriptDialog. We do NOT
     // respond automatically — the agent reads dialog-opening from

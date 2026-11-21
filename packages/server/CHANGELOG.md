@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.44](https://github.com/jobshimo/browser-link/compare/v1.4.43...v1.4.44) (2026-11-21)
+
+### Refactor
+
+- No behavior changes. The console and network half of a tab's CDP event intake (`Runtime.consoleAPICalled`, `Log.entryAdded`, `Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`, `Network.loadingFailed`) and its bounded buffers (200 console entries, 200 requests, oldest dropped first) move from the extension into the shared core (`captureIntake`, `CaptureBuffers`), which the extension's `TabSession` composes. cdp-direct does not use them yet: `browser.console`, `browser.network`, `browser.network_body` and `browser.wait_for` `network_url` are still refused on `cdp:` tabs.
+
 ## [1.4.43](https://github.com/jobshimo/browser-link/compare/v1.4.42...v1.4.43) (2026-11-21)
 
 ### Notes

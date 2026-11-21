@@ -145,8 +145,9 @@ export interface NetworkEntry {
 /** The transport's view of the console messages and requests its tab has
  * captured. Read-only and outside `ports/` (design revisions 7 and 8): the
  * extension's watch reads its tab's `TabSession` console and network
- * buffers (`session/tab-session.ts` `sessionCaptureWatch`); cdp-direct
- * captures nothing and gives none. */
+ * buffers (`session/tab-session.ts` `sessionCaptureWatch`), which are a
+ * `CaptureBuffers` (`session/capture-intake.ts`); cdp-direct captures
+ * nothing and gives none. */
 export interface CaptureWatch {
   /** The URLs of the captured requests that have finished, oldest first. */
   finishedUrls(): Iterable<string>;

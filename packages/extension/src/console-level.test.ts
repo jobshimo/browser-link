@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalizeConsoleLevel } from './console-level.js';
+import { normalizeConsoleLevel } from '@browser-link/core';
 
 describe('normalizeConsoleLevel', () => {
   test('Chrome "warning" is stored as the documented "warn"', () => {

@@ -8,14 +8,8 @@ import {
   type IdleFlowHold,
 } from '../policies/idle-rules.js';
 import type { PageDriverHandle } from './page-driver.js';
-import {
-  CONSOLE_BUFFER_MAX,
-  idleTabs,
-  NETWORK_BUFFER_MAX,
-  sessionCaptureWatch,
-  sessionDialogWatch,
-  TabSession,
-} from './tab-session.js';
+import { CONSOLE_BUFFER_MAX, NETWORK_BUFFER_MAX } from './capture-intake.js';
+import { idleTabs, sessionCaptureWatch, sessionDialogWatch, TabSession } from './tab-session.js';
 
 const MINUTE = 60_000;
 const TTL_MS = DEFAULT_IDLE_TTL_MINUTES * MINUTE;
