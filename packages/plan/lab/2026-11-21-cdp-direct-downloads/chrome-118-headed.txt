@@ -1,0 +1,70 @@
++    27ms label=chrome-118-headed headed=true chrome=C:/Users/NERO/AppData/Local/Temp/g9-cft/chrome/win64-118.0.5993.70/chrome-win64/chrome.exe
++    28ms scratch=C:\Users\NERO\AppData\Local\Temp\g9-lab-chrome-118-headed-HYx3zV (shown below as <scratch>; never deleted by this script)
++    28ms owner primary pids on 17529/17530 before: []
++    38ms chrome args: ["--remote-debugging-port=53986","--user-data-dir=C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\profile","--no-first-run","--no-default-browser-check","about:blank"]
++   223ms browser=Chrome/118.0.5993.70 protocol=1.3 cdp=53986 origin=http://127.0.0.1:53990 xOrigin=http://localhost:53991
++   223ms profile Preferences on disk after start: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\chrome-default-dir","prompt_for_download":true,"directory_upgrade":true}
++   575ms   T1 targetId=E73D921C65553BF28E70C7750CE1FE4E browserContextId=FC5DB7FADC0F0A628B483F07C6B6D38B
++   576ms   T1 main frame id=E73D921C65553BF28E70C7750CE1FE4E
++   576ms ===== E1 (headed): allow + path on each socket kind, profile asks where to save =====
++  1699ms   visible windows before any download: g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++  1699ms   -- page-socket Page.setDownloadBehavior --
++  1702ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\stage-e1h-1"} -> {} (0ms)
++  1702ms --- trial E1h-1 page-socket Page.setDownloadBehavior: click #dl in T1
++  1719ms   trigger: "clicked #dl"
++  2446ms   landed: stage-e1h-1/g9-e1h-1.bin (2048 B, report-bytes) (first finished file seen 343ms after the trigger started)
++  2447ms   [page-T1] +  26ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"ea415ae8-b1c0-4d64-8d36-a431f6a801c5","url":"http://127.0.0.1:53990/f/g9-e1h-1.bin","suggestedFilename":"g9-e1h-1.bin"}
++  2447ms   [page-T1] Page.downloadProgress guid=ea415ae8-b1c0-4d64-8d36-a431f6a801c5: 6 events, states inProgress>completed, last at +296ms {"guid":"ea415ae8-b1c0-4d64-8d36-a431f6a801c5","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  2447ms   [setter-page-Page] +  26ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"ea415ae8-b1c0-4d64-8d36-a431f6a801c5","url":"http://127.0.0.1:53990/f/g9-e1h-1.bin","suggestedFilename":"g9-e1h-1.bin"}
++  2447ms   [setter-page-Page] Page.downloadProgress guid=ea415ae8-b1c0-4d64-8d36-a431f6a801c5: 6 events, states inProgress>completed, last at +296ms {"guid":"ea415ae8-b1c0-4d64-8d36-a431f6a801c5","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  3540ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] | Recent download history [class Chrome_WidgetWin_1, browser process] | g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++  3541ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  3949ms   [setter-page-Page] socket closed normally (close frame)
++  3949ms   -- page-socket Browser.setDownloadBehavior --
++  3951ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\stage-e1h-2","eventsEnabled":true} -> {} (0ms)
++  3951ms --- trial E1h-2 page-socket Browser.setDownloadBehavior: click #dl in T1
++  4003ms   trigger: "clicked #dl"
++  4507ms   landed: stage-e1h-2/g9-e1h-2.bin (2048 B, report-bytes) (first finished file seen 153ms after the trigger started)
++  4507ms   [page-T1] +  62ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"3f395575-372d-4f42-ac84-f480d6114152","url":"http://127.0.0.1:53990/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4508ms   [page-T1] Page.downloadProgress guid=3f395575-372d-4f42-ac84-f480d6114152: 6 events, states inProgress>completed, last at +139ms {"guid":"3f395575-372d-4f42-ac84-f480d6114152","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4508ms   [setter-page-Browser] +  62ms Browser.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"3f395575-372d-4f42-ac84-f480d6114152","url":"http://127.0.0.1:53990/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4508ms   [setter-page-Browser] +  62ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"3f395575-372d-4f42-ac84-f480d6114152","url":"http://127.0.0.1:53990/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4508ms   [setter-page-Browser] Browser.downloadProgress guid=3f395575-372d-4f42-ac84-f480d6114152: 6 events, states inProgress>completed, last at +139ms {"guid":"3f395575-372d-4f42-ac84-f480d6114152","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4508ms   [setter-page-Browser] Page.downloadProgress guid=3f395575-372d-4f42-ac84-f480d6114152: 6 events, states inProgress>completed, last at +140ms {"guid":"3f395575-372d-4f42-ac84-f480d6114152","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  5588ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++  5588ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (1ms)
++  5993ms   [setter-page-Browser] socket closed normally (close frame)
++  5993ms   -- browser-socket Browser.setDownloadBehavior --
++  5996ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\stage-e1h-3","eventsEnabled":true} -> {} (1ms)
++  5996ms --- trial E1h-3 browser-socket Browser.setDownloadBehavior: click #dl in T1
++  6001ms   trigger: "clicked #dl"
++  6517ms   landed: stage-e1h-3/g9-e1h-3.bin (2048 B, report-bytes) (first finished file seen 118ms after the trigger started)
++  6517ms   [page-T1] +  15ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"26d44846-14ee-44fe-9f75-d27fc9b5d9d7","url":"http://127.0.0.1:53990/f/g9-e1h-3.bin","suggestedFilename":"g9-e1h-3.bin"}
++  6517ms   [page-T1] Page.downloadProgress guid=26d44846-14ee-44fe-9f75-d27fc9b5d9d7: 6 events, states inProgress>completed, last at +96ms {"guid":"26d44846-14ee-44fe-9f75-d27fc9b5d9d7","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  6517ms   [setter-browser] +  15ms Browser.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"26d44846-14ee-44fe-9f75-d27fc9b5d9d7","url":"http://127.0.0.1:53990/f/g9-e1h-3.bin","suggestedFilename":"g9-e1h-3.bin"}
++  6517ms   [setter-browser] Browser.downloadProgress guid=26d44846-14ee-44fe-9f75-d27fc9b5d9d7: 6 events, states inProgress>completed, last at +96ms {"guid":"26d44846-14ee-44fe-9f75-d27fc9b5d9d7","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  7624ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++  7625ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (1ms)
++  8030ms   [setter-browser] socket closed normally (close frame)
++  8031ms ===== E2 (headed): after every setting socket closed, the same click =====
++  8031ms --- trial E2h baseline after the setting sockets closed: click #dl in T1
++  8041ms   trigger: "clicked #dl"
++ 12041ms   landed: NOTHING in any watched dir (waited 4010ms)
++ 12041ms   [page-T1] +  19ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"6d787138-f706-4d45-b015-f5c79a4da71e","url":"http://127.0.0.1:53990/f/g9-e2h-after-close.bin","suggestedFilename":"g9-e2h-after-close.bin"}
++ 12041ms   [page-T1] Page.downloadProgress guid=6d787138-f706-4d45-b015-f5c79a4da71e: 4 events, states inProgress, last at +22ms {"guid":"6d787138-f706-4d45-b015-f5c79a4da71e","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 13115ms   visible windows of Chrome's process tree: Save As [class #32770, child process] |  [class Chrome_WidgetWin_1, browser process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++ 13115ms ===== E2 (headed): socket TERMINATED while allow is set =====
++ 13118ms   [setter-terminate] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\stage-e2h-term","eventsEnabled":true} -> {} (1ms)
++ 13522ms   [setter-terminate] socket TERMINATED (ws.terminate(): TCP destroyed, no close frame)
++ 13522ms --- trial E2h after terminate: click #dl in T1
++ 13573ms   trigger: "clicked #dl"
++ 17566ms   landed: NOTHING in any watched dir (waited 4042ms)
++ 17566ms   [page-T1] +  53ms Page.downloadWillBegin {"frameId":"E73D921C65553BF28E70C7750CE1FE4E","guid":"d8efd92d-4674-4855-a2d6-44079c43b7be","url":"http://127.0.0.1:53990/f/g9-e2h-after-terminate.bin","suggestedFilename":"g9-e2h-after-terminate.bin"}
++ 17566ms   [page-T1] Page.downloadProgress guid=d8efd92d-4674-4855-a2d6-44079c43b7be: 4 events, states inProgress, last at +57ms {"guid":"d8efd92d-4674-4855-a2d6-44079c43b7be","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 18690ms   visible windows of Chrome's process tree: Save As [class #32770, child process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Chromium [class Chrome_WidgetWin_1, browser process]
++ 18690ms ===== teardown =====
++ 18691ms owner's real Downloads folder holds g9-* files: none
++ 18691ms final listing of every watched dir: ["stage-e1h-1/g9-e1h-1.bin","stage-e1h-2/g9-e1h-2.bin","stage-e1h-3/g9-e1h-3.bin"]
++ 18808ms chrome exited after Browser.close: true
++ 19312ms profile Preferences on disk after exit: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-118-headed-HYx3zV\\chrome-default-dir","directory_upgrade":true,"last_complete_time":"13439745119112508","prompt_for_download":true}
++ 19313ms owner primary: none was running

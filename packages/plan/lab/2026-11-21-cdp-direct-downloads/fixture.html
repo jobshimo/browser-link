@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>g9 downloads</title>
+<h1>G9 download fixture</h1>
+<p><a id="dl" href="/f/unset.bin">download link (href set per trial)</a></p>
+<p><a id="blank-dl" href="/f/unset.bin" target="_blank">target=_blank download link (href set per trial)</a></p>
+<form id="postform" method="post" action="/post.pdf"><input type="hidden" name="q" value="1"><button id="dl-post" type="submit">Post for PDF</button></form>
+<iframe id="xo" width="300" height="80" src="about:blank"></iframe>
+<script>
+window.registerSw = () =>
+  navigator.serviceWorker
+    .register('/sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then(() =>
+      navigator.serviceWorker.controller
+        ? 'controlled'
+        : new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', () => r('controlled-after-change'))),
+    );
+window.loadXo = (src) =>
+  new Promise((r) => {
+    const f = document.getElementById('xo');
+    f.onload = () => r('loaded');
+    f.src = src;
+  });
+</script>

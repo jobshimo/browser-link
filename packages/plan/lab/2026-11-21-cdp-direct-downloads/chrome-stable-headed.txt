@@ -1,0 +1,70 @@
++    31ms label=chrome-stable-headed headed=true chrome=C:/Program Files/Google/Chrome/Application/chrome.exe
++    32ms scratch=C:\Users\NERO\AppData\Local\Temp\g9-lab-chrome-stable-headed-nJMZLD (shown below as <scratch>; never deleted by this script)
++    32ms owner primary pids on 17529/17530 before: []
++    41ms chrome args: ["--remote-debugging-port=56315","--user-data-dir=C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\profile","--no-first-run","--no-default-browser-check","about:blank"]
++   265ms browser=Chrome/157.0.8103.79 protocol=1.3 cdp=56315 origin=http://127.0.0.1:56319 xOrigin=http://localhost:56320
++   266ms profile Preferences on disk after start: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\chrome-default-dir","prompt_for_download":true,"directory_upgrade":true}
++   457ms   T1 targetId=B58C8018369427348639EC7DF5369B5E browserContextId=A66EC6258AF234E7B7FF2AE7EEBEC7C5
++   459ms   T1 main frame id=B58C8018369427348639EC7DF5369B5E
++   459ms ===== E1 (headed): allow + path on each socket kind, profile asks where to save =====
++  1653ms   visible windows before any download: g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++  1653ms   -- page-socket Page.setDownloadBehavior --
++  1657ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e1h-1"} -> {} (0ms)
++  1657ms --- trial E1h-1 page-socket Page.setDownloadBehavior: click #dl in T1
++  1678ms   trigger: "clicked #dl"
++  2298ms   landed: stage-e1h-1/g9-e1h-1.bin (2048 B, report-bytes) (first finished file seen 237ms after the trigger started)
++  2298ms   [page-T1] +  34ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"c35a941d-e879-4a65-a051-1311e7d61bf2","url":"http://127.0.0.1:56319/f/g9-e1h-1.bin","suggestedFilename":"g9-e1h-1.bin"}
++  2298ms   [page-T1] Page.downloadProgress guid=c35a941d-e879-4a65-a051-1311e7d61bf2: 6 events, states inProgress>completed, last at +226ms {"guid":"c35a941d-e879-4a65-a051-1311e7d61bf2","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  2298ms   [setter-page-Page] +  34ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"c35a941d-e879-4a65-a051-1311e7d61bf2","url":"http://127.0.0.1:56319/f/g9-e1h-1.bin","suggestedFilename":"g9-e1h-1.bin"}
++  2298ms   [setter-page-Page] Page.downloadProgress guid=c35a941d-e879-4a65-a051-1311e7d61bf2: 6 events, states inProgress>completed, last at +226ms {"guid":"c35a941d-e879-4a65-a051-1311e7d61bf2","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  3420ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] | Recent download history [class Chrome_WidgetWin_1, browser process] | g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++  3421ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"default"} (reset) -> {} (1ms)
++  3826ms   [setter-page-Page] socket closed normally (close frame)
++  3826ms   -- page-socket Browser.setDownloadBehavior --
++  3835ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e1h-2","eventsEnabled":true} -> {} (1ms)
++  3835ms --- trial E1h-2 page-socket Browser.setDownloadBehavior: click #dl in T1
++  3858ms   trigger: "clicked #dl"
++  4381ms   landed: stage-e1h-2/g9-e1h-2.bin (2048 B, report-bytes) (first finished file seen 129ms after the trigger started)
++  4381ms   [page-T1] +  30ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"61b3ddd3-672f-4284-8972-300f9177732b","url":"http://127.0.0.1:56319/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4381ms   [page-T1] Page.downloadProgress guid=61b3ddd3-672f-4284-8972-300f9177732b: 6 events, states inProgress>completed, last at +105ms {"guid":"61b3ddd3-672f-4284-8972-300f9177732b","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4381ms   [setter-page-Browser] +  30ms Browser.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"61b3ddd3-672f-4284-8972-300f9177732b","url":"http://127.0.0.1:56319/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4381ms   [setter-page-Browser] +  30ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"61b3ddd3-672f-4284-8972-300f9177732b","url":"http://127.0.0.1:56319/f/g9-e1h-2.bin","suggestedFilename":"g9-e1h-2.bin"}
++  4381ms   [setter-page-Browser] Browser.downloadProgress guid=61b3ddd3-672f-4284-8972-300f9177732b: 6 events, states inProgress>completed, last at +105ms {"guid":"61b3ddd3-672f-4284-8972-300f9177732b","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e1h-2\\g9-e1h-2.bin"}
++  4381ms   [setter-page-Browser] Page.downloadProgress guid=61b3ddd3-672f-4284-8972-300f9177732b: 6 events, states inProgress>completed, last at +105ms {"guid":"61b3ddd3-672f-4284-8972-300f9177732b","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  5405ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] | Recent download history [class Chrome_WidgetWin_1, browser process] | g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++  5406ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  5808ms   [setter-page-Browser] socket closed normally (close frame)
++  5809ms   -- browser-socket Browser.setDownloadBehavior --
++  5812ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e1h-3","eventsEnabled":true} -> {} (1ms)
++  5812ms --- trial E1h-3 browser-socket Browser.setDownloadBehavior: click #dl in T1
++  5822ms   trigger: "clicked #dl"
++  6339ms   landed: stage-e1h-3/g9-e1h-3.bin (2048 B, report-bytes) (first finished file seen 121ms after the trigger started)
++  6339ms   [page-T1] +  26ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"f8747a5c-e91a-4e17-adf8-9fd390274e89","url":"http://127.0.0.1:56319/f/g9-e1h-3.bin","suggestedFilename":"g9-e1h-3.bin"}
++  6339ms   [page-T1] Page.downloadProgress guid=f8747a5c-e91a-4e17-adf8-9fd390274e89: 6 events, states inProgress>completed, last at +106ms {"guid":"f8747a5c-e91a-4e17-adf8-9fd390274e89","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  6339ms   [setter-browser] +  26ms Browser.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"f8747a5c-e91a-4e17-adf8-9fd390274e89","url":"http://127.0.0.1:56319/f/g9-e1h-3.bin","suggestedFilename":"g9-e1h-3.bin"}
++  6339ms   [setter-browser] Browser.downloadProgress guid=f8747a5c-e91a-4e17-adf8-9fd390274e89: 6 events, states inProgress>completed, last at +106ms {"guid":"f8747a5c-e91a-4e17-adf8-9fd390274e89","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e1h-3\\g9-e1h-3.bin"}
++  7436ms   visible windows of Chrome's process tree: [class Chrome_WidgetWin_1, browser process] | g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++  7436ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  7841ms   [setter-browser] socket closed normally (close frame)
++  7841ms ===== E2 (headed): after every setting socket closed, the same click =====
++  7841ms --- trial E2h baseline after the setting sockets closed: click #dl in T1
++  7856ms   trigger: "clicked #dl"
++ 11871ms   landed: NOTHING in any watched dir (waited 4030ms)
++ 11871ms   [page-T1] +  30ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"6112361d-f81a-46a5-965f-7ecc41fadee7","url":"http://127.0.0.1:56319/f/g9-e2h-after-close.bin","suggestedFilename":"g9-e2h-after-close.bin"}
++ 11871ms   [page-T1] Page.downloadProgress guid=6112361d-f81a-46a5-965f-7ecc41fadee7: 4 events, states inProgress, last at +32ms {"guid":"6112361d-f81a-46a5-965f-7ecc41fadee7","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 12998ms   visible windows of Chrome's process tree: Save As [class #32770, child process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++ 12998ms ===== E2 (headed): socket TERMINATED while allow is set =====
++ 13002ms   [setter-terminate] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\stage-e2h-term","eventsEnabled":true} -> {} (0ms)
++ 13413ms   [setter-terminate] socket TERMINATED (ws.terminate(): TCP destroyed, no close frame)
++ 13413ms --- trial E2h after terminate: click #dl in T1
++ 13458ms   trigger: "clicked #dl"
++ 17462ms   landed: NOTHING in any watched dir (waited 4047ms)
++ 17462ms   [page-T1] +  56ms Page.downloadWillBegin {"frameId":"B58C8018369427348639EC7DF5369B5E","guid":"283c5597-ae2c-4bb1-bf8d-8f12f0f63b53","url":"http://127.0.0.1:56319/f/g9-e2h-after-terminate.bin","suggestedFilename":"g9-e2h-after-terminate.bin"}
++ 17462ms   [page-T1] Page.downloadProgress guid=283c5597-ae2c-4bb1-bf8d-8f12f0f63b53: 4 events, states inProgress, last at +73ms {"guid":"283c5597-ae2c-4bb1-bf8d-8f12f0f63b53","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 18545ms   visible windows of Chrome's process tree: Save As [class #32770, child process] |  [class Chrome_WidgetWin_1, browser process] | g9 downloads - Google Chrome [class Chrome_WidgetWin_1, browser process]
++ 18545ms ===== teardown =====
++ 18546ms owner's real Downloads folder holds g9-* files: none
++ 18546ms final listing of every watched dir: ["stage-e1h-1/g9-e1h-1.bin","stage-e1h-2/g9-e1h-2.bin","stage-e1h-3/g9-e1h-3.bin"]
++ 18707ms chrome exited after Browser.close: true
++ 19221ms profile Preferences on disk after exit: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-headed-nJMZLD\\chrome-default-dir","directory_upgrade":true,"prompt_for_download":true}
++ 19221ms owner primary: none was running

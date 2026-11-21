@@ -1,0 +1,688 @@
++    26ms label=chrome-stable headed=false chrome=C:/Program Files/Google/Chrome/Application/chrome.exe
++    26ms scratch=C:\Users\NERO\AppData\Local\Temp\g9-lab-chrome-stable-RIoJfL (shown below as <scratch>; never deleted by this script)
++    26ms owner primary pids on 17529/17530 before: []
++    36ms chrome args: ["--headless=new","--remote-debugging-port=52500","--user-data-dir=C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\profile","--no-first-run","--no-default-browser-check","about:blank"]
++   282ms browser=Chrome/157.0.8103.79 protocol=1.3 cdp=52500 origin=http://127.0.0.1:52538 xOrigin=http://localhost:52539
++   282ms profile Preferences on disk after start: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\chrome-default-dir","prompt_for_download":true,"directory_upgrade":true}
++   448ms   T1 targetId=0D74A00F58D93E13B7C0DD0AE1EB838A browserContextId=F9A5F787C73F219E2C0DA0C3E8611C43
++   450ms   T1 main frame id=0D74A00F58D93E13B7C0DD0AE1EB838A
++   451ms ===== BASELINE: nothing set, profile asks where to save =====
++   451ms --- trial BASE click #dl in T1 (no setDownloadBehavior anywhere)
++   472ms   trigger: "clicked #dl"
++  3494ms   landed: NOTHING in any watched dir (waited 3042ms)
++  3494ms   [page-T1] +  24ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"c7d80263-32cd-4018-8c30-7ab4c02c3b11","url":"http://127.0.0.1:52538/f/g9-base.bin","suggestedFilename":"g9-base.bin"}
++  3494ms   [page-T1] Page.downloadProgress guid=c7d80263-32cd-4018-8c30-7ab4c02c3b11: 4 events, states inProgress>canceled, last at +31ms {"guid":"c7d80263-32cd-4018-8c30-7ab4c02c3b11","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++  3494ms ===== E1: which socket accepts which command; behavior values =====
++  3494ms   -- E1.1 page-socket Page.setDownloadBehavior --
++  3496ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-1"} -> {} (0ms)
++  3496ms --- trial E1.1 page-socket Page.setDownloadBehavior: click #dl in T1
++  3503ms   trigger: "clicked #dl"
++  4021ms   landed: stage-e1-1/g9-e1-1.bin (2048 B, report-bytes) (first finished file seen 121ms after the trigger started)
++  4021ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11","url":"http://127.0.0.1:52538/f/g9-e1-1.bin","suggestedFilename":"g9-e1-1.bin"}
++  4021ms   [page-T1] Page.downloadProgress guid=98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11: 6 events, states inProgress>completed, last at +65ms {"guid":"98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4021ms   [setter-page-Page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11","url":"http://127.0.0.1:52538/f/g9-e1-1.bin","suggestedFilename":"g9-e1-1.bin"}
++  4021ms   [setter-page-Page] Page.downloadProgress guid=98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11: 6 events, states inProgress>completed, last at +65ms {"guid":"98a6f6bf-1ccf-47ef-94b2-43d3b52a4a11","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4022ms   [setter-page-Page] Page.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  4424ms   [setter-page-Page] socket closed normally (close frame)
++  4424ms   -- E1.2 page-socket Browser.setDownloadBehavior --
++  4426ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-2","eventsEnabled":true} -> {} (0ms)
++  4427ms --- trial E1.2 page-socket Browser.setDownloadBehavior: click #dl in T1
++  4434ms   trigger: "clicked #dl"
++  4963ms   landed: stage-e1-2/g9-e1-2.bin (2048 B, report-bytes) (first finished file seen 119ms after the trigger started)
++  4963ms   [page-T1] +   9ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","url":"http://127.0.0.1:52538/f/g9-e1-2.bin","suggestedFilename":"g9-e1-2.bin"}
++  4963ms   [page-T1] Page.downloadProgress guid=ee0e87b6-cf56-4ed6-9769-615d455c0370: 6 events, states inProgress>completed, last at +45ms {"guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4963ms   [setter-page-Browser] +   9ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","url":"http://127.0.0.1:52538/f/g9-e1-2.bin","suggestedFilename":"g9-e1-2.bin"}
++  4963ms   [setter-page-Browser] +   9ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","url":"http://127.0.0.1:52538/f/g9-e1-2.bin","suggestedFilename":"g9-e1-2.bin"}
++  4963ms   [setter-page-Browser] Browser.downloadProgress guid=ee0e87b6-cf56-4ed6-9769-615d455c0370: 6 events, states inProgress>completed, last at +45ms {"guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-2\\g9-e1-2.bin"}
++  4963ms   [setter-page-Browser] Page.downloadProgress guid=ee0e87b6-cf56-4ed6-9769-615d455c0370: 6 events, states inProgress>completed, last at +45ms {"guid":"ee0e87b6-cf56-4ed6-9769-615d455c0370","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  4963ms   [setter-page-Browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (1ms)
++  5377ms   [setter-page-Browser] socket closed normally (close frame)
++  5378ms   -- E1.3 browser-socket Browser.setDownloadBehavior --
++  5381ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-3","eventsEnabled":true} -> {} (1ms)
++  5381ms --- trial E1.3 browser-socket Browser.setDownloadBehavior: click #dl in T1
++  5390ms   trigger: "clicked #dl"
++  5907ms   landed: stage-e1-3/g9-e1-3.bin (2048 B, report-bytes) (first finished file seen 120ms after the trigger started)
++  5907ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"6ae3fefa-84ae-4007-b5c4-faacc9d01e41","url":"http://127.0.0.1:52538/f/g9-e1-3.bin","suggestedFilename":"g9-e1-3.bin"}
++  5907ms   [page-T1] Page.downloadProgress guid=6ae3fefa-84ae-4007-b5c4-faacc9d01e41: 6 events, states inProgress>completed, last at +47ms {"guid":"6ae3fefa-84ae-4007-b5c4-faacc9d01e41","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  5907ms   [setter-browser] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"6ae3fefa-84ae-4007-b5c4-faacc9d01e41","url":"http://127.0.0.1:52538/f/g9-e1-3.bin","suggestedFilename":"g9-e1-3.bin"}
++  5907ms   [setter-browser] Browser.downloadProgress guid=6ae3fefa-84ae-4007-b5c4-faacc9d01e41: 6 events, states inProgress>completed, last at +47ms {"guid":"6ae3fefa-84ae-4007-b5c4-faacc9d01e41","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-3\\g9-e1-3.bin"}
++  5908ms   [setter-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  6309ms   [setter-browser] socket closed normally (close frame)
++  6309ms   -- E1.4 browser-socket Page.setDownloadBehavior --
++  6311ms   [setter-browser-Page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-4"} FAILED: 'Page.setDownloadBehavior' wasn't found (1ms)
++  6715ms   [setter-browser-Page] socket closed normally (close frame)
++  6715ms   -- E1.5 behavior values and argument errors --
++  6720ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"deny"} (no downloadPath) -> {} (1ms)
++  6720ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"allow"} (no downloadPath) FAILED: downloadPath not provided (1ms)
++  6721ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"allowAndName"} (no downloadPath) FAILED: downloadPath not provided (0ms)
++  6721ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"default"} (no downloadPath) -> {} (0ms)
++  6721ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"hold"} (no downloadPath) -> {} (0ms)
++  6722ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"pending"} (no downloadPath) -> {} (0ms)
++  6722ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"relative/dir"} (relative path) -> {} (0ms)
++  6722ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  6722ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"deny"} (no downloadPath) -> {} (0ms)
++  6722ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"allow"} (no downloadPath) FAILED: downloadPath not provided (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"allowAndName"} (no downloadPath) FAILED: downloadPath not provided (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"default"} (no downloadPath) -> {} (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"hold"} (no downloadPath) -> {} (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"pending"} (no downloadPath) -> {} (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"relative/dir"} (relative path) -> {} (0ms)
++  6723ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  6724ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"deny"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6724ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"allow"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6724ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"allowAndName"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6724ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"default"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6724ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"hold"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6725ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"pending"} (no downloadPath) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6725ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"relative/dir"} (relative path) FAILED: 'Page.setDownloadBehavior' wasn't found (1ms)
++  6725ms   [setter-values-browser] Page.setDownloadBehavior {"behavior":"default"} (reset) FAILED: 'Page.setDownloadBehavior' wasn't found (0ms)
++  6726ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"deny"} (no downloadPath) -> {} (0ms)
++  6726ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allow"} (no downloadPath) FAILED: downloadPath not provided (0ms)
++  6726ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allowAndName"} (no downloadPath) FAILED: downloadPath not provided (0ms)
++  6726ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"default"} (no downloadPath) -> {} (0ms)
++  6726ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"hold"} (no downloadPath) -> {} (0ms)
++  6727ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"pending"} (no downloadPath) -> {} (0ms)
++  6727ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"relative/dir"} (relative path) -> {} (0ms)
++  6727ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  6728ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-ctx","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"} (page socket, T1 own browserContextId) -> {} (0ms)
++  6728ms   [setter-values-page] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-ctx","browserContextId":"NOSUCHCONTEXT"} (page socket, unknown context) FAILED: Failed to find browser context for id NOSUCHCONTEXT (0ms)
++  6729ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-ctx","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"} (browser socket, T1 own browserContextId) -> {} (0ms)
++  6729ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++  6729ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"default","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"} (reset, by id) -> {} (0ms)
++  6729ms   -- E1.6 allow with a directory that does not exist yet --
++  6729ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-missing\\deeper","eventsEnabled":true} -> {} (0ms)
++  6729ms --- trial E1.6 missing dir: click #dl in T1
++  6734ms   trigger: "clicked #dl"
++  7254ms   landed: stage-e1-missing/deeper/g9-e1-missing.bin (2048 B, report-bytes) (first finished file seen 111ms after the trigger started)
++  7254ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"0197c544-63c2-411d-8b6b-68567e2104ef","url":"http://127.0.0.1:52538/f/g9-e1-missing.bin","suggestedFilename":"g9-e1-missing.bin"}
++  7254ms   [page-T1] Page.downloadProgress guid=0197c544-63c2-411d-8b6b-68567e2104ef: 6 events, states inProgress>completed, last at +50ms {"guid":"0197c544-63c2-411d-8b6b-68567e2104ef","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  7254ms   [setter-values-page] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"0197c544-63c2-411d-8b6b-68567e2104ef","url":"http://127.0.0.1:52538/f/g9-e1-missing.bin","suggestedFilename":"g9-e1-missing.bin"}
++  7254ms   [setter-values-page] Page.downloadProgress guid=0197c544-63c2-411d-8b6b-68567e2104ef: 6 events, states inProgress>completed, last at +50ms {"guid":"0197c544-63c2-411d-8b6b-68567e2104ef","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  7254ms   [setter-values-browser] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"0197c544-63c2-411d-8b6b-68567e2104ef","url":"http://127.0.0.1:52538/f/g9-e1-missing.bin","suggestedFilename":"g9-e1-missing.bin"}
++  7254ms   [setter-values-browser] Browser.downloadProgress guid=0197c544-63c2-411d-8b6b-68567e2104ef: 6 events, states inProgress>completed, last at +50ms {"guid":"0197c544-63c2-411d-8b6b-68567e2104ef","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-missing\\deeper\\g9-e1-missing.bin"}
++  7254ms   the missing dir exists now: true
++  7254ms   -- E1.7 deny --
++  7255ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"deny","eventsEnabled":true} -> {} (0ms)
++  7255ms --- trial E1.7 deny: click #dl in T1
++  7262ms   trigger: "clicked #dl"
++  9327ms   landed: NOTHING in any watched dir (waited 2072ms)
++  9328ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","url":"http://127.0.0.1:52538/f/g9-e1-deny.bin","suggestedFilename":"g9-e1-deny.bin"}
++  9328ms   [page-T1] Page.downloadProgress guid=e4cebc49-8fe2-4497-a58a-842c0baefb07: 2 events, states inProgress>canceled, last at +10ms {"guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++  9328ms   [setter-values-page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","url":"http://127.0.0.1:52538/f/g9-e1-deny.bin","suggestedFilename":"g9-e1-deny.bin"}
++  9328ms   [setter-values-page] Page.downloadProgress guid=e4cebc49-8fe2-4497-a58a-842c0baefb07: 2 events, states inProgress>canceled, last at +10ms {"guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++  9328ms   [setter-values-browser] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","url":"http://127.0.0.1:52538/f/g9-e1-deny.bin","suggestedFilename":"g9-e1-deny.bin"}
++  9328ms   [setter-values-browser] Browser.downloadProgress guid=e4cebc49-8fe2-4497-a58a-842c0baefb07: 2 events, states inProgress>canceled, last at +10ms {"guid":"e4cebc49-8fe2-4497-a58a-842c0baefb07","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++  9328ms   -- E1.8 allowAndName --
++  9328ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allowAndName","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-name","eventsEnabled":true} -> {} (0ms)
++  9328ms --- trial E1.8 allowAndName: click #dl in T1
++  9336ms   trigger: "clicked #dl"
++  9853ms   landed: stage-e1-name/86dfecd9-2c02-4af2-b39e-e4805d951e65 (2048 B, report-bytes) (first finished file seen 122ms after the trigger started)
++  9853ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","url":"http://127.0.0.1:52538/f/g9-e1-name.bin","suggestedFilename":"g9-e1-name.bin"}
++  9853ms   [page-T1] Page.downloadProgress guid=86dfecd9-2c02-4af2-b39e-e4805d951e65: 6 events, states inProgress>completed, last at +48ms {"guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  9853ms   [setter-values-page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","url":"http://127.0.0.1:52538/f/g9-e1-name.bin","suggestedFilename":"g9-e1-name.bin"}
++  9853ms   [setter-values-page] Page.downloadProgress guid=86dfecd9-2c02-4af2-b39e-e4805d951e65: 6 events, states inProgress>completed, last at +48ms {"guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++  9853ms   [setter-values-browser] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","url":"http://127.0.0.1:52538/f/g9-e1-name.bin","suggestedFilename":"g9-e1-name.bin"}
++  9853ms   [setter-values-browser] Browser.downloadProgress guid=86dfecd9-2c02-4af2-b39e-e4805d951e65: 6 events, states inProgress>completed, last at +48ms {"guid":"86dfecd9-2c02-4af2-b39e-e4805d951e65","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-name\\86dfecd9-2c02-4af2-b39e-e4805d951e65"}
++  9853ms   -- E1.8b a behavior value outside the documented set ("hold") --
++  9854ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"hold","eventsEnabled":true} -> {} (0ms)
++  9854ms --- trial E1.8b "hold": click #dl in T1
++  9861ms   trigger: "clicked #dl"
++ 12885ms   landed: NOTHING in any watched dir (waited 3031ms)
++ 12885ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"724afc79-e716-41e4-929f-873c0e6b1c03","url":"http://127.0.0.1:52538/f/g9-e1-hold.bin","suggestedFilename":"g9-e1-hold.bin"}
++ 12885ms   [page-T1] Page.downloadProgress guid=724afc79-e716-41e4-929f-873c0e6b1c03: 4 events, states inProgress>canceled, last at +12ms {"guid":"724afc79-e716-41e4-929f-873c0e6b1c03","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 12885ms   [setter-values-page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"724afc79-e716-41e4-929f-873c0e6b1c03","url":"http://127.0.0.1:52538/f/g9-e1-hold.bin","suggestedFilename":"g9-e1-hold.bin"}
++ 12885ms   [setter-values-page] Page.downloadProgress guid=724afc79-e716-41e4-929f-873c0e6b1c03: 4 events, states inProgress>canceled, last at +12ms {"guid":"724afc79-e716-41e4-929f-873c0e6b1c03","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 12885ms   [setter-values-browser] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"724afc79-e716-41e4-929f-873c0e6b1c03","url":"http://127.0.0.1:52538/f/g9-e1-hold.bin","suggestedFilename":"g9-e1-hold.bin"}
++ 12885ms   [setter-values-browser] Browser.downloadProgress guid=724afc79-e716-41e4-929f-873c0e6b1c03: 4 events, states inProgress>canceled, last at +12ms {"guid":"724afc79-e716-41e4-929f-873c0e6b1c03","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 12886ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"hold"} (page socket) -> {} (1ms)
++ 12886ms --- trial E1.8c Page "hold": click #dl in T1
++ 12893ms   trigger: "clicked #dl"
++ 15916ms   landed: NOTHING in any watched dir (waited 3029ms)
++ 15916ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a6625700-d735-4e75-bb0d-e164f524439b","url":"http://127.0.0.1:52538/f/g9-e1-page-hold.bin","suggestedFilename":"g9-e1-page-hold.bin"}
++ 15916ms   [page-T1] Page.downloadProgress guid=a6625700-d735-4e75-bb0d-e164f524439b: 4 events, states inProgress>canceled, last at +12ms {"guid":"a6625700-d735-4e75-bb0d-e164f524439b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 15916ms   [setter-values-page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a6625700-d735-4e75-bb0d-e164f524439b","url":"http://127.0.0.1:52538/f/g9-e1-page-hold.bin","suggestedFilename":"g9-e1-page-hold.bin"}
++ 15916ms   [setter-values-page] Page.downloadProgress guid=a6625700-d735-4e75-bb0d-e164f524439b: 4 events, states inProgress>canceled, last at +12ms {"guid":"a6625700-d735-4e75-bb0d-e164f524439b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 15916ms   [setter-values-browser] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a6625700-d735-4e75-bb0d-e164f524439b","url":"http://127.0.0.1:52538/f/g9-e1-page-hold.bin","suggestedFilename":"g9-e1-page-hold.bin"}
++ 15916ms   [setter-values-browser] Browser.downloadProgress guid=a6625700-d735-4e75-bb0d-e164f524439b: 4 events, states inProgress>canceled, last at +12ms {"guid":"a6625700-d735-4e75-bb0d-e164f524439b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 15917ms   [setter-values-page] Page.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++ 15917ms   -- E1.9 allow WITHOUT eventsEnabled on the browser socket --
++ 15918ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e1-noevents"} -> {} (1ms)
++ 15918ms --- trial E1.9 allow, eventsEnabled omitted: click #dl in T1
++ 15925ms   trigger: "clicked #dl"
++ 16442ms   landed: stage-e1-noevents/g9-e1-noevents.bin (2048 B, report-bytes) (first finished file seen 120ms after the trigger started)
++ 16442ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a3079e33-dda0-44f7-8e44-81a3df969fea","url":"http://127.0.0.1:52538/f/g9-e1-noevents.bin","suggestedFilename":"g9-e1-noevents.bin"}
++ 16442ms   [page-T1] Page.downloadProgress guid=a3079e33-dda0-44f7-8e44-81a3df969fea: 6 events, states inProgress>completed, last at +47ms {"guid":"a3079e33-dda0-44f7-8e44-81a3df969fea","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 16442ms   [setter-values-page] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a3079e33-dda0-44f7-8e44-81a3df969fea","url":"http://127.0.0.1:52538/f/g9-e1-noevents.bin","suggestedFilename":"g9-e1-noevents.bin"}
++ 16442ms   [setter-values-page] Page.downloadProgress guid=a3079e33-dda0-44f7-8e44-81a3df969fea: 6 events, states inProgress>completed, last at +47ms {"guid":"a3079e33-dda0-44f7-8e44-81a3df969fea","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 16443ms   [setter-values-browser] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++ 16856ms   [setter-values-page] socket closed normally (close frame)
++ 17260ms   [setter-values-browser] socket closed normally (close frame)
++ 17260ms --- trial E1 control after reset+close: click #dl in T1
++ 17267ms   trigger: "clicked #dl"
++ 20297ms   landed: NOTHING in any watched dir (waited 3036ms)
++ 20297ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"d4b974bc-c2aa-4e96-a442-57d1ba7e883a","url":"http://127.0.0.1:52538/f/g9-e1-control.bin","suggestedFilename":"g9-e1-control.bin"}
++ 20298ms   [page-T1] Page.downloadProgress guid=d4b974bc-c2aa-4e96-a442-57d1ba7e883a: 4 events, states inProgress>canceled, last at +11ms {"guid":"d4b974bc-c2aa-4e96-a442-57d1ba7e883a","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 20298ms ===== E2: scope and revert =====
++ 20404ms   T2 (default ctx) targetId=6695EA76620FCF608D10AFF04D54753F ctx=F9A5F787C73F219E2C0DA0C3E8611C43; T3 (new ctx) targetId=BB10784CB2E8CD33D58074F98375284B ctx=73A4F554EDC65F73C638FE00243E3462
++ 20404ms   -- E2.a Page.setDownloadBehavior on a page socket of T1, then closed normally --
++ 20410ms   [setter-E2a-page-Page] Page.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2a"} -> {} (1ms)
++ 20410ms --- trial e2a: click in T1 (the setter's tab)
++ 20438ms   trigger: "clicked #dl"
++ 20959ms   landed: stage-e2a/g9-e2a-T1.bin (2048 B, report-bytes) (first finished file seen 132ms after the trigger started)
++ 20959ms   [page-T1] +  35ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"bfed4a8f-d169-4b60-9500-2952cfca784d","url":"http://127.0.0.1:52538/f/g9-e2a-T1.bin","suggestedFilename":"g9-e2a-T1.bin"}
++ 20959ms   [page-T1] Page.downloadProgress guid=bfed4a8f-d169-4b60-9500-2952cfca784d: 6 events, states inProgress>completed, last at +81ms {"guid":"bfed4a8f-d169-4b60-9500-2952cfca784d","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 20959ms   [setter-E2a-page-Page] +  35ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"bfed4a8f-d169-4b60-9500-2952cfca784d","url":"http://127.0.0.1:52538/f/g9-e2a-T1.bin","suggestedFilename":"g9-e2a-T1.bin"}
++ 20959ms   [setter-E2a-page-Page] Page.downloadProgress guid=bfed4a8f-d169-4b60-9500-2952cfca784d: 6 events, states inProgress>completed, last at +81ms {"guid":"bfed4a8f-d169-4b60-9500-2952cfca784d","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 20959ms --- trial e2a: click in T2 (same context, other tab)
++ 20979ms   trigger: "clicked #dl"
++ 21509ms   landed: stage-e2a/g9-e2a-T2.bin (2048 B, report-bytes) (first finished file seen 135ms after the trigger started)
++ 21509ms   [page-T2] +  23ms Page.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"8c29ac34-43e6-42d3-8b32-b0c36818282f","url":"http://127.0.0.1:52538/f/g9-e2a-T2.bin","suggestedFilename":"g9-e2a-T2.bin"}
++ 21509ms   [page-T2] Page.downloadProgress guid=8c29ac34-43e6-42d3-8b32-b0c36818282f: 6 events, states inProgress>completed, last at +59ms {"guid":"8c29ac34-43e6-42d3-8b32-b0c36818282f","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 21509ms --- trial e2a: click in T3 (other browser context)
++ 21521ms   trigger: "clicked #dl"
++ 24549ms   landed: NOTHING in any watched dir (waited 3039ms)
++ 24549ms   [page-T3(ctxC)] +  14ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"013106b8-624e-48c3-86b7-d90eadad282d","url":"http://127.0.0.1:52538/f/g9-e2a-T3.bin","suggestedFilename":"g9-e2a-T3.bin"}
++ 24549ms   [page-T3(ctxC)] Page.downloadProgress guid=013106b8-624e-48c3-86b7-d90eadad282d: 5 events, states inProgress>canceled, last at +18ms {"guid":"013106b8-624e-48c3-86b7-d90eadad282d","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 24951ms   [setter-E2a-page-Page] socket closed normally (close frame)
++ 24951ms --- trial e2a after close: click in T1
++ 24968ms   trigger: "clicked #dl"
++ 27989ms   landed: NOTHING in any watched dir (waited 3038ms)
++ 27990ms   [page-T1] +  24ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"301438df-7d48-4dd7-9f43-13bb43c663a7","url":"http://127.0.0.1:52538/f/g9-e2a-after-close.bin","suggestedFilename":"g9-e2a-after-close.bin"}
++ 27990ms   [page-T1] Page.downloadProgress guid=301438df-7d48-4dd7-9f43-13bb43c663a7: 5 events, states inProgress>canceled, last at +26ms {"guid":"301438df-7d48-4dd7-9f43-13bb43c663a7","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 27990ms   -- E2.b Browser.setDownloadBehavior on a page socket of T1, then closed normally --
++ 27993ms   [setter-E2b-page-Browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2b","eventsEnabled":true} -> {} (0ms)
++ 27993ms --- trial e2b: click in T1 (the setter's tab)
++ 28002ms   trigger: "clicked #dl"
++ 28515ms   landed: stage-e2b/g9-e2b-T1.bin (2048 B, report-bytes) (first finished file seen 119ms after the trigger started)
++ 28515ms   [page-T1] +  14ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","url":"http://127.0.0.1:52538/f/g9-e2b-T1.bin","suggestedFilename":"g9-e2b-T1.bin"}
++ 28515ms   [page-T1] Page.downloadProgress guid=e3ec4ac4-44fa-4208-8d16-aaeb3042d105: 6 events, states inProgress>completed, last at +55ms {"guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 28515ms   [setter-E2b-page-Browser] +  14ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","url":"http://127.0.0.1:52538/f/g9-e2b-T1.bin","suggestedFilename":"g9-e2b-T1.bin"}
++ 28515ms   [setter-E2b-page-Browser] +  14ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","url":"http://127.0.0.1:52538/f/g9-e2b-T1.bin","suggestedFilename":"g9-e2b-T1.bin"}
++ 28515ms   [setter-E2b-page-Browser] Browser.downloadProgress guid=e3ec4ac4-44fa-4208-8d16-aaeb3042d105: 6 events, states inProgress>completed, last at +55ms {"guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2b\\g9-e2b-T1.bin"}
++ 28515ms   [setter-E2b-page-Browser] Page.downloadProgress guid=e3ec4ac4-44fa-4208-8d16-aaeb3042d105: 6 events, states inProgress>completed, last at +55ms {"guid":"e3ec4ac4-44fa-4208-8d16-aaeb3042d105","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 28515ms --- trial e2b: click in T2 (same context, other tab)
++ 28532ms   trigger: "clicked #dl"
++ 29056ms   landed: stage-e2b/g9-e2b-T2.bin (2048 B, report-bytes) (first finished file seen 121ms after the trigger started)
++ 29057ms   [page-T2] +  24ms Page.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"e2af67cd-8ab7-4e1c-9474-336a68b1798f","url":"http://127.0.0.1:52538/f/g9-e2b-T2.bin","suggestedFilename":"g9-e2b-T2.bin"}
++ 29057ms   [page-T2] Page.downloadProgress guid=e2af67cd-8ab7-4e1c-9474-336a68b1798f: 6 events, states inProgress>completed, last at +63ms {"guid":"e2af67cd-8ab7-4e1c-9474-336a68b1798f","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 29057ms --- trial e2b: click in T3 (other browser context)
++ 29061ms   trigger: "clicked #dl"
++ 32111ms   landed: NOTHING in any watched dir (waited 3054ms)
++ 32111ms   [page-T3(ctxC)] +  10ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"7335a9ad-b752-4b70-8f06-7fa3ea6890e6","url":"http://127.0.0.1:52538/f/g9-e2b-T3.bin","suggestedFilename":"g9-e2b-T3.bin"}
++ 32112ms   [page-T3(ctxC)] Page.downloadProgress guid=7335a9ad-b752-4b70-8f06-7fa3ea6890e6: 5 events, states inProgress>canceled, last at +13ms {"guid":"7335a9ad-b752-4b70-8f06-7fa3ea6890e6","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 32513ms   [setter-E2b-page-Browser] socket closed normally (close frame)
++ 32513ms --- trial e2b after close: click in T1
++ 32534ms   trigger: "clicked #dl"
++ 35553ms   landed: NOTHING in any watched dir (waited 3040ms)
++ 35554ms   [page-T1] +  23ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"6757f764-789e-4016-96d9-c5ae21caba21","url":"http://127.0.0.1:52538/f/g9-e2b-after-close.bin","suggestedFilename":"g9-e2b-after-close.bin"}
++ 35554ms   [page-T1] Page.downloadProgress guid=6757f764-789e-4016-96d9-c5ae21caba21: 4 events, states inProgress>canceled, last at +24ms {"guid":"6757f764-789e-4016-96d9-c5ae21caba21","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 35554ms   -- E2.c Browser.setDownloadBehavior on a browser socket (no context, then ctxC), then closed normally --
++ 35556ms   [setter-E2c-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c","eventsEnabled":true} -> {} (0ms)
++ 35556ms --- trial e2c: click in T1 (the setter's tab)
++ 35560ms   trigger: "clicked #dl"
++ 36091ms   landed: stage-e2c/g9-e2c-T1.bin (2048 B, report-bytes) (first finished file seen 119ms after the trigger started)
++ 36091ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"25c8082d-eed2-4a88-bb2d-b01e5b536591","url":"http://127.0.0.1:52538/f/g9-e2c-T1.bin","suggestedFilename":"g9-e2c-T1.bin"}
++ 36091ms   [page-T1] Page.downloadProgress guid=25c8082d-eed2-4a88-bb2d-b01e5b536591: 6 events, states inProgress>completed, last at +46ms {"guid":"25c8082d-eed2-4a88-bb2d-b01e5b536591","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 36091ms   [setter-E2c-browser] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"25c8082d-eed2-4a88-bb2d-b01e5b536591","url":"http://127.0.0.1:52538/f/g9-e2c-T1.bin","suggestedFilename":"g9-e2c-T1.bin"}
++ 36091ms   [setter-E2c-browser] Browser.downloadProgress guid=25c8082d-eed2-4a88-bb2d-b01e5b536591: 6 events, states inProgress>completed, last at +46ms {"guid":"25c8082d-eed2-4a88-bb2d-b01e5b536591","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c\\g9-e2c-T1.bin"}
++ 36091ms --- trial e2c: click in T2 (same context, other tab)
++ 36121ms   trigger: "clicked #dl"
++ 36636ms   landed: stage-e2c/g9-e2c-T2.bin (2048 B, report-bytes) (first finished file seen 138ms after the trigger started)
++ 36636ms   [page-T2] +  36ms Page.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"6ef2a43d-ad81-4a6c-a318-1b71531dfc45","url":"http://127.0.0.1:52538/f/g9-e2c-T2.bin","suggestedFilename":"g9-e2c-T2.bin"}
++ 36637ms   [page-T2] Page.downloadProgress guid=6ef2a43d-ad81-4a6c-a318-1b71531dfc45: 6 events, states inProgress>completed, last at +72ms {"guid":"6ef2a43d-ad81-4a6c-a318-1b71531dfc45","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 36637ms   [setter-E2c-browser] +  37ms Browser.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"6ef2a43d-ad81-4a6c-a318-1b71531dfc45","url":"http://127.0.0.1:52538/f/g9-e2c-T2.bin","suggestedFilename":"g9-e2c-T2.bin"}
++ 36637ms   [setter-E2c-browser] Browser.downloadProgress guid=6ef2a43d-ad81-4a6c-a318-1b71531dfc45: 6 events, states inProgress>completed, last at +72ms {"guid":"6ef2a43d-ad81-4a6c-a318-1b71531dfc45","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c\\g9-e2c-T2.bin"}
++ 36637ms --- trial e2c: click in T3 (other browser context)
++ 36646ms   trigger: "clicked #dl"
++ 39688ms   landed: NOTHING in any watched dir (waited 3049ms)
++ 39688ms   [page-T3(ctxC)] +  10ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"599383e8-6d2c-44f9-9e64-53ee5d95845e","url":"http://127.0.0.1:52538/f/g9-e2c-T3.bin","suggestedFilename":"g9-e2c-T3.bin"}
++ 39688ms   [page-T3(ctxC)] Page.downloadProgress guid=599383e8-6d2c-44f9-9e64-53ee5d95845e: 4 events, states inProgress>canceled, last at +12ms {"guid":"599383e8-6d2c-44f9-9e64-53ee5d95845e","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 39688ms   [setter-E2c-browser] +  10ms Browser.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"599383e8-6d2c-44f9-9e64-53ee5d95845e","url":"http://127.0.0.1:52538/f/g9-e2c-T3.bin","suggestedFilename":"g9-e2c-T3.bin"}
++ 39688ms   [setter-E2c-browser] Browser.downloadProgress guid=599383e8-6d2c-44f9-9e64-53ee5d95845e: 4 events, states inProgress>canceled, last at +12ms {"guid":"599383e8-6d2c-44f9-9e64-53ee5d95845e","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 39689ms   [setter-E2c-browser] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c-ctxC","browserContextId":"73A4F554EDC65F73C638FE00243E3462","eventsEnabled":true} (explicit ctxC) -> {} (1ms)
++ 39689ms --- trial e2c with ctxC set too: click in T3
++ 39699ms   trigger: "clicked #dl"
++ 40212ms   landed: stage-e2c-ctxC/g9-e2c-ctxC-T3.bin (2048 B, report-bytes) (first finished file seen 116ms after the trigger started)
++ 40213ms   [page-T3(ctxC)] +  10ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"f3a83095-2220-4a35-935f-6343c3b7bd63","url":"http://127.0.0.1:52538/f/g9-e2c-ctxC-T3.bin","suggestedFilename":"g9-e2c-ctxC-T3.bin"}
++ 40213ms   [page-T3(ctxC)] Page.downloadProgress guid=f3a83095-2220-4a35-935f-6343c3b7bd63: 6 events, states inProgress>completed, last at +46ms {"guid":"f3a83095-2220-4a35-935f-6343c3b7bd63","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 40213ms   [setter-E2c-browser] +  10ms Browser.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"f3a83095-2220-4a35-935f-6343c3b7bd63","url":"http://127.0.0.1:52538/f/g9-e2c-ctxC-T3.bin","suggestedFilename":"g9-e2c-ctxC-T3.bin"}
++ 40213ms   [setter-E2c-browser] Browser.downloadProgress guid=f3a83095-2220-4a35-935f-6343c3b7bd63: 6 events, states inProgress>completed, last at +46ms {"guid":"f3a83095-2220-4a35-935f-6343c3b7bd63","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c-ctxC\\g9-e2c-ctxC-T3.bin"}
++ 40213ms --- trial e2c with ctxC set too: click in T1
++ 40233ms   trigger: "clicked #dl"
++ 40761ms   landed: stage-e2c/g9-e2c-ctxC-T1.bin (2048 B, report-bytes) (first finished file seen 137ms after the trigger started)
++ 40761ms   [page-T1] +  25ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"4d5123a0-8ec4-4f32-ad48-729d0e19a7a1","url":"http://127.0.0.1:52538/f/g9-e2c-ctxC-T1.bin","suggestedFilename":"g9-e2c-ctxC-T1.bin"}
++ 40761ms   [page-T1] Page.downloadProgress guid=4d5123a0-8ec4-4f32-ad48-729d0e19a7a1: 6 events, states inProgress>completed, last at +63ms {"guid":"4d5123a0-8ec4-4f32-ad48-729d0e19a7a1","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 40761ms   [setter-E2c-browser] +  25ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"4d5123a0-8ec4-4f32-ad48-729d0e19a7a1","url":"http://127.0.0.1:52538/f/g9-e2c-ctxC-T1.bin","suggestedFilename":"g9-e2c-ctxC-T1.bin"}
++ 40761ms   [setter-E2c-browser] Browser.downloadProgress guid=4d5123a0-8ec4-4f32-ad48-729d0e19a7a1: 6 events, states inProgress>completed, last at +63ms {"guid":"4d5123a0-8ec4-4f32-ad48-729d0e19a7a1","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2c\\g9-e2c-ctxC-T1.bin"}
++ 41168ms   [setter-E2c-browser] socket closed normally (close frame)
++ 41168ms --- trial e2c after close: click in T1
++ 41180ms   trigger: "clicked #dl"
++ 44219ms   landed: NOTHING in any watched dir (waited 3046ms)
++ 44219ms   [page-T1] +  16ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"49d2a738-ba8f-435c-a919-6740e8075c65","url":"http://127.0.0.1:52538/f/g9-e2c-after-close-T1.bin","suggestedFilename":"g9-e2c-after-close-T1.bin"}
++ 44219ms   [page-T1] Page.downloadProgress guid=49d2a738-ba8f-435c-a919-6740e8075c65: 5 events, states inProgress>canceled, last at +18ms {"guid":"49d2a738-ba8f-435c-a919-6740e8075c65","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 44219ms --- trial e2c after close: click in T3
++ 44224ms   trigger: "clicked #dl"
++ 47247ms   landed: NOTHING in any watched dir (waited 3026ms)
++ 47247ms   [page-T3(ctxC)] +  10ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"dff8bcab-1151-4b9e-8573-451a340c4b9b","url":"http://127.0.0.1:52538/f/g9-e2c-after-close-T3.bin","suggestedFilename":"g9-e2c-after-close-T3.bin"}
++ 47247ms   [page-T3(ctxC)] Page.downloadProgress guid=dff8bcab-1151-4b9e-8573-451a340c4b9b: 4 events, states inProgress>canceled, last at +12ms {"guid":"dff8bcab-1151-4b9e-8573-451a340c4b9b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 47247ms   -- E2.d page socket TERMINATED (no close frame) while allow is set --
++ 47249ms   [setter-E2d-terminate] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2d","eventsEnabled":true} -> {} (0ms)
++ 47249ms --- trial e2d before terminate: click in T1
++ 47257ms   trigger: "clicked #dl"
++ 47773ms   landed: stage-e2d/g9-e2d-before.bin (2048 B, report-bytes) (first finished file seen 120ms after the trigger started)
++ 47773ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","url":"http://127.0.0.1:52538/f/g9-e2d-before.bin","suggestedFilename":"g9-e2d-before.bin"}
++ 47773ms   [page-T1] Page.downloadProgress guid=659b79b1-6f73-439f-a1a7-75054e640d5e: 6 events, states inProgress>completed, last at +47ms {"guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 47773ms   [setter-E2d-terminate] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","url":"http://127.0.0.1:52538/f/g9-e2d-before.bin","suggestedFilename":"g9-e2d-before.bin"}
++ 47773ms   [setter-E2d-terminate] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","url":"http://127.0.0.1:52538/f/g9-e2d-before.bin","suggestedFilename":"g9-e2d-before.bin"}
++ 47773ms   [setter-E2d-terminate] Browser.downloadProgress guid=659b79b1-6f73-439f-a1a7-75054e640d5e: 6 events, states inProgress>completed, last at +47ms {"guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2d\\g9-e2d-before.bin"}
++ 47773ms   [setter-E2d-terminate] Page.downloadProgress guid=659b79b1-6f73-439f-a1a7-75054e640d5e: 6 events, states inProgress>completed, last at +47ms {"guid":"659b79b1-6f73-439f-a1a7-75054e640d5e","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 48173ms   [setter-E2d-terminate] socket TERMINATED (ws.terminate(): TCP destroyed, no close frame)
++ 48173ms --- trial e2d after terminate: click in T1
++ 48181ms   trigger: "clicked #dl"
++ 51207ms   landed: NOTHING in any watched dir (waited 3032ms)
++ 51207ms   [page-T1] +  18ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"439696b0-8cae-4b7e-bb29-6e30d52b7fc0","url":"http://127.0.0.1:52538/f/g9-e2d-after-terminate.bin","suggestedFilename":"g9-e2d-after-terminate.bin"}
++ 51207ms   [page-T1] Page.downloadProgress guid=439696b0-8cae-4b7e-bb29-6e30d52b7fc0: 4 events, states inProgress>canceled, last at +20ms {"guid":"439696b0-8cae-4b7e-bb29-6e30d52b7fc0","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 51207ms   -- E2.e the PROCESS holding the setting socket is killed --
++ 51269ms   child pid 14400 says: SET {}
++ 51269ms --- trial e2e child holds allow: click in T1
++ 51276ms   trigger: "clicked #dl"
++ 51812ms   landed: stage-e2e-kill/g9-e2e-before-kill.bin (2048 B, report-bytes) (first finished file seen 127ms after the trigger started)
++ 51813ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"bd6f93ab-622f-417d-b322-d76f6cd2dee3","url":"http://127.0.0.1:52538/f/g9-e2e-before-kill.bin","suggestedFilename":"g9-e2e-before-kill.bin"}
++ 51813ms   [page-T1] Page.downloadProgress guid=bd6f93ab-622f-417d-b322-d76f6cd2dee3: 6 events, states inProgress>completed, last at +50ms {"guid":"bd6f93ab-622f-417d-b322-d76f6cd2dee3","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 52231ms   child pid 14400 killed (SIGKILL; on Windows TerminateProcess): exitCode=null signal=SIGKILL
++ 52231ms --- trial e2e after the child was killed: click in T1
++ 52240ms   trigger: "clicked #dl"
++ 55268ms   landed: NOTHING in any watched dir (waited 3034ms)
++ 55268ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"2234746d-31d9-4f4f-a142-56375475472e","url":"http://127.0.0.1:52538/f/g9-e2e-after-kill.bin","suggestedFilename":"g9-e2e-after-kill.bin"}
++ 55268ms   [page-T1] Page.downloadProgress guid=2234746d-31d9-4f4f-a142-56375475472e: 4 events, states inProgress>canceled, last at +12ms {"guid":"2234746d-31d9-4f4f-a142-56375475472e","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 55268ms   -- E2.f a download IN FLIGHT when the setting process is killed (2048 B over 3 s) --
++ 55324ms   child pid 4784 says: SET {}
++ 55325ms --- trial e2f slow download started, child killed ~800ms later
++ 56152ms   during the download, before the kill: ["stage-e2f-inflight/g9-e2f-inflight.bin.crdownload"]
++ 56564ms   child pid 4784 killed (SIGKILL; on Windows TerminateProcess): exitCode=null signal=SIGKILL
++ 56564ms   trigger: "clicked, then killed the child"
++ 61343ms   landed: stage-e2f-inflight/g9-e2f-inflight.bin (2048 B, report-bytes) (waited 6017ms)
++ 61343ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"10ab8017-5ec2-42a6-957e-d2d3c6406669","url":"http://127.0.0.1:52538/f/g9-e2f-inflight.bin?slow=3000","suggestedFilename":"g9-e2f-inflight.bin"}
++ 61343ms   [page-T1] Page.downloadProgress guid=10ab8017-5ec2-42a6-957e-d2d3c6406669: 11 events, states inProgress>completed, last at +2713ms {"guid":"10ab8017-5ec2-42a6-957e-d2d3c6406669","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 61343ms   served for e2f: {"/f/g9-e2f-inflight.bin?slow=3000":{"requests":1,"methods":["GET"]}}
++ 61343ms   -- E2.g who resets: a quiet socket closing; another socket that set another context closing --
++ 61346ms   [setter-E2g-A] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2g-A","eventsEnabled":true} -> {} (0ms)
++ 61760ms   [quiet-E2g] socket closed normally (close frame)
++ 61760ms --- trial e2g after a quiet page socket (getTargetInfo+Page.enable only) closed: click in T1
++ 61765ms   trigger: "clicked #dl"
++ 62287ms   landed: stage-e2g-A/g9-e2g-after-quiet.bin (2048 B, report-bytes) (first finished file seen 109ms after the trigger started)
++ 62287ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","url":"http://127.0.0.1:52538/f/g9-e2g-after-quiet.bin","suggestedFilename":"g9-e2g-after-quiet.bin"}
++ 62287ms   [page-T1] Page.downloadProgress guid=b12dcf90-2d75-440b-8912-b6af1a8a665f: 6 events, states inProgress>completed, last at +51ms {"guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 62287ms   [setter-E2g-A] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","url":"http://127.0.0.1:52538/f/g9-e2g-after-quiet.bin","suggestedFilename":"g9-e2g-after-quiet.bin"}
++ 62287ms   [setter-E2g-A] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","url":"http://127.0.0.1:52538/f/g9-e2g-after-quiet.bin","suggestedFilename":"g9-e2g-after-quiet.bin"}
++ 62287ms   [setter-E2g-A] Browser.downloadProgress guid=b12dcf90-2d75-440b-8912-b6af1a8a665f: 6 events, states inProgress>completed, last at +51ms {"guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2g-A\\g9-e2g-after-quiet.bin"}
++ 62287ms   [setter-E2g-A] Page.downloadProgress guid=b12dcf90-2d75-440b-8912-b6af1a8a665f: 6 events, states inProgress>completed, last at +51ms {"guid":"b12dcf90-2d75-440b-8912-b6af1a8a665f","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 62289ms   [setter-E2g-X-ctxC] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2g-X","browserContextId":"73A4F554EDC65F73C638FE00243E3462","eventsEnabled":true} -> {} (0ms)
++ 62289ms --- trial e2g ctxC set by X: click in T3
++ 62295ms   trigger: "clicked #dl"
++ 62819ms   landed: stage-e2g-X/g9-e2g-X-T3.bin (2048 B, report-bytes) (first finished file seen 119ms after the trigger started)
++ 62819ms   [page-T3(ctxC)] +  11ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"0c51ad1d-fdaa-408c-9fa4-45a5ae759053","url":"http://127.0.0.1:52538/f/g9-e2g-X-T3.bin","suggestedFilename":"g9-e2g-X-T3.bin"}
++ 62820ms   [page-T3(ctxC)] Page.downloadProgress guid=0c51ad1d-fdaa-408c-9fa4-45a5ae759053: 6 events, states inProgress>completed, last at +52ms {"guid":"0c51ad1d-fdaa-408c-9fa4-45a5ae759053","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 62820ms   [setter-E2g-X-ctxC] +  11ms Browser.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"0c51ad1d-fdaa-408c-9fa4-45a5ae759053","url":"http://127.0.0.1:52538/f/g9-e2g-X-T3.bin","suggestedFilename":"g9-e2g-X-T3.bin"}
++ 62820ms   [setter-E2g-X-ctxC] Browser.downloadProgress guid=0c51ad1d-fdaa-408c-9fa4-45a5ae759053: 6 events, states inProgress>completed, last at +52ms {"guid":"0c51ad1d-fdaa-408c-9fa4-45a5ae759053","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2g-X\\g9-e2g-X-T3.bin"}
++ 63220ms   [setter-E2g-X-ctxC] socket closed normally (close frame)
++ 63220ms --- trial e2g after X (set ctxC) closed: click in T1 (default ctx, set by A)
++ 63228ms   trigger: "clicked #dl"
++ 63750ms   landed: stage-e2g-A/g9-e2g-after-X-T1.bin (2048 B, report-bytes) (first finished file seen 125ms after the trigger started)
++ 63750ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","url":"http://127.0.0.1:52538/f/g9-e2g-after-X-T1.bin","suggestedFilename":"g9-e2g-after-X-T1.bin"}
++ 63750ms   [page-T1] Page.downloadProgress guid=ae9a8682-ab17-4a01-b91a-5d863f7bcd28: 6 events, states inProgress>completed, last at +48ms {"guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 63750ms   [setter-E2g-A] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","url":"http://127.0.0.1:52538/f/g9-e2g-after-X-T1.bin","suggestedFilename":"g9-e2g-after-X-T1.bin"}
++ 63750ms   [setter-E2g-A] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","url":"http://127.0.0.1:52538/f/g9-e2g-after-X-T1.bin","suggestedFilename":"g9-e2g-after-X-T1.bin"}
++ 63750ms   [setter-E2g-A] Browser.downloadProgress guid=ae9a8682-ab17-4a01-b91a-5d863f7bcd28: 6 events, states inProgress>completed, last at +48ms {"guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2g-A\\g9-e2g-after-X-T1.bin"}
++ 63750ms   [setter-E2g-A] Page.downloadProgress guid=ae9a8682-ab17-4a01-b91a-5d863f7bcd28: 6 events, states inProgress>completed, last at +48ms {"guid":"ae9a8682-ab17-4a01-b91a-5d863f7bcd28","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 63750ms --- trial e2g after X closed: click in T3 (ctxC, set by X)
++ 63766ms   trigger: "clicked #dl"
++ 66792ms   landed: NOTHING in any watched dir (waited 3041ms)
++ 66792ms   [page-T3(ctxC)] +  18ms Page.downloadWillBegin {"frameId":"BB10784CB2E8CD33D58074F98375284B","guid":"c01dabb7-d2c5-43ed-981c-52f9a993a4df","url":"http://127.0.0.1:52538/f/g9-e2g-after-X-T3.bin","suggestedFilename":"g9-e2g-after-X-T3.bin"}
++ 66792ms   [page-T3(ctxC)] Page.downloadProgress guid=c01dabb7-d2c5-43ed-981c-52f9a993a4df: 4 events, states inProgress>canceled, last at +19ms {"guid":"c01dabb7-d2c5-43ed-981c-52f9a993a4df","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 66792ms   -- E2.h two sockets set the SAME context: last wins? closing the later one --
++ 66796ms   [setter-E2h-B] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2h-B","eventsEnabled":true} -> {} (0ms)
++ 66796ms --- trial e2h A then B set the default ctx: click in T1
++ 66804ms   trigger: "clicked #dl"
++ 67311ms   landed: stage-e2h-B/g9-e2h-both.bin (2048 B, report-bytes) (first finished file seen 111ms after the trigger started)
++ 67311ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","url":"http://127.0.0.1:52538/f/g9-e2h-both.bin","suggestedFilename":"g9-e2h-both.bin"}
++ 67311ms   [page-T1] Page.downloadProgress guid=fe3396c3-d3d9-43fe-9fce-d4891cd88bbf: 6 events, states inProgress>completed, last at +47ms {"guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 67311ms   [setter-E2g-A] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","url":"http://127.0.0.1:52538/f/g9-e2h-both.bin","suggestedFilename":"g9-e2h-both.bin"}
++ 67311ms   [setter-E2g-A] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","url":"http://127.0.0.1:52538/f/g9-e2h-both.bin","suggestedFilename":"g9-e2h-both.bin"}
++ 67311ms   [setter-E2g-A] Browser.downloadProgress guid=fe3396c3-d3d9-43fe-9fce-d4891cd88bbf: 6 events, states inProgress>completed, last at +47ms {"guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e2h-B\\g9-e2h-both.bin"}
++ 67311ms   [setter-E2g-A] Page.downloadProgress guid=fe3396c3-d3d9-43fe-9fce-d4891cd88bbf: 6 events, states inProgress>completed, last at +47ms {"guid":"fe3396c3-d3d9-43fe-9fce-d4891cd88bbf","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 67725ms   [setter-E2h-B] socket closed normally (close frame)
++ 67725ms --- trial e2h after B closed (A still open): click in T1
++ 67734ms   trigger: "clicked #dl"
++ 70778ms   landed: NOTHING in any watched dir (waited 3049ms)
++ 70779ms   [page-T1] +  13ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","url":"http://127.0.0.1:52538/f/g9-e2h-after-B.bin","suggestedFilename":"g9-e2h-after-B.bin"}
++ 70779ms   [page-T1] Page.downloadProgress guid=9a759b51-1859-4c2d-85e5-bd27f537b0ba: 4 events, states inProgress>canceled, last at +14ms {"guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 70779ms   [setter-E2g-A] +  13ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","url":"http://127.0.0.1:52538/f/g9-e2h-after-B.bin","suggestedFilename":"g9-e2h-after-B.bin"}
++ 70779ms   [setter-E2g-A] +  13ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","url":"http://127.0.0.1:52538/f/g9-e2h-after-B.bin","suggestedFilename":"g9-e2h-after-B.bin"}
++ 70779ms   [setter-E2g-A] Browser.downloadProgress guid=9a759b51-1859-4c2d-85e5-bd27f537b0ba: 4 events, states inProgress>canceled, last at +14ms {"guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 70779ms   [setter-E2g-A] Page.downloadProgress guid=9a759b51-1859-4c2d-85e5-bd27f537b0ba: 4 events, states inProgress>canceled, last at +14ms {"guid":"9a759b51-1859-4c2d-85e5-bd27f537b0ba","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 71192ms   [setter-E2g-A] socket closed normally (close frame)
++ 71192ms --- trial e2h after A closed too: click in T1
++ 71201ms   trigger: "clicked #dl"
++ 74216ms   landed: NOTHING in any watched dir (waited 3022ms)
++ 74216ms   [page-T1] +  12ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"94ec7740-dcb6-4759-8044-60f553cfe3ef","url":"http://127.0.0.1:52538/f/g9-e2h-after-A.bin","suggestedFilename":"g9-e2h-after-A.bin"}
++ 74216ms   [page-T1] Page.downloadProgress guid=94ec7740-dcb6-4759-8044-60f553cfe3ef: 5 events, states inProgress>canceled, last at +15ms {"guid":"94ec7740-dcb6-4759-8044-60f553cfe3ef","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 74216ms ===== E3: event fields and download classes =====
++ 74217ms   [browser-E3] Target.setDiscoverTargets {"discover":true} -> {} (1ms)
++ 74521ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3","eventsEnabled":true} -> {} (1ms)
++ 74522ms --- trial E3.1 plain click in T1 (both sockets listening)
++ 74531ms   trigger: "clicked #dl"
++ 75064ms   landed: stage-e3/g9-e3-plain.bin (2048 B, report-bytes) (first finished file seen 122ms after the trigger started)
++ 75064ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e066556a-f0eb-431a-b3b7-af22b33de718","url":"http://127.0.0.1:52538/f/g9-e3-plain.bin","suggestedFilename":"g9-e3-plain.bin"}
++ 75064ms   [page-T1] +  12ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 75064ms   [page-T1] +  12ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [page-T1] +  12ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [page-T1] +  13ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [page-T1] +  34ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [page-T1] +  52ms Page.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 75064ms   [browser-E3] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"e066556a-f0eb-431a-b3b7-af22b33de718","url":"http://127.0.0.1:52538/f/g9-e3-plain.bin","suggestedFilename":"g9-e3-plain.bin"}
++ 75064ms   [browser-E3] +  12ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 75064ms   [browser-E3] +  12ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [browser-E3] +  12ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [browser-E3] +  13ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [browser-E3] +  34ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 75064ms   [browser-E3] +  52ms Browser.downloadProgress {"guid":"e066556a-f0eb-431a-b3b7-af22b33de718","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-plain.bin"}
++ 75064ms --- trial E3.2 slow download in T1 (progress events)
++ 75083ms   trigger: "clicked #dl"
++ 76692ms   landed: stage-e3/g9-e3-slow.bin (2048 B, report-bytes) (first finished file seen 1222ms after the trigger started)
++ 76692ms   [page-T1] +  22ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","url":"http://127.0.0.1:52538/f/g9-e3-slow.bin?slow=1200","suggestedFilename":"g9-e3-slow.bin"}
++ 76692ms   [page-T1] +  25ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 76692ms   [page-T1] +  54ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 76692ms   [page-T1] + 535ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":1024,"state":"inProgress"}
++ 76692ms   [page-T1] +1037ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":1792,"state":"inProgress"}
++ 76692ms   [page-T1] +1116ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [page-T1] +1116ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [page-T1] +1116ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [page-T1] +1133ms Page.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 76692ms   [browser-E3] +  22ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","url":"http://127.0.0.1:52538/f/g9-e3-slow.bin?slow=1200","suggestedFilename":"g9-e3-slow.bin"}
++ 76692ms   [browser-E3] +  25ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 76692ms   [browser-E3] +  54ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 76692ms   [browser-E3] + 535ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":1024,"state":"inProgress"}
++ 76692ms   [browser-E3] +1037ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":1792,"state":"inProgress"}
++ 76692ms   [browser-E3] +1116ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [browser-E3] +1116ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [browser-E3] +1116ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 76692ms   [browser-E3] +1133ms Browser.downloadProgress {"guid":"37169f30-bb1c-48a9-82eb-e420b8d684f9","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-slow.bin"}
++ 76692ms --- trial E3.3 new window: click a target=_blank link to an attachment
++ 76709ms   trigger: "clicked #blank-dl"
++ 77218ms   landed: stage-e3/g9-e3-newwin-link.bin (2048 B, report-bytes) (first finished file seen 120ms after the trigger started)
++ 77218ms   [browser-E3] +   4ms Target.targetCreated {"targetInfo":{"targetId":"C9A4230C73FC63C0C03668D3390E4869","type":"page","title":"","url":"","attached":false,"openerId":"0D74A00F58D93E13B7C0DD0AE1EB838A","canAccessOpener":false,"openerFrameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"}}
++ 77218ms   [browser-E3] +  17ms Browser.downloadWillBegin {"frameId":"C9A4230C73FC63C0C03668D3390E4869","guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","url":"http://127.0.0.1:52538/f/g9-e3-newwin-link.bin","suggestedFilename":"g9-e3-newwin-link.bin"}
++ 77218ms   [browser-E3] +  18ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 77218ms   [browser-E3] +  18ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77218ms   [browser-E3] +  18ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77218ms   [browser-E3] +  20ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77218ms   [browser-E3] +  24ms Target.targetDestroyed {"targetId":"C9A4230C73FC63C0C03668D3390E4869"}
++ 77218ms   [browser-E3] +  41ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77218ms   [browser-E3] +  62ms Browser.downloadProgress {"guid":"9ec4f7a7-4c01-4f04-8469-eea668d6e2db","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-newwin-link.bin"}
++ 77218ms --- trial E3.4 new window: window.open(attachment) from a script with userGesture
++ 77234ms   trigger: "true"
++ 77754ms   landed: stage-e3/g9-e3-newwin-open.bin (2048 B, report-bytes) (first finished file seen 118ms after the trigger started)
++ 77754ms   [browser-E3] +   4ms Target.targetCreated {"targetInfo":{"targetId":"7B20A4476C3B5B0A6CF8130556DEAC99","type":"page","title":"","url":"","attached":false,"openerId":"0D74A00F58D93E13B7C0DD0AE1EB838A","canAccessOpener":true,"openerFrameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"}}
++ 77754ms   [browser-E3] +  15ms Browser.downloadWillBegin {"frameId":"7B20A4476C3B5B0A6CF8130556DEAC99","guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","url":"http://127.0.0.1:52538/f/g9-e3-newwin-open.bin","suggestedFilename":"g9-e3-newwin-open.bin"}
++ 77754ms   [browser-E3] +  15ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 77754ms   [browser-E3] +  15ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77754ms   [browser-E3] +  15ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77754ms   [browser-E3] +  16ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77755ms   [browser-E3] +  22ms Target.targetDestroyed {"targetId":"7B20A4476C3B5B0A6CF8130556DEAC99"}
++ 77755ms   [browser-E3] +  39ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 77755ms   [browser-E3] +  66ms Browser.downloadProgress {"guid":"ccd63b90-684d-4242-a059-0af3f6e734f0","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-newwin-open.bin"}
++ 77763ms   load cross-site iframe: loaded
++ 77764ms   iframe targets now: [{"targetId":"ABC6C45744C55CA10E7373F2A327828D","type":"iframe","title":"http://localhost:52539/iframe-child?target=http%3A%2F%2Flocalhost%3A52539%2Ff%2Fg9-e3-xo-iframe.bin","url":"http://localhost:52539/iframe-child?target=http%3A%2F%2Flocalhost%3A52539%2Ff%2Fg9-e3-xo-iframe.bin","attached":false,"parentId":"0D74A00F58D93E13B7C0DD0AE1EB838A","canAccessOpener":false,"parentFrameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","browserContextId":"F9A5F787C73F219E2C0DA0C3E8611C43"}]
++ 77764ms   T1 frame tree: undefined
++ 77764ms --- trial E3.5 cross-site iframe: user click inside it
++ 77776ms   trigger: "clicked #xo"
++ 78310ms   landed: stage-e3/g9-e3-xo-iframe.bin (2048 B, report-bytes) (first finished file seen 125ms after the trigger started)
++ 78310ms   [browser-E3] +  13ms Browser.downloadWillBegin {"frameId":"ABC6C45744C55CA10E7373F2A327828D","guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","url":"http://localhost:52539/f/g9-e3-xo-iframe.bin","suggestedFilename":"g9-e3-xo-iframe.bin"}
++ 78310ms   [browser-E3] +  14ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 78310ms   [browser-E3] +  14ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78310ms   [browser-E3] +  14ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78310ms   [browser-E3] +  15ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78310ms   [browser-E3] +  43ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78310ms   [browser-E3] +  64ms Browser.downloadProgress {"guid":"4101a982-7a1f-4311-9cc5-544cff384a7d","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-xo-iframe.bin"}
++ 78310ms   served for the iframe download: {"/iframe-child?target=http%3A%2F%2Flocalhost%3A52539%2Ff%2Fg9-e3-xo-iframe.bin":{"requests":1,"methods":["GET"]},"/f/g9-e3-xo-iframe.bin":{"requests":1,"methods":["GET"]}}
++ 78322ms   register service worker in T1: controlled-after-change
++ 78322ms --- trial E3.6 service-worker-made response: click #dl to /sw-dl/g9-e3-sw.bin
++ 78334ms   trigger: "clicked #dl"
++ 78866ms   landed: stage-e3/g9-e3-sw.bin (2048 B, report-bytes) (first finished file seen 127ms after the trigger started)
++ 78866ms   [page-T1] +  14ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","url":"http://127.0.0.1:52538/sw-dl/g9-e3-sw.bin","suggestedFilename":"g9-e3-sw.bin"}
++ 78866ms   [page-T1] +  16ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":0,"state":"inProgress"}
++ 78866ms   [page-T1] +  16ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":2048,"state":"inProgress"}
++ 78866ms   [page-T1] +  16ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":2048,"state":"inProgress"}
++ 78866ms   [page-T1] +  16ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [page-T1] +  32ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [page-T1] +  49ms Page.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 78867ms   [browser-E3] +  14ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","url":"http://127.0.0.1:52538/sw-dl/g9-e3-sw.bin","suggestedFilename":"g9-e3-sw.bin"}
++ 78867ms   [browser-E3] +  16ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":0,"state":"inProgress"}
++ 78867ms   [browser-E3] +  16ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [browser-E3] +  16ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":0,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [browser-E3] +  16ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [browser-E3] +  32ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 78867ms   [browser-E3] +  49ms Browser.downloadProgress {"guid":"a6893a4a-e170-441d-9596-e13b4ec998a6","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-sw.bin"}
++ 78867ms   served for /sw-dl (0 = the service worker answered): {}
++ 78869ms   unregister the service worker: unregistered 1
++ 78941ms   [page-T1] back on the fixture page (was http://127.0.0.1:52538/)
++ 78941ms --- trial E3.7 programmatic a.click() of a download="name" anchor on a blob: URL
++ 78945ms   trigger: "blob:http://127.0.0.1:52538/e087efc3-4d5f-4e6e-b929-11b82ef56a64"
++ 79471ms   landed: stage-e3/g9-e3-blob.bin (16 B, other(16B:"\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\ [clipped 18 chars])) (first finished file seen 107ms after the trigger started)
++ 79471ms   [page-T1] +   3ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","url":"blob:http://127.0.0.1:52538/e087efc3-4d5f-4e6e-b929-11b82ef56a64","suggestedFilename":"g9-e3-blob.bin"}
++ 79471ms   [page-T1] +   3ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":0,"state":"inProgress"}
++ 79471ms   [page-T1] +   3ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [page-T1] +   3ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [page-T1] +   5ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [page-T1] +  21ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [page-T1] +  39ms Page.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"completed"}
++ 79471ms   [browser-E3] +   3ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","url":"blob:http://127.0.0.1:52538/e087efc3-4d5f-4e6e-b929-11b82ef56a64","suggestedFilename":"g9-e3-blob.bin"}
++ 79471ms   [browser-E3] +   3ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":0,"state":"inProgress"}
++ 79471ms   [browser-E3] +   3ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [browser-E3] +   3ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [browser-E3] +   5ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [browser-E3] +  21ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"inProgress"}
++ 79471ms   [browser-E3] +  39ms Browser.downloadProgress {"guid":"0db9d7a8-3661-4b6e-8777-90c9f1af0158","totalBytes":16,"receivedBytes":16,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e3\\g9-e3-blob.bin"}
++ 79472ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (1ms)
++ 79472ms ===== E4: post, one-time, chunked, gzip under allow and deny =====
++ 79472ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e4","eventsEnabled":true} -> {} (0ms)
++ 79472ms --- trial E4 allow post
++ 79478ms   trigger: "clicked #dl-post"
++ 79995ms   landed: stage-e4/g9-e4-post.pdf (2048 B, report-bytes) (first finished file seen 116ms after the trigger started)
++ 79995ms   [page-T1] +  14ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"312ae5f3-5da5-42da-b47e-1808ed40d051","url":"http://127.0.0.1:52538/post.pdf?k=allow","suggestedFilename":"g9-e4-post.pdf"}
++ 79995ms   [page-T1] Page.downloadProgress guid=312ae5f3-5da5-42da-b47e-1808ed40d051: 6 events, states inProgress>completed, last at +54ms {"guid":"312ae5f3-5da5-42da-b47e-1808ed40d051","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 79995ms   [browser-E3] +  14ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"312ae5f3-5da5-42da-b47e-1808ed40d051","url":"http://127.0.0.1:52538/post.pdf?k=allow","suggestedFilename":"g9-e4-post.pdf"}
++ 79995ms   [browser-E3] Browser.downloadProgress guid=312ae5f3-5da5-42da-b47e-1808ed40d051: 6 events, states inProgress>completed, last at +54ms {"guid":"312ae5f3-5da5-42da-b47e-1808ed40d051","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e4\\g9-e4-post.pdf"}
++ 79996ms   served: {"/post.pdf?k=allow":{"requests":1,"methods":["POST"]}}; T1 url now: http://127.0.0.1:52538/
++ 79996ms --- trial E4 allow token
++ 80001ms   trigger: "clicked #dl"
++ 80531ms   landed: stage-e4/g9-e4-token-allow.bin (2048 B, report-bytes) (first finished file seen 120ms after the trigger started)
++ 80532ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"62705f60-427d-47b5-97c4-ee38438f9751","url":"http://127.0.0.1:52538/token.bin?k=allow","suggestedFilename":"g9-e4-token-allow.bin"}
++ 80532ms   [page-T1] Page.downloadProgress guid=62705f60-427d-47b5-97c4-ee38438f9751: 6 events, states inProgress>completed, last at +46ms {"guid":"62705f60-427d-47b5-97c4-ee38438f9751","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 80532ms   [browser-E3] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"62705f60-427d-47b5-97c4-ee38438f9751","url":"http://127.0.0.1:52538/token.bin?k=allow","suggestedFilename":"g9-e4-token-allow.bin"}
++ 80532ms   [browser-E3] Browser.downloadProgress guid=62705f60-427d-47b5-97c4-ee38438f9751: 6 events, states inProgress>completed, last at +46ms {"guid":"62705f60-427d-47b5-97c4-ee38438f9751","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e4\\g9-e4-token-allow.bin"}
++ 80532ms   served: {"/token.bin?k=allow":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 80533ms --- trial E4 allow chunked
++ 80539ms   trigger: "clicked #dl"
++ 81072ms   landed: stage-e4/g9-e4-chunked-allow.bin (2048 B, report-bytes) (first finished file seen 121ms after the trigger started)
++ 81072ms   [page-T1] +  12ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"87b2919e-688e-4c8f-b55d-b786ee702d5a","url":"http://127.0.0.1:52538/chunked.bin?k=allow","suggestedFilename":"g9-e4-chunked-allow.bin"}
++ 81072ms   [page-T1] Page.downloadProgress guid=87b2919e-688e-4c8f-b55d-b786ee702d5a: 6 events, states inProgress>completed, last at +54ms {"guid":"87b2919e-688e-4c8f-b55d-b786ee702d5a","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 81072ms   [browser-E3] +  12ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"87b2919e-688e-4c8f-b55d-b786ee702d5a","url":"http://127.0.0.1:52538/chunked.bin?k=allow","suggestedFilename":"g9-e4-chunked-allow.bin"}
++ 81072ms   [browser-E3] Browser.downloadProgress guid=87b2919e-688e-4c8f-b55d-b786ee702d5a: 6 events, states inProgress>completed, last at +54ms {"guid":"87b2919e-688e-4c8f-b55d-b786ee702d5a","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e4\\g9-e4-chunked-allow.bin"}
++ 81073ms   served: {"/chunked.bin?k=allow":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 81074ms --- trial E4 allow gzip
++ 81082ms   trigger: "clicked #dl"
++ 81607ms   landed: stage-e4/g9-e4-gzip-allow.bin (2048 B, report-bytes) (first finished file seen 116ms after the trigger started)
++ 81607ms   [page-T1] +  17ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"82de2545-1a8a-46dc-ac38-bedd8275f1ec","url":"http://127.0.0.1:52538/gzip.bin?k=allow","suggestedFilename":"g9-e4-gzip-allow.bin"}
++ 81607ms   [page-T1] Page.downloadProgress guid=82de2545-1a8a-46dc-ac38-bedd8275f1ec: 6 events, states inProgress>completed, last at +63ms {"guid":"82de2545-1a8a-46dc-ac38-bedd8275f1ec","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 81607ms   [browser-E3] +  17ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"82de2545-1a8a-46dc-ac38-bedd8275f1ec","url":"http://127.0.0.1:52538/gzip.bin?k=allow","suggestedFilename":"g9-e4-gzip-allow.bin"}
++ 81607ms   [browser-E3] Browser.downloadProgress guid=82de2545-1a8a-46dc-ac38-bedd8275f1ec: 6 events, states inProgress>completed, last at +63ms {"guid":"82de2545-1a8a-46dc-ac38-bedd8275f1ec","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e4\\g9-e4-gzip-allow.bin"}
++ 81608ms   served: {"/gzip.bin?k=allow":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 81609ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"deny","eventsEnabled":true} -> {} (0ms)
++ 81609ms --- trial E4 deny post
++ 81614ms   trigger: "clicked #dl-post"
++ 83671ms   landed: NOTHING in any watched dir (waited 2059ms)
++ 83671ms   [page-T1] +  17ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"cd3ff8bd-e33c-4ec9-8c99-42c31483d97b","url":"http://127.0.0.1:52538/post.pdf?k=deny","suggestedFilename":"g9-e4-post.pdf"}
++ 83671ms   [page-T1] Page.downloadProgress guid=cd3ff8bd-e33c-4ec9-8c99-42c31483d97b: 2 events, states inProgress>canceled, last at +19ms {"guid":"cd3ff8bd-e33c-4ec9-8c99-42c31483d97b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 83671ms   [browser-E3] +  17ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"cd3ff8bd-e33c-4ec9-8c99-42c31483d97b","url":"http://127.0.0.1:52538/post.pdf?k=deny","suggestedFilename":"g9-e4-post.pdf"}
++ 83671ms   [browser-E3] Browser.downloadProgress guid=cd3ff8bd-e33c-4ec9-8c99-42c31483d97b: 2 events, states inProgress>canceled, last at +19ms {"guid":"cd3ff8bd-e33c-4ec9-8c99-42c31483d97b","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 83672ms   served: {"/post.pdf?k=deny":{"requests":1,"methods":["POST"]}}; T1 url now: http://127.0.0.1:52538/
++ 83673ms --- trial E4 deny token
++ 83684ms   trigger: "clicked #dl"
++ 85736ms   landed: NOTHING in any watched dir (waited 2060ms)
++ 85736ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"d3449bd2-1e16-455e-b7a2-656f03660a13","url":"http://127.0.0.1:52538/token.bin?k=deny","suggestedFilename":"g9-e4-token-deny.bin"}
++ 85736ms   [page-T1] Page.downloadProgress guid=d3449bd2-1e16-455e-b7a2-656f03660a13: 2 events, states inProgress>canceled, last at +12ms {"guid":"d3449bd2-1e16-455e-b7a2-656f03660a13","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 85736ms   [browser-E3] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"d3449bd2-1e16-455e-b7a2-656f03660a13","url":"http://127.0.0.1:52538/token.bin?k=deny","suggestedFilename":"g9-e4-token-deny.bin"}
++ 85736ms   [browser-E3] Browser.downloadProgress guid=d3449bd2-1e16-455e-b7a2-656f03660a13: 2 events, states inProgress>canceled, last at +12ms {"guid":"d3449bd2-1e16-455e-b7a2-656f03660a13","totalBytes":2048,"receivedBytes":0,"state":"canceled"}
++ 85737ms   served: {"/token.bin?k=deny":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 85737ms --- trial E4 deny chunked
++ 85745ms   trigger: "clicked #dl"
++ 87803ms   landed: NOTHING in any watched dir (waited 2064ms)
++ 87803ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"f23175e1-0c9c-4b57-ac65-b7737306b760","url":"http://127.0.0.1:52538/chunked.bin?k=deny","suggestedFilename":"g9-e4-chunked-deny.bin"}
++ 87803ms   [page-T1] Page.downloadProgress guid=f23175e1-0c9c-4b57-ac65-b7737306b760: 2 events, states inProgress>canceled, last at +11ms {"guid":"f23175e1-0c9c-4b57-ac65-b7737306b760","totalBytes":0,"receivedBytes":0,"state":"canceled"}
++ 87803ms   [browser-E3] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"f23175e1-0c9c-4b57-ac65-b7737306b760","url":"http://127.0.0.1:52538/chunked.bin?k=deny","suggestedFilename":"g9-e4-chunked-deny.bin"}
++ 87803ms   [browser-E3] Browser.downloadProgress guid=f23175e1-0c9c-4b57-ac65-b7737306b760: 2 events, states inProgress>canceled, last at +11ms {"guid":"f23175e1-0c9c-4b57-ac65-b7737306b760","totalBytes":0,"receivedBytes":0,"state":"canceled"}
++ 87805ms   served: {"/chunked.bin?k=deny":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 87805ms --- trial E4 deny gzip
++ 87815ms   trigger: "clicked #dl"
++ 89867ms   landed: NOTHING in any watched dir (waited 2059ms)
++ 89867ms   [page-T1] +  10ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"1bde9f19-30fa-4e46-83ba-58cb4b53e8a1","url":"http://127.0.0.1:52538/gzip.bin?k=deny","suggestedFilename":"g9-e4-gzip-deny.bin"}
++ 89867ms   [page-T1] Page.downloadProgress guid=1bde9f19-30fa-4e46-83ba-58cb4b53e8a1: 2 events, states inProgress>canceled, last at +11ms {"guid":"1bde9f19-30fa-4e46-83ba-58cb4b53e8a1","totalBytes":0,"receivedBytes":0,"state":"canceled"}
++ 89867ms   [browser-E3] +  10ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"1bde9f19-30fa-4e46-83ba-58cb4b53e8a1","url":"http://127.0.0.1:52538/gzip.bin?k=deny","suggestedFilename":"g9-e4-gzip-deny.bin"}
++ 89867ms   [browser-E3] Browser.downloadProgress guid=1bde9f19-30fa-4e46-83ba-58cb4b53e8a1: 2 events, states inProgress>canceled, last at +11ms {"guid":"1bde9f19-30fa-4e46-83ba-58cb4b53e8a1","totalBytes":0,"receivedBytes":0,"state":"canceled"}
++ 89868ms   served: {"/gzip.bin?k=deny":{"requests":1,"methods":["GET"]}}; T1 url now: http://127.0.0.1:52538/
++ 89868ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++ 89868ms ===== E5: two concurrent downloads with the same URL =====
++ 89869ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5a","eventsEnabled":true} -> {} (0ms)
++ 89869ms --- trial E5.a same URL clicked twice in T1 (allow)
++ 89887ms   trigger: "two clicks"
++ 93882ms   landed: stage-e5a/g9-e5-same.bin (2048 B, reversed-bytes(2nd request)) (waited 4011ms)
++ 93882ms   [page-T1] +  11ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","url":"http://127.0.0.1:52538/f/g9-e5-same.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-same.bin"}
++ 93882ms   [page-T1] +  12ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [page-T1] +  23ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","url":"http://127.0.0.1:52538/f/g9-e5-same.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-same.bin"}
++ 93882ms   [page-T1] +  34ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [page-T1] +  35ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [page-T1] +  54ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [page-T1] + 518ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 93882ms   [page-T1] + 548ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 93882ms   [page-T1] +1027ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 93882ms   [page-T1] +1059ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 93882ms   [page-T1] +1385ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1385ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1386ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1386ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1386ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1387ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [page-T1] +1405ms Page.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 93882ms   [page-T1] +1422ms Page.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 93882ms   [browser-E3] +  11ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","url":"http://127.0.0.1:52538/f/g9-e5-same.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-same.bin"}
++ 93882ms   [browser-E3] +  12ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [browser-E3] +  23ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","url":"http://127.0.0.1:52538/f/g9-e5-same.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-same.bin"}
++ 93882ms   [browser-E3] +  34ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [browser-E3] +  35ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [browser-E3] +  54ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 93882ms   [browser-E3] + 518ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 93882ms   [browser-E3] + 548ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 93882ms   [browser-E3] +1027ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 93882ms   [browser-E3] +1059ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 93882ms   [browser-E3] +1385ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1385ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1386ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1386ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1386ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1387ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 93882ms   [browser-E3] +1405ms Browser.downloadProgress {"guid":"7c6a6c9c-26e2-409b-af88-2412cd6b6302","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5a\\g9-e5-same.bin"}
++ 93882ms   [browser-E3] +1422ms Browser.downloadProgress {"guid":"39ded986-845a-4f01-9ca7-2aab1f05ae37","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5a\\g9-e5-same.bin"}
++ 93882ms   served: {"/f/g9-e5-same.bin?slow=1500&vary=1":{"requests":2,"methods":["GET","GET"]}}
++ 93883ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"allow","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5b","eventsEnabled":true} -> {} (0ms)
++ 93883ms --- trial E5.b same URL in T1 and T2 at once (allow)
++ 93919ms   trigger: "T1 then T2"
++ 97914ms   landed: stage-e5b/g9-e5-two-tabs.bin (2048 B, reversed-bytes(2nd request)) (waited 4030ms)
++ 97914ms   [page-T1] +  19ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"4898daea-0842-4673-9166-e1496474b28d","url":"http://127.0.0.1:52538/f/g9-e5-two-tabs.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-two-tabs.bin"}
++ 97914ms   [page-T1] +  20ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97914ms   [page-T1] +  42ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97914ms   [page-T1] + 532ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 97914ms   [page-T1] +1041ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 97914ms   [page-T1] +1394ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97914ms   [page-T1] +1394ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [page-T1] +1396ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [page-T1] +1415ms Page.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 97915ms   [page-T2] +  38ms Page.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"2e024e8c-6c76-41bc-9305-943407372f4b","url":"http://127.0.0.1:52538/f/g9-e5-two-tabs.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-two-tabs.bin"}
++ 97915ms   [page-T2] +  44ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [page-T2] +  62ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [page-T2] + 547ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 97915ms   [page-T2] +1057ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 97915ms   [page-T2] +1416ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [page-T2] +1416ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [page-T2] +1416ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [page-T2] +1437ms Page.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++ 97915ms   [browser-E3] +  19ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"4898daea-0842-4673-9166-e1496474b28d","url":"http://127.0.0.1:52538/f/g9-e5-two-tabs.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-two-tabs.bin"}
++ 97915ms   [browser-E3] +  20ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [browser-E3] +  38ms Browser.downloadWillBegin {"frameId":"6695EA76620FCF608D10AFF04D54753F","guid":"2e024e8c-6c76-41bc-9305-943407372f4b","url":"http://127.0.0.1:52538/f/g9-e5-two-tabs.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-two-tabs.bin"}
++ 97915ms   [browser-E3] +  42ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [browser-E3] +  44ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [browser-E3] +  62ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++ 97915ms   [browser-E3] + 532ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 97915ms   [browser-E3] + 547ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++ 97915ms   [browser-E3] +1041ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 97915ms   [browser-E3] +1057ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++ 97915ms   [browser-E3] +1394ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1394ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1396ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1415ms Browser.downloadProgress {"guid":"4898daea-0842-4673-9166-e1496474b28d","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5b\\g9-e5-two-tabs.bin"}
++ 97915ms   [browser-E3] +1416ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1416ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1416ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++ 97915ms   [browser-E3] +1437ms Browser.downloadProgress {"guid":"2e024e8c-6c76-41bc-9305-943407372f4b","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5b\\g9-e5-two-tabs.bin"}
++ 97915ms   served: {"/f/g9-e5-two-tabs.bin?slow=1500&vary=1":{"requests":2,"methods":["GET","GET"]}}
++ 97915ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"allowAndName","downloadPath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5c","eventsEnabled":true} -> {} (0ms)
++ 97916ms --- trial E5.c same URL clicked twice in T1 (allowAndName)
++ 97953ms   trigger: "two clicks"
++101944ms   landed: stage-e5c/60d5ee18-6a56-499a-bc1e-5464ed91ecbe (2048 B, reversed-bytes(2nd request)), stage-e5c/cc29ff7e-5439-4826-9dea-0f2284a4f3e1 (2048 B, report-bytes) (waited 4026ms)
++101944ms   [page-T1] +  25ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","url":"http://127.0.0.1:52538/f/g9-e5-named.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-named.bin"}
++101944ms   [page-T1] +  25ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [page-T1] +  40ms Page.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","url":"http://127.0.0.1:52538/f/g9-e5-named.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-named.bin"}
++101944ms   [page-T1] +  48ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [page-T1] +  48ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [page-T1] +  68ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [page-T1] + 538ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++101944ms   [page-T1] + 552ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++101944ms   [page-T1] +1046ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++101944ms   [page-T1] +1059ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++101944ms   [page-T1] +1414ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1414ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1415ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1416ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1416ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1418ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [page-T1] +1437ms Page.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++101944ms   [page-T1] +1455ms Page.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"completed"}
++101944ms   [browser-E3] +  25ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","url":"http://127.0.0.1:52538/f/g9-e5-named.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-named.bin"}
++101944ms   [browser-E3] +  25ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [browser-E3] +  40ms Browser.downloadWillBegin {"frameId":"0D74A00F58D93E13B7C0DD0AE1EB838A","guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","url":"http://127.0.0.1:52538/f/g9-e5-named.bin?slow=1500&vary=1","suggestedFilename":"g9-e5-named.bin"}
++101944ms   [browser-E3] +  48ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [browser-E3] +  48ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [browser-E3] +  68ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":0,"state":"inProgress"}
++101944ms   [browser-E3] + 538ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++101944ms   [browser-E3] + 552ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":768,"state":"inProgress"}
++101944ms   [browser-E3] +1046ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++101944ms   [browser-E3] +1059ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":1536,"state":"inProgress"}
++101944ms   [browser-E3] +1414ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1414ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1415ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1416ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1416ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1418ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"inProgress"}
++101944ms   [browser-E3] +1437ms Browser.downloadProgress {"guid":"cc29ff7e-5439-4826-9dea-0f2284a4f3e1","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5c\\cc29ff7e-5439-4826-9dea-0f2284a4f3e1"}
++101944ms   [browser-E3] +1455ms Browser.downloadProgress {"guid":"60d5ee18-6a56-499a-bc1e-5464ed91ecbe","totalBytes":2048,"receivedBytes":2048,"state":"completed","filePath":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\stage-e5c\\60d5ee18-6a56-499a-bc1e-5464ed91ecbe"}
++101944ms   served: {"/f/g9-e5-named.bin?slow=1500&vary=1":{"requests":2,"methods":["GET","GET"]}}
++101944ms   [browser-E3] Browser.setDownloadBehavior {"behavior":"default"} (reset) -> {} (0ms)
++102355ms   [browser-E3] socket closed normally (close frame)
++102362ms   [browser-main] Target.disposeBrowserContext {"browserContextId":"73A4F554EDC65F73C638FE00243E3462"} (cleanup) -> {} (6ms)
++102362ms ===== teardown =====
++102362ms owner's real Downloads folder holds g9-* files: none
++102365ms final listing of every watched dir: ["stage-e1-1/g9-e1-1.bin","stage-e1-2/g9-e1-2.bin","stage-e1-3/g9-e1-3.bin","stage-e1-missing/deeper/g9-e1-missing.bin","stage-e1-name/86dfecd9-2c02-4af2-b39e-e4805d951e65","stage-e1-noevents/g9-e1-noevents.bin","stage-e2a/g9-e2a-T1.bin","stage-e2a/g9-e2a-T2.bin","stage-e2b/g9-e2b-T1.bin","stage-e2b/g9-e2b-T2.bin","stage-e2c/g9-e2c-ctxC-T1.bin","stage-e2c/g9-e2c-T1.bin","stage-e2c/g9-e2c-T2.bin","stage-e2c-ctxC/g9-e2c-ctxC-T3.bin","stage-e2d/g9-e2d-before.bin","stage-e2e-kill/g9-e2e-before-kill.bin","stage-e2f-inflight/g9-e2f-inflight.bin","stage-e2g-A/g9-e2g-after-quiet.bin","stage-e2g-A/g9-e2g-after-X-T1.bin","stage-e2g-X/g9-e2g-X-T3.bin","stage-e2h-B/g9-e2h-both.bin","stage-e3/g9-e3-blob.bin","stage-e3/g9-e3-newwin-link.bin","stage-e3/g9-e3-newwin-open.bin","stage-e3/g9-e3-plain.bin","stage-e3/g9-e3-slow.bin","stage-e3/g9-e3-sw.bin","stage-e3/g9-e3-xo-iframe.bin","stage-e4/g9-e4-chunked-allow.bin","stage-e4/g9-e4-gzip-allow.bin","stage-e4/g9-e4-post.pdf","stage-e4/g9-e4-token-allow.bin","stage-e5a/g9-e5-same.bin","stage-e5b/g9-e5-two-tabs.bin","stage-e5c/60d5ee18-6a56-499a-bc1e-5464ed91ecbe","stage-e5c/cc29ff7e-5439-4826-9dea-0f2284a4f3e1"]
++102488ms chrome exited after Browser.close: true
++103003ms profile Preferences on disk after exit: download={"default_directory":"C:\\Users\\NERO\\AppData\\Local\\Temp\\g9-lab-chrome-stable-RIoJfL\\chrome-default-dir","directory_upgrade":true,"prompt_for_download":true}
++103004ms owner primary: none was running
