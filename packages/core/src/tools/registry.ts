@@ -27,6 +27,14 @@ export interface ParamRequirement {
  * this declaration; it never decides by the tool's name. */
 export type CommandTimeout = 'call-budget';
 
+/** What the transport waits for after the handler returned: `'top-document'`
+ * makes it wait until the page observer messages it has received are
+ * applied (`PageDriverHandle.topDocumentSettled`), so what is read next
+ * about the page (its build and view_sig) is the document the call left the
+ * tab on. A transport reads this declaration; it never decides by the
+ * tool's name. */
+export type Completion = 'top-document';
+
 export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   /** The wire name: 'click', not 'browser.click'. */
   name: string;
@@ -37,6 +45,8 @@ export interface ToolEntry<P = unknown, R extends Requirement = Requirement> {
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => P>>;
   /** Absent: commands keep the transport's own timeouts. */
   commandTimeout?: CommandTimeout;
+  /** Absent: the call ends when its handler returns. */
+  completes?: Completion;
   /** What this call needs beyond `requires`, from its coerced params. */
   needs?(params: P): readonly ParamRequirement[];
   handler(deps: DepsFor<R>, params: P): Promise<ToolOutcome>;
@@ -51,6 +61,7 @@ export interface RegisteredTool {
   listed: boolean;
   coerce: Readonly<Record<Transport, (params: Record<string, unknown>) => unknown>>;
   commandTimeout?: CommandTimeout;
+  completes?: Completion;
   needs?(params: never): readonly ParamRequirement[];
   handler(deps: ToolDeps, params: never): Promise<ToolOutcome>;
 }
