@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.43](https://github.com/jobshimo/browser-link/compare/v1.4.42...v1.4.43) (2026-11-21)
+
+### Notes
+
+- No product change. Experiments E1-E5 for cdp-direct downloads (G9, decision D17) recorded in `packages/plan/lab/2026-11-21-cdp-direct-downloads/`, on Chrome for Testing 118 and stable 157, headless and headed, Windows. Findings: `Page.setDownloadBehavior`/`Browser.setDownloadBehavior` with `allow` and a `downloadPath` work on a page socket and suppress the Save As prompt; there is no behavior that holds a download; the setting covers the tab's whole browser context and reverts to default when the socket that set it closes, is terminated or its process is killed, and also when another client that set the same context closes; new-window and cross-site-iframe downloads reach only a browser-level socket; under `deny` the request is still made; two concurrent same-URL downloads under `allow` leave one file, `allowAndName` keeps both.
+
 ## [1.4.42](https://github.com/jobshimo/browser-link/compare/v1.4.41...v1.4.42) (2026-11-21)
 
 ### Bug Fixes

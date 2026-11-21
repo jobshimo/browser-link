@@ -1,6 +1,6 @@
 {
   "name": "@browser-link/shared",
-  "version": "1.4.42",
+  "version": "1.4.43",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
