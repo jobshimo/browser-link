@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.47](https://github.com/jobshimo/browser-link/compare/v1.4.46...v1.4.47) (2026-11-21)
+
+### Bug Fixes
+
+- cdp-direct: `browser.navigate` on a `cdp:` tab now returns only after the page it landed on has reported its `build` and `view_sig`, so the navigate's `knowledge` start pack, the learner's record of the call and the next `browser.list_tabs` all see the build of the landed page. Before, the page's report was applied only after a check the page answered on its own time, and the navigate could return first: the same navigate then gave `confidence: "unverified"` (build unknown) on one run and `"fresh"` on another. A page whose check does not answer holds the navigate at most 2 s longer and is listed without a build, as before.
+
 ## [1.4.46](https://github.com/jobshimo/browser-link/compare/v1.4.45...v1.4.46) (2026-11-21)
 
 ### Features

@@ -261,6 +261,43 @@ describe('binding messages', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(seen).toEqual([]);
   });
+
+  test('topDocumentSettled waits for every message received so far to be handed on', async () => {
+    let answerProbe: (v: unknown) => void = () => undefined;
+    const probe = new Promise((resolve) => {
+      answerProbe = resolve;
+    });
+    const { session } = recordingSession((e) =>
+      e === TOP_DOCUMENT_PROBE_JS ? probe : value(null),
+    );
+    const driver = driverOn(session);
+    const seen: unknown[] = [];
+    await driver.install({ enableRuntime: false, onTopDocument: (o) => void seen.push(o) });
+    session.emit('Runtime.bindingCalled', { name: OBSERVER_BINDING, payload: docStart });
+    let settled = false;
+    const settling = driver.topDocumentSettled().then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false);
+    answerProbe(value({ doc_id: 'd1' }));
+    await settling;
+    expect(seen).toHaveLength(1);
+  });
+
+  test('topDocumentSettled resolves at once with nothing in flight, and after a failed probe', async () => {
+    const { session } = recordingSession((e) => {
+      if (e === TOP_DOCUMENT_PROBE_JS) throw new Error('renderer gone');
+      return value(null);
+    });
+    const driver = driverOn(session);
+    const seen: unknown[] = [];
+    await driver.install({ enableRuntime: false, onTopDocument: (o) => void seen.push(o) });
+    await driver.topDocumentSettled();
+    session.emit('Runtime.bindingCalled', { name: OBSERVER_BINDING, payload: docStart });
+    await driver.topDocumentSettled();
+    expect(seen).toEqual([]);
+  });
 });
 
 describe('Settler', () => {

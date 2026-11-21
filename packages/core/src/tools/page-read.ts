@@ -9,7 +9,9 @@
  * - `navigate` arms the load wait before the navigation, cancels it when the
  *   navigation fails, and answers `PageInfo.info` as the transport gives it.
  *   Like `evaluate`, both transports share one coercion of a missing or
- *   non-string value: the extension's `String(p[key])`.
+ *   non-string value: the extension's `String(p[key])`. It declares
+ *   `completes: 'top-document'`: cdp-direct returns only after the landed
+ *   document's build and view_sig reports are applied.
  * - `evaluate` declares `commandTimeout: 'call-budget'`: a transport that
  *   bounds commands itself (cdp-direct) makes the call's budget the
  *   per-command timeout of the evaluator it gives.
@@ -87,6 +89,9 @@ export const navigateTool: ToolEntry<NavigateParams, 'navigator' | 'page'> = {
     extension: coerceNavigate,
     'cdp-direct': coerceNavigate,
   },
+  // The landed document's identity reports arrive before its load event, but
+  // a transport may apply them later; the call ends once they are applied.
+  completes: 'top-document',
   handler: async ({ navigator, page }, { url, wait_for_load }) => {
     // Armed before the navigation is sent (see session/load-wait.ts).
     const loadWait = wait_for_load ? page.armLoadWait(NAVIGATE_LOAD_TIMEOUT_MS) : undefined;

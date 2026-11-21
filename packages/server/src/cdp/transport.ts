@@ -626,7 +626,23 @@ export async function callCdpTool(
     }),
     'flow-cancel': cdpFlowCancel,
   };
-  return cdpToolResult(
-    await dispatchTool(TOOL_REGISTRY, CDP_DIRECT_PROVIDES, deps, 'cdp-direct', tool, params),
+  const outcome = await dispatchTool(
+    TOOL_REGISTRY,
+    CDP_DIRECT_PROVIDES,
+    deps,
+    'cdp-direct',
+    tool,
+    params,
   );
+  // An entry that declares `completes: 'top-document'` (navigate) ends only
+  // once the observer messages already received are applied. The landed
+  // document's doc_start and doc_info reach the connection before
+  // Page.loadEventFired (the observer pushes doc_info from its load handler),
+  // but each is applied only after its top-document probe answers, which the
+  // renderer can do after Target.getTargetInfo answered. Waiting here makes
+  // what the caller reads next (list_tabs, the navigate's knowledge, the
+  // learner's record) carry the build and view_sig of the document the
+  // navigate landed on, never a race between the two.
+  if (entry?.completes === 'top-document') await pageDriver(client).topDocumentSettled();
+  return cdpToolResult(outcome);
 }

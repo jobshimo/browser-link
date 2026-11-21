@@ -102,6 +102,12 @@ export interface PageDriverHandle extends PageDriver {
   /** Best-effort removal before the session closes. The in-page teardown
    * runs only when `tearDownPage()` says so at that point. Never throws. */
   uninstall(tearDownPage: () => boolean): Promise<void>;
+  /** Resolves once every observer message received so far has been checked
+   * against the top document and, when it is one, applied and handed to
+   * `onTopDocument`. A message waits for its top-document probe, so without
+   * this a caller that read the page identity right after a load could see
+   * the previous document's, or none. Never rejects. */
+  topDocumentSettled(): Promise<void>;
 }
 
 /** The transport's view of JavaScript dialogs. Read-only and outside
@@ -277,6 +283,8 @@ export function createPageDriver({
 }: PageDriverDeps): PageDriverHandle {
   const observer = createObserverMirror();
   let scriptId: string | undefined;
+  /** The binding messages still being handled (`topDocumentSettled`). */
+  const inFlight = new Set<Promise<void>>();
 
   /** Race a CDP call against `OBSERVER_EVAL_TIMEOUT_MS`; rejects on timeout. */
   const withObserverTimeout = <T>(work: Promise<T>): Promise<T> => {
@@ -509,7 +517,14 @@ export function createPageDriver({
         if (method !== 'Runtime.bindingCalled') return;
         const p = (params ?? {}) as { name?: unknown; payload?: unknown };
         if (p.name !== OBSERVER_BINDING) return;
-        void handleObserverMessage(typeof p.payload === 'string' ? p.payload : '', onTopDocument);
+        // Tracked from the moment it arrives, so a caller that runs after
+        // a later event (Page.loadEventFired) already finds it in flight.
+        const handled = handleObserverMessage(
+          typeof p.payload === 'string' ? p.payload : '',
+          onTopDocument,
+        ).catch(() => undefined);
+        inFlight.add(handled);
+        void handled.finally(() => inFlight.delete(handled));
       });
       try {
         if (enableRuntime) await session.send('Runtime.enable');
@@ -549,6 +564,11 @@ export function createPageDriver({
       } catch {
         // Best effort: the page may already be gone.
       }
+    },
+
+    async topDocumentSettled(): Promise<void> {
+      // Each handler is bounded by its probe's OBSERVER_EVAL_TIMEOUT_MS.
+      await Promise.all([...inFlight]);
     },
   };
 }

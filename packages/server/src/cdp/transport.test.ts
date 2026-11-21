@@ -48,6 +48,7 @@ import {
   notFocusedMessage,
 } from '../generated/core/flow/flow-engine.js';
 import { TOP_DOCUMENT_PROBE_JS } from '../generated/core/support/observer-host.js';
+import { OBSERVER_EVAL_TIMEOUT_MS } from '../generated/core/session/page-driver.js';
 import { closeActivityDb } from '../activity/db.js';
 import { SENSITIVE_PAYLOAD_MARKER, UNIDENTIFIED_FIELD_MARKER } from '../activity/extract.js';
 import { query, record } from '../activity/queries.js';
@@ -79,6 +80,16 @@ class CdpError {
   constructor(readonly message: string) {}
 }
 
+/** A handler returning one of these makes the fake target answer the
+ * command with `result` only after `ms`: a renderer slow to answer one
+ * command while events and other answers keep flowing. */
+class Delayed {
+  constructor(
+    readonly ms: number,
+    readonly result: unknown,
+  ) {}
+}
+
 /** Default Target.getTargetInfo answer — a real page target, so
  * getConnection's connect-time re-validation passes. Tests that need a
  * different target type (e.g. to assert the rejection path) wire their own
@@ -106,6 +117,12 @@ function startFakeTarget(
         if (result === NO_REPLY) return;
         if (result instanceof CdpError) {
           ws.send(JSON.stringify({ id: msg.id, error: { message: result.message } }));
+          return;
+        }
+        if (result instanceof Delayed) {
+          setTimeout(() => {
+            ws.send(JSON.stringify({ id: msg.id, result: result.result }));
+          }, result.ms);
           return;
         }
         ws.send(JSON.stringify({ id: msg.id, result }));
@@ -2113,6 +2130,113 @@ describe('callCdpTool — page observer', () => {
         expect.objectContaining({ build: '3f9a2b1c', viewSig: '00aa11bb' }),
       );
     });
+
+    // A real navigation, in Chrome's wire order: the new document's
+    // doc_start, then its doc_info (pushed from its load handler), then
+    // Page.loadEventFired. Each observer message is applied only after its
+    // top-document probe answers, and the renderer answers that probe
+    // later than Target.getTargetInfo (the browser answers that one).
+    // The navigate must not return before the landed document's identity
+    // is applied, or what the call reads next depends on that race.
+    const LANDED = 'https://example.com/landed';
+    function navigatingPage(probe: (doc: { doc_id: string }) => unknown): Record<string, Handler> {
+      const base = topDocumentPage();
+      return {
+        ...base,
+        'Runtime.evaluate': (params) =>
+          (params as { expression?: string }).expression === TOP_DOCUMENT_PROBE_JS
+            ? probe({ doc_id: 'doc-2' })
+            : (base['Runtime.evaluate'] as Handler)(params),
+        'Page.navigate': () => {
+          pushEvent('Runtime.bindingCalled', {
+            name: OBSERVER_BINDING,
+            payload: JSON.stringify({
+              type: 'doc_start',
+              doc_id: 'doc-2',
+              url: LANDED,
+              version: 1,
+              coverage: 'full',
+            }),
+          });
+          pushEvent('Runtime.bindingCalled', {
+            name: OBSERVER_BINDING,
+            payload: JSON.stringify({
+              type: 'doc_info',
+              doc_id: 'doc-2',
+              url: LANDED,
+              build: '5e5e5e5e',
+              view_sig: '7a7a7a7a',
+              title: 'Landed',
+            }),
+          });
+          pushEvent('Page.loadEventFired', {});
+          return {};
+        },
+        'Target.getTargetInfo': () => ({
+          targetInfo: { type: 'page', title: 'Landed', url: LANDED },
+        }),
+      };
+    }
+    const slowProbe = (doc: { doc_id: string }): Delayed =>
+      new Delayed(150, { result: { value: doc } });
+    const landedTab = (targetId: string) => [
+      { tab_id: `cdp:${targetId}`, url: LANDED, title: 'Landed', transport: 'cdp' as const },
+    ];
+
+    test('a navigate returns only after the landed document reported its build and view_sig', async () => {
+      const { port, targetId } = await startFakeTarget(navigatingPage(slowProbe));
+      grantAccess(port);
+      await callCdpTool(`cdp:${targetId}`, 'navigate', { url: LANDED });
+      expect(withCdpFootprint(landedTab(targetId))).toEqual([
+        { ...landedTab(targetId)[0], build: '5e5e5e5e', view_sig: '7a7a7a7a' },
+      ]);
+    });
+
+    test('the knowledge of a cdp navigate is looked up with the build it landed on', async () => {
+      const { port, targetId } = await startFakeTarget(navigatingPage(slowProbe));
+      grantAccess(port);
+      const getKnowledge = vi.fn(() => null);
+      const recordOutcome = vi.fn();
+      await handleBrowserTool(
+        'browser.navigate',
+        { tab_id: `cdp:${targetId}`, url: LANDED },
+        {
+          listTabs: () => [],
+          listCdpTabs: async () => withCdpFootprint(landedTab(targetId)),
+          callBrowserTool: async () => {
+            throw new Error('the extension transport must not be used for a cdp: tab');
+          },
+          callCdpTool,
+          cdpGate: () => checkCdpDirectGate(),
+          getKnowledge,
+          recordOutcome,
+        },
+        { agent_id: 'agent-p6', pid: 9, binary: 'node' },
+      );
+      expect(getKnowledge).toHaveBeenCalledWith({
+        origin: 'https://example.com',
+        pathname: '/landed',
+        build: '5e5e5e5e',
+      });
+      expect(recordOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'browser.navigate',
+          build: '5e5e5e5e',
+          viewSig: '7a7a7a7a',
+        }),
+      );
+    });
+
+    test('a navigate whose top-document probe never answers returns after the probe timeout, without an identity', async () => {
+      const { port, targetId } = await startFakeTarget(navigatingPage(() => NO_REPLY));
+      grantAccess(port);
+      const started = Date.now();
+      const result = await callCdpTool(`cdp:${targetId}`, 'navigate', { url: LANDED });
+      // The probe gives up after OBSERVER_EVAL_TIMEOUT_MS (2 s).
+      expect(Date.now() - started).toBeLessThan(OBSERVER_EVAL_TIMEOUT_MS + 2_000);
+      expect(result).toEqual({ title: 'Landed', url: LANDED });
+      expect(withCdpFootprint(landedTab(targetId))).toEqual(landedTab(targetId));
+    }, 10_000);
   });
 
   // Parity P3: the dial feeds the connection's pending dialog through core's

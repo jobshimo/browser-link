@@ -435,3 +435,12 @@ describe('command timeouts are declared on the entry', () => {
     ).toEqual(['evaluate']);
   });
 });
+
+describe('completions are declared on the entry', () => {
+  it('only navigate makes the transport wait for the top document', () => {
+    expect(navigateTool.completes).toBe('top-document');
+    expect(
+      [...TOOL_REGISTRY.values()].filter((e) => e.completes !== undefined).map((e) => e.name),
+    ).toEqual(['navigate']);
+  });
+});
