@@ -19,7 +19,7 @@
  * selector mode). `drag` and `canvas_screenshot` joined cdp-direct in
  * 1.4.36, `dialog_respond` in 1.4.39, `wait_for_tab` in 1.4.41, `console`,
  * `network`, `network_body` and `wait_for`'s `network_url` mode in
- * 1.4.45, `set_permission` (as a temporary override) in 1.4.48.
+ * 1.4.45, `set_permission` (as a temporary override) in 1.4.49.
  */
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
 import { cdpToolSupport } from '../generated/core/tools/registry.js';
