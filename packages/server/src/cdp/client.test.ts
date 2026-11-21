@@ -50,6 +50,27 @@ describe('CdpClient', () => {
     client.close();
   });
 
+  test('send() rejects with the error onAnswer throws, instead of never settling', async () => {
+    const port = await startFakeCdpServer((ws, msg) => {
+      ws.send(JSON.stringify({ id: msg.id, result: {} }));
+    });
+    const client = new CdpClient(`ws://127.0.0.1:${port}`);
+    await client.connect();
+    const outcome = await Promise.race([
+      client
+        .send('Test.method', {}, 15_000, () => {
+          throw new Error('callback broke');
+        })
+        .then(
+          () => 'resolved',
+          (err: unknown) => (err as Error).message,
+        ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 1_000)),
+    ]);
+    expect(outcome).toBe('callback broke');
+    client.close();
+  });
+
   test('send() rejects with the server error message', async () => {
     const port = await startFakeCdpServer((ws, msg) => {
       ws.send(JSON.stringify({ id: msg.id, error: { message: 'boom' } }));

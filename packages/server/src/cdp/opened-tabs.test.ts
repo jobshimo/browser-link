@@ -482,6 +482,48 @@ describe('watchOpenedTabs: the first listing (the 1.5 s window)', () => {
     stop();
   });
 
+  test('a candidate whose url is not known yet is judged by url_substring when its url arrives, not counted before', async () => {
+    const fake = fakeSocket({
+      listing: [created(openerPage), child('A', 'http://x/want'), child('B', '')],
+    });
+    const lost = vi.fn();
+    const d = deps(fake, {
+      openerActedRecently: () => true,
+      accepts: (url) => url.includes('want'),
+      onLost: lost,
+    });
+    const stop = await watchOpenedTabs(OPENER_TAB, d);
+    // B could still match: nothing is decided yet.
+    expect(d.emitted).toEqual([]);
+    fake.fire(...changed({ targetId: 'B', type: 'page', url: 'http://x/other', openerId: OPENER }));
+    expect(d.emitted).toEqual([
+      { tabId: 'cdp:A', data: { opened_from: OPENER_TAB, url: 'http://x/want' } },
+    ]);
+    expect(lost).not.toHaveBeenCalled();
+    stop();
+  });
+
+  test('a candidate whose url arrives and matches too makes the listing ambiguous: the watch ends with the named error', async () => {
+    const fake = fakeSocket({
+      listing: [created(openerPage), child('A', 'http://x/want'), child('B', '')],
+    });
+    const lost = vi.fn();
+    const d = deps(fake, {
+      openerActedRecently: () => true,
+      accepts: (url) => url.includes('want'),
+      onLost: lost,
+    });
+    await watchOpenedTabs(OPENER_TAB, d);
+    fake.fire(...changed({ targetId: 'B', type: 'page', url: 'http://x/want2', openerId: OPENER }));
+    expect(d.emitted).toEqual([]);
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect((lost.mock.calls[0][0] as Error).message).toBe(
+      'cdp-direct: browser.wait_for_tab cannot tell which tab cdp:OPENER1 opened: 2 tabs it opened were already open when the wait started, within 1.5 s of its last action: cdp:A (http://x/want), cdp:B (http://x/want2). Call browser.list_tabs and pick one.',
+    );
+    expect(fake.closed).toBe(1);
+    expect(fake.listeners).toBe(0);
+  });
+
   test('a page a wait already returned is not a candidate', async () => {
     const fake = fakeSocket({
       listing: [created(openerPage), child('A', 'http://x/a'), child('B', 'http://x/b')],

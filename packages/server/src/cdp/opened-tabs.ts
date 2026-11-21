@@ -215,8 +215,10 @@ export interface OpenedTabsDeps {
   openSocket(url: string): Promise<BrowserSocket>;
   sink?: CdpTabCreatedSink;
   reported?: Set<string>;
-  /** Called once, with `BROWSER_SOCKET_LOST_ERROR`, when the browser drops
-   * the socket before `stop`. */
+  /** Called once with the error that ended the watch before `stop`:
+   * `BROWSER_SOCKET_LOST_ERROR` when the browser drops the socket, or the
+   * ambiguity error when a first-listing candidate whose url came late
+   * matches as well as another. */
   onLost?: (err: Error) => void;
   /** Read once, when discovery's first listing is complete: whether the
    * opener ran an action within the replay window before the wait started
@@ -289,10 +291,13 @@ export function ambiguousOpenedTabsMessage(
  * in the same chunk is not taken for the listing). A page of that first
  * listing that the opener opened is a candidate only when
  * `openerActedRecently()` holds and `accepts` its url: no candidate, nothing;
- * one, it is reported (now, or when its url arrives); several, the watch
- * rejects with `ambiguousOpenedTabsMessage`. Every other page of the listing
- * is ignored for the whole watch. Pages created afterwards are reported as
- * they come.
+ * one, it is reported; several, the watch rejects with
+ * `ambiguousOpenedTabsMessage`. A candidate whose url is not known yet is
+ * judged when its url arrives: until every such candidate is judged (or
+ * destroyed) nothing of the listing is reported; then one match is reported
+ * and several end the watch through `onLost` with the same message. Every
+ * other page of the listing is ignored for the whole watch. Pages created
+ * afterwards are reported as they come.
  *
  * Resolves to the stop function (idempotent: it unsubscribes and closes the
  * socket); rejects, with nothing left open, when the gate is closed, the
@@ -338,12 +343,46 @@ export async function watchOpenedTabs(
   let listing: [string, unknown][] | null = [];
   // Set by endListing (a closure, so a holder rather than a let).
   const listingOutcome: { ambiguous: Error | null } = { ambiguous: null };
+  // A first listing with candidates whose url was not known yet: judged when
+  // every one of them has a url (or is gone). `matches` are the candidates
+  // `accepts` took so far.
+  let undecided: { matches: OpenedTab[]; waiting: Set<string> } | null = null;
+
+  /** Judge the listing's waiting candidates with this live event; true when
+   * the judgment ended the watch (several matches). */
+  const judge = (method: string, params: unknown): boolean => {
+    if (!undecided) return false;
+    if (method === 'Target.targetDestroyed') {
+      const id = (params as { targetId?: unknown } | null)?.targetId;
+      if (typeof id === 'string') undecided.waiting.delete(id);
+    } else if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
+      const info = targetInfoOf(params);
+      if (info && undecided.waiting.has(info.targetId) && info.url) {
+        undecided.waiting.delete(info.targetId);
+        if (isDrivablePageTarget(info.type, info.url) && accepts(info.url)) {
+          undecided.matches.push({ targetId: info.targetId, url: info.url });
+        }
+      }
+    }
+    if (undecided.waiting.size > 0) return false;
+    const { matches } = undecided;
+    undecided = null;
+    if (matches.length > 1) {
+      stop();
+      deps.onLost?.(new Error(ambiguousOpenedTabsMessage(openerTabId, matches)));
+      return true;
+    }
+    if (matches.length === 1) ignored.delete(matches[0].targetId);
+    return false;
+  };
+
   const unsubscribe = socket.onAny((method, params) => {
     if (stopped) return;
     if (listing) {
       listing.push([method, params]);
       return;
     }
+    if (judge(method, params)) return;
     for (const opened of filter(method, params)) emit(opened);
   });
 
@@ -366,18 +405,27 @@ export async function watchOpenedTabs(
     const opener = facts.get(openerTargetId);
     const openerOk = opener !== undefined && isDrivablePageTarget(opener.type, opener.url);
     const candidates: OpenedTab[] = [];
+    const unknownUrl: string[] = [];
     for (const [targetId, f] of facts) {
       if (targetId === openerTargetId) continue;
       ignored.add(targetId);
       if (!openerOk || f.type !== 'page' || f.openerId !== openerTargetId) continue;
       if (reported.has(targetId)) continue;
       const pageUrl = f.url ?? '';
-      if (pageUrl !== '' && (!isDrivablePageTarget(f.type, pageUrl) || !accepts(pageUrl))) continue;
+      // No url yet: `accepts` cannot judge it until the url arrives.
+      if (pageUrl === '') {
+        unknownUrl.push(targetId);
+        continue;
+      }
+      if (!isDrivablePageTarget(f.type, pageUrl) || !accepts(pageUrl)) continue;
       candidates.push({ targetId, url: pageUrl });
     }
-    const allowed = candidates.length > 0 && (deps.openerActedRecently?.() ?? false);
+    const allowed =
+      candidates.length + unknownUrl.length > 0 && (deps.openerActedRecently?.() ?? false);
     if (allowed && candidates.length > 1) {
       listingOutcome.ambiguous = new Error(ambiguousOpenedTabsMessage(openerTabId, candidates));
+    } else if (allowed && unknownUrl.length > 0) {
+      undecided = { matches: candidates, waiting: new Set(unknownUrl) };
     } else if (allowed) {
       ignored.delete(candidates[0].targetId);
     }
