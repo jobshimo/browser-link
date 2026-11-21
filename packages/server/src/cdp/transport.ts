@@ -9,9 +9,8 @@
  * generated mirror of core's `tools/`, outcome mapped by
  * `./tool-outcome.ts`), the same bodies the extension runs; the flow tools
  * run on cdp-direct's own flow model (`./flow-control.ts`). A tool whose
- * requirements cdp-direct does not provide (`downloads`,
- * `content-settings`) is refused there with the unsupported text
- * (`./support.ts`). The wire-level contract is
+ * requirements cdp-direct does not provide (`downloads`) is refused there
+ * with the unsupported text (`./support.ts`). The wire-level contract is
  * identical: a resolved promise is a wire `ok:true` result, a rejected
  * promise is a wire `ok:false` (the rejection's message is the error
  * string) — exactly what `sendToolRequest` produces for the extension path,
@@ -36,6 +35,7 @@ import { buildSnapshotJs } from '../generated/core/inpage/builders.js';
 import { systemClock } from './adapters/system-clock.js';
 import { createCdpClientSession } from './adapters/cdp-client-session.js';
 import { createCdpPageInfo } from './adapters/cdp-page-info.js';
+import { createCdpContentSettings } from './adapters/cdp-content-settings.js';
 import { createPageDriver, type PageDriverHandle } from '../generated/core/session/page-driver.js';
 import type { ObserverMessageOutcome } from '../generated/core/support/observer-host.js';
 import { performClick } from '../generated/core/actions/perform-click.js';
@@ -411,6 +411,8 @@ function actionDeps(client: CdpClient, evaluateTimeoutMs?: number): ToolDeps {
     'screen-capture': driver.screen,
     'response-bodies': driver.responses,
     'dialog-input': driver.dialog,
+    // Parity G10: on this connection, never on the browser-level socket.
+    'content-settings': createCdpContentSettings(client),
     clock: systemClock,
     dialogs: driver.dialogs,
     captureBuffers: captures.get(client),

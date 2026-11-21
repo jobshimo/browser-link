@@ -3,9 +3,10 @@
 // were already on cdp-direct, and a canvas screenshot rides the evaluator)
 // and `dialog-input` (P3: the dial feeds the connection's pending dialog),
 // `capture-buffers` and `response-bodies` (P5: the dial enables Log and
-// Network and feeds the connection's capture buffers). It does not provide
-// `downloads` or `content-settings`, so `browser.set_permission` and
-// `browser.download` are refused. Declaring a capability outside that scope is a
+// Network and feeds the connection's capture buffers) and `content-settings`
+// (G10: Browser.setPermission on the tab's page connection, a temporary
+// override). It does not provide `downloads`, so `browser.download`'s
+// selector mode is refused. Declaring a capability outside that scope is a
 // behavior change (7(e)), so this test pins the set.
 import { describe, expect, test } from 'vitest';
 import { TOOL_REGISTRY } from '../generated/core/tools/catalog.js';
@@ -20,11 +21,12 @@ const DOWNLOADS_REFUSAL =
   'browser.download with a selector is not supported over cdp-direct: Chrome gives a DevTools client no way to hold a download until it is saved. Pass url instead (it works on cdp: tabs), or use a tab connected through the Chrome extension.';
 
 describe('CDP_DIRECT_PROVIDES', () => {
-  test('is the page ports, the CDP event wait and the flow services, with drag, canvas, dialog-input, capture-buffers and response-bodies', () => {
+  test('is the page ports, the CDP event wait and the flow services, with drag, canvas, dialog-input, capture-buffers, response-bodies and content-settings', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
       'canvas',
       'capture-buffers',
       'cdp-events',
+      'content-settings',
       'dialog-input',
       'drag',
       'evaluator',
@@ -41,7 +43,6 @@ describe('CDP_DIRECT_PROVIDES', () => {
   });
 
   test.each([
-    ['set_permission', ['content-settings'], null],
     ['download', ['downloads'], DOWNLOADS_REFUSAL],
     ['download_settle', ['downloads'], DOWNLOADS_REFUSAL],
   ])(
@@ -57,10 +58,7 @@ describe('CDP_DIRECT_PROVIDES', () => {
         {},
       );
       expect(outcome).toEqual({ ok: false, failure: { kind: 'unsupported', tool, missing } });
-      expect(() => cdpToolResult(outcome)).toThrow(
-        text ??
-          `browser.${tool} is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.`,
-      );
+      expect(() => cdpToolResult(outcome)).toThrow(text);
     },
   );
 

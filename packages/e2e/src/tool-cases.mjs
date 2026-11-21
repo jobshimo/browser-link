@@ -102,7 +102,11 @@ export const TOOL_CASES = {
     'browser.download.stress-after-scroll',
     'browser.dialog_respond.cdp',
   ],
-  'browser.set_permission': ['browser.set_permission'],
+  'browser.set_permission': [
+    'browser.set_permission',
+    'browser.set_permission.cdp',
+    'error.set_permission-name.cdp',
+  ],
   'browser.download': [
     'browser.download.selector',
     'browser.download.url',
@@ -129,6 +133,7 @@ export const TOOL_CASES = {
     'browser.drag.drop-check.cdp',
     'browser.flow.drag-step.drop-check.cdp',
     'browser.evaluate.after-dialog.cdp',
+    'browser.set_permission.read.cdp',
     'error.dialog-before-dial.cdp',
   ],
   'browser.read': ['browser.read'],

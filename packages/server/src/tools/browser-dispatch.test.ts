@@ -2535,23 +2535,28 @@ describe('cdp-direct routing', () => {
     ).rejects.toThrow(/cdp-direct is not available/i);
   });
 
-  test('an out-of-v1-scope tool on a cdp: tab is rejected before callCdpTool runs', async () => {
+  test('browser.set_permission on a cdp: tab reaches callCdpTool with origin/name/state (G10)', async () => {
     const callCdpTool = vi.fn(async () => ({}));
-    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool });
-    await expect(
-      handleBrowserTool(
-        'browser.set_permission',
-        {
-          tab_id: 'cdp:ABC',
-          origin: 'https://example.com',
-          name: 'geolocation',
-          state: 'granted',
-        },
-        deps,
-        TEST_CALLER,
-      ),
-    ).rejects.toThrow(/browser.set_permission is not supported over cdp-direct/i);
-    expect(callCdpTool).not.toHaveBeenCalled();
+    const callBrowserTool = vi.fn(async () => ({}));
+    const deps = makeDeps({ cdpGate: () => OK_GATE, callCdpTool, callBrowserTool });
+    await handleBrowserTool(
+      'browser.set_permission',
+      {
+        tab_id: 'cdp:ABC',
+        origin: 'https://example.com',
+        name: 'geolocation',
+        state: 'granted',
+      },
+      deps,
+      TEST_CALLER,
+    );
+    expect(callCdpTool).toHaveBeenCalledTimes(1);
+    expect(callCdpTool.mock.calls[0]?.slice(0, 3)).toEqual([
+      'cdp:ABC',
+      'set_permission',
+      { origin: 'https://example.com', name: 'geolocation', state: 'granted' },
+    ]);
+    expect(callBrowserTool).not.toHaveBeenCalled();
   });
 
   test('browser.drag, browser.canvas_screenshot and browser.dialog_respond on a cdp: tab reach callCdpTool', async () => {

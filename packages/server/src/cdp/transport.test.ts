@@ -3406,3 +3406,109 @@ describe('callCdpTool — a failed action on a sensitive field (S2)', () => {
     expect(rows().map((r) => r.payload)).toEqual(['hunter2', UNIDENTIFIED_FIELD_MARKER]);
   });
 });
+
+// Parity G10 (owner decision 2026-11-21, option a): set_permission on a cdp:
+// tab is Browser.setPermission on the tab's own page connection, for the
+// origin, with no browserContextId; the result says the override is
+// temporary.
+describe('callCdpTool — set_permission as a temporary override (parity G10)', () => {
+  const TEMPORARY_NOTE =
+    'Temporary: on a cdp: tab this permission is a DevTools override, not a saved site setting. It lasts while browser-link stays connected to the tab (the connection is dropped after 30 minutes without a tool call on the tab, 5 when nothing was captured) and another DevTools client disconnecting from the browser can clear it earlier.';
+
+  function permissionPage(sent: unknown[]): Record<string, Handler> {
+    return {
+      'Browser.setPermission': (params) => {
+        sent.push(params);
+        return {};
+      },
+    };
+  }
+
+  test.each([
+    ['granted', 'geolocation', 'geolocation', 'location'],
+    ['denied', 'notifications', 'notifications', 'notifications'],
+  ])(
+    'state %s for %s sends Browser.setPermission on the page connection with the origin and answers the temporary note',
+    async (state, name, descriptor, appliedAs) => {
+      const sent: unknown[] = [];
+      const { port, targetId } = await startFakeTarget(permissionPage(sent));
+      grantAccess(port);
+      const result = await callCdpTool(`cdp:${targetId}`, 'set_permission', {
+        origin: 'https://example.com',
+        name,
+        state,
+      });
+      expect(sent).toEqual([
+        { permission: { name: descriptor }, setting: state, origin: 'https://example.com' },
+      ]);
+      expect(result).toEqual({
+        origin: 'https://example.com',
+        name,
+        state,
+        applied_as: appliedAs,
+        note: TEMPORARY_NOTE,
+      });
+      expect(connectionCount).toBe(1);
+    },
+  );
+
+  test('the names whose content setting differs map to the descriptor Chrome takes for it', async () => {
+    const sent: { permission: { name: string } }[] = [];
+    const { port, targetId } = await startFakeTarget(permissionPage(sent));
+    grantAccess(port);
+    for (const name of [
+      'camera',
+      'microphone',
+      'clipboardReadWrite',
+      'clipboardSanitizedWrite',
+      'sensors',
+    ]) {
+      await callCdpTool(`cdp:${targetId}`, 'set_permission', {
+        origin: 'https://example.com/*',
+        name,
+        state: 'prompt',
+      });
+    }
+    expect(sent).toEqual(
+      ['camera', 'microphone', 'clipboard-read', 'clipboard-read', 'accelerometer'].map(
+        (descriptor) => ({
+          permission: { name: descriptor },
+          setting: 'prompt',
+          origin: 'https://example.com',
+        }),
+      ),
+    );
+  });
+
+  test('an unsupported name fails with the extension text without the MV3 wording and sends nothing', async () => {
+    const sent: unknown[] = [];
+    const { port, targetId } = await startFakeTarget(permissionPage(sent));
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'set_permission', {
+        origin: 'https://example.com',
+        name: 'midi',
+        state: 'granted',
+      }),
+    ).rejects.toThrow(
+      new Error(
+        "set_permission: 'midi' is not supported. Supported names: geolocation, notifications, camera, microphone, clipboardReadWrite, clipboardSanitizedWrite, sensors.",
+      ),
+    );
+    expect(sent).toEqual([]);
+  });
+
+  test("Chrome's refusal is the error, unchanged after the tool prefix", async () => {
+    const { port, targetId } = await startFakeTarget({
+      'Browser.setPermission': () => new CdpError('Unknown permission setting: maybe'),
+    });
+    grantAccess(port);
+    await expect(
+      callCdpTool(`cdp:${targetId}`, 'set_permission', {
+        origin: 'https://example.com',
+        name: 'camera',
+        state: 'granted',
+      }),
+    ).rejects.toThrow(new Error('set_permission: Unknown permission setting: maybe'));
+  });
+});

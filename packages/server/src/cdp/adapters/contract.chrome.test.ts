@@ -13,6 +13,7 @@ import {
   countingSession,
   defineCdpEventsContract,
   defineCdpSessionContract,
+  defineContentSettingsContract,
   defineDialogInputContract,
   defineDragInputContract,
   defineKeyboardContract,
@@ -43,6 +44,7 @@ import { CdpClient } from '../client.js';
 import { createCdpClientSession } from './cdp-client-session.js';
 import { createCdpDialogWatch } from './cdp-dialog-watch.js';
 import { createCdpCaptureWatch } from './cdp-capture-watch.js';
+import { createCdpContentSettings } from './cdp-content-settings.js';
 import { createCdpPageInfo } from './cdp-page-info.js';
 import { systemClock } from './system-clock.js';
 
@@ -82,6 +84,8 @@ const NO_RESOURCE = 'No resource with given identifier found';
 const SERVED = '<title>served</title><p>body</p>';
 /** What Chrome answers for a dialog response while no dialog is showing. */
 const NO_DIALOG = 'No dialog is showing';
+/** What Chrome answers for a permission name it does not know. */
+const UNKNOWN_PERMISSION = 'Invalid PermissionDescriptor name: contract-unknown';
 
 /** A fresh page target on PAGE, loaded, with a connected client. */
 async function openPage(): Promise<{ client: CdpClient; close: () => Promise<void> }> {
@@ -528,6 +532,57 @@ describe.skipIf(!CHROME)('cdp-direct adapters on a real Chrome target', () => {
           captured: { requestId, body: { body: SERVED, base64Encoded: false } },
           failing: { requestId: 'contract-unknown', message: NO_RESOURCE },
           dispose: close,
+        };
+      }),
+    );
+  });
+  // Parity G10: the cdp ContentSettings writes Browser.setPermission on the
+  // page connection; the harness reads the state the page sees on the
+  // contract's origin (https://a.test, served by Fetch on that connection).
+  describe('ContentSettings contract: Browser.setPermission on the page connection', () => {
+    const QUERY_NAME: Record<string, string> = { location: 'geolocation' };
+    const VALUE_BY_STATE: Record<string, string> = {
+      granted: 'allow',
+      denied: 'block',
+      prompt: 'ask',
+    };
+    run(
+      defineContentSettingsContract(async () => {
+        const { client, close } = await openPage();
+        await client.send('Fetch.enable', { patterns: [{ urlPattern: 'https://a.test/*' }] });
+        const offPaused = client.on('Fetch.requestPaused', (params) => {
+          void client.send('Fetch.fulfillRequest', {
+            requestId: (params as { requestId: string }).requestId,
+            responseCode: 200,
+            responseHeaders: [{ name: 'content-type', value: 'text/html' }],
+            body: Buffer.from('<p>a.test</p>').toString('base64'),
+          });
+        });
+        const loaded = new Promise<void>((resolve) => {
+          const off = client.on('Page.loadEventFired', () => {
+            off();
+            resolve();
+          });
+        });
+        await client.send('Page.navigate', { url: 'https://a.test/' });
+        await loaded;
+        return {
+          settings: createCdpContentSettings(client),
+          read: async (setting) => {
+            const name = QUERY_NAME[setting] ?? setting;
+            const answer = await client.send<{ result: { value?: string } }>('Runtime.evaluate', {
+              expression: `navigator.permissions.query({ name: ${JSON.stringify(name)} }).then((s) => s.state)`,
+              awaitPromise: true,
+              returnByValue: true,
+            });
+            const state = answer.result.value;
+            return state === undefined ? undefined : VALUE_BY_STATE[state];
+          },
+          failing: { setting: 'contract-unknown', message: UNKNOWN_PERMISSION },
+          dispose: async () => {
+            offPaused();
+            await close();
+          },
         };
       }),
     );
