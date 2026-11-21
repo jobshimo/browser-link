@@ -2696,7 +2696,7 @@ clear error naming the extension as the fallback.
 
 | Supported in v1                                                                                                                                                                                                                                                                                                                               | NOT supported in v1 (use the extension instead) |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`_, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `console`_, `network`_, `network_body`_, `download` (`url` mode) | `set_permission`, `download` (`selector` mode)  |
+| `list_tabs`, `ping`, `snapshot`, `find`, `state`, `screenshot`, `click`, `type`, `press`, `evaluate`, `wait_for`_, `navigate`, `flow` (incl. `detach`), `flow_status`, `flow_cancel`, `canvas_screenshot`, `drag` (also as a flow step), `dialog_respond`†, `wait_for_tab`‡, `console`_, `network`_, `network_body`_, `download` (`url` mode) | `set_permission`, `download` (`selector` mode)§ |
 
 \* Since 1.4.45 the connection enables Chrome's `Log` and `Network` domains
 when it is opened, and `console`, `network`, `network_body` and
@@ -2708,6 +2708,8 @@ console history Chrome replays then, `network` only requests made since.
 A connection whose buffers hold an entry is kept 30 minutes without a tool
 call on its tab (see the connection clock below); `network_body` answers
 only for requests the current connection saw.
+
+§ Not ported, by decision (2026-11-21): Chrome gives a DevTools client no way to hold a download until it is saved, so `download` with a `selector` (and `download_settle`) stays refused on `cdp:` tabs. Pass `url` instead, or use a tab connected through the extension.
 
 † Limit: a JavaScript dialog that opened while browser-link had no connection to the tab (before its first call, or after an idle close) cannot be seen or answered over cdp-direct; calls on that tab fail with "the page did not answer Page.enable within 15 s" until you close the dialog in the browser.
 

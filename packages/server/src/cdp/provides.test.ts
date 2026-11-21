@@ -15,6 +15,10 @@ import { systemClock } from './adapters/system-clock.js';
 import { cdpToolResult } from './tool-outcome.js';
 import { CDP_DIRECT_PROVIDES } from './transport.js';
 
+/** The decided refusal of the `downloads` requirement (D17 option b, 2026-11-21). */
+const DOWNLOADS_REFUSAL =
+  'browser.download with a selector is not supported over cdp-direct: Chrome gives a DevTools client no way to hold a download until it is saved. Pass url instead (it works on cdp: tabs), or use a tab connected through the Chrome extension.';
+
 describe('CDP_DIRECT_PROVIDES', () => {
   test('is the page ports, the CDP event wait and the flow services, with drag, canvas, dialog-input, capture-buffers and response-bodies', () => {
     expect([...CDP_DIRECT_PROVIDES].sort()).toEqual([
@@ -37,12 +41,12 @@ describe('CDP_DIRECT_PROVIDES', () => {
   });
 
   test.each([
-    ['set_permission', ['content-settings']],
-    ['download', ['downloads']],
-    ['download_settle', ['downloads']],
+    ['set_permission', ['content-settings'], null],
+    ['download', ['downloads'], DOWNLOADS_REFUSAL],
+    ['download_settle', ['downloads'], DOWNLOADS_REFUSAL],
   ])(
-    'browser.%s on cdp-direct is refused with the unchanged unsupported text',
-    async (tool, missing) => {
+    'browser.%s on cdp-direct is refused with its unsupported text',
+    async (tool, missing, text) => {
       const deps = { clock: systemClock } as unknown as ToolDeps;
       const outcome = await dispatchTool(
         TOOL_REGISTRY,
@@ -54,7 +58,8 @@ describe('CDP_DIRECT_PROVIDES', () => {
       );
       expect(outcome).toEqual({ ok: false, failure: { kind: 'unsupported', tool, missing } });
       expect(() => cdpToolResult(outcome)).toThrow(
-        `browser.${tool} is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.`,
+        text ??
+          `browser.${tool} is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.`,
       );
     },
   );

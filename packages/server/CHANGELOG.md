@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.48](https://github.com/jobshimo/browser-link/compare/v1.4.47...v1.4.48) (2026-11-21)
+
+### Features
+
+- cdp-direct: `browser.download` with a `selector` on a `cdp:` tab now fails with `browser.download with a selector is not supported over cdp-direct: Chrome gives a DevTools client no way to hold a download until it is saved. Pass url instead (it works on cdp: tabs), or use a tab connected through the Chrome extension.` instead of the generic `browser.download is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.` Selector mode and `download_settle` stay refused on `cdp:` tabs by decision (2026-11-21); `url` mode is unchanged. The README's cdp-direct table and the manual's downloads topic say so.
+
 ## [1.4.47](https://github.com/jobshimo/browser-link/compare/v1.4.46...v1.4.47) (2026-11-21)
 
 ### Bug Fixes
