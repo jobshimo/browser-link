@@ -139,4 +139,10 @@ describe('cdpUnsupportedToolError', () => {
     expect(err.message).toMatch(/not supported over cdp-direct/i);
     expect(err.message).toMatch(/extension/i);
   });
+
+  test("download's selector mode names both ways out: url mode and the extension transport", () => {
+    expect(cdpUnsupportedToolError('download').message).toBe(
+      'browser.download with a selector is not supported over cdp-direct: Chrome gives a DevTools client no way to hold a download until it is saved. Pass url instead (it works on cdp: tabs), or use a tab connected through the Chrome extension.',
+    );
+  });
 });

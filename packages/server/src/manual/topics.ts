@@ -42,6 +42,7 @@ export const TOPICS: Record<TopicName, Topic> = {
       '- On Windows each saved file gets the Mark-of-the-Web (Zone.Identifier stream) like a Chrome download: `mark_of_the_web: "written"`, or `"failed"` with `mark_of_the_web_error` (the file is kept).',
       '- The file is written under a temporary name and linked into place when complete, so a failed write leaves nothing; an existing file is never overwritten (the name gets " (1)").',
       '- With a known URL, pass `url` instead (this also works on `cdp:` tabs).',
+      '- On `cdp:` tabs selector mode is refused, by decision (2026-11-21): Chrome gives a DevTools client no way to hold a download until it is saved. Pass `url`, or use a tab connected through the extension.',
       '- The result always says what happened: `state: "complete" | "interrupted" | "timeout"` with `path`, `bytes`, `mime`.',
     ),
   },

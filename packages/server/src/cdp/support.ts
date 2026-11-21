@@ -76,10 +76,27 @@ export function isCdpToolSupported(tool: string): boolean {
   return CDP_TOOL_SUPPORT.get(tool) === true;
 }
 
+/** The refusal text of a requirement cdp-direct does not provide by
+ * decision, used instead of the generic text for any tool that needs it.
+ * `downloads` (D17 option b, 2026-11-21): no CDP primitive holds a download
+ * pending a later decision, so `download`'s selector mode and
+ * `download_settle` stay refused; url mode never needs it. */
+const REQUIREMENT_REFUSALS: ReadonlyMap<Requirement, string> = new Map<Requirement, string>([
+  [
+    'downloads',
+    'browser.download with a selector is not supported over cdp-direct: Chrome gives a DevTools client no way to hold a download until it is saved. Pass url instead (it works on cdp: tabs), or use a tab connected through the Chrome extension.',
+  ],
+]);
+
 /** Error a caller gets for a tool that is valid in general but explicitly
  * not implemented over cdp-direct in v1 — names the limitation and points
  * at the fallback transport. */
 export function cdpUnsupportedToolError(tool: string): Error {
+  const refusal = TOOL_REGISTRY.get(tool)
+    ?.requires.filter((requirement) => !CDP_DIRECT_PROVIDES.has(requirement))
+    .map((requirement) => REQUIREMENT_REFUSALS.get(requirement))
+    .find((text) => text !== undefined);
+  if (refusal) return new Error(refusal);
   return new Error(
     `browser.${tool} is not supported over cdp-direct in v1. Use a tab connected through the Chrome extension instead.`,
   );
