@@ -155,7 +155,8 @@ export class CdpClient {
   /** Send one CDP command and wait for its matching response. `onAnswer`
    * runs synchronously when a successful answer's frame is handled, before
    * any later frame: a caller can tell the events that came
-   * before the answer from those after it. */
+   * before the answer from those after it. If `onAnswer` throws, the
+   * command rejects with that error. */
   send<T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
@@ -175,7 +176,13 @@ export class CdpClient {
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
-          onAnswer?.();
+          try {
+            onAnswer?.();
+          } catch (err) {
+            // A throwing callback settles the command with its error.
+            reject(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
           resolve(value as T);
         },
         reject: (err) => {

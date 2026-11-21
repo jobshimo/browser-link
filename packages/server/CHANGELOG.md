@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.42](https://github.com/jobshimo/browser-link/compare/v1.4.41...v1.4.42) (2026-11-21)
+
+### Bug Fixes
+
+- cdp-direct: `browser.wait_for_tab` with a `cdp:` `opened_from` and a `url_substring` no longer fails with `cdp-direct: browser.wait_for_tab cannot tell which tab <opener> opened: ...` because of a page the tab opened before the call whose url Chrome had not sent yet. Such a page was counted as a match before `url_substring` could judge it; it is now judged when its url arrives. Until then nothing already open is returned; then one match is returned, and several make the call fail with the same error, naming them. Pages opened during the call and extension tabs are unchanged.
+- cdp-direct: a DevTools command whose answer callback throws now fails with that error instead of never settling (`CdpClient.send`). Nothing agent-visible used a throwing callback; the fix keeps a future one from hanging a call.
+
 ## [1.4.41](https://github.com/jobshimo/browser-link/compare/v1.4.40...v1.4.41) (2026-11-20)
 
 ### Features
