@@ -141,7 +141,7 @@ describe('matchBrowserLinkCommand', () => {
   test('ignores browser-link appearing only as an argument value', () => {
     expect(
       matchBrowserLinkCommand(
-        'C:\\x\\node.exe --liftoff-only C:\\x\\codegraph.js serve --mcp --path C:\\Users\\NERO\\repos\\browser-link',
+        'C:\\x\\node.exe --liftoff-only C:\\x\\codegraph.js serve --mcp --path C:\\Users\\<user>\\repos\\browser-link',
       ),
     ).toBeNull();
     expect(matchBrowserLinkCommand('grep browser-link')).toBeNull();

@@ -63,13 +63,13 @@ Perception is **stateless by design**, not by neglect; what is missing is not a 
 
 ## 4. Lab evidence
 
-Six experiments, raw CDP from Node against a throwaway Chrome 156 profile, plus one MV3 lab extension. Scripts, pages and unedited results are in `../lab/2026-11-06-live-page-model/` (README there maps each number to its file). Targets: **Home Assistant** (Lit; 3,723 nodes, 403 open shadow roots), **timeanddate.com world clock** (two same-origin iframes), and a controlled **storm page** (200 text nodes and 20 attributes mutating every animation frame inside 20 open shadow roots, ~144 fps on this machine).
+Six experiments, raw CDP from Node against a throwaway Chrome 156 profile, plus one MV3 lab extension. Scripts, pages and unedited results are in `../lab/2026-11-06-live-page-model/` (README there maps each number to its file). Targets: **a local Lit app** (Lit; 3,723 nodes, 403 open shadow roots), **timeanddate.com world clock** (two same-origin iframes), and a controlled **storm page** (200 text nodes and 20 attributes mutating every animation frame inside 20 open shadow roots, ~144 fps on this machine).
 
 ### 4.1 CDP `DOM.*` events are not a viable feed
 
 | Measurement | Result |
 |---|---|
-| Full tree, `DOM.getDocument({depth:-1, pierce:true})` on Home Assistant | 27 ms, 746 KB, 3,723 nodes, 403 shadow roots. Cheap enough for a **resync** |
+| Full tree, `DOM.getDocument({depth:-1, pierce:true})` on a local Lit app | 27 ms, 746 KB, 3,723 nodes, 403 shadow roots. Cheap enough for a **resync** |
 | Events inside an existing shadow root (depth 11) | `attributeModified`, `childNodeInserted/Removed`, `characterDataModified` all arrive |
 | New shadow root, open or closed | `DOM.shadowRootPushed` fires for both, with `shadowRootType` |
 | Mutations inside a **newly pushed** root | **Zero events**, only `childNodeCountUpdated` on the parent. The protocol only reports nodes the client has already requested; every insertion needs a follow-up `requestChildNodes`, with a blind window per round trip |
@@ -120,7 +120,7 @@ The same observer in an isolated world (`worldName` + `Runtime.addBinding({execu
 
 ### 4.6 Identity in a Lit app
 
-Home Assistant, 88 interactive elements tagged with a `WeakMap` id on the overview; navigate to the configuration dashboard (71 elements: 39 the same nodes, 32 new); `history.back()`: **88 of 88 the same DOM nodes**. A semantic key of role + accessible text produced **37 distinct keys for 88 elements**.
+a local Lit app, 88 interactive elements tagged with a `WeakMap` id on the overview; navigate to the configuration dashboard (71 elements: 39 the same nodes, 32 new); `history.back()`: **88 of 88 the same DOM nodes**. A semantic key of role + accessible text produced **37 distinct keys for 88 elements**.
 
 Conclusion: node identity is strong and cheap and should be primary; semantic identity is a fallback and must include structural position to be unique.
 

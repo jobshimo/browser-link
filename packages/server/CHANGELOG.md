@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.43](https://github.com/jobshimo/browser-link/compare/v1.4.42...v1.4.43) (2026-11-21)
+
+### Notes
+
+- No product change. Lab records and one test fixture use neutral placeholders for machine paths and lab app names.
+
 ## [1.4.42](https://github.com/jobshimo/browser-link/compare/v1.4.41...v1.4.42) (2026-11-21)
 
 ### Bug Fixes
@@ -902,13 +908,13 @@ The release pipeline is hardened before 1.0.0. No change to the published tools 
 - **identity:** a live `ref` resolves directly; a node that a re-render replaced is re-resolved by its semantic key (same role, same accessible name, identical ancestor tag path) only when exactly one candidate matches, and the result carries `reresolved: true`. Otherwise the call fails with `ref-stale: <ref> not found in document <doc_id>` (take a fresh snapshot) or `observer-unavailable` when the page observer is not in the tab. Identical rows tie and are refused, never guessed. Refs are now `<doc_tag>:e<N>` (the first 6 characters of `doc_id`), so a ref from an earlier document is always stale; the bare `e<N>` form that 0.36.0 returned as an informational field is rejected as malformed.
 - **find:** single matches carry `semantic_key { role, name, path: [{ tag, index }] }`; `find({ key })` locates an element by role and accessible name (optionally its ancestor path), returning the usual single match or a not-found that counts the candidates.
 - **map:** selector entries may store `semantic_key` next to the selector inside the existing JSON payload (no migration; old rows read unchanged); `browser.map.save` validates it and refuses it on an `ambiguous: true` entry; `browser.map.recall` adds `prefer: "semantic_key"` at read time when the stored selector is a structural `:nth-of-type` fallback; export and import carry the field.
-- **observer:** in-page protocol version 3 (semantic keys, re-resolution); a version 2 instance is replaced on reinstall. Measured on Home Assistant (Lit) and GitHub (React) list re-renders: zero wrong re-resolutions across seven scenarios; ambiguous per-row buttons are refused.
+- **observer:** in-page protocol version 3 (semantic keys, re-resolution); a version 2 instance is replaced on reinstall. Measured on a Lit app and GitHub (React) list re-renders: zero wrong re-resolutions across seven scenarios; ambiguous per-row buttons are refused.
 
 ## [0.36.0](https://github.com/jobshimo/browser-link/compare/v0.35.0...v0.36.0) (2026-11-08)
 
 ### Features
 
-- **snapshot:** `browser.snapshot({ since: <snapshot_id> })` returns a diff instead of the whole page: `added` and `changed` entries (full entries, added first), `removed` as `{ ref, tag, text? }`, with `max_interactive` applied after diffing and an `overflow` count when it truncates; `headings` and `text` appear only when requested and changed. When no diff can be made the call still returns a full snapshot plus `since_status`: `doc-changed` (the id belongs to another document), `evicted` (not among the last 4 snapshots of this document) or `observer-unavailable`. Measured on a Home Assistant view over 10 looks with read-only interactions between them: 114,031 result bytes for 10 full snapshots vs 35,499 for one full snapshot and 9 `since` calls, 68.9 % less; an idle re-look costs about 2 % of a full snapshot.
+- **snapshot:** `browser.snapshot({ since: <snapshot_id> })` returns a diff instead of the whole page: `added` and `changed` entries (full entries, added first), `removed` as `{ ref, tag, text? }`, with `max_interactive` applied after diffing and an `overflow` count when it truncates; `headings` and `text` appear only when requested and changed. When no diff can be made the call still returns a full snapshot plus `since_status`: `doc-changed` (the id belongs to another document), `evicted` (not among the last 4 snapshots of this document) or `observer-unavailable`. Measured on a Lit app view over 10 looks with read-only interactions between them: 114,031 result bytes for 10 full snapshots vs 35,499 for one full snapshot and 9 `since` calls, 68.9 % less; an idle re-look costs about 2 % of a full snapshot.
 - **snapshot, find, state:** interactive entries carry `ref` (`e<N>`), a per-document element handle issued by the page observer and reused while the node lives; results carry `doc_id`, and snapshot results carry `snapshot_id` (`<doc_id>:s<N>`). All additive and absent when the observer is not in the page, where the output is byte-identical to 0.35.0. `ref` is informational in this release; it becomes an action target in the next slice.
 - **observer:** in-page protocol version 2: element refs (`refFor`, `resolveRef`), per-document snapshot ids and a bounded store of the last 4 snapshot records; an installed version 1 instance is replaced on reinstall.
 

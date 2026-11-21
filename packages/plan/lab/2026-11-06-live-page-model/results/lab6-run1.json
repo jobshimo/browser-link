@@ -1,6 +1,6 @@
 {
   "start": {
-    "url": "http://homeassistant.local:8123/home/overview",
+    "url": "http://lit-app.example:8123/home/overview",
     "total": 88,
     "same_node": 0,
     "new_node": 88,
@@ -8,13 +8,13 @@
   },
   "navigated": true,
   "away": {
-    "url": "http://homeassistant.local:8123/config/dashboard",
+    "url": "http://lit-app.example:8123/config/dashboard",
     "total": 71,
     "same_node": 39,
     "new_node": 32
   },
   "back": {
-    "url": "http://homeassistant.local:8123/home/overview",
+    "url": "http://lit-app.example:8123/home/overview",
     "total": 88,
     "same_node": 88,
     "new_node": 0,

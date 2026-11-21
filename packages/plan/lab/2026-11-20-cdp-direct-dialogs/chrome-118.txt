@@ -1,4 +1,4 @@
-+    85ms label=chrome-118 chrome=C:/Users/NERO/AppData/Local/Temp/claude/09a8d5156dd42345/bfd363a9-84c1-4cdd-a718-40fa13fc76bf/scratchpad/cft/chrome/win64-118.0.5993.70/chrome-win64/chrome.exe
++    85ms label=chrome-118 chrome=C:/Users/<user>/AppData/Local/Temp/claude/09a8d5156dd42345/bfd363a9-84c1-4cdd-a718-40fa13fc76bf/scratchpad/cft/chrome/win64-118.0.5993.70/chrome-win64/chrome.exe
 +    85ms owner primary pids on 17529/17530 before: [54284]
 +   439ms browser=Chrome/118.0.5993.70 protocol=1.3 ports ws=61629 ipc=61630 cdp=61632 page=http://127.0.0.1:61628/
 +  1568ms cli: cdp-direct.enabled set to on. This alone does not let an agent use a cdp: tab — run `browser-link cdp allow` to also grant it.

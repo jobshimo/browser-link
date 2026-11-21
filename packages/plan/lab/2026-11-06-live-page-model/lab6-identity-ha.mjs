@@ -1,7 +1,7 @@
-// Lab 6: on a Lit app (Home Assistant), how many interactive DOM nodes survive
+// Lab 6: on a Lit app (a local Lit app), how many interactive DOM nodes survive
 // an SPA navigation there-and-back? Tags every interactive element with a
 // WeakMap id, navigates via the sidebar, comes back, re-walks and counts hits.
-// Read-only on the house: only navigation between views.
+// Read-only on the app: only navigation between views.
 // usage: node lab6-identity-ha.mjs <HA webSocketDebuggerUrl>
 const [, , wsUrl] = process.argv;
 const ws = new WebSocket(wsUrl);

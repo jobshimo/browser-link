@@ -1,6 +1,6 @@
 // Lab 9: S2 acceptance and token measurement with the PRODUCTION in-page code
 // (built `packages/extension/dist/inpage/{observer,builders}.js`) over raw CDP
-// against the lab Chrome on port 9222, on Home Assistant (Lit).
+// against the lab Chrome on port 9222, on a local Lit app (Lit).
 //
 //   1. Spec §6.2 acceptance in a real page: two snapshots of an idle page
 //      diff to empty; a synthetic insertion reports exactly the inserted
@@ -11,7 +11,7 @@
 //      look BOTH a full snapshot and a `since` snapshot, and comparing result
 //      bytes like for like.
 //
-// Read-only on the house: navigation inside /config, a text filter, and one
+// Read-only on the app: navigation inside /config, a text filter, and one
 // synthetic <button> appended to <body> and removed again.
 //
 // usage: node lab9-snapshot-since.mjs
@@ -25,7 +25,7 @@ import { buildSnapshotJs } from '../../../extension/dist/inpage/builders.js';
 
 const LAB_DIR = dirname(fileURLToPath(import.meta.url));
 const HTTP = 'http://127.0.0.1:9222';
-const PAGE = 'http://homeassistant.local:8123/config/entities';
+const PAGE = 'http://lit-app.example:8123/config/entities';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const target = await (await fetch(`${HTTP}/json/new?about:blank`, { method: 'PUT' })).json();

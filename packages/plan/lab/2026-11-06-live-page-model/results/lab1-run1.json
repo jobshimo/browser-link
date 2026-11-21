@@ -1,7 +1,7 @@
-[lab] target: http://homeassistant.local:8123/home/overview
+[lab] target: http://lit-app.example:8123/home/overview
 [lab] listening 30000 ms (leave the page alone)…
 {
-  "target": "http://homeassistant.local:8123/home/overview",
+  "target": "http://lit-app.example:8123/home/overview",
   "idle_ms": 30000,
   "phase1_full_tree": {
     "getDocument_ms": 27,
@@ -45,7 +45,7 @@
   "navigation": {
     "spa": {
       "clicked_href": "/home",
-      "url_after": "http://homeassistant.local:8123/home/overview",
+      "url_after": "http://lit-app.example:8123/home/overview",
       "events_during": 7,
       "document_updated_during": 0
     },

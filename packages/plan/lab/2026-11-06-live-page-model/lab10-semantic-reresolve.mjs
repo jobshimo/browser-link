@@ -20,7 +20,7 @@
 // Also counts how many gone elements had 1 / 2+ same-role+name candidates.
 //
 // usage: node lab10-semantic-reresolve.mjs ha | react
-// Read-only on the house (HA: text filter on /config/entities). Writes
+// Read-only on the app (HA: text filter on /config/entities). Writes
 // results/lab10-reresolve-<scenario>.json with machine paths scrubbed.
 
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -123,7 +123,7 @@ const pressEnter = async () => {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 };
 
-const page = scenario === 'ha' ? 'http://homeassistant.local:8123/config/entities' : 'https://github.com/facebook/react/issues';
+const page = scenario === 'ha' ? 'http://lit-app.example:8123/config/entities' : 'https://github.com/facebook/react/issues';
 const loaded = waitLoad();
 await send('Page.navigate', { url: page });
 await Promise.race([loaded, sleep(25000)]);
