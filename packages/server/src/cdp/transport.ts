@@ -142,8 +142,11 @@ function holdConnectionForFlow(targetId: string, until: number): () => void {
 /** How long `client` may go without a tool call before the sweep closes it
  * (gate A): never while a JavaScript dialog it saw open is pending; 30
  * minutes while its capture buffers hold an entry; otherwise the 5-minute
- * window. The buffers are dropped with the connection. */
+ * window. The buffers are dropped with the connection. A connection whose
+ * socket already closed (the tab is gone) keeps nothing: only the 5-minute
+ * window applies, so the sweep removes it. */
 function idleLimitOf(client: CdpClient): number {
+  if (!client.isOpen) return idleCleanupMs;
   if (dialogs.get(client)?.isOpen() === true) return Number.POSITIVE_INFINITY;
   const capture = captures.get(client);
   const holdsEntries =
@@ -468,6 +471,12 @@ export function setIdleCleanupConfigForTest(idleMs: number, sweepIntervalMs: num
  * step past the real 5-minute window without waiting for it. */
 export function sweepIdleConnectionsForTest(now: number): void {
   sweepIdleConnections(now);
+}
+
+/** Test-only: how many connections the cache holds now (dead ones not yet
+ * removed included). Not on any agent-reachable path. */
+export function cachedConnectionCountForTest(): number {
+  return connections.size;
 }
 
 // === Flow deps ==============================================================

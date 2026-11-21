@@ -16,6 +16,7 @@ import {
   setIdleCleanupConfigForTest,
   setPageEnableTimeoutForTest,
   sweepIdleConnectionsForTest,
+  cachedConnectionCountForTest,
 } from './transport.js';
 import {
   cancelDetachedFlow,
@@ -955,6 +956,18 @@ describe('callCdpTool — the idle sweep keeps captured state (gate A)', () => {
     await arrive();
     // Answered, with empty buffers: the 5-minute sweep applies again.
     expect(await sweepAt(245, tabId, 1)).toBe(2);
+  });
+
+  test('a pending dialog does not keep a connection whose tab is gone', async () => {
+    await connect();
+    pushEvent('Page.javascriptDialogOpening', { type: 'alert', message: 'm', url: '' });
+    await arrive();
+    closeTargetSocket();
+    await arrive();
+    expect(cachedConnectionCountForTest()).toBe(1);
+    vi.setSystemTime(T0 + 6 * MIN);
+    sweepIdleConnectionsForTest(Date.now());
+    expect(cachedConnectionCountForTest()).toBe(0);
   });
 
   test('a tool call on the tab restarts the 30-minute clock', async () => {
